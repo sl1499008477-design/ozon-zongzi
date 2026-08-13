@@ -400,19 +400,22 @@ export function createAutoListingCategoryRecoveryPostgres({
     async saveCategoryRecoveryMatch(raw) {
       const input = transitionBase(raw, [
         "replacementSharedCategoryId", "replacementSharedCategoryVersion",
-        "correctedItems", "correctedItemsHash",
+        "replacementCategoryMetadata", "correctedItems", "correctedItemsHash",
       ]);
       identifier(input.replacementSharedCategoryId);
       positive(input.replacementSharedCategoryVersion);
       const items = projectOzonImportCarrier(input.correctedItems);
+      const metadata = projectOzonImportCarrier(input.replacementCategoryMetadata);
       if (!Array.isArray(items) || items.length < 1 || items.length > 100
+        || !metadata || Array.isArray(metadata)
         || digest(input.correctedItemsHash) !== stableHash(items)) throw invalid();
       return transaction(pool, async (client) => {
         let row = (await client.query(
           `UPDATE submission_category_recovery_attempts AS attempt
               SET status='MATCHED',corrected_items=$12::JSONB,corrected_items_hash=$13,
                   replacement_shared_category_id=$14,replacement_shared_category_version=$15,
-                  updated_at=GREATEST($16::TIMESTAMPTZ,attempt.updated_at+INTERVAL '1 microsecond')
+                  replacement_category_metadata=$16::JSONB,
+                  updated_at=GREATEST($17::TIMESTAMPTZ,attempt.updated_at+INTERVAL '1 microsecond')
              FROM account_ozon_shared_categories AS shared,
                   collect_ozon_category_source_evidence AS source
             WHERE attempt.account_id=$1 AND attempt.submission_job_id=$2
@@ -433,7 +436,7 @@ export function createAutoListingCategoryRecoveryPostgres({
             input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
             input.originalOzonTaskId, input.correlationId, input.expectedStatus, JSON.stringify(items),
             input.correctedItemsHash, input.replacementSharedCategoryId,
-            input.replacementSharedCategoryVersion, input.transitionedAt],
+            input.replacementSharedCategoryVersion, JSON.stringify(metadata), input.transitionedAt],
         )).rows[0];
         if (!row) {
           const existing = (await client.query(
@@ -444,6 +447,8 @@ export function createAutoListingCategoryRecoveryPostgres({
             || !["MATCHED", "RETRY_PENDING", "RETRY_ACCEPTED", "SUCCEEDED"].includes(existing.status)
             || existing.corrected_items_hash !== input.correctedItemsHash
             || stableHash(projectOzonImportCarrier(existing.corrected_items)) !== input.correctedItemsHash
+            || JSON.stringify(canonical(projectOzonImportCarrier(existing.replacement_category_metadata)))
+              !== JSON.stringify(canonical(metadata))
             || existing.replacement_shared_category_id !== input.replacementSharedCategoryId
             || Number(existing.replacement_shared_category_version) !== input.replacementSharedCategoryVersion) {
             throw conflict();

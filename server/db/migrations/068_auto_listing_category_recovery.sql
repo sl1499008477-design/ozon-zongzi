@@ -103,6 +103,7 @@ CREATE TABLE submission_category_recovery_attempts (
   original_snapshot_hash TEXT NOT NULL CHECK (original_snapshot_hash ~ '^[0-9a-f]{64}$'),
   corrected_items JSONB,
   corrected_items_hash TEXT CHECK (corrected_items_hash IS NULL OR corrected_items_hash ~ '^[0-9a-f]{64}$'),
+  replacement_category_metadata JSONB,
   replacement_shared_category_id TEXT,
   replacement_shared_category_version INTEGER
     CHECK (replacement_shared_category_version IS NULL OR replacement_shared_category_version > 0),
@@ -134,12 +135,14 @@ CREATE TABLE submission_category_recovery_attempts (
   FOREIGN KEY (account_id,replacement_shared_category_id)
     REFERENCES account_ozon_shared_categories(account_id,id) ON DELETE CASCADE,
   CHECK (
-    (corrected_items IS NULL AND corrected_items_hash IS NULL
+    (corrected_items IS NULL AND corrected_items_hash IS NULL AND replacement_category_metadata IS NULL
       AND replacement_shared_category_id IS NULL AND replacement_shared_category_version IS NULL)
     OR
     (jsonb_typeof(corrected_items)='array' AND jsonb_array_length(corrected_items) BETWEEN 1 AND 100
       AND OCTET_LENGTH(corrected_items::TEXT) <= 2097152
       AND corrected_items_hash IS NOT NULL
+      AND jsonb_typeof(replacement_category_metadata)='object'
+      AND OCTET_LENGTH(replacement_category_metadata::TEXT) <= 2097152
       AND replacement_shared_category_id IS NOT NULL
       AND replacement_shared_category_version > old_shared_category_version)
   ),
@@ -159,10 +162,12 @@ CREATE TABLE submission_category_recovery_attempts (
     (status='NEEDS_REVIEW'
       AND (
         (corrected_items IS NULL AND corrected_items_hash IS NULL
+          AND replacement_category_metadata IS NULL
           AND replacement_shared_category_id IS NULL AND replacement_shared_category_version IS NULL
           AND retry_ozon_task_id IS NULL)
         OR
         (corrected_items IS NOT NULL AND corrected_items_hash IS NOT NULL
+          AND replacement_category_metadata IS NOT NULL
           AND replacement_shared_category_id IS NOT NULL
           AND replacement_shared_category_version IS NOT NULL)
       )
@@ -333,13 +338,135 @@ RETURNS TEXT LANGUAGE SQL IMMUTABLE STRICT AS $$
   END;
 $$;
 
-CREATE OR REPLACE FUNCTION valid_submission_category_recovery_complex_attributes(value JSONB)
+CREATE OR REPLACE FUNCTION valid_submission_category_recovery_metadata(value JSONB)
+RETURNS BOOLEAN LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE
+  attribute_metadata JSONB;
+  dictionary_value JSONB;
+  identifier_text TEXT;
+  attribute_key TEXT;
+  seen_attribute_keys TEXT[] := ARRAY[]::TEXT[];
+  seen_dictionary_ids TEXT[];
+  trimmed_text TEXT;
+  js_whitespace CONSTANT TEXT := U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF';
+BEGIN
+  IF JSONB_TYPEOF(value) IS DISTINCT FROM 'object'
+    OR NOT (value ?& ARRAY['descriptionCategoryId','typeId','attributes'])
+    OR value - ARRAY['descriptionCategoryId','typeId','attributes'] IS DISTINCT FROM '{}'::JSONB
+    OR JSONB_TYPEOF(value->'attributes') IS DISTINCT FROM 'array'
+    OR JSONB_ARRAY_LENGTH(value->'attributes') NOT BETWEEN 1 AND 1000
+  THEN
+    RETURN FALSE;
+  END IF;
+  FOREACH identifier_text IN ARRAY ARRAY[
+    value->>'descriptionCategoryId',value->>'typeId'
+  ]
+  LOOP
+    IF identifier_text IS NULL OR LENGTH(identifier_text)>16
+      OR NOT (identifier_text ~ '^[1-9][0-9]*$')
+      OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+    THEN
+      RETURN FALSE;
+    END IF;
+  END LOOP;
+  IF JSONB_TYPEOF(value->'descriptionCategoryId') IS DISTINCT FROM 'number'
+    OR JSONB_TYPEOF(value->'typeId') IS DISTINCT FROM 'number'
+  THEN
+    RETURN FALSE;
+  END IF;
+  FOR attribute_metadata IN
+    SELECT entry.value FROM JSONB_ARRAY_ELEMENTS(value->'attributes') AS entry(value)
+  LOOP
+    IF JSONB_TYPEOF(attribute_metadata) IS DISTINCT FROM 'object'
+      OR NOT (attribute_metadata ?& ARRAY['id','complexId','required','dictionaryId','dictionaryValues'])
+      OR attribute_metadata - ARRAY['id','complexId','required','dictionaryId','dictionaryValues']
+        IS DISTINCT FROM '{}'::JSONB
+      OR JSONB_TYPEOF(attribute_metadata->'id') IS DISTINCT FROM 'number'
+      OR JSONB_TYPEOF(attribute_metadata->'complexId') IS DISTINCT FROM 'number'
+      OR JSONB_TYPEOF(attribute_metadata->'required') IS DISTINCT FROM 'boolean'
+      OR JSONB_TYPEOF(attribute_metadata->'dictionaryValues') IS DISTINCT FROM 'array'
+      OR JSONB_ARRAY_LENGTH(attribute_metadata->'dictionaryValues') > 5000
+    THEN
+      RETURN FALSE;
+    END IF;
+    identifier_text := attribute_metadata->>'id';
+    IF identifier_text IS NULL OR LENGTH(identifier_text)>16
+      OR NOT (identifier_text ~ '^[1-9][0-9]*$')
+      OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+    THEN
+      RETURN FALSE;
+    END IF;
+    identifier_text := attribute_metadata->>'complexId';
+    IF identifier_text IS NULL OR LENGTH(identifier_text)>16
+      OR NOT (identifier_text ~ '^(0|[1-9][0-9]*)$')
+      OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+    THEN
+      RETURN FALSE;
+    END IF;
+    attribute_key := (attribute_metadata->>'complexId') || ':' || (attribute_metadata->>'id');
+    IF attribute_key=ANY(seen_attribute_keys) THEN RETURN FALSE; END IF;
+    seen_attribute_keys := ARRAY_APPEND(seen_attribute_keys,attribute_key);
+    IF attribute_metadata->'dictionaryId' <> 'null'::JSONB THEN
+      identifier_text := attribute_metadata->>'dictionaryId';
+      IF JSONB_TYPEOF(attribute_metadata->'dictionaryId') IS DISTINCT FROM 'number'
+        OR identifier_text IS NULL OR LENGTH(identifier_text)>16
+        OR NOT (identifier_text ~ '^[1-9][0-9]*$')
+        OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+      THEN
+        RETURN FALSE;
+      END IF;
+    ELSIF JSONB_ARRAY_LENGTH(attribute_metadata->'dictionaryValues')<>0 THEN
+      RETURN FALSE;
+    END IF;
+    seen_dictionary_ids := ARRAY[]::TEXT[];
+    FOR dictionary_value IN
+      SELECT entry.value FROM JSONB_ARRAY_ELEMENTS(attribute_metadata->'dictionaryValues') AS entry(value)
+    LOOP
+      IF JSONB_TYPEOF(dictionary_value) IS DISTINCT FROM 'object'
+        OR NOT (dictionary_value ?& ARRAY['id','value'])
+        OR dictionary_value - ARRAY['id','value'] IS DISTINCT FROM '{}'::JSONB
+        OR JSONB_TYPEOF(dictionary_value->'id') IS DISTINCT FROM 'number'
+        OR JSONB_TYPEOF(dictionary_value->'value') IS DISTINCT FROM 'string'
+      THEN
+        RETURN FALSE;
+      END IF;
+      identifier_text := dictionary_value->>'id';
+      trimmed_text := BTRIM(dictionary_value->>'value',js_whitespace);
+      IF identifier_text IS NULL OR LENGTH(identifier_text)>16
+        OR NOT (identifier_text ~ '^[1-9][0-9]*$')
+        OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+        OR identifier_text=ANY(seen_dictionary_ids)
+        OR LENGTH(dictionary_value->>'value')>5000
+        OR trimmed_text='' OR trimmed_text IS DISTINCT FROM dictionary_value->>'value'
+      THEN
+        RETURN FALSE;
+      END IF;
+      seen_dictionary_ids := ARRAY_APPEND(seen_dictionary_ids,identifier_text);
+    END LOOP;
+  END LOOP;
+  RETURN TRUE;
+EXCEPTION WHEN OTHERS THEN
+  RETURN FALSE;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION valid_submission_category_recovery_complex_attributes(
+  value JSONB,
+  metadata JSONB
+)
 RETURNS BOOLEAN LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE
   complex_group JSONB;
   complex_attribute JSONB;
   attribute_value JSONB;
+  metadata_attribute JSONB;
   identifier_text TEXT;
+  complex_id_text TEXT;
+  attribute_key TEXT;
+  total_attributes INTEGER := 0;
+  seen_attribute_keys TEXT[] := ARRAY[]::TEXT[];
+  trimmed_text TEXT;
+  js_whitespace CONSTANT TEXT := U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF';
 BEGIN
   IF JSONB_TYPEOF(value) IS DISTINCT FROM 'array'
     OR JSONB_ARRAY_LENGTH(value) NOT BETWEEN 1 AND 1000
@@ -356,6 +483,9 @@ BEGIN
     THEN
       RETURN FALSE;
     END IF;
+    total_attributes := total_attributes + JSONB_ARRAY_LENGTH(complex_group->'attributes');
+    IF total_attributes>1000 THEN RETURN FALSE; END IF;
+    complex_id_text := NULL;
     FOR complex_attribute IN
       SELECT entry.value FROM JSONB_ARRAY_ELEMENTS(complex_group->'attributes') AS entry(value)
     LOOP
@@ -383,14 +513,30 @@ BEGIN
       THEN
         RETURN FALSE;
       END IF;
+      IF complex_id_text IS NULL THEN
+        complex_id_text := complex_attribute->>'complex_id';
+      ELSIF complex_id_text IS DISTINCT FROM complex_attribute->>'complex_id' THEN
+        RETURN FALSE;
+      END IF;
+      attribute_key := (complex_attribute->>'complex_id') || ':' || (complex_attribute->>'id');
+      IF attribute_key=ANY(seen_attribute_keys) THEN RETURN FALSE; END IF;
+      seen_attribute_keys := ARRAY_APPEND(seen_attribute_keys,attribute_key);
+      SELECT candidate.value INTO metadata_attribute
+        FROM JSONB_ARRAY_ELEMENTS(metadata->'attributes') AS candidate(value)
+       WHERE candidate.value->>'complexId'=complex_attribute->>'complex_id'
+         AND candidate.value->>'id'=complex_attribute->>'id';
+      IF metadata_attribute IS NULL THEN RETURN FALSE; END IF;
       FOR attribute_value IN
         SELECT entry.value FROM JSONB_ARRAY_ELEMENTS(complex_attribute->'values') AS entry(value)
       LOOP
+        trimmed_text := CASE WHEN JSONB_TYPEOF(attribute_value->'value')='string'
+          THEN BTRIM(attribute_value->>'value',js_whitespace) ELSE NULL END;
         IF JSONB_TYPEOF(attribute_value) IS DISTINCT FROM 'object'
           OR NOT (attribute_value ? 'value')
           OR attribute_value - ARRAY['value','dictionary_value_id'] IS DISTINCT FROM '{}'::JSONB
           OR JSONB_TYPEOF(attribute_value->'value') IS DISTINCT FROM 'string'
-          OR NULLIF(BTRIM(attribute_value->>'value'),'') IS NULL
+          OR trimmed_text=''
+          OR trimmed_text IS DISTINCT FROM attribute_value->>'value'
         THEN
           RETURN FALSE;
         END IF;
@@ -400,6 +546,18 @@ BEGIN
             OR identifier_text IS NULL OR LENGTH(identifier_text)>16
             OR NOT (identifier_text ~ '^[1-9][0-9]*$')
             OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+          THEN
+            RETURN FALSE;
+          END IF;
+        END IF;
+        IF metadata_attribute->'dictionaryId' <> 'null'::JSONB THEN
+          IF NOT (attribute_value ? 'dictionary_value_id')
+            OR JSONB_ARRAY_LENGTH(metadata_attribute->'dictionaryValues')=0
+            OR NOT EXISTS (
+              SELECT 1 FROM JSONB_ARRAY_ELEMENTS(metadata_attribute->'dictionaryValues') AS option(value)
+               WHERE option.value->>'id'=attribute_value->>'dictionary_value_id'
+                 AND option.value->>'value'=attribute_value->>'value'
+            )
           THEN
             RETURN FALSE;
           END IF;
@@ -463,6 +621,11 @@ BEGIN
       OR replacement.taxonomy_scope IS DISTINCT FROM source_evidence.taxonomy_scope
       OR NEW.corrected_items_hash IS DISTINCT FROM ENCODE(SHA256(CONVERT_TO(
         canonical_submission_category_recovery_json(NEW.corrected_items),'UTF8')), 'hex')
+      OR NOT valid_submission_category_recovery_metadata(NEW.replacement_category_metadata)
+      OR NEW.replacement_category_metadata->>'descriptionCategoryId'
+        IS DISTINCT FROM replacement.current_description_category_id::TEXT
+      OR NEW.replacement_category_metadata->>'typeId'
+        IS DISTINCT FROM replacement.current_type_id::TEXT
       OR JSONB_ARRAY_LENGTH(NEW.corrected_items) <> JSONB_ARRAY_LENGTH(triggering_evidence.original_items)
       OR EXISTS (
         SELECT 1
@@ -504,7 +667,7 @@ BEGIN
             OR CASE
               WHEN NOT (corrected_item.value ? 'complex_attributes') THEN FALSE
               ELSE NOT valid_submission_category_recovery_complex_attributes(
-                corrected_item.value->'complex_attributes'
+                corrected_item.value->'complex_attributes',NEW.replacement_category_metadata
               )
             END
       )
@@ -531,6 +694,8 @@ BEGIN
       AND NEW.corrected_items IS DISTINCT FROM OLD.corrected_items)
     OR (OLD.corrected_items_hash IS NOT NULL
       AND NEW.corrected_items_hash IS DISTINCT FROM OLD.corrected_items_hash)
+    OR (OLD.replacement_category_metadata IS NOT NULL
+      AND NEW.replacement_category_metadata IS DISTINCT FROM OLD.replacement_category_metadata)
     OR (OLD.replacement_shared_category_id IS NOT NULL
       AND NEW.replacement_shared_category_id IS DISTINCT FROM OLD.replacement_shared_category_id)
     OR (OLD.replacement_shared_category_version IS NOT NULL

@@ -21,6 +21,18 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const canonicalSha = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 
+const recoveryMetadata = Object.freeze({
+  descriptionCategoryId: 30,
+  typeId: 40,
+  attributes: Object.freeze([
+    Object.freeze({ id: 1, complexId: 0, required: false, dictionaryId: null, dictionaryValues: Object.freeze([]) }),
+    Object.freeze({ id: 300, complexId: 77, required: true, dictionaryId: 5,
+      dictionaryValues: Object.freeze([Object.freeze({ id: 900, value: "canonical" })]) }),
+    Object.freeze({ id: 400, complexId: 77, required: false, dictionaryId: null, dictionaryValues: Object.freeze([]) }),
+    Object.freeze({ id: 400, complexId: 88, required: false, dictionaryId: null, dictionaryValues: Object.freeze([]) }),
+  ]),
+});
+
 async function applyAll(client) {
   const files = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(files.at(-1), "068_auto_listing_category_recovery.sql");
@@ -296,6 +308,7 @@ if (!enabled) {
       const directMatchSql = `UPDATE ${q(schema)}.submission_category_recovery_attempts
         SET status='MATCHED',corrected_items=$2::JSONB,corrected_items_hash=$3,
             replacement_shared_category_id=$4,replacement_shared_category_version=$5,
+            replacement_category_metadata=$6::JSONB,
             updated_at='2026-08-13T00:00:00.750Z' WHERE id=$1`;
       const without = (object, key) => Object.fromEntries(
         Object.entries(object).filter(([candidate]) => candidate !== key),
@@ -325,11 +338,59 @@ if (!enabled) {
         [{ attributes: [{ id: 300, complex_id: 77, values: [] }] }],
         [{ attributes: [{ id: 300, complex_id: 77, values: [{ value: "" }] }] }],
         [{ attributes: [{ id: 300, complex_id: 77, values: [{ value: "safe", extra: true }] }] }],
+        [{ attributes: [
+          { id: 300, complex_id: 77, values: [{ value: "canonical", dictionary_value_id: 900 }] },
+          { id: 400, complex_id: 88, values: [{ value: "safe" }] },
+        ] }],
+        [{ attributes: [
+          { id: 300, complex_id: 77, values: [{ value: "canonical", dictionary_value_id: 900 }] },
+          { id: 300, complex_id: 77, values: [{ value: "canonical", dictionary_value_id: 900 }] },
+        ] }],
+        [
+          { attributes: [{ id: 400, complex_id: 77, values: [{ value: "safe" }] }] },
+          { attributes: [{ id: 400, complex_id: 77, values: [{ value: "safe" }] }] },
+        ],
+        [
+          { attributes: Array.from({ length: 1_000 }, (_, index) => ({
+            id: index + 1, complex_id: 77, values: [{ value: "safe" }],
+          })) },
+          { attributes: [{ id: 1_001, complex_id: 88, values: [{ value: "safe" }] }] },
+        ],
+        ...[" ", "\t", "\n", "\u00a0", "\u1680", "\u2007", "\u202f", "\u3000", "\ufeff"]
+          .map((value) => [{ attributes: [{
+            id: 300, complex_id: 77, values: [{ value, dictionary_value_id: 900 }],
+          }] }]),
+        [{ attributes: [{ id: 999, complex_id: 77, values: [{ value: "safe" }] }] }],
+        [{ attributes: [{
+          id: 300, complex_id: 77, values: [{ value: "canonical", dictionary_value_id: 901 }],
+        }] }],
+        [{ attributes: [{
+          id: 300, complex_id: 77, values: [{ value: "wrong", dictionary_value_id: 900 }],
+        }] }],
         [{
           attributes: [{ id: 300, complex_id: 77, values: [{ value: "safe" }] }],
           extra: true,
         }],
       ];
+      for (const invalidMetadata of [
+        null,
+        {},
+        { ...recoveryMetadata, descriptionCategoryId: 31 },
+        { ...recoveryMetadata, typeId: 41 },
+        { ...recoveryMetadata, extra: true },
+        { ...recoveryMetadata, attributes: [] },
+        { ...recoveryMetadata, attributes: [...recoveryMetadata.attributes,
+          recoveryMetadata.attributes[1]] },
+        { ...recoveryMetadata, attributes: recoveryMetadata.attributes.map((attribute, index) =>
+          index === 1 ? { ...attribute, extra: true } : attribute) },
+        { ...recoveryMetadata, attributes: recoveryMetadata.attributes.map((attribute, index) =>
+          index === 1 ? { ...attribute, dictionaryValues: [{ id: 900, value: "\u00a0" }] } : attribute) },
+      ]) {
+        await assertCheckRejected(client, directMatchSql, [
+          attempt.attemptId, JSON.stringify(corrected), canonicalSha(corrected), ids.shared, 2,
+          JSON.stringify(invalidMetadata),
+        ]);
+      }
       for (const [items, hash, replacementId, version] of [
         [{ forged: true }, "a".repeat(64), ids.shared, 2],
         [42, "a".repeat(64), ids.shared, 2],
@@ -350,6 +411,7 @@ if (!enabled) {
       ]) {
         await assertCheckRejected(client, directMatchSql, [
           attempt.attemptId, JSON.stringify(items), hash, replacementId, version,
+          JSON.stringify(recoveryMetadata),
         ]);
       }
       const forgedCorrection = [{ ...corrected[0], price: "999" }];
@@ -363,6 +425,7 @@ if (!enabled) {
       const matchInput = {
         ...claimInput, attemptId: attempt.attemptId, expectedStatus: "CLAIMED",
         replacementSharedCategoryId: ids.shared, replacementSharedCategoryVersion: 2,
+        replacementCategoryMetadata: recoveryMetadata,
         correctedItems: corrected, correctedItemsHash: canonicalSha(corrected), transitionedAt: "2026-08-13T00:00:01.000Z",
       };
       await assertTupleClosed((input) => repository.saveCategoryRecoveryMatch(input), matchInput, "CLAIMED");
@@ -372,6 +435,10 @@ if (!enabled) {
       };
       assert.deepEqual(await repository.saveCategoryRecoveryMatch(matchInput), matchedDto);
       assert.deepEqual(await repository.saveCategoryRecoveryMatch(matchInput), matchedDto);
+      await assert.rejects(repository.saveCategoryRecoveryMatch({
+        ...matchInput,
+        replacementCategoryMetadata: { ...recoveryMetadata, attributes: recoveryMetadata.attributes.slice(0, 1) },
+      }), (error) => error.code === "AUTO_LISTING_CATEGORY_RECOVERY_CONFLICT");
       const pendingInput = {
         ...claimInput, attemptId: attempt.attemptId, expectedStatus: "MATCHED",
         transitionedAt: "2026-08-13T00:00:02.000Z",
@@ -439,10 +506,12 @@ if (!enabled) {
       assert.deepEqual(await reviewRepository.requireCategoryRecoveryReview(reviewInput), reviewDto);
       assert.deepEqual(await reviewRepository.requireCategoryRecoveryReview(reviewInput), reviewDto);
       const reviewShape = (await client.query(`SELECT corrected_items,corrected_items_hash,
+        replacement_category_metadata,
         replacement_shared_category_id,replacement_shared_category_version,retry_ozon_task_id
         FROM ${q(schema)}.submission_category_recovery_attempts WHERE id=$1`, [reviewDto.attemptId])).rows[0];
       assert.deepEqual(reviewShape, {
-        corrected_items: null, corrected_items_hash: null, replacement_shared_category_id: null,
+        corrected_items: null, corrected_items_hash: null, replacement_category_metadata: null,
+        replacement_shared_category_id: null,
         replacement_shared_category_version: null, retry_ozon_task_id: null,
       });
       const postMatchJobIds = [];
@@ -484,7 +553,8 @@ if (!enabled) {
         };
         await postRepository.saveCategoryRecoveryMatch({
           ...identity, expectedStatus: "CLAIMED", replacementSharedCategoryId: postIds.shared,
-          replacementSharedCategoryVersion: 2, correctedItems: postCorrected,
+          replacementSharedCategoryVersion: 2, replacementCategoryMetadata: recoveryMetadata,
+          correctedItems: postCorrected,
           correctedItemsHash: postHash, transitionedAt: "2026-08-13T00:01:01.000Z",
         });
         await postRepository.markCategoryRecoveryRetryPending({
@@ -510,16 +580,19 @@ if (!enabled) {
           transitionedAt: "2026-08-13T00:01:05.000Z",
         }), { attemptId: postAttempt.attemptId, status: "NEEDS_REVIEW" });
         const preserved = (await client.query(`SELECT status,corrected_items,corrected_items_hash,
+          replacement_category_metadata,
           replacement_shared_category_id,replacement_shared_category_version,retry_ozon_task_id
           FROM ${q(schema)}.submission_category_recovery_attempts WHERE account_id=$1 AND id=$2`,
         [postIds.account, postAttempt.attemptId])).rows[0];
         assert.deepEqual(preserved, {
           status: "NEEDS_REVIEW", corrected_items: postCorrected, corrected_items_hash: postHash,
+          replacement_category_metadata: recoveryMetadata,
           replacement_shared_category_id: postIds.shared,
           replacement_shared_category_version: 2, retry_ozon_task_id: expectedRetry,
         });
         for (const [column, replacement] of [
           ["corrected_items", "NULL"], ["corrected_items_hash", "NULL"],
+          ["replacement_category_metadata", "NULL"],
           ["replacement_shared_category_id", "NULL"],
           ["replacement_shared_category_version", "NULL"],
           ...(acceptRetry ? [["retry_ozon_task_id", "NULL"]] : []),
@@ -608,7 +681,8 @@ if (!enabled) {
           taxonomyFingerprint: "c".repeat(64), metadata: {
             descriptionCategoryId: 30, typeId: 40,
             attributes: [
-              { id: 300, complexId: 77, required: true, dictionaryId: null, dictionaryValues: [] },
+              { id: 300, complexId: 77, required: true, dictionaryId: 5,
+                dictionaryValues: [{ id: 900, value: "canonical-replaced" }] },
               { id: 400, complexId: 77, required: true, dictionaryId: null, dictionaryValues: [] },
             ],
           },
@@ -618,7 +692,8 @@ if (!enabled) {
           return rebuildOzonItemsForCategory({
             originalItems,
             sourceEvidenceAttributes: [[
-              { id: 300, complex_id: 77, values: [{ value: "source-replaced" }] },
+              { id: 300, complex_id: 77,
+                values: [{ value: "source-will-be-canonicalized", dictionary_value_id: 900 }] },
               { id: 400, complex_id: 77, values: [{ value: "source-added" }] },
             ]],
             replacementCategory: {
@@ -653,7 +728,8 @@ if (!enabled) {
         FROM ${q(schema)}.submission_category_recovery_attempts
         WHERE account_id=$1 AND submission_job_id=$2`, [ids.account, ids.job])).rows[0].corrected_items;
       assert.deepEqual(correctedItems[0].complex_attributes, [{ attributes: [
-        { complex_id: 77, id: 300, values: [{ value: "source-replaced" }] },
+        { complex_id: 77, id: 300,
+          values: [{ value: "canonical-replaced", dictionary_value_id: 900 }] },
         { complex_id: 77, id: 400, values: [{ value: "source-added" }] },
       ] }]);
       assert.equal(schedules, 1);

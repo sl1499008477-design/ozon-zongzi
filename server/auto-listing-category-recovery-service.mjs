@@ -46,6 +46,42 @@ function positive(value) {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
+function exactKeys(value, keys) {
+  return value && !Array.isArray(value)
+    && Object.keys(value).length === keys.length
+    && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function categoryMetadata(raw, descriptionCategoryId, typeId) {
+  if (!exactKeys(raw, ["descriptionCategoryId", "typeId", "attributes"])
+    || raw.descriptionCategoryId !== descriptionCategoryId || raw.typeId !== typeId
+    || !Array.isArray(raw.attributes) || raw.attributes.length < 1
+    || raw.attributes.length > 1_000) return null;
+  const seen = new Set();
+  for (const attribute of raw.attributes) {
+    if (!exactKeys(attribute, ["id", "complexId", "required", "dictionaryId", "dictionaryValues"])
+      || !positive(attribute.id)
+      || !(attribute.complexId === 0 || positive(attribute.complexId))
+      || typeof attribute.required !== "boolean"
+      || !(attribute.dictionaryId === null || positive(attribute.dictionaryId))
+      || !Array.isArray(attribute.dictionaryValues) || attribute.dictionaryValues.length > 5_000) {
+      return null;
+    }
+    const key = `${attribute.complexId}:${attribute.id}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const dictionaryIds = new Set();
+    for (const option of attribute.dictionaryValues) {
+      if (!exactKeys(option, ["id", "value"]) || !positive(option.id)
+        || typeof option.value !== "string" || option.value.length < 1 || option.value.length > 5_000
+        || option.value.trim() !== option.value || dictionaryIds.has(option.id)) return null;
+      dictionaryIds.add(option.id);
+    }
+    if (attribute.dictionaryId === null && attribute.dictionaryValues.length) return null;
+  }
+  return raw;
+}
+
 function sharedCategory(raw) {
   const value = exact(raw, SHARED_KEYS);
   if (!value || !safeId(value.accountId) || !positive(value.sourceDescriptionCategoryId)
@@ -106,8 +142,8 @@ function categoryResult(raw) {
   ]);
   if (!value || value.kind !== "UNIQUE_MATCH" || !positive(value.descriptionCategoryId)
     || !positive(value.typeId) || typeof value.taxonomyFingerprint !== "string"
-    || !HASH.test(value.taxonomyFingerprint) || !value.metadata
-    || typeof value.metadata !== "object" || Array.isArray(value.metadata)) return null;
+    || !HASH.test(value.taxonomyFingerprint)
+    || !categoryMetadata(value.metadata, value.descriptionCategoryId, value.typeId)) return null;
   return value;
 }
 
@@ -183,7 +219,8 @@ function immutableProjection(item) {
 
 function validComplexAttributeValue(value) {
   if (!value || Array.isArray(value) || !Object.hasOwn(value, "value")
-    || typeof value.value !== "string" || value.value.trim().length < 1) return false;
+    || typeof value.value !== "string" || value.value.length < 1
+    || value.value.trim() !== value.value) return false;
   const keys = Object.keys(value);
   return keys.length === (Object.hasOwn(value, "dictionary_value_id") ? 2 : 1)
     && keys.every((key) => key === "value" || key === "dictionary_value_id")
@@ -200,15 +237,38 @@ function validComplexAttribute(attribute) {
     && attribute.values.every(validComplexAttributeValue);
 }
 
-function validComplexAttributes(item) {
+function validComplexAttributes(item, metadata) {
   if (!Object.hasOwn(item, "complex_attributes")) return true;
   const groups = item.complex_attributes;
   if (!Array.isArray(groups) || groups.length < 1 || groups.length > 1_000) return false;
-  return groups.every((group) => group && !Array.isArray(group)
-    && Object.keys(group).length === 1 && Object.hasOwn(group, "attributes")
-    && Array.isArray(group.attributes)
-    && group.attributes.length >= 1 && group.attributes.length <= 1_000
-    && group.attributes.every(validComplexAttribute));
+  const metadataByKey = new Map(metadata.attributes.map((attribute) => [
+    `${attribute.complexId}:${attribute.id}`, attribute,
+  ]));
+  const seen = new Set();
+  let total = 0;
+  for (const group of groups) {
+    if (!group || Array.isArray(group) || Object.keys(group).length !== 1
+      || !Object.hasOwn(group, "attributes") || !Array.isArray(group.attributes)
+      || group.attributes.length < 1 || group.attributes.length > 1_000) return false;
+    total += group.attributes.length;
+    if (total > 1_000) return false;
+    const complexId = group.attributes[0]?.complex_id;
+    for (const attribute of group.attributes) {
+      if (!validComplexAttribute(attribute) || attribute.complex_id !== complexId) return false;
+      const key = `${attribute.complex_id}:${attribute.id}`;
+      const refreshed = metadataByKey.get(key);
+      if (!refreshed || seen.has(key)) return false;
+      seen.add(key);
+      if (!refreshed.dictionaryId) continue;
+      if (!refreshed.dictionaryValues.length) return false;
+      const dictionary = new Map(refreshed.dictionaryValues.map((option) => [option.id, option.value]));
+      for (const value of attribute.values) {
+        if (!Object.hasOwn(value, "dictionary_value_id")
+          || dictionary.get(value.dictionary_value_id) !== value.value) return false;
+      }
+    }
+  }
+  return true;
 }
 
 function validCorrection(original, corrected, category) {
@@ -219,7 +279,7 @@ function validCorrection(original, corrected, category) {
     const after = projected[index];
     if (!after || Array.isArray(after)
       || !Object.hasOwn(after, "attributes") || !Array.isArray(after.attributes)
-      || !validComplexAttributes(after)
+      || !validComplexAttributes(after, category.metadata)
       || after.description_category_id !== category.descriptionCategoryId
       || after.type_id !== category.typeId
       || (Object.hasOwn(after, "descriptionCategoryId")
@@ -380,6 +440,7 @@ export function createAutoListingCategoryRecoveryService({
           ...transitionIdentity(basis, request, attempt.attemptId), expectedStatus: "CLAIMED",
           replacementSharedCategoryId: basis.oldSharedCategoryId,
           replacementSharedCategoryVersion: replacement.version,
+          replacementCategoryMetadata: category.metadata,
           correctedItems, correctedItemsHash, transitionedAt: now(),
         }), ["attemptId", "status", "replacementSharedCategoryId",
           "replacementSharedCategoryVersion", "correctedItemsHash"], {

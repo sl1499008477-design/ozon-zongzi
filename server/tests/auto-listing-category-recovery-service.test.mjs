@@ -39,12 +39,13 @@ function basis() {
 
 function harness(overrides = {}) {
   const calls = [];
+  const savedMatches = [];
   let shared = sharedCategory();
   const { repository: repositoryOverrides = {}, ...serviceOverrides } = overrides;
   const repository = {
     loadCategoryRecoveryBasis: async (input) => { calls.push("load"); return basis(); },
     claimCategoryRecovery: async () => { calls.push("claim"); return { attemptId: "attempt-a", status: "CLAIMED", claimed: true }; },
-    saveCategoryRecoveryMatch: async (input) => { calls.push("save-match"); return {
+    saveCategoryRecoveryMatch: async (input) => { calls.push("save-match"); savedMatches.push(input); return {
       attemptId: "attempt-a", status: "MATCHED",
       replacementSharedCategoryId: input.replacementSharedCategoryId,
       replacementSharedCategoryVersion: input.replacementSharedCategoryVersion,
@@ -67,7 +68,13 @@ function harness(overrides = {}) {
     },
     refreshCategory: async () => { calls.push("refresh"); return {
       kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
-      taxonomyFingerprint: "a".repeat(64), metadata: { attributes: [] },
+      taxonomyFingerprint: "a".repeat(64), metadata: {
+        descriptionCategoryId: 30,
+        typeId: 40,
+        attributes: [
+          { id: 1, complexId: 0, required: false, dictionaryId: null, dictionaryValues: [] },
+        ],
+      },
     }; },
     rebuildItems: async ({ originalItems }) => { calls.push("rebuild"); return originalItems.map((item) => ({
       ...item, description_category_id: 30, type_id: 40, attributes: [],
@@ -89,7 +96,7 @@ function harness(overrides = {}) {
     now: () => "2026-08-13T00:00:00.000Z",
     ...serviceOverrides,
   });
-  return { service, calls };
+  return { service, calls, savedMatches };
 }
 
 const request = Object.freeze({
@@ -97,7 +104,7 @@ const request = Object.freeze({
 });
 
 test("recovery uses the exact safe order and commits corrected items before one retry schedule", async () => {
-  const { service, calls } = harness();
+  const { service, calls, savedMatches } = harness();
   const result = await service.recover(request);
   assert.deepEqual(calls, [
     "load", "access", "absence", "claim", "invalidate", "refresh", "rebuild", "activate",
@@ -106,6 +113,11 @@ test("recovery uses the exact safe order and commits corrected items before one 
   assert.deepEqual(result, { attemptId: "attempt-a", status: "RETRY_PENDING" });
   assert.equal(Object.isFrozen(result), true);
   assert.equal(basis().frozenItems[0].description_category_id, 10);
+  assert.deepEqual(JSON.parse(JSON.stringify(savedMatches[0].replacementCategoryMetadata)), {
+    descriptionCategoryId: 30, typeId: 40, attributes: [
+      { id: 1, complexId: 0, required: false, dictionaryId: null, dictionaryValues: [] },
+    ],
+  });
 });
 
 test("present or unknown offer state becomes NEEDS_REVIEW with zero category or retry work", async () => {
@@ -295,6 +307,19 @@ test("absence, refresh and review ports require exact descriptor-safe DTOs", asy
       taxonomyFingerprint: "a".repeat(64), metadata: { attributes: [] }, extra: true },
     new Proxy({ kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
       taxonomyFingerprint: "a".repeat(64), metadata: { attributes: [] } }, {}),
+    { kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+      taxonomyFingerprint: "a".repeat(64), metadata: {
+        descriptionCategoryId: 30, typeId: 40, attributes: [
+          { id: 1, complexId: 0, required: false, dictionaryId: null,
+            dictionaryValues: [], extra: true },
+        ],
+      } },
+    { kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+      taxonomyFingerprint: "a".repeat(64), metadata: new Proxy({
+        descriptionCategoryId: 30, typeId: 40, attributes: [
+          { id: 1, complexId: 0, required: false, dictionaryId: null, dictionaryValues: [] },
+        ],
+      }, {}) },
     revoked.proxy,
   ]) {
     const { service, calls } = harness({ refreshCategory: async () => refresh });
@@ -402,6 +427,59 @@ test("correction accepts only the closed production complex-attributes carrier w
       attemptId: "attempt-a", status: "NEEDS_REVIEW",
     });
     assert.equal(calls.includes("save-match"), false);
+    assert.equal(calls.includes("schedule"), false);
+  }
+});
+
+test("complex correction is closed against refreshed metadata before any match persistence or retry", async () => {
+  const metadataAttributes = [
+    { id: 300, complexId: 77, required: true, dictionaryId: 5,
+      dictionaryValues: [{ id: 900, value: "canonical" }] },
+    { id: 400, complexId: 77, required: false, dictionaryId: null, dictionaryValues: [] },
+    { id: 400, complexId: 88, required: false, dictionaryId: null, dictionaryValues: [] },
+  ];
+  const attribute = (overrides = {}) => ({
+    complex_id: 77, id: 300,
+    values: [{ value: "canonical", dictionary_value_id: 900 }],
+    ...overrides,
+  });
+  const repeated = Array.from({ length: 1_001 }, (_, index) => ({
+    complex_id: 77,
+    id: index + 1,
+    values: [{ value: "safe" }],
+  }));
+  const cases = [
+    [{ attributes: [attribute(), attribute({ complex_id: 88, id: 400, values: [{ value: "safe" }] })] }],
+    [{ attributes: [attribute(), attribute()] }],
+    [{ attributes: [attribute()] }, { attributes: [attribute()] }],
+    [{ attributes: repeated.slice(0, 1_000) }, { attributes: repeated.slice(1_000) }],
+    ...[" ", "\t", "\n", "\u00a0", "\u1680", "\u2007", "\u202f", "\u3000", "\ufeff"]
+      .map((value) => [{ attributes: [attribute({ values: [{ value, dictionary_value_id: 900 }] })] }]),
+    [{ attributes: [attribute({ id: 999, values: [{ value: "safe" }] })] }],
+    [{ attributes: [attribute({ values: [{ value: "canonical", dictionary_value_id: 901 }] })] }],
+    [{ attributes: [attribute({ values: [{ value: "wrong", dictionary_value_id: 900 }] })] }],
+  ];
+  for (const complexAttributes of cases) {
+    const { service, calls } = harness({
+      refreshCategory: async () => {
+        calls.push("refresh");
+        return {
+          kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+          taxonomyFingerprint: "a".repeat(64), metadata: {
+            descriptionCategoryId: 30, typeId: 40, attributes: metadataAttributes,
+          },
+        };
+      },
+      rebuildItems: async ({ originalItems }) => originalItems.map((item) => ({
+        ...item, description_category_id: 30, type_id: 40, attributes: [],
+        complex_attributes: complexAttributes,
+      })),
+    });
+    assert.deepEqual(await service.recover(request), {
+      attemptId: "attempt-a", status: "NEEDS_REVIEW",
+    });
+    assert.equal(calls.includes("save-match"), false);
+    assert.equal(calls.includes("retry-pending"), false);
     assert.equal(calls.includes("schedule"), false);
   }
 });

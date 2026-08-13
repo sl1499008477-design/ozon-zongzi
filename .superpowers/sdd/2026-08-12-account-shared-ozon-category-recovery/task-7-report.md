@@ -11,6 +11,7 @@
 - Fix round 4 SHA: `48329ad` (`fix(listing): preserve category recovery provenance`).
 - Fix round 5 SHA: `073a66b` (`fix(listing): close recovery category identifiers`).
 - Fix round 6: user-authorized exception after the five-round review cap (`fix(listing): preserve complex category attributes`).
+- Fix round 7: the user authorized continuing later confirmed review defects without another per-round prompt (`fix(listing): bind complex attributes to refresh metadata`).
 - Migration correction: the plan's 064 was already occupied and the repository latest was 067, so Task 7 adds only `068_auto_listing_category_recovery.sql`. Migrations 064–067 were not changed.
 - Product scope is exactly the eight planned Task 7 paths with the corrected 068 number: migration, PostgreSQL repository, pure recovery service, exact offer reconciliation, and four focused tests.
 - No Task 8 worker integration, classifier policy expansion, UI, dependency, lockfile or production configuration changed.
@@ -71,6 +72,16 @@
 - GREEN: fresh tmpfs PostgreSQL 16 Task 7 focused 27/27, 0 failed, 0 skipped. Adjacent account-shared/category/preparer/empty-policy tests passed 158/158, 0 skipped. The known ChatGPT-bundled Node Team-ID mismatch initially blocked Sharp-dependent adjacent files; the already-created ad-hoc temporary Node copy reran those exact files 22/22, 0 skipped, and Listing Pipeline V3 passed. Repository dependencies and the application bundle were not modified.
 - The Task 7 PostgreSQL fixture now seeds its shared-row clock to a fixed instant before its fixed transition instants; this removes a date-dependent test failure after 2026-08-13 without changing production behavior.
 
+## User-authorized automatic exceptional fix round 7 — exact Task 5 complex metadata contract
+
+- The round-6 structural validator did not prove several invariants already guaranteed by the real Task 5 rebuilder: one `complex_id` per group, global `(complex_id,id)` uniqueness, the 1,000-attribute total bound, membership in the exact refreshed metadata, or dictionary ID/text canonicality. It also used PostgreSQL's ASCII-oriented `BTRIM` rather than JavaScript `trim` semantics for all whitespace.
+- Recovery now accepts only a descriptor-safe, closed Task 5 refresh metadata projection with exact category identity, exact normalized five-field attributes, unique `(complexId,id)` keys, and exact bounded dictionary entries. Each corrected complex group has one complex ID, every key is globally unique and present in that projection, and the sum across all groups is at most 1,000. Dictionary-backed attributes require an exact allowed dictionary-value ID paired with its canonical text.
+- The MATCHED attempt now persists `replacement_category_metadata` as immutable audit/provenance evidence. Repository replay requires exact metadata equality. Migration 068 independently validates the closed metadata and corrected complex structure, replacement category identity, group consistency, global uniqueness, total count, metadata membership and dictionary pair before allowing MATCHED. Post-match review retains this evidence permanently alongside corrected items/hash and replacement identity.
+- JavaScript and PostgreSQL now agree on blank/outer-whitespace rejection. The SQL validators use the explicit ECMAScript trim character set (ASCII whitespace, NBSP, U+1680, U+2000–U+200A, line/paragraph separators, narrow no-break space, medium mathematical space, ideographic space and BOM), avoiding locale-dependent inference.
+- The real Task 5 rebuilder → service → fresh PostgreSQL composition still replaces attribute 300, adds 400, removes obsolete 999 and reaches durable `RETRY_PENDING`; the dictionary-backed 300 source value is additionally canonicalized to the refresh metadata text before persistence.
+- TDD RED evidence: service was 17/18 because the first mixed/metadata-invalid complex result reached `RETRY_PENDING`; migration was 1/2 because no metadata evidence/validator existed; fresh PostgreSQL was 2/3 because direct SQL could not store or validate the refresh metadata and surfaced the missing column rather than fixed `23514`. GREEN: focused 28/28, adjacent Task 4–7/Task 5 account/category/preparer/materialization/empty-policy/rebuilder 180/180, Task 4 lease/upload PostgreSQL 11/11, and Listing Pipeline V3 passed, all with zero skips.
+- No live Ozon seller API, product import, paid AI, object storage, production credential/account/database or production write was used. Tests used injected ports and one loopback-only tmpfs PostgreSQL 16 container.
+
 ## Closed contracts delivered
 
 ### Persistence and tenant boundary
@@ -112,6 +123,7 @@
 
 ## Final verification
 
+- User-authorized automatic round 7 focused command: **28/28 passed, 0 failed, 0 skipped** on fresh tmpfs PostgreSQL 16. Adjacent Task 4–7/Task 5 account/category/preparer/materialization/empty-policy/rebuilder tests passed **180/180**, Task 4 lease/upload PostgreSQL passed **11/11**, and Listing Pipeline V3 passed; all had zero skips.
 - User-authorized exceptional round 6 focused command: **27/27 passed, 0 failed, 0 skipped** on fresh tmpfs PostgreSQL 16, including the real Task 5 rebuilder → recovery service → migrations 001–068 path and the malformed service/direct-SQL matrices.
 - Round 6 adjacent category/account/preparer/empty-production-policy command: **158/158 passed, 0 failed, 0 skipped**. The two Sharp-dependent adjacent files passed **22/22, 0 skipped** under the pre-existing ad-hoc temporary Node copy, and Listing Pipeline V3 passed against the same disposable PostgreSQL database.
 - Fix round 5 latest focused command: **26/26 passed, 0 failed, 0 skipped** on a fresh tmpfs PostgreSQL 16 database, including both real-PG Task 7 paths and migrations 001–068.
