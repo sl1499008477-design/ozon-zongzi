@@ -103,7 +103,6 @@ function plainDataRecord(value, allowedKeys) {
       || allowedKeys.some((key) => !Object.hasOwn(descriptors, key))
       || keys.some((key) => typeof key !== "string" || !allowedKeys.includes(key)
       || !descriptors[key]?.enumerable || !("value" in descriptors[key]))) return null;
-    structuredClone(value);
     return Object.fromEntries(allowedKeys.map((key) => [key, descriptors[key].value]));
   } catch {
     return null;

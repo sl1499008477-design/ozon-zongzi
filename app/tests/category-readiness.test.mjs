@@ -454,9 +454,17 @@ test("accepts only a complete exact administrator confirmation response", () => 
     source: "MANUAL", version: 2, validatedAt: "2026-08-12T01:02:03.000Z",
     action: "NONE", message: "使用采集类目准备上架",
   };
-  assert.deepEqual(categoryConfirmationResponse({ collectItemId: "collect-a", categoryResolution }, request), {
+  const responseInput = { collectItemId: "collect-a", categoryResolution };
+  const projected = categoryConfirmationResponse(responseInput, request);
+  assert.deepEqual(projected, {
     collectItemId: "collect-a", categoryResolution,
   });
+  assert.notEqual(projected, responseInput);
+  assert.notEqual(projected.categoryResolution, categoryResolution);
+  assert.equal(Object.isFrozen(responseInput), false);
+  assert.equal(Object.isFrozen(categoryResolution), false);
+  assert.equal(Object.isFrozen(projected), true);
+  assert.equal(Object.isFrozen(projected.categoryResolution), true);
   let getterCalls = 0;
   const accessor = { collectItemId: "collect-a" };
   Object.defineProperty(accessor, "categoryResolution", {
@@ -479,6 +487,45 @@ test("accepts only a complete exact administrator confirmation response", () => 
     new Proxy({ collectItemId: "collect-a", categoryResolution }, {}),
     trapped,
   ]) assert.equal(categoryConfirmationResponse(response, request), null);
+  assert.equal(getterCalls, 0);
+  assert.equal(trapCalls, 0);
+});
+
+test("rejects nested confirmation summaries without executing accessors or proxy traps", () => {
+  const request = categoryConfirmationRequest({
+    collectItemId: "collect-a", expectedSourceVersion: "draft:7",
+    descriptionCategoryId: 17_028_702, typeId: 94_405,
+    taxonomyScope: "OZON:DEFAULT", idempotencyKey: "key", correlationId: "correlation",
+  });
+  const categoryResolution = {
+    status: "ACTIVE", taxonomyScope: "OZON:DEFAULT",
+    sourceDescriptionCategoryId: 10, sourceTypeId: 20,
+    currentDescriptionCategoryId: 17_028_702, currentTypeId: 94_405,
+    source: "MANUAL", version: 2, validatedAt: "2026-08-12T01:02:03.000Z",
+    action: "NONE", message: "使用采集类目准备上架",
+  };
+  let getterCalls = 0;
+  const nestedAccessor = { ...categoryResolution };
+  Object.defineProperty(nestedAccessor, "currentTypeId", {
+    enumerable: true,
+    get() { getterCalls += 1; return 94_405; },
+  });
+  const transparent = new Proxy({ ...categoryResolution }, {});
+  const { proxy: revoked, revoke } = Proxy.revocable({ ...categoryResolution }, {});
+  revoke();
+  let trapCalls = 0;
+  const trapped = new Proxy({ ...categoryResolution }, {
+    getPrototypeOf() { trapCalls += 1; return Object.prototype; },
+    ownKeys() { trapCalls += 1; return []; },
+    getOwnPropertyDescriptor() { trapCalls += 1; return undefined; },
+    get() { trapCalls += 1; return undefined; },
+  });
+
+  for (const nested of [nestedAccessor, transparent, revoked, trapped]) {
+    assert.equal(categoryConfirmationResponse({
+      collectItemId: "collect-a", categoryResolution: nested,
+    }, request), null);
+  }
   assert.equal(getterCalls, 0);
   assert.equal(trapCalls, 0);
 });
