@@ -890,9 +890,11 @@ const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), ".
 const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
 
 async function migrationFiles() {
-  return (await readdir(migrationsDir))
-    .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= 70)
+  const files = (await readdir(migrationsDir))
+    .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= 72)
     .sort();
+  assert.equal(files.at(-1), "072_account_shared_category_confirmation_audit_provenance.sql");
+  return files;
 }
 
 if (!postgresEnabled) {
@@ -1298,17 +1300,26 @@ if (!postgresEnabled) {
       assert.deepEqual(await repository.readCurrentEvidence({
         accountId, collectItemIds: [foreignCollectItemId],
       }), []);
-      const foreignAuditId = `foreign-cleanup-audit-${suffix}`;
-      await scoped.query(
-        `INSERT INTO account_ozon_category_confirmation_audit
-          (id,account_id,collect_item_id,source_evidence_id,expected_source_version,
-           selected_description_category_id,selected_type_id,taxonomy_scope,actor_id,
-           correlation_id,idempotency_key,request_hash,result_json,confirmed_at)
-         VALUES ($1,$2,$3,$4,$5,17028702,94405,'OZON:DEFAULT',$2,$6,$7,$8,'{}'::jsonb,$9)`,
-        [foreignAuditId, foreignAccountId, foreignCollectItemId, foreignLookup.evidence.id,
-          foreignLookup.evidence.sourceVersion, `foreign-correlation-${suffix}`,
-          `foreign-idempotency-${suffix}`, HASH_A, CAPTURED_AT],
-      );
+      const foreignConfirmationRuntime = createAccountSharedOzonCategoryRuntime({
+        loadState: async () => ({}), saveState: async () => {},
+        stateTransaction: { run: async (operation) => operation() },
+        persistenceMode: () => "postgres", postgresPool: async () => scoped,
+        now: () => new Date(CAPTURED_AT), randomUUID: sequential(`foreign-runtime-${suffix}`),
+      });
+      await foreignConfirmationRuntime.confirmManualCategory({
+        actor: { id: foreignAccountId, role: "admin" },
+        collectItemId: foreignCollectItemId,
+        expectedSourceVersion: "draft:1",
+        descriptionCategoryId: 17028702,
+        typeId: 94405,
+        taxonomyScope: "OZON:DEFAULT",
+        idempotencyKey: `foreign-idempotency-${suffix}`,
+        correlationId: `foreign-correlation-${suffix}`,
+      });
+      const foreignAuditId = (await scoped.query(
+        "SELECT id FROM account_ozon_category_confirmation_audit WHERE account_id=$1",
+        [foreignAccountId],
+      )).rows[0].id;
       await assert.rejects(scoped.query(
         "DELETE FROM account_ozon_category_confirmation_audit WHERE id=$1", [foreignAuditId],
       ), (error) => error?.code === "23514");
