@@ -204,6 +204,47 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
         'category-source-a','category-shared-a',1,'ozon-task-original',$2,'CLAIMED',
         'submission-correlation-a','2026-08-13T00:00:01.000Z','2026-08-13T00:00:01.000Z')`,
     [accountA, h]);
+    const retrySubmitCases = ["notsent", "local", "persist", "schedule"];
+    for (const label of retrySubmitCases) {
+      await owner.query(`INSERT INTO submission_snapshots(
+        id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,
+        snapshot_hash,item_count,items,stocks)
+        VALUES($2,'collect-a','draft-a',1,$1,'store-a',$3,$4,1,$5::jsonb,'[]'::jsonb)`,
+      [accountA, `submission-snapshot-${label}`, `snapshot-key-${label}`, h,
+        JSON.stringify(originalCategoryItems)]);
+      await owner.query(`INSERT INTO submission_jobs(
+        id,snapshot_id,collect_item_id,account_id,store_id,status,correlation_id,item_count,ozon_task_id)
+        VALUES($2,$3,'collect-a',$1,'store-a','FAILED',$4,1,$5)`,
+      [accountA, `submission-${label}`, `submission-snapshot-${label}`,
+        `submission-correlation-${label}`, `ozon-task-original-${label}`]);
+      await owner.query(`INSERT INTO submission_items(
+        id,job_id,snapshot_id,variant_key,offer_id,sku,status,product_id,response)
+        VALUES($1,$2,$3,$4,'offer-a','sku-a','FAILED','',$5::jsonb)`,
+      [`submission-item-${label}`, `submission-${label}`,
+        `submission-snapshot-${label}`, `variant-${label}`, JSON.stringify({
+          schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1", rawResponse: {},
+          errorEvidence: categoryEvidence(),
+        })]);
+      await owner.query(`INSERT INTO submission_category_error_evidence(
+        id,account_id,submission_job_id,submission_snapshot_id,submission_item_id,offer_id,
+        original_ozon_task_id,original_snapshot_hash,original_items,source_evidence_id,
+        old_shared_category_id,old_shared_category_version,classifier_policy_version,safe_evidence)
+        VALUES($2,$1,$3,$4,$5,'offer-a',$6,$7,$8::jsonb,'category-source-a',
+          'category-shared-a',1,'ozon-category-policy.v2',$9::jsonb)`,
+      [accountA, `category-error-${label}`, `submission-${label}`,
+        `submission-snapshot-${label}`, `submission-item-${label}`,
+        `ozon-task-original-${label}`, h, JSON.stringify(originalCategoryItems),
+        JSON.stringify(categoryEvidence())]);
+      await owner.query(`INSERT INTO submission_category_recovery_attempts(
+        id,account_id,submission_job_id,submission_snapshot_id,triggering_error_evidence_id,
+        source_evidence_id,old_shared_category_id,old_shared_category_version,original_ozon_task_id,
+        original_snapshot_hash,status,correlation_id,claimed_at,updated_at)
+        VALUES($2,$1,$3,$4,$5,'category-source-a','category-shared-a',1,$6,$7,'CLAIMED',$8,
+          '2026-08-13T00:00:01.000Z','2026-08-13T00:00:01.000Z')`,
+      [accountA, `category-attempt-${label}`, `submission-${label}`,
+        `submission-snapshot-${label}`, `category-error-${label}`,
+        `ozon-task-original-${label}`, h, `submission-correlation-${label}`]);
+    }
     await owner.query(`UPDATE account_ozon_shared_categories
       SET status='INVALIDATED',version=2,safe_failure_code='OZON_CATEGORY_INVALIDATED',
           updated_at='2026-08-13T00:00:02.000Z'
@@ -225,6 +266,18 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
           replacement_category_metadata=$4::jsonb,updated_at='2026-08-13T00:00:04.000Z'
       WHERE account_id=$1 AND id='category-attempt-a'`,
     [accountA, JSON.stringify(correctedCategoryItems), correctedHash, JSON.stringify(categoryMetadata)]);
+    for (const label of retrySubmitCases) {
+      await owner.query(`UPDATE submission_category_recovery_attempts
+        SET status='MATCHED',corrected_items=$2::jsonb,corrected_items_hash=$3,
+            replacement_shared_category_id='category-shared-a',replacement_shared_category_version=3,
+            replacement_category_metadata=$4::jsonb,updated_at='2026-08-13T00:00:04.000Z'
+        WHERE account_id=$1 AND id=$5`,
+      [accountA, JSON.stringify(correctedCategoryItems), correctedHash,
+        JSON.stringify(categoryMetadata), `category-attempt-${label}`]);
+      await owner.query(`UPDATE submission_category_recovery_attempts
+        SET status='RETRY_PENDING',updated_at='2026-08-13T00:00:05.000Z'
+        WHERE account_id=$1 AND id=$2`, [accountA, `category-attempt-${label}`]);
+    }
     await owner.query(`UPDATE submission_category_recovery_attempts
       SET status='RETRY_PENDING',updated_at='2026-08-13T00:00:05.000Z'
       WHERE account_id=$1 AND id='category-attempt-a'`, [accountA]);
@@ -241,6 +294,89 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
       completeRecovery: pipeline.completeSubmissionCategoryRecoveryV3,
       requireRecoveryReview: pipeline.requireSubmissionCategoryRecoveryReviewV3,
       reviewUncertainRetry: pipeline.requireSubmissionCategoryRetryUncertainReviewV3,
+    });
+    const submitFailureErrors = new Map([
+      ["notsent", { code: "SUBMISSION_NOT_SENT" }],
+      ["local", { code: "LISTING_RFBS_PHASE_VALIDATION_REQUIRED" }],
+      ["persist", { code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT" }],
+    ]);
+    for (const label of retrySubmitCases) {
+      await pipeline.scheduleSubmissionCategoryRetryV3({
+        accountId: accountA, jobId: `submission-${label}`,
+        snapshotId: `submission-snapshot-${label}`, attemptId: `category-attempt-${label}`,
+        correctedItemsHash: correctedHash, correlationId: `submission-correlation-${label}`,
+      });
+      await owner.query(`UPDATE outbox_events SET status='PUBLISHED',published_at=NOW()
+        WHERE aggregate_id=$1 AND event_type='listing.submit.requested'`, [`submission-${label}`]);
+      await owner.query(`UPDATE submission_jobs SET status=$2
+        WHERE account_id=$1 AND id=$3`, [accountA,
+        label === "local" ? "VALIDATING" : "SUBMITTING", `submission-${label}`]);
+    }
+    for (const [label, error] of submitFailureErrors) {
+      const pending = await pipeline.loadSubmissionWorkV3(`submission-${label}`);
+      for (let replay = 0; replay < 2; replay += 1) {
+        assert.deepEqual(await recoveryController.handleSubmitFailure({ work: pending, error }), {
+          handled: true, attemptId: `category-attempt-${label}`, status: "NEEDS_REVIEW",
+        });
+      }
+      assert.deepEqual((await owner.query(`SELECT
+        (SELECT status FROM submission_category_recovery_attempts WHERE id=$1) AS attempt_status,
+        (SELECT status FROM submission_jobs WHERE id=$2) AS job_status,
+        (SELECT count(*)::int FROM outbox_events WHERE aggregate_id=$2
+          AND event_type='listing.submit.requested') AS imports`,
+      [`category-attempt-${label}`, `submission-${label}`])).rows[0], {
+        attempt_status: "NEEDS_REVIEW", job_status: "FAILED", imports: 1,
+      });
+    }
+    const notsentIdentity = {
+      accountId: accountA, jobId: "submission-notsent", snapshotId: "submission-snapshot-notsent",
+      evidenceId: "category-error-notsent", attemptId: "category-attempt-notsent",
+      sourceEvidenceId: "category-source-a", oldSharedCategoryId: "category-shared-a",
+      oldSharedCategoryVersion: 1, originalOzonTaskId: "ozon-task-original-notsent",
+      correlationId: "submission-correlation-notsent",
+      safeReviewCode: "AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED",
+    };
+    await assert.rejects(pipeline.requireSubmissionCategoryRetryUncertainReviewV3({
+      ...notsentIdentity, accountId: accountB,
+    }), { code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT" });
+
+    const schedulePending = await pipeline.loadSubmissionWorkV3("submission-schedule");
+    await pipeline.markSubmissionCategoryRetryAcceptedV3({
+      accountId: accountA, jobId: "submission-schedule", snapshotId: "submission-snapshot-schedule",
+      evidenceId: "category-error-schedule", attemptId: "category-attempt-schedule",
+      sourceEvidenceId: "category-source-a", oldSharedCategoryId: "category-shared-a",
+      oldSharedCategoryVersion: 1, originalOzonTaskId: "ozon-task-original-schedule",
+      correlationId: "submission-correlation-schedule", retryOzonTaskId: "ozon-task-retry-schedule",
+    });
+    const scheduleLatest = await pipeline.loadSubmissionWorkV3("submission-schedule");
+    for (let replay = 0; replay < 2; replay += 1) {
+      assert.deepEqual(await recoveryController.handleSubmitFailure({
+        work: schedulePending, latestWork: scheduleLatest,
+        error: { code: "STATUS_CHECK_SCHEDULE_FAILED" },
+      }), { handled: true, status: "RETRY_ACCEPTED", retryOzonTaskId: "ozon-task-retry-schedule" });
+    }
+    await owner.query(`UPDATE submission_jobs
+      SET updated_at=NOW()-INTERVAL '10 minutes',locked_by='',lock_expires_at=NULL
+      WHERE id='submission-schedule'`);
+    assert.deepEqual((await pipeline.recoverStaleSubmissionJobsV3({
+      workerId: "task8-fix3-watchdog", limit: 10,
+    })).filter((row) => row.id === "submission-schedule").map((row) => ({
+      fromStatus: row.fromStatus, toStatus: row.toStatus, action: row.action,
+    })), [{ fromStatus: "OZON_ACCEPTED", toStatus: "CHECKING", action: "check" }]);
+    assert.equal((await pipeline.recoverStaleSubmissionJobsV3({
+      workerId: "task8-fix3-watchdog", limit: 10,
+    })).some((row) => row.id === "submission-schedule"), false);
+    assert.deepEqual((await owner.query(`SELECT
+      (SELECT status FROM submission_category_recovery_attempts
+        WHERE id='category-attempt-schedule') AS attempt_status,
+      (SELECT status FROM submission_jobs WHERE id='submission-schedule') AS job_status,
+      (SELECT ozon_task_id FROM submission_jobs WHERE id='submission-schedule') AS task_id,
+      (SELECT count(*)::int FROM outbox_events WHERE aggregate_id='submission-schedule'
+        AND event_type='listing.submit.requested') AS imports,
+      (SELECT count(*)::int FROM outbox_events WHERE aggregate_id='submission-schedule'
+        AND event_type='listing.check.requested') AS checks`)).rows[0], {
+      attempt_status: "RETRY_ACCEPTED", job_status: "CHECKING",
+      task_id: "ozon-task-retry-schedule", imports: 1, checks: 1,
     });
     assert.equal((await pipeline.scheduleSubmissionCategoryRetryV3({
       accountId: accountA, jobId: "submission-a", snapshotId: "submission-snapshot-a",

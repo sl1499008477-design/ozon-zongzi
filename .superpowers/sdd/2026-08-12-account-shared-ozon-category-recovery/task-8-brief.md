@@ -39,6 +39,10 @@ Migration 069 stores child retry item results under the complete account/job/sna
 
 The approved second review round stays within the existing Task 8 files and migration 069. It closes the six-field recovery summary per attempt status, handles retry-response uncertainty through the exact retry identity only, and resumes terminal work from exact child rows after the specified crash barriers. It introduces no new migration, external side effect, production policy rule, or file-scope expansion.
 
+### Automatic fix-round-3 review contract
+
+Any failure during the single retry submission must either atomically terminate the exact pending attempt/job for review or, when the retry task identity was already durably accepted, resume checking only that exact retry task. Generic reconciliation, original-task lookup, and another import are forbidden. The change remains inside the existing worker/pipeline/test scope and migration 069.
+
 ## Closed worker behavior
 
 - Only the first terminal, all-item allowlisted category failure with every `productId` absent may enter Task 7 recovery. Partial success, any product identity, still-processing, unknown, ordinary/non-category failure, response loss, or offer `PRESENT/UNKNOWN` causes zero category refresh.

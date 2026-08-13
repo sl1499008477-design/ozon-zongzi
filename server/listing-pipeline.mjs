@@ -2213,10 +2213,30 @@ export function requireSubmissionCategoryRecoveryReviewV3(input) {
 
 export async function requireSubmissionCategoryRetryUncertainReviewV3(raw) {
   const input = categoryAttemptIdentity(raw);
+  const safeReviewCode = raw.safeReviewCode;
+  if (!["AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN",
+    "AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED"].includes(safeReviewCode)) {
+    throw Object.assign(new Error("类目恢复提交失败类型无效"), {
+      code: "LISTING_CATEGORY_RECOVERY_IDENTITY_INVALID", status: 409,
+    });
+  }
+  const unknown = safeReviewCode === "AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN";
+  const safeMessage = unknown
+    ? "类目修复后的上架请求结果未知，需要人工复核"
+    : "类目修复后的上架请求未完成，需要人工复核";
   return transaction(async (client) => {
+    const jobBefore = await client.query(
+      `SELECT status
+         FROM submission_jobs
+        WHERE account_id=$1 AND id=$2 AND snapshot_id=$3
+          AND status IN ('RETRY_PENDING','VALIDATING','SUBMITTING','RECONCILING')
+          AND ozon_task_id=$4
+        FOR UPDATE`,
+      [input.accountId, input.jobId, input.snapshotId, input.originalOzonTaskId],
+    );
     const attempt = await client.query(
       `UPDATE submission_category_recovery_attempts
-          SET status='NEEDS_REVIEW',safe_review_code='AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN',
+          SET status='NEEDS_REVIEW',safe_review_code=$11,
               completed_at=COALESCE(completed_at,NOW()),
               updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 microsecond')
         WHERE account_id=$1 AND submission_job_id=$2 AND submission_snapshot_id=$3
@@ -2227,27 +2247,27 @@ export async function requireSubmissionCategoryRetryUncertainReviewV3(raw) {
         RETURNING id,status`,
       [input.accountId, input.jobId, input.snapshotId, input.evidenceId, input.attemptId,
         input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
-        input.originalOzonTaskId, input.correlationId],
+        input.originalOzonTaskId, input.correlationId, safeReviewCode],
     );
     const job = await client.query(
       `UPDATE submission_jobs
           SET status='FAILED',status_version=status_version+1,
-              error_code='AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN',
-              error_message='类目修复后的上架请求结果未知，需要人工复核',
+              error_code=$5,error_message=$6,
               status_message='',completed_at=COALESCE(completed_at,NOW()),updated_at=NOW()
         WHERE account_id=$1 AND id=$2 AND snapshot_id=$3
-          AND status IN ('SUBMITTING','RECONCILING') AND ozon_task_id=$4
+          AND status=$7 AND ozon_task_id=$4
         RETURNING id`,
-      [input.accountId, input.jobId, input.snapshotId, input.originalOzonTaskId],
+      [input.accountId, input.jobId, input.snapshotId, input.originalOzonTaskId,
+        safeReviewCode, safeMessage, jobBefore.rows[0]?.status || ""],
     );
-    if (attempt.rowCount === 1 && job.rowCount === 1) {
+    if (jobBefore.rowCount === 1 && attempt.rowCount === 1 && job.rowCount === 1) {
       await client.query(
         `INSERT INTO submission_events
           (job_id,from_status,to_status,event_type,message,actor_type,actor_id,payload)
-         VALUES ($1,'SUBMITTING','FAILED','submission.category_retry_unknown_review',
-           '类目修复后的上架请求结果未知，需要人工复核','worker','category-recovery',$2::jsonb)`,
-        [input.jobId, json({ attemptId: input.attemptId,
-          originalOzonTaskId: input.originalOzonTaskId })],
+         VALUES ($1,$2,'FAILED','submission.category_retry_submit_review',
+           $3,'worker','category-recovery',$4::jsonb)`,
+        [input.jobId, jobBefore.rows[0].status, safeMessage, json({ attemptId: input.attemptId,
+          originalOzonTaskId: input.originalOzonTaskId, safeReviewCode })],
       );
       return Object.freeze({ attemptId: input.attemptId, status: "NEEDS_REVIEW" });
     }
@@ -2263,12 +2283,12 @@ export async function requireSubmissionCategoryRetryUncertainReviewV3(raw) {
           AND attempt.old_shared_category_id=$7 AND attempt.old_shared_category_version=$8
           AND attempt.original_ozon_task_id=$9 AND attempt.correlation_id=$10
           AND attempt.status='NEEDS_REVIEW'
-          AND attempt.safe_review_code='AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN'
+          AND attempt.safe_review_code=$11
           AND attempt.retry_ozon_task_id IS NULL AND job.status='FAILED'
-          AND job.error_code='AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN'`,
+          AND job.error_code=$11`,
       [input.accountId, input.jobId, input.snapshotId, input.evidenceId, input.attemptId,
         input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
-        input.originalOzonTaskId, input.correlationId],
+        input.originalOzonTaskId, input.correlationId, safeReviewCode],
     );
     if (replay.rowCount !== 1) throw Object.assign(new Error("类目恢复未知任务状态冲突"), {
       code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT", status: 409,

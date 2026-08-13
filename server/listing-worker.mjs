@@ -54,6 +54,12 @@ function categoryRecoveryIdentity(work) {
   return values;
 }
 
+function sameCategoryRecoveryIdentity(leftWork, rightWork) {
+  const left = categoryRecoveryIdentity(leftWork);
+  const right = categoryRecoveryIdentity(rightWork);
+  return left && right && Object.keys(left).every((key) => left[key] === right[key]);
+}
+
 function explicitCategoryTerminal(statusInfo) {
   return statusInfo?.done === true && statusInfo.status === "FAILED"
     && statusInfo.success === 0 && statusInfo.skipped === 0
@@ -185,13 +191,23 @@ export function createListingWorkerCategoryRecoveryController({
         ...identity, safeReviewCode: "AUTO_LISTING_CATEGORY_RECOVERY_RETRY_FAILED",
       });
     },
-    async handleSubmitUncertainty({ work, error } = {}) {
+    async handleSubmitFailure({ work, latestWork, error } = {}) {
       const identity = categoryRecoveryIdentity(work);
-      if (!identity || work.categoryRecovery.status !== "RETRY_PENDING"
-        || resolveSubmissionFailureDisposition(error) !== "RECONCILING") {
+      if (!identity || work.categoryRecovery.status !== "RETRY_PENDING") {
         return Object.freeze({ handled: false });
       }
-      const reviewed = await reviewUncertainRetry(identity);
+      const latestRecovery = latestWork?.categoryRecovery;
+      if (sameCategoryRecoveryIdentity(work, latestWork)
+        && latestRecovery?.status === "RETRY_ACCEPTED"
+        && typeof latestRecovery.retryOzonTaskId === "string" && latestRecovery.retryOzonTaskId
+        && latestWork.ozon_task_id === latestRecovery.retryOzonTaskId) {
+        return Object.freeze({ handled: true, status: "RETRY_ACCEPTED",
+          retryOzonTaskId: latestRecovery.retryOzonTaskId });
+      }
+      const safeReviewCode = resolveSubmissionFailureDisposition(error) === "RECONCILING"
+        ? "AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN"
+        : "AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED";
+      const reviewed = await reviewUncertainRetry({ ...identity, safeReviewCode });
       return Object.freeze({ handled: true, attemptId: reviewed.attemptId, status: "NEEDS_REVIEW" });
     },
     persistRetryTerminal,
@@ -269,7 +285,7 @@ export async function resumeListingCategoryRecoveryFromChildResults({
 }
 
 export function resolveListingSubmitFailureDispositionForWork(work, error) {
-  if (work?.categoryRecovery?.status === "RETRY_PENDING") return "RECONCILING";
+  if (work?.categoryRecovery?.status === "RETRY_PENDING") return "FAILED";
   return resolveSubmissionFailureDisposition(error);
 }
 
@@ -369,8 +385,8 @@ async function processSubmit(jobId) {
     if (work.collect_item_id) await patchLegacyCollectStatusV3(work.account_id, work.collect_item_id, collectPatch("CHECKING", { ...accepted, ozon_task_id: ozonTaskId }));
   } catch (error) {
     const latest = await loadSubmissionWorkV3(jobId);
-    const uncertainRecovery = await productionCategoryRecoveryController.handleSubmitUncertainty({
-      work, error,
+    const uncertainRecovery = await productionCategoryRecoveryController.handleSubmitFailure({
+      work, latestWork: latest, error,
     });
     if (uncertainRecovery.handled) return;
     const disposition = latest?.status === "SUBMITTING"

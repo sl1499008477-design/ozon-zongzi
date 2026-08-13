@@ -213,10 +213,10 @@ test("response loss after the original or category retry import always reconcile
   }), "RECONCILING");
   assert.equal(resolveListingSubmitFailureDispositionForWork(work({ categoryRecovery: {
     status: "RETRY_PENDING",
-  } }), { code: "SUBMISSION_NOT_SENT" }), "RECONCILING");
+  } }), { code: "SUBMISSION_NOT_SENT" }), "FAILED");
 });
 
-test("retry import response loss closes the exact pending attempt for review without querying the original task", async () => {
+test("every retry submit failure closes the exact pending attempt atomically without generic reconciliation", async () => {
   const { calls, controller } = harness();
   const recovery = {
     attemptId: "attempt-a", status: "RETRY_PENDING", evidenceId: "evidence-a",
@@ -224,23 +224,42 @@ test("retry import response loss closes the exact pending attempt for review wit
     replacementSharedCategoryId: "shared-a", replacementSharedCategoryVersion: 3,
     originalOzonTaskId: "task-original", retryOzonTaskId: null, correlationId: "corr-a",
   };
-  assert.deepEqual(await controller.handleSubmitUncertainty({
-    work: work({ status: "SUBMITTING", categoryRecovery: recovery }),
-    error: { code: "OZON_RESPONSE_LOST", body: { network: true } },
-  }), { handled: true, attemptId: "attempt-a", status: "NEEDS_REVIEW" });
-  assert.deepEqual(calls.map(([name]) => name), ["uncertain-review"]);
-  assert.equal(calls[0][1].originalOzonTaskId, "task-original");
-  assert.equal(calls[0][1].retryOzonTaskId, undefined);
-
-  for (const error of [
-    { code: "SUBMISSION_NOT_SENT" },
-    { code: "LISTING_RFBS_PHASE_VALIDATION_REQUIRED" },
+  for (const [error, safeReviewCode] of [
+    [{ code: "OZON_RESPONSE_LOST", body: { network: true } },
+      "AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN"],
+    [{ code: "SUBMISSION_NOT_SENT" }, "AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED"],
+    [{ code: "LISTING_RFBS_PHASE_VALIDATION_REQUIRED" },
+      "AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED"],
+    [{ code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT" },
+      "AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED"],
   ]) {
-    assert.deepEqual(await controller.handleSubmitUncertainty({
+    assert.deepEqual(await controller.handleSubmitFailure({
       work: work({ status: "SUBMITTING", categoryRecovery: recovery }), error,
-    }), { handled: false });
+    }), { handled: true, attemptId: "attempt-a", status: "NEEDS_REVIEW" });
+    assert.equal(calls.at(-1)[1].safeReviewCode, safeReviewCode);
+    assert.equal(calls.at(-1)[1].originalOzonTaskId, "task-original");
+    assert.equal(calls.at(-1)[1].retryOzonTaskId, undefined);
   }
-  assert.deepEqual(calls.map(([name]) => name), ["uncertain-review"]);
+  assert.deepEqual(calls.map(([name]) => name), Array(4).fill("uncertain-review"));
+});
+
+test("a retry task persisted before scheduling failure resumes only that exact retry task", async () => {
+  const { calls, controller } = harness();
+  const recovery = {
+    attemptId: "attempt-a", status: "RETRY_PENDING", evidenceId: "evidence-a",
+    sourceEvidenceId: "source-a", oldSharedCategoryId: "shared-a", oldSharedCategoryVersion: 1,
+    replacementSharedCategoryId: "shared-a", replacementSharedCategoryVersion: 3,
+    originalOzonTaskId: "task-original", retryOzonTaskId: null, correlationId: "corr-a",
+  };
+  const latest = work({ status: "OZON_ACCEPTED", ozon_task_id: "task-retry",
+    categoryRecovery: { ...recovery, status: "RETRY_ACCEPTED", retryOzonTaskId: "task-retry" } });
+  for (let replay = 0; replay < 2; replay += 1) {
+    assert.deepEqual(await controller.handleSubmitFailure({
+      work: work({ status: "SUBMITTING", categoryRecovery: recovery }), latestWork: latest,
+      error: { code: "STATUS_CHECK_SCHEDULE_FAILED" },
+    }), { handled: true, status: "RETRY_ACCEPTED", retryOzonTaskId: "task-retry" });
+  }
+  assert.deepEqual(calls, []);
 });
 
 test("uncertain, present, partial, product, processing and noncategory results never enter recovery", async () => {
