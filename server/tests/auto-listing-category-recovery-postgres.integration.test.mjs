@@ -25,7 +25,7 @@ const recoveryMetadata = Object.freeze({
   descriptionCategoryId: 30,
   typeId: 40,
   attributes: Object.freeze([
-    Object.freeze({ id: 1, complexId: 0, required: false, dictionaryId: null, dictionaryValues: Object.freeze([]) }),
+    Object.freeze({ id: 1, complexId: 0, required: true, dictionaryId: null, dictionaryValues: Object.freeze([]) }),
     Object.freeze({ id: 2, complexId: 0, required: false, dictionaryId: 6,
       dictionaryValues: Object.freeze([Object.freeze({ id: 901, value: "simple-canonical" })]) }),
     Object.freeze({ id: 300, complexId: 77, required: true, dictionaryId: 5,
@@ -76,24 +76,34 @@ async function seed(client, suffix, itemOverrides = {}) {
     current_description_category_id,current_type_id,status,source,version,source_evidence_id,created_at,updated_at)
     VALUES($1,$2,10,20,'OZON:DEFAULT',10,20,'ACTIVE','SOURCE_DIRECT',1,$3,$4,$4)`,
   [ids.shared, ids.account, ids.source, "2026-08-12T00:00:00.000Z"]);
-  const item = {
+  const baseItem = {
     offer_id: "offer-a", sku: "sku-a", description_category_id: 10, type_id: 20,
-    attributes: [], price: "1", currency_code: "RUB", ...itemOverrides,
+    attributes: [], price: "1", currency_code: "RUB",
   };
+  const items = Array.isArray(itemOverrides)
+    ? itemOverrides.map((item, index) => ({ ...baseItem, offer_id: `offer-${index + 1}`,
+      sku: `sku-${index + 1}`, ...item }))
+    : [{ ...baseItem, ...itemOverrides }];
   await client.query(`INSERT INTO submission_snapshots(
     id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,snapshot_hash,item_count,items)
-    VALUES($1,$2,$3,1,$4,$5,$6,$7,1,$8)`,
-  [ids.snapshot, ids.collect, ids.draft, ids.account, ids.store, `idem-${suffix}`, sha([item]), JSON.stringify([item])]);
+    VALUES($1,$2,$3,1,$4,$5,$6,$7,$8,$9)`,
+  [ids.snapshot, ids.collect, ids.draft, ids.account, ids.store, `idem-${suffix}`, sha(items),
+    items.length, JSON.stringify(items)]);
   await client.query(`INSERT INTO submission_jobs(
     id,snapshot_id,collect_item_id,account_id,store_id,status,ozon_task_id,item_count,failed_count,correlation_id)
-    VALUES($1,$2,$3,$4,$5,'FAILED','task-original',1,1,$6)`,
-  [ids.job, ids.snapshot, ids.collect, ids.account, ids.store, `corr-${suffix}`]);
-  await client.query(`INSERT INTO submission_items(
-    id,job_id,snapshot_id,variant_key,sort_order,sku,offer_id,status,product_id,response)
-    VALUES($1,$2,$3,'variant-a',0,'sku-a','offer-a','FAILED','',$4)`,
-  [ids.item, ids.job, ids.snapshot, JSON.stringify({
-    schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1", rawResponse: {}, errorEvidence: safeEvidence(),
-  })]);
+    VALUES($1,$2,$3,$4,$5,'FAILED','task-original',$6,$6,$7)`,
+  [ids.job, ids.snapshot, ids.collect, ids.account, ids.store, items.length, `corr-${suffix}`]);
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    await client.query(`INSERT INTO submission_items(
+      id,job_id,snapshot_id,variant_key,sort_order,sku,offer_id,status,product_id,response)
+      VALUES($1,$2,$3,$4,$5,$6,$7,'FAILED','',$8)`,
+    [index === 0 ? ids.item : `${ids.item}-${index + 1}`, ids.job, ids.snapshot,
+      `variant-${index + 1}`, index, item.sku, item.offer_id, JSON.stringify({
+        schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1", rawResponse: {},
+        errorEvidence: safeEvidence(item.offer_id),
+      })]);
+  }
   return ids;
 }
 
@@ -290,7 +300,10 @@ if (!enabled) {
           { complex_id: 0, id: 1, values: [{ value: "simple-safe", dictionary_value_id: 777 }] },
           { complex_id: 0, id: 2,
             values: [{ value: "simple-canonical", dictionary_value_id: 901 }] },
-        ], price: "1", currency_code: "RUB" }];
+        ],
+        complex_attributes: [{ attributes: [{ complex_id: 77, id: 300,
+          values: [{ value: "canonical", dictionary_value_id: 900 }] }] }],
+        price: "1", currency_code: "RUB" }];
       await assertCheckRejected(client,
         `UPDATE ${q(schema)}.submission_category_recovery_attempts
             SET status='NEEDS_REVIEW',corrected_items=$2,corrected_items_hash=$3,
@@ -380,6 +393,7 @@ if (!enabled) {
         }],
       ];
       const invalidSimpleAttributes = [
+        [],
         [{ id: 1, values: [{ value: "safe" }] }],
         [{ complex_id: 77, id: 1, values: [{ value: "safe" }] }],
         [{ complex_id: 0, id: 999, values: [{ value: "safe" }] }],
@@ -395,6 +409,8 @@ if (!enabled) {
         ...[" ", "\t", "\n", "\u00a0", "\u1680", "\u2007", "\u202f", "\u3000", "\ufeff"]
           .map((value) => [{ complex_id: 0, id: 1, values: [{ value }] }]),
       ];
+      const requiredComplexOmitted = { ...corrected[0] };
+      delete requiredComplexOmitted.complex_attributes;
       for (const invalidMetadata of [
         null,
         {},
@@ -431,6 +447,7 @@ if (!enabled) {
           const item = { ...corrected[0], attributes };
           return [[item], canonicalSha([item]), ids.shared, 2];
         }),
+        [[requiredComplexOmitted], canonicalSha([requiredComplexOmitted]), ids.shared, 2],
         ...invalidComplexAttributes.map((complexAttributes) => {
           const item = { ...corrected[0], complex_attributes: complexAttributes };
           return [[item], canonicalSha([item]), ids.shared, 2];
@@ -503,6 +520,55 @@ if (!enabled) {
       assert.deepEqual(terminalBasis.existingAttempt, {
         attemptId: attempt.attemptId, status: "SUCCEEDED", correlationId: `corr-${suffix}`,
       });
+      const variantIds = await seed(client, `${suffix}required-variants`, [
+        { offer_id: "offer-a", sku: "sku-a" },
+        { offer_id: "offer-b", sku: "sku-b" },
+      ]);
+      const variantSnapshot = (await client.query(
+        `SELECT items,snapshot_hash FROM ${q(schema)}.submission_snapshots WHERE id=$1`,
+        [variantIds.snapshot],
+      )).rows[0];
+      const variantEvidenceId = `category-error-${suffix}-required-variants`;
+      await client.query(insertEvidenceSql, [
+        variantEvidenceId, variantIds.account, variantIds.job, variantIds.snapshot, variantIds.item,
+        "offer-a", "task-original", variantSnapshot.snapshot_hash,
+        JSON.stringify(variantSnapshot.items), variantIds.source, variantIds.shared, 1,
+        "ozon-category-policy.v2", JSON.stringify(safeEvidence()),
+      ]);
+      const variantRepository = createAutoListingCategoryRecoveryPostgres({
+        pool: scopedPool, idFactory: () => `recovery-${suffix}-required-variants`,
+        now: () => "2026-08-13T00:00:05.500Z",
+      });
+      const variantClaim = {
+        accountId: variantIds.account, jobId: variantIds.job, snapshotId: variantIds.snapshot,
+        evidenceId: variantEvidenceId, sourceEvidenceId: variantIds.source,
+        oldSharedCategoryId: variantIds.shared, oldSharedCategoryVersion: 1,
+        originalOzonTaskId: "task-original", correlationId: `corr-${suffix}required-variants`,
+      };
+      const variantAttempt = await variantRepository.claimCategoryRecovery(variantClaim);
+      await client.query(`UPDATE ${q(schema)}.account_ozon_shared_categories
+        SET current_description_category_id=30,current_type_id=40,status='ACTIVE',
+            source='OZON_REFRESH',version=2,taxonomy_fingerprint=$1,safe_failure_code='',
+            validated_at=$2,updated_at=$2 WHERE account_id=$3 AND id=$4`,
+      ["d".repeat(64), "2026-08-13T00:00:05.600Z", variantIds.account, variantIds.shared]);
+      const requiredVariant = (item) => ({ ...item, description_category_id: 30, type_id: 40,
+        attributes: [{ complex_id: 0, id: 1, values: [{ value: "required-simple" }] }],
+        complex_attributes: [{ attributes: [{ complex_id: 77, id: 300,
+          values: [{ value: "canonical", dictionary_value_id: 900 }] }] }],
+      });
+      const variantCorrection = [
+        requiredVariant(variantSnapshot.items[0]),
+        { ...requiredVariant(variantSnapshot.items[1]), attributes: [] },
+      ];
+      await assertCheckRejected(client,
+        `UPDATE ${q(schema)}.submission_category_recovery_attempts
+            SET status='MATCHED',corrected_items=$2::JSONB,corrected_items_hash=$3,
+                replacement_shared_category_id=$4,replacement_shared_category_version=2,
+                replacement_category_metadata=$5::JSONB,updated_at=$6
+          WHERE account_id=$7 AND id=$1`,
+        [variantAttempt.attemptId, JSON.stringify(variantCorrection), canonicalSha(variantCorrection),
+          variantIds.shared, JSON.stringify(recoveryMetadata), "2026-08-13T00:00:05.700Z",
+          variantIds.account]);
       await assert.rejects(client.query(`UPDATE ${q(schema)}.submission_category_recovery_attempts SET corrected_items='[]' WHERE id=$1`, [attempt.attemptId]), (error) => error.code === "23514");
       await assert.rejects(client.query(`DELETE FROM ${q(schema)}.submission_category_error_evidence WHERE id=$1`, [evidence.id]), (error) => error.code === "23514");
       const foreign = createAutoListingCategoryRecoveryPostgres({ pool: scopedPool });
@@ -572,7 +638,10 @@ if (!enabled) {
               validated_at=$2,updated_at=$2 WHERE account_id=$3 AND id=$4`,
         ["c".repeat(64), "2026-08-13T00:01:00.100Z", postIds.account, postIds.shared]);
         const postCorrected = [{
-          ...postSnapshot.items[0], description_category_id: 30, type_id: 40, attributes: [],
+          ...postSnapshot.items[0], description_category_id: 30, type_id: 40,
+          attributes: [{ complex_id: 0, id: 1, values: [{ value: "required-simple" }] }],
+          complex_attributes: [{ attributes: [{ complex_id: 77, id: 300,
+            values: [{ value: "canonical", dictionary_value_id: 900 }] }] }],
         }];
         const postHash = canonicalSha(postCorrected);
         const identity = {
@@ -633,6 +702,8 @@ if (!enabled) {
       await assertPostMatchReviewPreservesProvenance("pending-review", false);
       await assertPostMatchReviewPreservesProvenance("accepted-review", true);
       await client.query(`DELETE FROM ${q(schema)}.submission_jobs WHERE account_id=$1 AND id=$2`, [ids.account, ids.job]);
+      await client.query(`DELETE FROM ${q(schema)}.submission_jobs WHERE account_id=$1 AND id=$2`,
+        [variantIds.account, variantIds.job]);
       await client.query(`DELETE FROM ${q(schema)}.submission_jobs WHERE account_id=$1 AND id=$2`,
         [reviewIds.account, reviewIds.job]);
       for (const postIds of postMatchJobIds) {

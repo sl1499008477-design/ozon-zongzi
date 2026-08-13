@@ -31,6 +31,7 @@ test("068 guards append-only evidence and the closed attempt transition lattice"
   assert.match(sql, /valid_submission_category_recovery_metadata/);
   assert.match(sql, /valid_submission_category_recovery_complex_attributes/);
   assert.match(sql, /valid_submission_category_recovery_simple_attributes/);
+  assert.match(sql, /valid_submission_category_recovery_required_attributes/);
   assert.match(sql, /NEW\.status='MATCHED'/);
   assert.match(sql, /replacement\.source_description_category_id IS DISTINCT FROM source_evidence\.source_description_category_id/);
   assert.match(sql, /JSONB_TYPEOF\(NEW\.corrected_items\)<>'array'/);

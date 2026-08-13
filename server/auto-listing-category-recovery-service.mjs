@@ -260,7 +260,9 @@ function validCategoryAttributes(item, metadata) {
   };
   if (item.attributes.length > 1_000
     || !item.attributes.every((attribute) => accept(attribute, false))) return false;
-  if (!Object.hasOwn(item, "complex_attributes")) return true;
+  const complete = () => metadata.attributes.every((attribute) => !attribute.required
+    || seen.has(`${attribute.complexId}:${attribute.id}`));
+  if (!Object.hasOwn(item, "complex_attributes")) return complete();
   const groups = item.complex_attributes;
   if (!Array.isArray(groups) || groups.length < 1 || groups.length > 1_000) return false;
   for (const group of groups) {
@@ -272,7 +274,7 @@ function validCategoryAttributes(item, metadata) {
       if (attribute?.complex_id !== complexId || !accept(attribute, true)) return false;
     }
   }
-  return true;
+  return complete();
 }
 
 function validCorrection(original, corrected, category) {

@@ -659,6 +659,34 @@ EXCEPTION WHEN OTHERS THEN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION valid_submission_category_recovery_required_attributes(
+  simple_attributes JSONB,
+  complex_attributes JSONB,
+  metadata JSONB
+)
+RETURNS BOOLEAN LANGUAGE SQL IMMUTABLE AS $$
+  SELECT NOT EXISTS (
+    SELECT 1
+      FROM JSONB_ARRAY_ELEMENTS(metadata->'attributes') AS required_attribute(value)
+     WHERE required_attribute.value->>'required'='true'
+       AND CASE
+         WHEN required_attribute.value->>'complexId'='0' THEN NOT EXISTS (
+           SELECT 1 FROM JSONB_ARRAY_ELEMENTS(simple_attributes) AS candidate(value)
+            WHERE candidate.value->>'complex_id'='0'
+              AND candidate.value->>'id'=required_attribute.value->>'id'
+         )
+         ELSE complex_attributes IS NULL OR JSONB_TYPEOF(complex_attributes)<>'array'
+           OR NOT EXISTS (
+             SELECT 1
+               FROM JSONB_ARRAY_ELEMENTS(complex_attributes) AS complex_group(value),
+                    JSONB_ARRAY_ELEMENTS(complex_group.value->'attributes') AS candidate(value)
+              WHERE candidate.value->>'complex_id'=required_attribute.value->>'complexId'
+                AND candidate.value->>'id'=required_attribute.value->>'id'
+           )
+       END
+  );
+$$;
+
 CREATE OR REPLACE FUNCTION guard_submission_category_recovery_attempt_transition()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
@@ -756,9 +784,16 @@ BEGIN
               WHEN NOT valid_submission_category_recovery_simple_attributes(
                 corrected_item.value->'attributes',NEW.replacement_category_metadata
               ) THEN TRUE
-              WHEN NOT (corrected_item.value ? 'complex_attributes') THEN FALSE
+              WHEN NOT (corrected_item.value ? 'complex_attributes') THEN NOT
+                valid_submission_category_recovery_required_attributes(
+                  corrected_item.value->'attributes',NULL,NEW.replacement_category_metadata
+                )
               WHEN NOT valid_submission_category_recovery_complex_attributes(
                 corrected_item.value->'complex_attributes',NEW.replacement_category_metadata
+              ) THEN TRUE
+              WHEN NOT valid_submission_category_recovery_required_attributes(
+                corrected_item.value->'attributes',corrected_item.value->'complex_attributes',
+                NEW.replacement_category_metadata
               ) THEN TRUE
               ELSE JSONB_ARRAY_LENGTH(corrected_item.value->'attributes') + (
                 SELECT COALESCE(SUM(JSONB_ARRAY_LENGTH(complex_group.value->'attributes')),0)

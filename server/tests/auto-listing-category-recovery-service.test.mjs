@@ -577,6 +577,70 @@ test("simple and complex correction attributes share one 1000-attribute item lim
   assert.equal(calls.includes("schedule"), false);
 });
 
+test("every corrected variant independently contains every refreshed required attribute", async () => {
+  const requiredMetadata = [
+    { id: 1, complexId: 0, required: true, dictionaryId: null, dictionaryValues: [] },
+    { id: 2, complexId: 0, required: false, dictionaryId: null, dictionaryValues: [] },
+    { id: 300, complexId: 77, required: true, dictionaryId: null, dictionaryValues: [] },
+    { id: 400, complexId: 77, required: false, dictionaryId: null, dictionaryValues: [] },
+  ];
+  const full = (item) => ({ ...item, description_category_id: 30, type_id: 40,
+    attributes: [{ complex_id: 0, id: 1, values: [{ value: "simple-required" }] }],
+    complex_attributes: [{ attributes: [
+      { complex_id: 77, id: 300, values: [{ value: "complex-required" }] },
+    ] }],
+  });
+  const twoVariantBasis = () => {
+    const first = basis();
+    const second = Object.freeze({ ...first.frozenItems[0], offer_id: "offer-b", sku: "sku-b" });
+    return Object.freeze({ ...first,
+      offers: Object.freeze([
+        Object.freeze({ offerId: "offer-a", sku: "sku-a" }),
+        Object.freeze({ offerId: "offer-b", sku: "sku-b" }),
+      ]),
+      frozenItems: Object.freeze([first.frozenItems[0], second]),
+    });
+  };
+  const cases = [
+    (items) => items.map((item) => ({ ...full(item), attributes: [] })),
+    (items) => items.map((item) => ({ ...full(item), complex_attributes: undefined }))
+      .map(({ complex_attributes, ...item }) => item),
+    (items) => [full(items[0]), { ...full(items[1]), attributes: [] }],
+  ];
+  for (const rebuild of cases) {
+    const { service, calls } = harness({
+      repository: { loadCategoryRecoveryBasis: async () => {
+        calls.push("load"); return twoVariantBasis();
+      } },
+      refreshCategory: async () => {
+        calls.push("refresh");
+        return { kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+          taxonomyFingerprint: "a".repeat(64), metadata: {
+            descriptionCategoryId: 30, typeId: 40, attributes: requiredMetadata,
+          } };
+      },
+      rebuildItems: async ({ originalItems }) => rebuild(originalItems),
+    });
+    assert.deepEqual(await service.recover(request), {
+      attemptId: "attempt-a", status: "NEEDS_REVIEW",
+    });
+    assert.equal(calls.includes("save-match"), false);
+    assert.equal(calls.includes("retry-pending"), false);
+    assert.equal(calls.includes("schedule"), false);
+  }
+
+  const optionalMissing = harness({
+    refreshCategory: async () => ({ kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+      taxonomyFingerprint: "a".repeat(64), metadata: {
+        descriptionCategoryId: 30, typeId: 40, attributes: requiredMetadata,
+      } }),
+    rebuildItems: async ({ originalItems }) => originalItems.map(full),
+  });
+  assert.deepEqual(await optionalMissing.service.recover(request), {
+    attemptId: "attempt-a", status: "RETRY_PENDING",
+  });
+});
+
 test("cross-account or non-explicit/nonzero-product basis fails before store/Ozon access", async () => {
   for (const mutate of [
     (value) => ({ ...value, accountId: "account-b" }),
