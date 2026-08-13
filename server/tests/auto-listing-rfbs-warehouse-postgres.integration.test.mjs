@@ -20,6 +20,18 @@ const migrationsDir = path.join(__dirname, "../db/migrations");
 const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const hashJson = (value) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
+function categoryAuthority(accountId, suffix) {
+  const evidenceId = `category-evidence-${suffix}`;
+  return {
+    categoryEvidence: { id: evidenceId, accountId, sourceDescriptionCategoryId: 123,
+      sourceTypeId: 456, taxonomyScope: "OZON:DEFAULT" },
+    sharedCategory: { id: `shared-category-${accountId}`, accountId, version: 1,
+      evidenceId, status: "ACTIVE", source: "SOURCE_DIRECT",
+      sourceDescriptionCategoryId: 123, sourceTypeId: 456, currentDescriptionCategoryId: 123,
+      currentTypeId: 456, taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null },
+  };
+}
+
 function validation(accountId, storeId, warehouseId, platformWarehouseId, correlationId, dates = {}) {
   const observedAt = dates.observedAt || new Date(Date.now() - 5_000).toISOString();
   const expiresAt = dates.expiresAt || new Date(Date.now() + 300_000).toISOString();
@@ -49,6 +61,8 @@ function graph(accountId, storeId, warehouseId, idempotencyKey, sourceSuffix, wa
     accountId, sourceType: "COLLECT_BOX", sourceRecordId, sourceVersion: "1",
     rawResponseRef: `raw-${sourceSuffix}`, rawResponseHash: `raw-hash-${sourceSuffix}`,
     productDraft: { id: `draft-${sourceSuffix}`, version: 1 },
+    ...categoryAuthority(accountId, sourceSuffix),
+    targetStoreCurrency: "RUB",
     collectItem: {
       id: sourceRecordId, accountId, sku: `sku-${sourceSuffix}`,
       listingDraft: {
@@ -61,7 +75,9 @@ function graph(accountId, storeId, warehouseId, idempotencyKey, sourceSuffix, wa
     },
   });
   return {
-    accountId, actorAccountId: accountId, sourceType: "COLLECT_BOX", idempotencyKey,
+    accountId, actorAccountId: accountId,
+    categoryPreparationLeaseId: `category-lease-${sourceSuffix}`,
+    sourceType: "COLLECT_BOX", idempotencyKey,
     correlationId: warehouseValidation.correlationId, configSnapshot: config, configHash,
     strategyVersionId: `strategy-${accountId}`, uploadPolicyVersionId: `policy-${accountId}`,
     warehouseValidation,
@@ -76,8 +92,9 @@ function graph(accountId, storeId, warehouseId, idempotencyKey, sourceSuffix, wa
       effectiveImageConfig: deriveEffectiveAutoListingImageConfig({ configSnapshot: config, configHash, sourceCapture: captured }),
       listingBaseTemplate: {
         productDraft: { id: `draft-${sourceSuffix}`, version: 1, dataHash: "1".repeat(64) },
-        pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000",
-          evidenceHash: "767a5b396ef1e82c9ebf280694cb5cb97ea39d654af13a0f78e021cad0db36c2" },
+        pricingEvidence: { currency: "RUB", currencySource: "SOURCE",
+          blackKopecks: "10000", greenKopecks: "8000",
+          evidenceHash: "4c6f549e1668186515248caffeb08fe2f9ba91ca1dab9edbdd8d159aa2b11bf8" },
         richContentAttributeSupported: true,
         variants: [{ sourceVariantId: `variant-${sourceSuffix}`, sourceSku: `sku-${sourceSuffix}`,
           item: { offer_id: `offer-${sourceSuffix}`, name: "RFBS product", price: "100.00", currency_code: "RUB",
@@ -102,7 +119,9 @@ function blockedGraph(accountId, storeId, warehouseId, idempotencyKey, sourceSuf
     rawResponseHash: `raw-hash-${sourceSuffix}`, failureCode: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
   });
   return {
-    accountId, actorAccountId: accountId, sourceType: "COLLECT_BOX", idempotencyKey,
+    accountId, actorAccountId: accountId,
+    categoryPreparationLeaseId: `category-lease-${sourceSuffix}`,
+    sourceType: "COLLECT_BOX", idempotencyKey,
     correlationId: warehouseValidation.correlationId, configSnapshot: config, configHash,
     strategyVersionId: `strategy-${accountId}`, uploadPolicyVersionId: `policy-${accountId}`,
     warehouseValidation,
@@ -114,6 +133,64 @@ function blockedGraph(accountId, storeId, warehouseId, idempotencyKey, sourceSuf
       failureCode: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
     }],
   };
+}
+
+async function establishActiveCategoryPreparationLease(client, input) {
+  await client.query(`INSERT INTO auto_listing_category_preparation_leases(
+    id,account_id,holder_backend_pid,holder_backend_started_at,state,acquired_at,expires_at)
+    SELECT $1,$2,activity.pid,activity.backend_start,'ACTIVE',NOW(),NOW()+INTERVAL '1 hour'
+      FROM pg_stat_activity AS activity
+     WHERE activity.pid=pg_backend_pid() AND activity.datname=current_database()`,
+  [input.categoryPreparationLeaseId, input.accountId]);
+  for (const item of input.items.filter((entry) => entry.status === "SOURCE_READY")) {
+    const category = item.snapshot.targetCategory;
+    const draft = item.listingBaseTemplate.productDraft;
+    const rawId = `category-raw-${item.sourceRecordId}`;
+    const rawHash = crypto.createHash("sha256").update(rawId).digest("hex");
+    await client.query(`INSERT INTO collect_raw_payloads(
+      id,collect_item_id,account_id,source_sku,payload_hash,payload,collected_at)
+      VALUES($1,$2,$3,$4,$5,'{}'::jsonb,NOW())`,
+    [rawId, item.sourceRecordId, input.accountId, item.snapshot.identity.primarySku, rawHash]);
+    await client.query("UPDATE product_drafts SET source_payload_id=$1 WHERE id=$2 AND collect_item_id=$3",
+      [rawId, draft.id, item.sourceRecordId]);
+    await client.query(`INSERT INTO collect_ozon_category_source_evidence(
+      id,account_id,source_kind,source_record_id,source_version,collect_item_id,product_draft_id,
+      source_description_category_id,source_type_id,taxonomy_scope,captured_at,raw_response_hash,
+      raw_response_ref,product_raw_response_ref,provenance)
+      VALUES($1,$2,'PRODUCT_DRAFT',$3,$4,$3,$5,$6,$7,$8,NOW(),$9,$10,$10,'{}'::jsonb)`,
+    [category.evidenceId, input.accountId, item.sourceRecordId, String(draft.version), draft.id,
+      category.sourceDescriptionCategoryId, category.sourceTypeId, category.taxonomyScope, rawHash, rawId]);
+    await client.query(`INSERT INTO account_ozon_shared_categories(
+      id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
+      current_description_category_id,current_type_id,status,source,version,taxonomy_fingerprint,
+      safe_failure_code,source_evidence_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,'ACTIVE',$8,$9,$10,'',$11)
+      ON CONFLICT(account_id,source_description_category_id,source_type_id,taxonomy_scope) DO NOTHING`,
+    [category.sharedCategoryId, input.accountId, category.sourceDescriptionCategoryId,
+      category.sourceTypeId, category.taxonomyScope, category.descriptionCategoryId,
+      category.typeId, category.provenance, category.sharedCategoryVersion,
+      category.taxonomyFingerprint || null, category.evidenceId]);
+    await client.query(`INSERT INTO collect_ozon_category_current_sources(
+      account_id,collect_item_id,source_evidence_id,source_kind,source_record_id,source_version)
+      VALUES($1,$2,$3,'PRODUCT_DRAFT',$2,$4)`,
+    [input.accountId, item.sourceRecordId, category.evidenceId, String(draft.version)]);
+    await client.query(`INSERT INTO auto_listing_category_preparation_lease_items(
+      account_id,lease_id,collect_item_id,evidence_id,shared_category_id,shared_category_version,
+      source_description_category_id,source_type_id,description_category_id,type_id,taxonomy_scope,
+      taxonomy_fingerprint,provenance)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [input.accountId, input.categoryPreparationLeaseId, item.sourceRecordId, category.evidenceId,
+      category.sharedCategoryId, category.sharedCategoryVersion, category.sourceDescriptionCategoryId,
+      category.sourceTypeId, category.descriptionCategoryId, category.typeId, category.taxonomyScope,
+      category.taxonomyFingerprint || "", category.provenance]);
+  }
+  const row = (await client.query(`SELECT lease.state,warehouse.status,warehouse.is_active,warehouse.is_archived
+      FROM auto_listing_category_preparation_leases AS lease
+      JOIN warehouses AS warehouse ON warehouse.store_id=$3 AND warehouse.id=$4
+     WHERE lease.account_id=$1 AND lease.id=$2`,
+  [input.accountId, input.categoryPreparationLeaseId,
+    input.configSnapshot.targetStoreId, input.configSnapshot.targetWarehouseId])).rows[0];
+  assert.deepEqual(row, { state: "ACTIVE", status: "active", is_active: true, is_archived: false });
 }
 
 function cleanupState(accountId, storeId) {
@@ -204,6 +281,7 @@ if (!enabled) {
         `store-first-${suffix}`, `store-first-${suffix}`, storeFirstValidation);
       await client.query("INSERT INTO collect_items (id,account_id,source,identity_key,source_sku,summary) VALUES ($1,$2,'test',$3,$4,'{}'::jsonb)",
         [storeFirstInput.items[0].sourceRecordId, accountStoreFirst, `identity-store-first-${suffix}`, `sku-store-first-${suffix}`]);
+      await establishActiveCategoryPreparationLease(client, storeFirstInput);
       const storeFirstJob = await repository.createJobGraph(storeFirstInput);
       const storeFirstAuditId = `AUTO_LISTING_RFBS_WAREHOUSE_VALIDATED:${storeFirstJob.warehouseValidationEvidenceId}`;
       assert.deepEqual((await client.query(
@@ -309,6 +387,7 @@ if (!enabled) {
       await client.query(`INSERT INTO product_drafts (id,collect_item_id,version,data_hash,data,normalizer_version,category_rule_version,dictionary_version)
         VALUES ($1,$2,1,$3,'{}'::jsonb,'v3','v1','live')`, [`draft-rfbs-${suffix}`, input.items[0].sourceRecordId, "1".repeat(64)]);
       await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE id=$2", [`draft-rfbs-${suffix}`, input.items[0].sourceRecordId]);
+      await establishActiveCategoryPreparationLease(client, input);
       const [first, second] = await Promise.all([repository.createJobGraph(structuredClone(input)), repository.createJobGraph(structuredClone(input))]);
       assert.equal(first.id, second.id);
       assert.equal([first.duplicate, second.duplicate].filter(Boolean).length, 1);
@@ -409,6 +488,7 @@ if (!enabled) {
       await client.query(`INSERT INTO product_drafts (id,collect_item_id,version,data_hash,data,normalizer_version,category_rule_version,dictionary_version)
         VALUES ($1,$2,1,$3,'{}'::jsonb,'v3','v1','live')`, [`draft-rollback-${suffix}`, rollbackInput.items[0].sourceRecordId, "1".repeat(64)]);
       await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE id=$2", [`draft-rollback-${suffix}`, rollbackInput.items[0].sourceRecordId]);
+      await establishActiveCategoryPreparationLease(client, rollbackInput);
       await assert.rejects(repository.createJobGraph(rollbackInput));
       assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2", [accountA, rollbackInput.idempotencyKey])).rows[0].count), 0);
       assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM auto_listing_rfbs_warehouse_evidence WHERE account_id=$1 AND correlation_id=$2", [accountA, rollbackValidation.correlationId])).rows[0].count), 0);

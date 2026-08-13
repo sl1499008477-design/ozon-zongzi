@@ -18,6 +18,7 @@
     "sub2api:upgrade": "node scripts/sub2api-local.mjs upgrade",
     "test:pipeline": "node server/tests/listing-pipeline-v3.integration.mjs",
     "test:collection-pipeline": "node server/tests/collection-pipeline-v4.integration.mjs",
+    "test:account-shared-category-recovery-e2e": "node --test --test-concurrency=1 server/tests/account-shared-category-recovery-e2e.test.mjs",
     "db:migrate": "node server/db/migrate.mjs",
     "app": "pnpm --dir app dev",
     "build": "pnpm --dir app build",
