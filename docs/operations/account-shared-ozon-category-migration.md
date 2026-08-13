@@ -51,19 +51,67 @@ Restore verification checklist:
 
 Run these read-only checks in the maintenance window. Any returned row is a stop condition that requires correcting the source record or restoring a known-good snapshot; never infer replacement category IDs from retired target matches.
 
-Malformed source facts in current drafts:
+Build the same raw-fact set that migration 063 reads. This includes every product draft (not only
+the current draft), all four canonical draft paths, and every completed enrichment-cache row:
 
 ```sql
-SELECT item.account_id,item.id AS collect_item_id,draft.id AS draft_id,draft.version,
-       draft.data->'sourceCategory' AS source_category
-  FROM collect_items AS item
-  JOIN product_drafts AS draft ON draft.id=item.current_draft_id AND draft.collect_item_id=item.id
- WHERE draft.data->'sourceCategory' IS NOT NULL
-   AND (
-     jsonb_typeof(draft.data->'sourceCategory')<>'object'
-     OR COALESCE(draft.data->'sourceCategory'->>'descriptionCategoryId','') !~ '^[1-9][0-9]*$'
-     OR COALESCE(draft.data->'sourceCategory'->>'typeIdCandidate','') !~ '^[1-9][0-9]*$'
-   );
+WITH product_draft_facts AS (
+  SELECT item.account_id,'PRODUCT_DRAFT'::text AS source_kind,draft.id AS source_record_id,
+         draft.version::text AS source_version,item.id AS collect_item_id,
+         raw.account_id AS raw_account_id,raw.collect_item_id AS raw_collect_item_id,
+         raw.payload_hash AS raw_hash,raw.id AS raw_ref,
+         COALESCE(raw.collected_at,raw.created_at) AS captured_at,fact.canonical_path,
+         fact.category_json
+    FROM product_drafts AS draft
+    JOIN collect_items AS item ON item.id=draft.collect_item_id
+    LEFT JOIN collect_raw_payloads AS raw ON raw.id=draft.source_payload_id
+    CROSS JOIN LATERAL (
+      SELECT 'data.sourceCategory'::text,draft.data->'sourceCategory'
+      UNION ALL
+      SELECT 'data.variants[].sourceCategory',variant.value->'sourceCategory'
+        FROM jsonb_array_elements(CASE WHEN jsonb_typeof(draft.data->'variants')='array'
+          THEN draft.data->'variants' ELSE '[]'::jsonb END) AS variant(value)
+      UNION ALL
+      SELECT 'data.listingDraft.sourceCategory',draft.data->'listingDraft'->'sourceCategory'
+      UNION ALL
+      SELECT 'data.listingDraft.variants[].sourceCategory',variant.value->'sourceCategory'
+        FROM jsonb_array_elements(CASE WHEN jsonb_typeof(draft.data->'listingDraft'->'variants')='array'
+          THEN draft.data->'listingDraft'->'variants' ELSE '[]'::jsonb END) AS variant(value)
+    ) AS fact(canonical_path,category_json)
+   WHERE fact.category_json IS NOT NULL AND fact.category_json<>'null'::jsonb
+), enrichment_facts AS (
+  SELECT cache.account_id,'ENRICHMENT_CACHE'::text AS source_kind,
+         cache.source||':'||cache.sku||':'||cache.contract_version AS source_record_id,
+         COALESCE(NULLIF(cache.response_hash,''),cache.contract_version) AS source_version,
+         NULL::text AS collect_item_id,NULL::text AS raw_account_id,NULL::text AS raw_collect_item_id,
+         cache.response_hash AS raw_hash,
+         'collector_ozon_enrichment_cache:'||cache.source||':'||cache.sku||':'||cache.contract_version AS raw_ref,
+         cache.captured_at,NULL::text AS canonical_path,cache.result_json->'sourceCategory' AS category_json
+    FROM collector_ozon_enrichment_cache AS cache
+   WHERE cache.status='COMPLETE' AND cache.result_json->'sourceCategory' IS NOT NULL
+     AND cache.result_json->'sourceCategory'<>'null'::jsonb
+), raw_facts AS (
+  SELECT * FROM product_draft_facts UNION ALL SELECT * FROM enrichment_facts
+)
+SELECT * FROM raw_facts
+ WHERE jsonb_typeof(category_json)<>'object'
+    OR ((category_json?'descriptionCategoryId')
+      AND NULLIF(BTRIM(category_json->>'descriptionCategoryId'),'') IS NOT NULL
+      AND NOT CASE WHEN category_json->>'descriptionCategoryId' ~ '^[1-9][0-9]*$'
+        THEN (category_json->>'descriptionCategoryId')::numeric<=9223372036854775807 ELSE false END)
+    OR ((category_json?'typeIdCandidate')
+      AND NULLIF(BTRIM(category_json->>'typeIdCandidate'),'') IS NOT NULL
+      AND NOT CASE WHEN category_json->>'typeIdCandidate' ~ '^[1-9][0-9]*$'
+        THEN (category_json->>'typeIdCandidate')::numeric<=9223372036854775807 ELSE false END)
+    OR (source_kind='PRODUCT_DRAFT'
+      AND category_json->>'descriptionCategoryId' ~ '^[1-9][0-9]*$'
+      AND category_json->>'typeIdCandidate' ~ '^[1-9][0-9]*$'
+      AND (raw_account_id IS DISTINCT FROM account_id
+        OR raw_collect_item_id IS DISTINCT FROM collect_item_id))
+    OR (category_json->>'descriptionCategoryId' ~ '^[1-9][0-9]*$'
+      AND category_json->>'typeIdCandidate' ~ '^[1-9][0-9]*$'
+      AND (raw_hash IS NULL OR LOWER(raw_hash)!~'^[0-9a-f]{64}$'
+        OR NULLIF(BTRIM(raw_ref),'') IS NULL OR captured_at IS NULL));
 ```
 
 Cross-account legacy ownership conflicts:
@@ -75,20 +123,19 @@ SELECT resolution.id,resolution.account_id,item.account_id AS item_account_id,re
  WHERE resolution.account_id<>item.account_id;
 ```
 
-Duplicate source identities that disagree on category signature:
+Using the same `raw_facts` CTE above, source identities that disagree on category signature are a
+stop condition (run this in the same statement by replacing the final `SELECT`):
 
 ```sql
-SELECT item.account_id,draft.id,draft.version,
-       COUNT(DISTINCT CONCAT_WS(':',
-         draft.data->'sourceCategory'->>'descriptionCategoryId',
-         draft.data->'sourceCategory'->>'typeIdCandidate','OZON:DEFAULT')) AS signatures
-  FROM collect_items AS item
-  JOIN product_drafts AS draft ON draft.collect_item_id=item.id
- WHERE draft.data->'sourceCategory' IS NOT NULL
- GROUP BY item.account_id,draft.id,draft.version
-HAVING COUNT(DISTINCT CONCAT_WS(':',
-         draft.data->'sourceCategory'->>'descriptionCategoryId',
-         draft.data->'sourceCategory'->>'typeIdCandidate','OZON:DEFAULT'))>1;
+SELECT account_id,source_kind,source_record_id,source_version,
+       COUNT(DISTINCT (category_json->>'descriptionCategoryId')||':'||
+         (category_json->>'typeIdCandidate')||':OZON:DEFAULT') AS signatures
+  FROM raw_facts
+ WHERE category_json->>'descriptionCategoryId' ~ '^[1-9][0-9]*$'
+   AND category_json->>'typeIdCandidate' ~ '^[1-9][0-9]*$'
+ GROUP BY account_id,source_kind,source_record_id,source_version
+HAVING COUNT(DISTINCT (category_json->>'descriptionCategoryId')||':'||
+         (category_json->>'typeIdCandidate')||':OZON:DEFAULT')>1;
 ```
 
 Also verify every admissible product-draft source has a same-account/same-item raw payload reference, a lowercase 64-hex payload hash, and a capture time. Confirm sufficient disk space, no long-running write transaction, no failed migration row, and the exact tested code/migration checksums.

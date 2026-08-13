@@ -206,8 +206,8 @@ if (!enabled) {
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
       assert.equal(migrations.some((file) => file.startsWith("061_")), true,
         "E2E must include immutable RFBS standard-submission handoff migration 061");
-      assert.equal(migrations.at(-1)?.startsWith("062_"), true,
-        "E2E must include native target-store currency migration 062");
+      assert.equal(migrations.at(-1)?.startsWith("069_"), true,
+        "E2E must apply the complete production migration chain through recovery item results 069");
       for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       await admin.query("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
       for (const migration of migrations) {
@@ -275,6 +275,23 @@ if (!enabled) {
           VALUES ($1,$2,$3,1,$4,$5::jsonb,'v3','cat-v1','dict-v1')`,
         [scenario.draft, scenario.collect, scenario.raw, H("a"), JSON.stringify(draftData)]);
         await admin.query("UPDATE collect_items SET current_draft_id=$1 WHERE id=$2", [scenario.draft, scenario.collect]);
+        const categoryEvidenceId = `category-evidence-${name}-${suffix}`;
+        await admin.query(`INSERT INTO collect_ozon_category_source_evidence(
+          id,account_id,source_kind,source_record_id,source_version,collect_item_id,product_draft_id,
+          source_description_category_id,source_type_id,taxonomy_scope,captured_at,raw_response_hash,
+          raw_response_ref,provenance)
+          VALUES($1,$2,'PRODUCT_DRAFT',$3,'draft:1',$3,$4,17028702,92576,'OZON:DEFAULT',NOW(),$5,$6,$7::jsonb)`,
+        [categoryEvidenceId, scenario.account, scenario.collect, scenario.draft, H("b"), scenario.raw,
+          JSON.stringify({ fixture: "task10-rfbs-adjacent", canonicalPath: ["RFBS"] })]);
+        await admin.query(`INSERT INTO collect_ozon_category_current_sources(
+          account_id,collect_item_id,source_evidence_id,source_kind,source_record_id,source_version)
+          VALUES($1,$2,$3,'PRODUCT_DRAFT',$2,'draft:1')`,
+        [scenario.account, scenario.collect, categoryEvidenceId]);
+        await admin.query(`INSERT INTO account_ozon_shared_categories(
+          id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
+          current_description_category_id,current_type_id,status,source,source_evidence_id)
+          VALUES($1,$2,17028702,92576,'OZON:DEFAULT',17028702,92576,'ACTIVE','SOURCE_DIRECT',$3)`,
+        [`shared-category-${name}-${suffix}`, scenario.account, categoryEvidenceId]);
         await admin.query(`INSERT INTO ai_content_strategy_versions
           (id,account_id,strategy_key,version,status,content,content_hash)
           VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,$4)`,

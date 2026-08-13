@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { createAccountSharedOzonCategoryService } from "../account-shared-ozon-category-service.mjs";
-import { createAccountSharedOzonCategoryRuntime } from "../account-shared-ozon-category-runtime.mjs";
 import { createPostgresAccountSharedOzonCategoryRepository } from "../account-shared-ozon-category-repository.mjs";
 import { createAutoListingCategoryRecoveryPostgres } from "../auto-listing-category-recovery-postgres.mjs";
 import { createAutoListingCategoryRecoveryService } from "../auto-listing-category-recovery-service.mjs";
+import { createAutoListingService } from "../auto-listing-service.mjs";
+import { createAutoListingSubmissionReconciler } from "../auto-listing-submission-reconciler.mjs";
+import { encryptSecret } from "../crypto-secrets.mjs";
 import { classifyOzonCategoryImportResult, projectProductionOzonImportErrorEvidence } from "../ozon-category-import-error-policy.mjs";
 import { rebuildOzonItemsForCategory } from "../ozon-category-item-rebuilder.mjs";
 
@@ -63,6 +65,14 @@ function scopedPool(pool, schema) {
 
 async function listenFakeOzon() {
   const calls = [];
+  const state = {
+    importCount: 0,
+    checkCount: 0,
+    offerStatus: "ABSENT",
+    retryResult: "SUCCEEDED",
+    scenarios: new Map(),
+    taskOffers: new Map(),
+  };
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -70,12 +80,44 @@ async function listenFakeOzon() {
     calls.push(Object.freeze({ path: request.url, body: structuredClone(body) }));
     response.setHeader("content-type", "application/json");
     if (request.url === "/v3/product/info/list") {
-      response.end(JSON.stringify({ items: [] }));
+      response.end(JSON.stringify({ items: state.offerStatus === "PRESENT" ? [{ offer_id: "offer-a" }] : [] }));
     } else if (request.url === "/v1/description-category/tree") {
       response.end(JSON.stringify({ result: [{ descriptionCategoryId: 30, typeId: 40 }] }));
     } else if (request.url === "/v3/product/import") {
-      response.end(JSON.stringify({ result: { task_id: "task-retry" } }));
+      const offerId = String(body?.items?.[0]?.offer_id || "");
+      const scenario = state.scenarios.get(offerId) || {};
+      state.importCount += 1;
+      if (scenario.importHttpStatus) {
+        response.statusCode = scenario.importHttpStatus;
+        response.end(JSON.stringify({ code: scenario.errorCode, message: scenario.errorCode }));
+        return;
+      }
+      const taskId = offerId === "offer-a"
+        ? (state.importCount === 1 ? "task-original" : "task-retry")
+        : `task-${offerId}`;
+      if (offerId !== "offer-a") state.taskOffers.set(taskId, offerId);
+      response.end(JSON.stringify({ result: { task_id: taskId } }));
+    } else if (request.url === "/v1/product/import/info") {
+      state.checkCount += 1;
+      const retry = body.task_id === "task-retry";
+      const matrixOfferId = state.taskOffers.get(String(body.task_id || ""));
+      const matrixScenario = state.scenarios.get(matrixOfferId) || {};
+      response.end(JSON.stringify({ result: { items: matrixOfferId
+        ? [{ offer_id: matrixOfferId, product_id: matrixScenario.checkErrorCode ? "" : "201",
+          status: matrixScenario.checkErrorCode ? "failed" : "imported",
+          ...(matrixScenario.checkErrorCode ? { errors: [{ code: matrixScenario.checkErrorCode, field: matrixScenario.errorField || "offer_id" }] } : {}) }]
+        : retry && state.retryResult === "SUCCEEDED"
+        ? [{ offer_id: "offer-a", product_id: "101", status: "imported" }]
+        : [{ offer_id: "offer-a", product_id: "", status: "failed",
+          errors: [{ code: "CATEGORY_INVALID", field: "description_category_id" }] }] } }));
     } else if (request.url === "/v2/products/stocks") {
+      const offerId = String(body?.stocks?.[0]?.offer_id || "");
+      const scenario = state.scenarios.get(offerId) || {};
+      if (scenario.stockHttpStatus) {
+        response.statusCode = scenario.stockHttpStatus;
+        response.end(JSON.stringify({ code: scenario.errorCode, message: scenario.errorCode }));
+        return;
+      }
       response.end(JSON.stringify({ result: [{ offer_id: "offer-a", updated: true }] }));
     } else {
       response.statusCode = 404;
@@ -86,6 +128,8 @@ async function listenFakeOzon() {
   const address = server.address();
   return {
     calls,
+    state,
+    baseUrl: `http://127.0.0.1:${address.port}`,
     async post(route, body) {
       const response = await fetch(`http://127.0.0.1:${address.port}${route}`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
@@ -108,10 +152,19 @@ async function seedCollection(client, { accountId, storeId, collectId, rawId, dr
     [rawId, collectId, accountId, storeId, sku, sha(rawId), "2026-08-12T00:00:00.000Z"],
   );
   const category = { descriptionCategoryId: 10, typeIdCandidate: 20, path: ["root", "leaf"] };
+  const image = "https://cdn.example.test/item.jpg";
+  const listingVariant = {
+    sku, offer_id: "offer-a", name: "Frozen item", price: "100.00", currency_code: "RUB",
+    sourceCategory: category, weight: 500, weight_unit: "g", depth: 200, width: 100, height: 50,
+    dimension_unit: "mm", images: [image], primary_image: image,
+    attributes: [{ complex_id: 0, id: 1, values: [{ value: "safe" }] }],
+  };
+  const draftData = { ...listingVariant, sourceCategory: category, variants: [listingVariant],
+    blackKopecks: "10000", greenKopecks: "8000", currency: "RUB" };
   await client.query(
     `INSERT INTO product_drafts(id,collect_item_id,source_payload_id,version,data_hash,data,updated_by)
      VALUES($1,$2,$3,1,$4,$5::jsonb,$6)`,
-    [draftId, collectId, rawId, sha(draftId), JSON.stringify({ sourceCategory: category }), accountId],
+    [draftId, collectId, rawId, sha(draftId), JSON.stringify(draftData), accountId],
   );
   await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3", [draftId, accountId, collectId]);
   return {
@@ -121,6 +174,81 @@ async function seedCollection(client, { accountId, storeId, collectId, rawId, dr
     attributeSummary: [], capturedAt: "2026-08-12T00:00:00.000Z",
     rawResponseRef: rawId, rawResponseHash: sha(rawId),
   };
+}
+
+function autoListingSource({ source, accountId, evidence, shared }) {
+  const category = { descriptionCategoryId: 10, typeIdCandidate: 20, path: ["root", "leaf"] };
+  const image = "https://cdn.example.test/item.jpg";
+  const variant = {
+    sku: source.sourceSku, offer_id: "offer-a", name: "Frozen item", price: "100.00",
+    currency_code: "RUB", sourceCategory: category, weight: 500, weight_unit: "g", depth: 200,
+    width: 100, height: 50, dimension_unit: "mm", images: [image], primary_image: image,
+    attributes: [{ complex_id: 0, id: 1, values: [{ value: "safe" }] }],
+  };
+  return {
+    id: source.collectItemId, collectItemId: source.collectItemId, accountId,
+    sourceVersion: source.sourceVersion, rawResponseRef: source.rawResponseRef,
+    rawResponseHash: source.rawResponseHash, rawCollectedAt: source.capturedAt,
+    categoryEvidence: {
+      id: evidence.id, accountId, sourceDescriptionCategoryId: Number(evidence.source_description_category_id),
+      sourceTypeId: Number(evidence.source_type_id), taxonomyScope: evidence.taxonomy_scope,
+    },
+    sharedCategory: {
+      id: shared.id, accountId, version: Number(shared.version), evidenceId: evidence.id,
+      status: shared.status, source: shared.source,
+      sourceDescriptionCategoryId: Number(shared.source_description_category_id),
+      sourceTypeId: Number(shared.source_type_id),
+      currentDescriptionCategoryId: Number(shared.current_description_category_id),
+      currentTypeId: Number(shared.current_type_id), taxonomyScope: shared.taxonomy_scope,
+      taxonomyFingerprint: shared.taxonomy_fingerprint,
+    },
+    collectItem: { id: source.collectItemId, accountId, sku: source.sourceSku,
+      listingDraft: { ...variant, sourceCategory: category, variants: [variant],
+        blackKopecks: "10000", greenKopecks: "8000", currency: "RUB" } },
+    productDraft: { id: source.productDraftId, version: source.productDraftVersion,
+      dataHash: sha(source.productDraftId), normalizerVersion: "v3",
+      categoryRuleVersion: "category-v1", dictionaryVersion: "dictionary-live" },
+  };
+}
+
+function productionAutoListingHarness({ source, accountId, storeId, warehouseId, listingBasePreparer }) {
+  const calls = [];
+  const controller = new AbortController();
+  let graph = null;
+  const repository = {
+    async loadCollectSources(input) { calls.push(["loadCollectSources", input]); return [source]; },
+    async loadTargetStore(input) { calls.push(["loadTargetStore", input]); return {
+      id: storeId, ownerAccountId: accountId, status: "active", clientId: storeId,
+      currencyCode: "RUB", credentialsSaved: true,
+    }; },
+    async loadTargetWarehouse(input) { calls.push(["loadTargetWarehouse", input]); return {
+      warehouse: { id: warehouseId, storeId, accountId, warehouse_id: "platform-fbs-a",
+        warehouse_type: "FBS", status: "active", is_active: true, is_archived: false },
+      products: [{ accountId, storeId, warehouse_stocks: [{ warehouse_id: "platform-fbs-a", source: "fbs" }] }],
+    }; },
+    async loadPublishedStrategy(input) { calls.push(["loadPublishedStrategy", input]); return {
+      strategyVersion: { strategyId: "strategy-a", strategyVersionId: "strategy-v1" }, rules: [],
+    }; },
+    async loadPublishedUploadPolicies(input) { calls.push(["loadPublishedUploadPolicies", input]); return [{
+      id: "policy-review-v1", accountId, version: 1, mode: "REVIEW", enabled: true,
+      publishedBy: accountId, publishedAt: "2026-08-12T00:00:00.000Z",
+    }]; },
+    async acquireCategoryPreparationLease(input) { calls.push(["acquireCategoryPreparationLease", input]);
+      return { leaseId: "category-lease-a", expiresAt: "2099-01-01T00:00:00.000Z", signal: controller.signal }; },
+    async releaseCategoryPreparationLease(input) { calls.push(["releaseCategoryPreparationLease", input]);
+      return { released: true }; },
+    async getJobByIdempotencyKey(input) { calls.push(["getJobByIdempotencyKey", input]); return null; },
+    async createJobGraph(input) { calls.push(["createJobGraph", input]); graph = {
+      ...input, id: "auto-job-a", createdAt: "2026-08-12T00:00:00.000Z", items: input.items,
+    }; return graph; },
+    async getJob() { return graph; },
+    async listJobs() { return graph ? [graph] : []; },
+  };
+  const service = createAutoListingService({ repository, prepareListingBase: listingBasePreparer,
+    rfbsWarehouseVerifier: Object.freeze({ async verifyRfbsWarehouse() {
+      throw new Error("FBS must not use RFBS verifier");
+    } }) });
+  return { calls, repository, service, get graph() { return graph; } };
 }
 
 function historicalEvidence(offerId = "offer-a") {
@@ -147,6 +275,171 @@ function exactRecoveryIdentity(basis, attemptId, correlationId) {
   };
 }
 
+function failureMatrixRecoveryHarness({ absenceStatus = "ABSENT", refreshResult = "MATCHED",
+  rebuildFailure = false, basisClassification = "EXPLICIT_CATEGORY_FAILURE" } = {}) {
+  const calls = [];
+  let shared = {
+    accountId: "matrix-account", sourceDescriptionCategoryId: 10, sourceTypeId: 20,
+    taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 10, currentTypeId: 20,
+    status: "ACTIVE", source: "SOURCE_DIRECT", taxonomyFingerprint: null,
+    version: 1, evidenceId: "matrix-source", validatedAt: null,
+  };
+  const basis = {
+    accountId: "matrix-account", jobId: "matrix-job", snapshotId: "matrix-snapshot",
+    evidenceId: "matrix-error", policyVersion: "ozon-category-policy.v2",
+    classification: basisClassification, productId: null, originalOzonTaskId: "matrix-original-task",
+    sourceEvidenceId: "matrix-source", oldSharedCategoryId: "matrix-shared",
+    oldSharedCategoryVersion: 1, existingAttempt: null, sharedCategory: shared,
+    offers: [{ offerId: "matrix-offer", sku: "" }],
+    frozenItems: [{ offer_id: "matrix-offer", description_category_id: 10, type_id: 20,
+      attributes: [{ complex_id: 0, id: 1, values: [{ value: "safe" }] }],
+      price: "1.00", currency_code: "RUB" }],
+    safeEvidence: {
+      schemaVersion: "OZON_CATEGORY_IMPORT_ERROR_EVIDENCE_V1",
+      policyVersion: "ozon-category-policy.v2", errorCode: "CATEGORY_INVALID",
+      field: "description_category_id", attributeId: null, state: "FAILED",
+      offerId: "matrix-offer", productId: null, classification: "EXPLICIT_CATEGORY_FAILURE",
+    },
+  };
+  const repository = {
+    loadCategoryRecoveryBasis: async () => { calls.push("load"); return basis; },
+    claimCategoryRecovery: async () => { calls.push("claim"); return {
+      attemptId: "matrix-attempt", status: "CLAIMED", claimed: true,
+    }; },
+    saveCategoryRecoveryMatch: async (input) => { calls.push("save"); return {
+      attemptId: "matrix-attempt", status: "MATCHED",
+      replacementSharedCategoryId: input.replacementSharedCategoryId,
+      replacementSharedCategoryVersion: input.replacementSharedCategoryVersion,
+      correctedItemsHash: input.correctedItemsHash,
+    }; },
+    markCategoryRecoveryRetryPending: async () => { calls.push("pending"); return {
+      attemptId: "matrix-attempt", status: "RETRY_PENDING",
+    }; },
+    requireCategoryRecoveryReview: async () => { calls.push("review"); return {
+      attemptId: "matrix-attempt", status: "NEEDS_REVIEW",
+    }; },
+  };
+  const service = createAutoListingCategoryRecoveryService({
+    repository,
+    loadOperatingStoreAccess: async () => { calls.push("access"); return { fixture: "safe" }; },
+    confirmOfferAbsent: async () => { calls.push("absence"); return absenceStatus === "ABSENT"
+      ? { status: "ABSENT", code: "OZON_OFFERS_CONFIRMED_ABSENT" }
+      : absenceStatus === "PRESENT"
+        ? { status: "PRESENT", code: "OZON_OFFER_PRESENT" }
+        : { status: "UNKNOWN", code: "OZON_OFFER_RECONCILIATION_UNKNOWN" }; },
+    invalidateSharedCategory: async () => { calls.push("invalidate"); shared = {
+      ...shared, status: "INVALIDATED", version: 2,
+    }; return shared; },
+    refreshCategory: async () => { calls.push("refresh"); return refreshResult === "MATCHED" ? {
+      kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+      taxonomyFingerprint: "a".repeat(64), metadata: {
+        descriptionCategoryId: 30, typeId: 40,
+        attributes: [{ id: 1, complexId: 0, required: true, dictionaryId: null, dictionaryValues: [] }],
+      },
+    } : { kind: "NEEDS_REVIEW" }; },
+    rebuildItems: async ({ originalItems }) => { calls.push("rebuild");
+      if (rebuildFailure) throw new Error("safe local validation failure");
+      return originalItems.map((item) => ({ ...item, description_category_id: 30, type_id: 40 })); },
+    activateRefreshedCategory: async (input) => { calls.push("activate"); shared = {
+      ...shared, currentDescriptionCategoryId: input.currentDescriptionCategoryId,
+      currentTypeId: input.currentTypeId, status: "ACTIVE", source: "OZON_REFRESH",
+      taxonomyFingerprint: input.taxonomyFingerprint, version: 3, validatedAt: input.validatedAt,
+    }; return shared; },
+    markSharedNeedsReview: async () => { calls.push("shared-review"); shared = {
+      ...shared, status: "NEEDS_REVIEW", version: shared.version + 1,
+    }; return shared; },
+    scheduleRetry: async () => { calls.push("schedule"); },
+    now: () => "2026-08-13T00:00:00.000Z",
+  });
+  return { service, calls };
+}
+
+test("Task 10 recovery acceptance cannot self-simulate product import, stock, or recovery state", async () => {
+  const source = await readFile(fileURLToPath(import.meta.url), "utf8");
+  for (const forbidden of [
+    "await fake" + ".post(\"/v3/product/import\"",
+    "await fake" + ".post(\"/v2/products/stocks\"",
+    "INSERT INTO submission_category_recovery_" + "item_results",
+    "UPDATE submission_jobs SET ozon_task_id=" + "'task-retry'",
+  ]) assert.equal(source.includes(forbidden), false, forbidden);
+  for (const required of [
+    "createAutoListing" + "Service", "createAutoListingListingBase" + "Preparer",
+    "createSubmission" + "V3", "processListingQueue" + "Message",
+    "createAutoListingSubmission" + "Reconciler",
+  ]) assert.equal(source.includes(required), true, required);
+});
+
+test("production recovery boundaries fail closed for the Task 10 failure matrix", async () => {
+  const request = { accountId: "matrix-account", jobId: "matrix-job",
+    evidenceId: "matrix-error", correlationId: "matrix-correlation" };
+  for (const absenceStatus of ["PRESENT", "UNKNOWN"]) {
+    const { service, calls } = failureMatrixRecoveryHarness({ absenceStatus });
+    assert.equal((await service.recover(request)).status, "NEEDS_REVIEW");
+    assert.deepEqual(calls, ["load", "access", "absence", "review"]);
+  }
+  for (const scenario of [
+    { refreshResult: "AMBIGUOUS" },
+    { rebuildFailure: true },
+  ]) {
+    const { service, calls } = failureMatrixRecoveryHarness(scenario);
+    assert.equal((await service.recover(request)).status, "NEEDS_REVIEW");
+    assert.equal(calls.includes("schedule"), false);
+    assert.equal(calls.includes("save"), false);
+    assert.equal(calls.at(-1), "review");
+  }
+  for (const errorCode of [
+    "AUTH_FAILED", "THROTTLED", "BRAND_RESTRICTED", "CURRENCY_INVALID",
+    "WAREHOUSE_INVALID", "STOCK_INVALID",
+  ]) {
+    const classified = classifyOzonCategoryImportResult({
+      item: { offer_id: "matrix-offer", status: "failed", product_id: null,
+        errors: [{ code: errorCode, field: "offer_id" }] },
+      expectedOfferId: "matrix-offer", batchHasPartialOutcome: false,
+    });
+    assert.notEqual(classified.classification, "EXPLICIT_CATEGORY_FAILURE");
+    const { service, calls } = failureMatrixRecoveryHarness({
+      basisClassification: classified.classification,
+    });
+    await assert.rejects(service.recover(request), (error) =>
+      error.code === "AUTO_LISTING_CATEGORY_RECOVERY_NOT_ELIGIBLE" && error.cause === null);
+    assert.deepEqual(calls, ["load"], `${errorCode} stops before store, Ozon, attempt, and retry ports`);
+  }
+  let secondFailureApply = null;
+  const secondFailureReconciler = createAutoListingSubmissionReconciler({ repository: {
+    async loadReconciliationEvidence(input) {
+      return {
+        accountId: input.accountId, jobId: "matrix-auto-job", itemId: input.itemId,
+        itemStatus: "UPLOADING", itemStatusVersion: 2,
+        submissionLinkId: input.submissionLinkId, submissionLinkStatus: "SUBMITTED",
+        submissionJobId: "matrix-job", submission: {
+          id: "matrix-job", accountId: input.accountId, status: "FAILED",
+          ozonTaskId: "matrix-retry-task", errorCode: "OZON_ITEM_RESULT",
+          successCount: 0, failedCount: 1, skippedCount: 0,
+          resultSummary: { success: 0, failed: 1, skipped: 0, stockCount: 0 },
+          items: [{ offerId: "matrix-offer", status: "FAILED", productId: null,
+            errorCode: "OZON_ITEM_RESULT" }],
+          categoryRecovery: {
+            attemptId: "matrix-attempt", status: "NEEDS_REVIEW",
+            originalOzonTaskId: "matrix-original-task", retryOzonTaskId: "matrix-retry-task",
+            oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: 3,
+          },
+        },
+      };
+    },
+    async applyReconciliation(input) { secondFailureApply = input; return {
+      itemId: input.itemId, status: input.itemStatus, statusVersion: 3,
+      linkStatus: input.linkStatus, duplicate: false,
+    }; },
+  } });
+  const secondFailure = await secondFailureReconciler.reconcile({
+    accountId: "matrix-account", itemId: "matrix-item", submissionLinkId: "matrix-link",
+    correlationId: "matrix-second-failure",
+  });
+  assert.equal(secondFailure.status, "BLOCKED");
+  assert.equal(secondFailureApply.allowResubmission, false);
+  assert.equal(secondFailureApply.enqueueNextCheck, false);
+});
+
 if (!enabled) {
   test("Task 10 E2E requires two disposable PostgreSQL 16 databases", {
     skip: "set ACCOUNT_SHARED_CATEGORY_RECOVERY_E2E=1 and both disposable database URLs",
@@ -158,11 +451,16 @@ if (!enabled) {
     const client = await pool.connect();
     const schema = `task10_e2e_${crypto.randomUUID().replaceAll("-", "")}`;
     const fake = await listenFakeOzon();
+    process.env.OZON_API_BASE = fake.baseUrl;
     let ids = 0;
     try {
       await client.query(`CREATE SCHEMA ${q(schema)}`);
       await client.query(`SET search_path TO ${q(schema)}, public`);
       await applyMigrations(client, 69);
+      await client.query("CREATE TABLE schema_migrations(version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
+      for (const migration of await migrationFiles(69)) {
+        await client.query("INSERT INTO schema_migrations(version) VALUES($1)", [migration.replace(/\.sql$/u, "")]);
+      }
       const accountA = `account-a-${schema}`;
       const accountB = `account-b-${schema}`;
       const storeA = `store-a-${schema}`;
@@ -191,6 +489,9 @@ if (!enabled) {
       assert.equal(lookupCalls, 1);
       assert.equal(fake.calls.filter((call) => call.path === "/v3/product/import").length, 0);
 
+      const { createAccountSharedOzonCategoryRuntime } = await import(
+        `../account-shared-ozon-category-runtime.mjs?task10=${schema}`
+      );
       const runtime = createAccountSharedOzonCategoryRuntime({
         loadState: async () => ({}), saveState: async () => {}, stateTransaction: { run: (operation) => operation() },
         persistenceMode: () => "postgres", postgresPool: async () => db,
@@ -206,26 +507,109 @@ if (!enabled) {
       const confirmed = await runtime.confirmManualCategory({ actor: { id: accountA, role: "admin" }, ...confirmation });
       assert.equal(confirmed.categoryResolution.source, "MANUAL");
       assert.deepEqual(await runtime.confirmManualCategory({ actor: { id: accountA, role: "admin" }, ...confirmation }), confirmed, "manual confirmation is idempotently reusable");
+      const confirmationCounts = (await db.query(`SELECT
+        (SELECT COUNT(*)::int FROM account_ozon_shared_categories) AS shared,
+        (SELECT COUNT(*)::int FROM account_ozon_category_confirmation_audit) AS confirmations,
+        (SELECT COUNT(*)::int FROM account_ozon_shared_category_events) AS events`)).rows[0];
+      const confirmationTransportCalls = fake.calls.length;
+      await assert.rejects(runtime.confirmManualCategory({
+        actor: { id: accountB, role: "admin" }, ...confirmation, idempotencyKey: `foreign-${schema}`,
+      }));
+      assert.deepEqual((await db.query(`SELECT
+        (SELECT COUNT(*)::int FROM account_ozon_shared_categories) AS shared,
+        (SELECT COUNT(*)::int FROM account_ozon_category_confirmation_audit) AS confirmations,
+        (SELECT COUNT(*)::int FROM account_ozon_shared_category_events) AS events`)).rows[0], confirmationCounts,
+      "cross-account public confirmation cannot mutate category or audit state");
+      assert.equal(fake.calls.length, confirmationTransportCalls,
+        "cross-account public confirmation fails before Ozon transport");
 
       const current = (await db.query("SELECT * FROM account_ozon_shared_categories WHERE account_id=$1", [accountA])).rows[0];
       const sourceEvidence = (await db.query("SELECT * FROM collect_ozon_category_source_evidence WHERE account_id=$1 AND collect_item_id=$2", [accountA, sourceA.collectItemId])).rows[0];
-      const item = {
-        offer_id: "offer-a", sku: "sku-a", name: "Frozen item", price: "100.00", currency_code: "RUB",
-        description_category_id: 10, type_id: 20, weight: 500, weight_unit: "g", depth: 200,
-        width: 100, height: 50, dimension_unit: "mm", images: ["https://cdn.example.test/item.jpg"],
-        primary_image: "https://cdn.example.test/item.jpg",
-        attributes: [{ complex_id: 0, id: 1, values: [{ value: "safe" }] }],
-      };
-      const snapshotId = `snapshot-${schema}`;
-      const jobId = `job-${schema}`;
-      const itemId = `item-${schema}`;
-      const originalHash = canonicalSha([item]);
-      await db.query(`INSERT INTO submission_snapshots(id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,snapshot_hash,item_count,items)
-        VALUES($1,$2,$3,1,$4,$5,$6,$7,1,$8::jsonb)`, [snapshotId, sourceA.collectItemId, sourceA.productDraftId, accountA, storeA, `idem-${schema}`, originalHash, JSON.stringify([item])]);
-      await db.query(`INSERT INTO submission_jobs(id,snapshot_id,collect_item_id,account_id,store_id,status,ozon_task_id,item_count,failed_count,correlation_id)
-        VALUES($1,$2,$3,$4,$5,'FAILED','task-original',1,1,$6)`, [jobId, snapshotId, sourceA.collectItemId, accountA, storeA, `corr-${schema}`]);
-      await db.query(`INSERT INTO submission_items(id,job_id,snapshot_id,variant_key,sort_order,sku,offer_id,status,product_id,response)
-        VALUES($1,$2,$3,'variant-1',0,'sku-a','offer-a','FAILED','',$4::jsonb)`, [itemId, jobId, snapshotId, JSON.stringify({ schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1", rawResponse: { fixture: "test-only-authoritative-history" }, errorEvidence: historicalEvidence() })]);
+      const warehouseId = `warehouse-${schema}`;
+      await db.query(`INSERT INTO warehouses(id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived)
+        VALUES($1,$2,'platform-fbs-a','FBS','active',TRUE,FALSE)`, [warehouseId, storeA]);
+      await db.query(`INSERT INTO products(id,store_id,product_id,sku,offer_id,name,status,is_archived)
+        VALUES($1,$2,$3,'existing-sku','existing-offer','Existing active product','active',FALSE)`,
+      [`product-${schema}`, storeA, `existing-product-${schema}`]);
+      await db.query(`INSERT INTO product_stocks(product_id,warehouse_id,store_id,sku,offer_id,source,present)
+        VALUES($1,$2,$3,'existing-sku','existing-offer','fbs',1)`,
+      [`product-${schema}`, warehouseId, storeA]);
+      process.env.APP_ENCRYPTION_KEY = `task10-loopback-key-${schema}`;
+      process.env.APP_ENCRYPTION_KEY_VERSION = "task10-v1";
+      const encrypted = encryptSecret("loopback-api-key");
+      await db.query(`INSERT INTO store_credentials(store_id,client_id,encrypted_api_key,iv,auth_tag,algorithm,key_version)
+        VALUES($1,$1,$2,$3,$4,$5,$6)`, [storeA, encrypted.ciphertext, encrypted.iv,
+        encrypted.authTag, encrypted.algorithm, encrypted.keyVersion]);
+
+      const listedSource = autoListingSource({ source: sourceA, accountId: accountA,
+        evidence: sourceEvidence, shared: current });
+      const { createAutoListingListingBasePreparer } = await import(
+        `../auto-listing-listing-base-preparer.mjs?task10=${schema}`
+      );
+      const preparer = createAutoListingListingBasePreparer({
+        loadStoreAccess: async () => ({ id: storeA, ownerAccountId: accountA, clientId: storeA,
+          apiKey: "loopback-api-key", currencyCode: "RUB" }),
+        categoryService: {
+          async getCategoryAttributes() { return { items: [
+            { id: 1, is_required: true }, { id: 11254 },
+          ] }; },
+          async getCategoryAttributeValues() { return { items: [] }; },
+        },
+      });
+      const autoHarness = productionAutoListingHarness({ source: listedSource, accountId: accountA,
+        storeId: storeA, warehouseId, listingBasePreparer: preparer });
+      const foreignAutoCalls = autoHarness.calls.length;
+      const foreignAutoTransportCalls = fake.calls.length;
+      await assert.rejects(autoHarness.service.createAutoListingJob({
+        actor: { id: accountB, role: "user" }, collectItemIds: [sourceA.collectItemId],
+        idempotencyKey: `foreign-auto-${schema}`, correlationId: `foreign-corr-${schema}`,
+        config: { targetStoreId: storeA, targetWarehouseId: warehouseId, stock: 5,
+          priceAdjustmentKopecks: "0" },
+      }));
+      assert.equal(autoHarness.calls.some(([name], index) => index >= foreignAutoCalls && name === "createJobGraph"), false);
+      assert.equal(fake.calls.length, foreignAutoTransportCalls,
+        "cross-account auto listing fails before category/Ozon transport");
+      const autoJob = await autoHarness.service.createAutoListingJob({
+        actor: { id: accountA, role: "user" }, collectItemIds: [sourceA.collectItemId],
+        idempotencyKey: `auto-job-${schema}`, correlationId: `auto-corr-${schema}`,
+        config: { targetStoreId: storeA, targetWarehouseId: warehouseId, stock: 5,
+          priceAdjustmentKopecks: "0" },
+      });
+      assert.equal(autoJob.jobId, "auto-job-a");
+      const autoGraph = autoHarness.graph;
+      assert.ok(autoHarness.calls.some(([name]) => name === "createJobGraph"));
+      const listingBase = autoGraph.items[0].listingBaseTemplate;
+      const item = listingBase.variants[0].item;
+
+      const pipelineUrl = new URL(sourceUrl);
+      pipelineUrl.searchParams.set("options", `-c search_path=${schema},public`);
+      process.env.DATABASE_URL = pipelineUrl.toString();
+      process.env.LISTING_PIPELINE_V3 = "1";
+      process.env.QH_LOCAL_NO_DOTENV = "1";
+      const pipeline = await import(`../listing-pipeline.mjs?task10=${schema}`);
+      const worker = await import(`../listing-worker.mjs?task10=${schema}`);
+      const liveDraft = (await db.query(`SELECT draft.id,draft.version,draft.data_hash
+        FROM collect_items AS item JOIN product_drafts AS draft ON draft.id=item.current_draft_id
+        WHERE item.account_id=$1 AND item.id=$2`, [accountA, sourceA.collectItemId])).rows[0];
+      const submission = await pipeline.createSubmissionV3({
+        collectItem: listedSource.collectItem, storeId: storeA, accountId: accountA,
+        targetStoreId: storeA, idempotencyKey: `task10-listing-${schema}`,
+        normalizedItems: [item], stocks: [{ offer_id: "offer-a", warehouse_id: "platform-fbs-a", stock: 5 }],
+        type: "AUTO_LISTING", versions: listingBase.versions,
+        frozenProductDraft: { id: liveDraft.id, version: Number(liveDraft.version), dataHash: liveDraft.data_hash },
+      });
+      const jobId = submission.job.clientJobId;
+      await worker.processListingQueueMessage({ submissionJobId: jobId, action: "submit" });
+      await worker.processListingQueueMessage({ submissionJobId: jobId, action: "check" });
+      const failedWork = await pipeline.loadSubmissionWorkV3(jobId);
+      assert.equal(failedWork.status, "FAILED");
+      assert.equal(failedWork.ozon_task_id, "task-original", JSON.stringify({
+        job: failedWork, calls: fake.calls.map((call) => call.path),
+      }));
+      const snapshotId = failedWork.snapshot_id;
+      const originalHash = (await db.query("SELECT snapshot_hash FROM submission_snapshots WHERE id=$1", [snapshotId])).rows[0].snapshot_hash;
+      const frozenItems = (await db.query("SELECT items FROM submission_snapshots WHERE id=$1", [snapshotId])).rows[0].items;
+      const itemId = (await db.query("SELECT id FROM submission_items WHERE job_id=$1", [jobId])).rows[0].id;
       const recoveryRepository = createAutoListingCategoryRecoveryPostgres({ pool: db, idFactory: () => `attempt-${schema}`, now: () => "2026-08-12T02:00:00.000Z" });
       const disabledInput = {
         accountId: accountA, jobId, snapshotId, itemId, offerId: "offer-a", originalOzonTaskId: "task-original",
@@ -235,13 +619,25 @@ if (!enabled) {
       assert.equal(projectProductionOzonImportErrorEvidence(historicalEvidence()), null);
       assert.notEqual(classifyOzonCategoryImportResult({ item: { offer_id: "offer-a", errors: [{ code: "CATEGORY_INVALID" }] }, expectedOfferId: "offer-a", batchHasPartialOutcome: false }).classification, "EXPLICIT_CATEGORY_FAILURE");
       await assert.rejects(recoveryRepository.recordCategoryErrorEvidence(disabledInput), (error) => error.code === "AUTO_LISTING_CATEGORY_RECOVERY_POLICY_DISABLED");
+      // The production V1 classifier is intentionally empty. This single write represents an
+      // already-persisted historical V2 terminal-evidence carrier; all recovery state after it
+      // must be created and advanced exclusively through production services and workers.
+      const historicalCarrier = {
+        schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1", rawResponse: {},
+        errorEvidence: historicalEvidence(),
+      };
+      const seededHistoricalCarrier = await db.query(`UPDATE submission_items
+        SET response=$1::jsonb
+        WHERE id=$2 AND job_id=$3 AND snapshot_id=$4 AND status='FAILED'
+          AND NULLIF(BTRIM(product_id),'') IS NULL AND response->'errorEvidence'='null'::jsonb`,
+      [JSON.stringify(historicalCarrier), itemId, jobId, snapshotId]);
+      assert.equal(seededHistoricalCarrier.rowCount, 1, "the sole test-only exception seeds exact historical terminal evidence");
       const evidenceId = `evidence-${schema}`;
       await db.query(`INSERT INTO submission_category_error_evidence(
         id,account_id,submission_job_id,submission_snapshot_id,submission_item_id,offer_id,original_ozon_task_id,
         original_snapshot_hash,original_items,source_evidence_id,old_shared_category_id,old_shared_category_version,
         classifier_policy_version,safe_evidence) VALUES($1,$2,$3,$4,$5,'offer-a','task-original',$6,$7::jsonb,$8,$9,$10,'ozon-category-policy.v2',$11::jsonb)`,
-      [evidenceId, accountA, jobId, snapshotId, itemId, originalHash, JSON.stringify([item]), sourceEvidence.id, current.id, Number(current.version), JSON.stringify(historicalEvidence())]);
-      let schedules = 0;
+      [evidenceId, accountA, jobId, snapshotId, itemId, originalHash, JSON.stringify(frozenItems), sourceEvidence.id, current.id, Number(current.version), JSON.stringify(historicalEvidence())]);
       const metadata = { descriptionCategoryId: 30, typeId: 40, attributes: [{ id: 1, complexId: 0, required: true, dictionaryId: null, dictionaryValues: [] }] };
       const recovery = createAutoListingCategoryRecoveryService({
         repository: recoveryRepository,
@@ -261,43 +657,128 @@ if (!enabled) {
         }),
         activateRefreshedCategory: (input) => categoryRepository.activateRefreshedCategory(input),
         markSharedNeedsReview: (input) => categoryRepository.markSharedNeedsReview(input),
-        scheduleRetry: async () => { schedules += 1; },
+        scheduleRetry: pipeline.scheduleSubmissionCategoryRetryV3,
         now: () => "2026-08-12T02:00:00.000Z",
       });
-      const request = { accountId: accountA, jobId, evidenceId, correlationId: `corr-${schema}` };
+      const request = { accountId: accountA, jobId, evidenceId, correlationId: failedWork.correlation_id };
+      const foreignRecoveryCalls = fake.calls.length;
+      await assert.rejects(recovery.recover({ ...request, accountId: accountB }), (error) =>
+        error.code === "AUTO_LISTING_CATEGORY_RECOVERY_NOT_FOUND"
+          && error.status === 404 && error.cause === null);
+      assert.equal((await db.query("SELECT COUNT(*)::int AS count FROM submission_category_recovery_attempts WHERE submission_job_id=$1", [jobId])).rows[0].count, 0);
+      assert.equal(fake.calls.length, foreignRecoveryCalls,
+        "cross-account recovery fails before offer/category/Ozon transport");
       const pending = await recovery.recover(request);
-      assert.equal(pending.status, "RETRY_PENDING");
-      assert.equal(schedules, 1);
       const attempt = (await db.query("SELECT * FROM submission_category_recovery_attempts WHERE account_id=$1 AND submission_job_id=$2", [accountA, jobId])).rows[0];
+      assert.equal(pending.status, "RETRY_PENDING", JSON.stringify({ pending, attempt }));
       assert.equal(attempt.status, "RETRY_PENDING");
       assert.equal(attempt.corrected_items[0].description_category_id, 30);
-      assert.deepEqual(Object.fromEntries(Object.entries(attempt.corrected_items[0]).filter(([key]) => !["description_category_id", "type_id", "attributes", "complex_attributes"].includes(key))), Object.fromEntries(Object.entries(item).filter(([key]) => !["description_category_id", "type_id", "attributes", "complex_attributes"].includes(key))));
-      await fake.post("/v3/product/import", { items: attempt.corrected_items, recovery_attempt_id: attempt.id });
-      const identity = exactRecoveryIdentity({ accountId: accountA, jobId, snapshotId, evidenceId, sourceEvidenceId: sourceEvidence.id, oldSharedCategoryId: current.id, oldSharedCategoryVersion: Number(current.version), originalOzonTaskId: "task-original" }, attempt.id, `corr-${schema}`);
-      await recoveryRepository.markCategoryRecoveryRetryAccepted({ ...identity, expectedStatus: "RETRY_PENDING", retryOzonTaskId: "task-retry", transitionedAt: "2026-08-12T02:01:00.000Z" });
-      await db.query("UPDATE submission_jobs SET ozon_task_id='task-retry',status='CHECKING' WHERE account_id=$1 AND id=$2", [accountA, jobId]);
-      await db.query(`INSERT INTO submission_category_recovery_item_results(
-        id,account_id,submission_job_id,submission_snapshot_id,recovery_attempt_id,retry_ozon_task_id,
-        submission_item_id,offer_id,status,product_id) VALUES($1,$2,$3,$4,$5,'task-retry',$6,'offer-a','SUCCEEDED','101')`,
-      [`child-${schema}`, accountA, jobId, snapshotId, attempt.id, itemId]);
-      await recoveryRepository.completeCategoryRecovery({ ...identity, expectedStatus: "RETRY_ACCEPTED", retryOzonTaskId: "task-retry", transitionedAt: "2026-08-12T02:02:00.000Z" });
-      await fake.post("/v2/products/stocks", { stocks: [{ offer_id: "offer-a", stock: 5 }] });
+      assert.deepEqual(Object.fromEntries(Object.entries(attempt.corrected_items[0]).filter(([key]) => !["description_category_id", "type_id", "attributes", "complex_attributes"].includes(key))), Object.fromEntries(Object.entries(frozenItems[0]).filter(([key]) => !["description_category_id", "type_id", "attributes", "complex_attributes"].includes(key))));
+      await worker.processListingQueueMessage({ submissionJobId: jobId, action: "submit" });
+      await worker.processListingQueueMessage({ submissionJobId: jobId, action: "submit" });
+      await worker.processListingQueueMessage({ submissionJobId: jobId, action: "check" });
+      await worker.processListingQueueMessage({ submissionJobId: jobId, action: "check" });
       const replay = await recovery.recover(request);
       assert.equal(replay.status, "SUCCEEDED");
-      assert.equal(fake.calls.filter((call) => call.path === "/v3/product/import").length, 1);
+      assert.equal(fake.calls.filter((call) => call.path === "/v3/product/import").length, 2);
       assert.equal(fake.calls.filter((call) => call.path === "/v2/products/stocks").length, 1);
       assert.equal((await db.query("SELECT COUNT(*)::int AS count FROM submission_category_error_evidence WHERE account_id=$1 AND submission_job_id=$2", [accountA, jobId])).rows[0].count, 1);
       assert.equal((await db.query("SELECT COUNT(*)::int AS count FROM submission_category_recovery_attempts WHERE account_id=$1 AND submission_job_id=$2", [accountA, jobId])).rows[0].count, 1);
+      assert.equal((await db.query("SELECT COUNT(*)::int AS count FROM submission_category_recovery_item_results WHERE account_id=$1 AND submission_job_id=$2", [accountA, jobId])).rows[0].count, 1);
       const original = (await db.query("SELECT status,product_id,response FROM submission_items WHERE id=$1", [itemId])).rows[0];
       assert.equal(original.status, "FAILED");
       assert.equal(original.product_id, "");
-
-      for (const fixture of ["second-category", "ambiguous", "missing-required", "present", "unknown", "response-loss", "authentication", "throttling", "brand", "currency", "warehouse", "stock"]) {
-        const classified = classifyOzonCategoryImportResult({ item: { offer_id: "offer-a", error: { code: fixture } }, expectedOfferId: "offer-a", batchHasPartialOutcome: false });
-        assert.notEqual(classified.classification, "EXPLICIT_CATEGORY_FAILURE");
-      }
-      assert.equal(fake.calls.filter((call) => call.path === "/v3/product/import").length, 1, "non-allowlisted failures never add a product import");
+      const succeededWork = await pipeline.loadSubmissionWorkV3(jobId);
+      assert.equal(succeededWork.status, "SUCCEEDED");
+      let reconciled = null;
+      const reconciler = createAutoListingSubmissionReconciler({ repository: {
+        async loadReconciliationEvidence(input) {
+          return {
+            accountId: input.accountId, jobId: autoJob.jobId, itemId: input.itemId,
+            itemStatus: "UPLOADING", itemStatusVersion: 1,
+            submissionLinkId: input.submissionLinkId, submissionLinkStatus: "SUBMITTED",
+            submissionJobId: jobId,
+            submission: {
+              id: jobId, accountId: input.accountId, status: succeededWork.status,
+              ozonTaskId: "task-retry", errorCode: null, successCount: 1, failedCount: 0,
+              skippedCount: 0, resultSummary: { success: 1, failed: 0, skipped: 0, stockCount: 1 },
+              items: [{ offerId: "offer-a", status: "SUCCEEDED", productId: "101" }],
+              categoryRecovery: {
+                attemptId: attempt.id, status: "SUCCEEDED", originalOzonTaskId: "task-original",
+                retryOzonTaskId: "task-retry", oldSharedCategoryVersion: Number(attempt.old_shared_category_version),
+                replacementSharedCategoryVersion: Number(attempt.replacement_shared_category_version),
+              },
+            },
+          };
+        },
+        async applyReconciliation(input) {
+          reconciled = input;
+          return { itemId: input.itemId, status: input.itemStatus, statusVersion: 2,
+            linkStatus: input.linkStatus, duplicate: false };
+        },
+      } });
+      const reconciliation = await reconciler.reconcile({
+        accountId: accountA, itemId: "auto-item-a", submissionLinkId: "submission-link-a",
+        correlationId: `reconcile-${schema}`,
+      });
+      assert.equal(reconciliation.status, "SUCCEEDED");
+      assert.equal(reconciled.allowResubmission, false,
+        "response-loss reconciliation never submits a third product import");
+      assert.equal(reconciled.summary.categoryRecovery.retryOzonTaskId, "task-retry");
+      assert.equal(fake.calls.filter((call) => call.path === "/v3/product/import").length, 2);
       assert.equal(fake.calls.some((call) => /match/i.test(call.path)), false, "no store-category matching endpoint is used");
+
+      const runWorkerFailure = async ({ label, scenario, expectedStatus,
+        stocks = [{ warehouse_id: "platform-fbs-a", stock: 5 }], expectedStockCalls = 0 }) => {
+        const offerId = `matrix-${label}-${schema}`;
+        fake.state.scenarios.set(offerId, scenario);
+        const beforeImport = fake.calls.filter((call) => call.path === "/v3/product/import").length;
+        const beforeStock = fake.calls.filter((call) => call.path === "/v2/products/stocks").length;
+        const matrixItem = { ...item, offer_id: offerId, sku: `${label}-sku` };
+        const matrixSubmission = await pipeline.createSubmissionV3({
+          collectItem: listedSource.collectItem, storeId: storeA, accountId: accountA,
+          targetStoreId: storeA, idempotencyKey: `task10-matrix-${label}-${schema}`,
+          normalizedItems: [matrixItem], stocks: stocks.map((stock) => ({ ...stock, offer_id: offerId })),
+          type: "AUTO_LISTING", versions: listingBase.versions,
+          frozenProductDraft: { id: liveDraft.id, version: Number(liveDraft.version), dataHash: liveDraft.data_hash },
+        });
+        const matrixJobId = matrixSubmission.job.clientJobId;
+        await worker.processListingQueueMessage({ submissionJobId: matrixJobId, action: "submit" });
+        const afterSubmit = await pipeline.loadSubmissionWorkV3(matrixJobId);
+        if (["OZON_ACCEPTED", "CHECKING", "RECONCILING"].includes(afterSubmit.status)) {
+          await worker.processListingQueueMessage({ submissionJobId: matrixJobId, action: "check" });
+        }
+        const final = await pipeline.loadSubmissionWorkV3(matrixJobId);
+        assert.equal(final.status, expectedStatus, `${label}: ${JSON.stringify(final)}`);
+        assert.equal(fake.calls.slice().filter((call) => call.path === "/v3/product/import"
+          && call.body?.items?.[0]?.offer_id === offerId).length, 1, `${label}: one real product import`);
+        assert.equal(fake.calls.filter((call) => call.path === "/v3/product/import").length, beforeImport + 1);
+        assert.equal((await db.query(`SELECT COUNT(*)::int AS count
+          FROM submission_category_recovery_attempts WHERE submission_job_id=$1`, [matrixJobId])).rows[0].count, 0,
+        `${label}: non-category failure creates no recovery attempt`);
+        assert.equal((await db.query(`SELECT COUNT(*)::int AS count
+          FROM submission_category_error_evidence WHERE submission_job_id=$1`, [matrixJobId])).rows[0].count, 0,
+        `${label}: disabled production policy persists no category evidence`);
+        const stockDelta = fake.calls.filter((call) => call.path === "/v2/products/stocks").length - beforeStock;
+        assert.equal(stockDelta, expectedStockCalls, `${label}: exact stock transport count`);
+        return { matrixJobId, offerId };
+      };
+      await runWorkerFailure({ label: "auth", scenario: { importHttpStatus: 401, errorCode: "AUTH_FAILED" }, expectedStatus: "FAILED" });
+      await runWorkerFailure({ label: "throttle", scenario: { importHttpStatus: 429, errorCode: "THROTTLED" }, expectedStatus: "FAILED" });
+      await runWorkerFailure({ label: "brand", scenario: { checkErrorCode: "BRAND_RESTRICTED" }, expectedStatus: "FAILED" });
+      await runWorkerFailure({ label: "currency", scenario: { checkErrorCode: "CURRENCY_INVALID" }, expectedStatus: "FAILED" });
+      const stockFailure = await runWorkerFailure({ label: "stock", scenario: { stockHttpStatus: 503, errorCode: "STOCK_INVALID" },
+        expectedStatus: "PARTIAL_SUCCESS", expectedStockCalls: 1 });
+      const stockCounts = {
+        imports: fake.calls.filter((call) => call.path === "/v3/product/import").length,
+        stocks: fake.calls.filter((call) => call.path === "/v2/products/stocks").length,
+      };
+      await worker.processListingQueueMessage({ submissionJobId: stockFailure.matrixJobId, action: "submit" });
+      await worker.processListingQueueMessage({ submissionJobId: stockFailure.matrixJobId, action: "check" });
+      assert.deepEqual({
+        imports: fake.calls.filter((call) => call.path === "/v3/product/import").length,
+        stocks: fake.calls.filter((call) => call.path === "/v2/products/stocks").length,
+      }, stockCounts, "stock-only partial replay never reimports or repeats stock");
     } finally {
       await client.query(`DROP SCHEMA IF EXISTS ${q(schema)} CASCADE`).catch(() => {});
       client.release();
@@ -324,14 +805,33 @@ if (!enabled) {
       await applyMigrations(sourceClient, 62);
       const account = `account-${suffix}`;
       const store = `store-${suffix}`;
+      const secondStore = `store-two-${suffix}`;
       const source = await (async () => {
         await sourceClient.query("INSERT INTO accounts(id,username,display_name,role,status) VALUES($1,$1,$1,'admin','active')", [account]);
-        await sourceClient.query("INSERT INTO stores(id,label,company_name,client_id,status,owner_account_id) VALUES($1,$1,$1,$1,'active',$2)", [store, account]);
+        await sourceClient.query("INSERT INTO stores(id,label,company_name,client_id,status,owner_account_id) VALUES($1,$1,$1,$1,'active',$3),($2,$2,$2,$2,'active',$3)", [store, secondStore, account]);
         return seedCollection(sourceClient, { accountId: account, storeId: store, collectId: `collect-${suffix}`, rawId: `raw-${suffix}`, draftId: `draft-${suffix}`, sku: "sku-old" });
       })();
+      const secondSource = await seedCollection(sourceClient, { accountId: account, storeId: secondStore,
+        collectId: `collect-two-${suffix}`, rawId: `raw-two-${suffix}`, draftId: `draft-two-${suffix}`, sku: "sku-two" });
       await sourceClient.query(`INSERT INTO collect_category_resolutions(id,account_id,collect_item_id,taxonomy_scope,source_type_id,target_description_category_id,target_type_id,method,status)
         VALUES($1,$2,$3,'OZON:DEFAULT',20,999,888,'legacy','MATCHED')`, [`legacy-${suffix}`, account, source.collectItemId]);
+      await sourceClient.query(`INSERT INTO collect_category_resolutions(id,account_id,collect_item_id,taxonomy_scope,source_type_id,target_description_category_id,target_type_id,method,status)
+        VALUES($1,$2,$3,'OZON:DEFAULT',20,777,666,'legacy-two','MATCHED')`,
+      [`legacy-two-${suffix}`, account, secondSource.collectItemId]);
       await sourceClient.query("INSERT INTO audit_events(event_id,account_id,action,entity_type,entity_id) VALUES($1,$2,'TASK10_SENTINEL','test',$1)", [`audit-${suffix}`, account]);
+      const snapshot = `snapshot-${suffix}`;
+      const job = `job-${suffix}`;
+      await sourceClient.query(`INSERT INTO submission_snapshots(
+        id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,snapshot_hash,item_count,items)
+        VALUES($1,$2,$3,1,$4,$5,$6,$7,1,$8::jsonb)`,
+      [snapshot, source.collectItemId, source.productDraftId, account, store, `idem-${suffix}`,
+        canonicalSha([{ offer_id: "offer-a", sku: "sku-old" }]), JSON.stringify([{ offer_id: "offer-a", sku: "sku-old" }])]);
+      await sourceClient.query(`INSERT INTO submission_jobs(
+        id,snapshot_id,collect_item_id,account_id,store_id,status,item_count,correlation_id)
+        VALUES($1,$2,$3,$4,$5,'QUEUE_PENDING',1,$6)`,
+      [job, snapshot, source.collectItemId, account, store, `corr-${suffix}`]);
+      await sourceClient.query(`INSERT INTO submission_events(job_id,to_status,event_type,message)
+        VALUES($1,'QUEUE_PENDING','TASK10_HISTORY_SENTINEL','history survives')`, [job]);
       const databaseName = new URL(sourceUrl).pathname.slice(1);
       execFileSync("docker", ["exec", sourceContainer, "pg_dump", "-U", "postgres", "-d", databaseName, "-Fc", "-n", upgradeSchema, "-f", "/tmp/task10-pre-upgrade.dump"]);
       execFileSync("docker", ["cp", `${sourceContainer}:/tmp/task10-pre-upgrade.dump`, dump]);
@@ -341,6 +841,10 @@ if (!enabled) {
       await sourceClient.query("COMMIT");
       assert.equal((await sourceClient.query("SELECT to_regclass('collect_category_resolutions') AS value")).rows[0].value, null);
       assert.equal((await sourceClient.query("SELECT current_description_category_id::int AS category FROM account_ozon_shared_categories")).rows[0].category, 10);
+      assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM account_ozon_shared_categories")).rows[0].count, 1,
+        "two stores with conflicting retired targets collapse to one source-derived shared category");
+      assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM submission_jobs WHERE id=$1 AND status='QUEUE_PENDING'", [job])).rows[0].count, 1);
+      assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM submission_events WHERE job_id=$1 AND event_type='TASK10_HISTORY_SENTINEL'", [job])).rows[0].count, 1);
       assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM audit_events WHERE event_id=$1", [`audit-${suffix}`])).rows[0].count, 1);
       for (const file of (await migrationFiles(69)).filter((name) => Number(name.slice(0, 3)) >= 64)) await sourceClient.query(await readFile(path.join(migrationsDir, file), "utf8"));
 
@@ -365,7 +869,19 @@ if (!enabled) {
       await restoreClient.query(`SET search_path TO ${q(restoredSchema)}, public`);
       assert.equal((await restoreClient.query("SELECT target_description_category_id::int AS category FROM collect_category_resolutions WHERE id=$1", [`legacy-${suffix}`])).rows[0].category, 999);
       const oldRepository = execFileSync("git", ["show", "411d33b7de78865d6bf23c4eed0b17437b43d113:server/collect-category-resolution-repository.mjs"], { cwd: path.join(here, "../.."), encoding: "utf8" });
-      assert.match(oldRepository, /collect_category_resolutions/u, "the restored table remains readable by the pre-upgrade implementation contract");
+      const oldRepositoryPath = path.join(temp, "collect-category-resolution-repository.mjs");
+      await writeFile(oldRepositoryPath, oldRepository, { encoding: "utf8", mode: 0o600 });
+      const oldModule = await import(`${pathToFileURL(oldRepositoryPath).href}?task10=${suffix}`);
+      const restoredOldRepository = oldModule.createPostgresCollectCategoryResolutionRepository({
+        pool: { query: (...args) => restoreClient.query(...args) },
+      });
+      const restoredLegacy = await restoredOldRepository.readForItem({
+        accountId: account, collectItemId: source.collectItemId, taxonomyScope: "OZON:DEFAULT",
+      });
+      assert.equal(restoredLegacy.targetDescriptionCategoryId, 999,
+        "the actual pre-upgrade repository implementation reads the restored legacy row");
+      assert.equal((await restoreClient.query("SELECT COUNT(*)::int AS count FROM submission_jobs WHERE id=$1", [job])).rows[0].count, 1);
+      assert.equal((await restoreClient.query("SELECT COUNT(*)::int AS count FROM submission_events WHERE job_id=$1 AND event_type='TASK10_HISTORY_SENTINEL'", [job])).rows[0].count, 1);
     } finally {
       await sourceClient.query(`DROP SCHEMA IF EXISTS ${q(upgradeSchema)} CASCADE`).catch(() => {});
       await sourceClient.query(`DROP SCHEMA IF EXISTS ${q(rejectedSchema)} CASCADE`).catch(() => {});
