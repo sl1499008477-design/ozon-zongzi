@@ -389,6 +389,21 @@ test("unverified target-store currency has a stable safe 409 response", async ()
 });
 
 for (const [code, status, message] of [
+  ["AUTO_LISTING_CATEGORY_REFRESH_REQUIRED", 409, "Ozon 类目已更新，请刷新后重试"],
+  ["AUTO_LISTING_CATEGORY_NEEDS_REVIEW", 409, "Ozon 当前类目无法唯一确定，请联系管理员处理"],
+  ["AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", 422, "Ozon 类目属性暂时不可用，请稍后重试"],
+]) {
+  test(`category preparation failure ${code} has a fixed safe response`, async () => {
+    const { handler, replies } = harness({ runtime: { getService: async () => ({
+      createAutoListingJob: async () => { throw Object.assign(new Error("raw must not leak"), { code, status }); },
+    }) } });
+    await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {},
+      new URL("http://local/auto-listing/jobs/from-collect-box"));
+    assert.deepEqual(replies[0], { status, payload: { ok: false, code, message, correlationId: "corr_1" } });
+  });
+}
+
+for (const [code, status, message] of [
   ["RFBS_WAREHOUSE_NOT_FOUND", 404, "未找到目标 RFBS 仓库"],
   ["RFBS_WAREHOUSE_DISABLED", 409, "目标 RFBS 仓库不可用"],
   ["RFBS_WAREHOUSE_SCOPE_MISMATCH", 422, "RFBS 仓库不属于当前账号或店铺"],
@@ -535,6 +550,7 @@ test("runtime initializes once concurrently and retries after failure", async ()
     createRepository: ({ pool }) => { repositories += 1; return { pool }; },
     createService: ({ repository }) => { services += 1; return { repository }; },
     createListingBasePreparer: async () => async () => ({}),
+    createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
   });
   await assert.rejects(runtime.getService(), /temporary/);
   const [left, right] = await Promise.all([runtime.getService(), runtime.getService()]);

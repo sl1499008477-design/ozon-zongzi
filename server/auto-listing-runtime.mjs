@@ -118,6 +118,7 @@ export function createAutoListingRuntime({
   createAiOutboxRelay = null,
   createAiWorkflow = null,
   createListingBasePreparer = null,
+  createCategoryFreshness = null,
   createRfbsWarehouseVerifier = createAutoListingRfbsWarehouseVerifier,
   readStoreCredential = null,
   callOzonSellerApi = defaultCallOzonSellerApi,
@@ -129,6 +130,7 @@ export function createAutoListingRuntime({
     || !(createAiOutboxRelay === null || typeof createAiOutboxRelay === "function")
     || !(createAiWorkflow === null || typeof createAiWorkflow === "function")
     || !(createListingBasePreparer === null || typeof createListingBasePreparer === "function")
+    || !(createCategoryFreshness === null || typeof createCategoryFreshness === "function")
     || typeof createRfbsWarehouseVerifier !== "function"
     || !(readStoreCredential === null || typeof readStoreCredential === "function")
     || typeof callOzonSellerApi !== "function" || typeof persistenceMode !== "function") {
@@ -169,6 +171,22 @@ export function createAutoListingRuntime({
       },
     });
   });
+  const resolveCategoryFreshness = createCategoryFreshness || (async ({ pool }) => {
+    const [{ createAutoListingCategoryAccessPostgres },
+      { createAutoListingCategoryFreshness },
+      { createOzonCategoryService },
+      { createPostgresAccountSharedOzonCategoryRepository }] = await Promise.all([
+      import("./auto-listing-category-access-postgres.mjs"),
+      import("./auto-listing-category-freshness.mjs"),
+      import("./ozon-category-service.mjs"),
+      import("./account-shared-ozon-category-repository.mjs"),
+    ]);
+    return createAutoListingCategoryFreshness({
+      loadStoreAccess: createAutoListingCategoryAccessPostgres({ pool }),
+      categoryService: createOzonCategoryService(),
+      repository: createPostgresAccountSharedOzonCategoryRepository({ pool }),
+    });
+  });
   const resolveStoreCredential = readStoreCredential || (async (storeId, accountId) => {
     const { readStoreCredentialV3 } = await import("./listing-pipeline.mjs");
     return readStoreCredentialV3(storeId, accountId);
@@ -187,9 +205,15 @@ export function createAutoListingRuntime({
           );
         }
         const pool = await resolvePool();
-        const prepareListingBase = await resolveListingBasePreparer({ pool, env });
+        const [prepareListingBase, ensureCategoryFresh] = await Promise.all([
+          resolveListingBasePreparer({ pool, env }),
+          resolveCategoryFreshness({ pool, env }),
+        ]);
         if (typeof prepareListingBase !== "function") {
           throw runtimeError("AUTO_LISTING_BASE_RUNTIME_INITIALIZATION_FAILED", "自动上架商品底稿运行时初始化失败");
+        }
+        if (typeof ensureCategoryFresh !== "function") {
+          throw runtimeError("AUTO_LISTING_CATEGORY_RUNTIME_INITIALIZATION_FAILED", "自动上架类目运行时初始化失败");
         }
         const directUploadAllowed = ["1", "true"].includes(String(env.AUTO_LISTING_DIRECT_UPLOAD_ALLOWED || "").trim().toLowerCase());
         let repository;
@@ -223,6 +247,7 @@ export function createAutoListingRuntime({
         return createService({
           repository,
           prepareListingBase,
+          ensureCategoryFresh,
           rfbsWarehouseVerifier: closedRfbsWarehouseVerifier,
           uploadPolicyGates: {
             directUploadAllowed,

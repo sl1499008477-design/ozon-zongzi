@@ -223,6 +223,7 @@ test("runtime injects the AI workflow into job creation only when both feature f
     const service = { name: "service-a" };
     const rfbsWarehouseVerifier = { async verifyRfbsWarehouse() {} };
     const prepareListingBase = async () => {};
+    const ensureCategoryFresh = async () => ({ status: "CURRENT" });
     let workflowFactories = 0;
     let workerDependencyFactories = 0;
     const repositoryInputs = [];
@@ -241,13 +242,14 @@ test("runtime injects the AI workflow into job creation only when both feature f
         assert.equal(input.env, env);
         return prepareListingBase;
       },
+      createCategoryFreshness: async () => ensureCategoryFresh,
       createService(input) {
         assert.notEqual(input.rfbsWarehouseVerifier, rfbsWarehouseVerifier);
         assert.equal(Object.isFrozen(input.rfbsWarehouseVerifier), true);
         assert.deepEqual(Object.keys(input.rfbsWarehouseVerifier), ["verifyRfbsWarehouse"]);
         assert.equal(input.rfbsWarehouseVerifier.verifyRfbsWarehouse, rfbsWarehouseVerifier.verifyRfbsWarehouse);
         assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined }, {
-          repository, prepareListingBase, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
+          repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
           directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
           },
         });
@@ -279,6 +281,7 @@ test("runtime rejects an open AI workflow factory result before constructing the
     }),
     createRepository() { repositories += 1; },
     createListingBasePreparer: async () => async () => {},
+    createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
     createService() { throw new Error("must not create service"); },
     createAiWorkerDependencies: async () => { throw new Error("worker must remain lazy"); },
   });
@@ -296,6 +299,7 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
   const service = { name: "service-a" };
   const rfbsWarehouseVerifier = { async verifyRfbsWarehouse() {} };
   const prepareListingBase = async () => {};
+  const ensureCategoryFresh = async () => ({ status: "CURRENT" });
   let pools = 0;
   let repositories = 0;
   let services = 0;
@@ -308,13 +312,14 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
       assert.equal(input.pool, pool);
       return prepareListingBase;
     },
+    createCategoryFreshness: async () => ensureCategoryFresh,
     createService(input) {
       services += 1;
       assert.notEqual(input.rfbsWarehouseVerifier, rfbsWarehouseVerifier);
       assert.equal(Object.isFrozen(input.rfbsWarehouseVerifier), true);
       assert.equal(input.rfbsWarehouseVerifier.verifyRfbsWarehouse, rfbsWarehouseVerifier.verifyRfbsWarehouse);
       assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined }, {
-        repository, prepareListingBase, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
+        repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
         directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
         },
       });
@@ -350,6 +355,7 @@ test("runtime composes the RFBS verifier from tenant-scoped warehouse and creden
     getPostgresPool: async () => pool,
     createRepository(input) { assert.deepEqual(input, { pool }); return repository; },
     createListingBasePreparer: async () => async () => {},
+    createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
     createRfbsWarehouseVerifier(input) {
       verifierDependencies = input;
       return rfbsWarehouseVerifier;
@@ -397,6 +403,7 @@ for (const [label, verifierFactory] of [
       getPostgresPool: async () => ({ name: "pool-a" }),
       createRepository: () => ({ async loadTargetWarehouse() { return { warehouse: null, products: [] }; } }),
       createListingBasePreparer: async () => async () => ({}),
+      createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
       createRfbsWarehouseVerifier: verifierFactory,
       readStoreCredential: async () => { calls.credentials += 1; return null; },
       callOzonSellerApi: async () => { calls.network += 1; return { result: [] }; },
@@ -423,6 +430,7 @@ test("runtime captures one ordinary verifier method against late factory-result 
     getPostgresPool: async () => ({ name: "pool-a" }),
     createRepository: () => ({ async loadTargetWarehouse() { return { warehouse: null, products: [] }; } }),
     createListingBasePreparer: async () => async () => ({}),
+    createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
     createRfbsWarehouseVerifier: () => factoryResult,
     createService(input) { captured = input.rfbsWarehouseVerifier; return { name: "service-a" }; },
   });

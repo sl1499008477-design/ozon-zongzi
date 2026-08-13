@@ -304,11 +304,15 @@ export function createAutoListingService({
   repository,
   prepareListingBase,
   rfbsWarehouseVerifier,
+  ensureCategoryFresh = async () => Object.freeze({ status: "CURRENT" }),
   uploadPolicyGates = {},
 } = {}) {
   const storage = requireRepository(repository);
   if (typeof prepareListingBase !== "function") {
     throw new TypeError("Auto listing base preparer dependency is required");
+  }
+  if (typeof ensureCategoryFresh !== "function") {
+    throw new TypeError("Auto listing category freshness dependency is required");
   }
   const verifier = requireRfbsWarehouseVerifier(rfbsWarehouseVerifier);
   async function createFromSources({
@@ -467,9 +471,21 @@ export function createAutoListingService({
       if (!targetStoreCurrency || targetStoreCurrency !== targetStore.currencyCode) {
         throw error("AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED", 422);
       }
-      const sources = await storage.loadCollectSources({ accountId, collectItemIds });
+      let sources = await storage.loadCollectSources({ accountId, collectItemIds });
       if (!Array.isArray(sources) || sources.length !== collectItemIds.length) {
         throw error("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
+      }
+      const freshness = await ensureCategoryFresh({
+        accountId, targetStoreId: config.targetStoreId, sources,
+      });
+      if (!freshness || !["CURRENT", "REFRESHED"].includes(freshness.status)) {
+        throw error("AUTO_LISTING_CATEGORY_REFRESH_REQUIRED", 409);
+      }
+      if (freshness.status === "REFRESHED") {
+        sources = await storage.loadCollectSources({ accountId, collectItemIds });
+        if (!Array.isArray(sources) || sources.length !== collectItemIds.length) {
+          throw error("AUTO_LISTING_CATEGORY_REFRESH_REQUIRED", 409);
+        }
       }
       return createFromSources({
         accountId, sourceType: "COLLECT_BOX", sources, idempotencyKey, correlationId, config, configHash, targetStore,

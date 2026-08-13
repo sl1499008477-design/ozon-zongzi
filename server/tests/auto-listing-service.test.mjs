@@ -110,10 +110,12 @@ const createAutoListingService = ({
   repository,
   rfbsWarehouseVerifier = forbiddenRfbsWarehouseVerifier,
   listingBasePreparer = prepareListingBase,
+  ensureCategoryFresh = async () => ({ status: "CURRENT" }),
 }) => createProductionAutoListingService({
   repository,
   prepareListingBase: listingBasePreparer,
   rfbsWarehouseVerifier,
+  ensureCategoryFresh,
 });
 
 const frozenGraphConfig = () => {
@@ -868,6 +870,48 @@ test("creates a native CNY job from exact target-store currency evidence", async
   assert.deepEqual(graph.items[0].snapshot.priceEvidence, {
     blackKopecks: "10000", greenKopecks: "8000", currency: "CNY", currencySource: "TARGET_STORE",
   });
+});
+
+test("reloads refreshed shared category sources before acquiring the preparation lease", async () => {
+  const stale = source("collect-refresh");
+  const refreshed = structuredClone(stale);
+  refreshed.sharedCategory.version = 3;
+  refreshed.sharedCategory.source = "OZON_REFRESH";
+  refreshed.sharedCategory.currentDescriptionCategoryId = 17029005;
+  refreshed.sharedCategory.taxonomyFingerprint = "a".repeat(64);
+  const repository = fakeRepository({ sources: [stale] });
+  let sourceReads = 0;
+  repository.loadCollectSources = async (input) => {
+    repository.calls.push(["loadCollectSources", input]);
+    sourceReads += 1;
+    return [sourceReads === 1 ? stale : refreshed];
+  };
+  const seen = [];
+  const service = createAutoListingService({
+    repository,
+    ensureCategoryFresh: async (input) => {
+      seen.push({ name: "freshness", version: input.sources[0].sharedCategory.version });
+      return { status: "REFRESHED" };
+    },
+    listingBasePreparer: async ({ targetCategory }) => {
+      seen.push({ name: "prepare", descriptionCategoryId: targetCategory.descriptionCategoryId });
+      return repositoryListingBaseTemplate("collect-refresh");
+    },
+  });
+
+  await service.createAutoListingJob({
+    actor, collectItemIds: ["collect-refresh"], idempotencyKey: "refresh-before-lease",
+    correlationId: "corr-refresh-before-lease", config,
+  });
+
+  assert.equal(sourceReads, 2);
+  assert.deepEqual(seen, [
+    { name: "freshness", version: 1 },
+    { name: "prepare", descriptionCategoryId: "17029005" },
+  ]);
+  assert.deepEqual(repository.calls.filter(([name]) => name === "acquireCategoryPreparationLease")
+    .map(([, input]) => input.items[0].sharedCategoryVersion), [3]);
+  assert.equal(repository.calls.filter(([name]) => name === "createJobGraph").length, 1);
 });
 
 test("rejects a legacy default currency without exact Ozon seller-info authority", async () => {
