@@ -1,6 +1,8 @@
 # Final review fix 1 report
 
-Status: IMPLEMENTED — final commit/gate SHA pending
+Status: COMPLETE
+
+Implementation commit: `6ae1562552d0596e7bed8eb1a28928cec46e687e`
 
 ## Outcome
 
@@ -29,7 +31,7 @@ GREEN evidence from the disposable PostgreSQL 16 instance on loopback port `6039
 
 The real PostgreSQL chain applies migrations 001–070, exercises unresolved lookup, exact administrator confirmation, exact replay, second-item/account-shared reuse, stale and cross-account zero writes, append-only mutation rejection, and formal source/shared reads. No real Ozon, paid AI, object store, production database or deployment was contacted.
 
-Syntax checks for all three production modules and `git diff --check` passed. The final commit SHA is recorded after the verification gate stabilizes.
+Syntax checks for all three production modules and `git diff --check` passed.
 
 ## File boundary
 
