@@ -4,9 +4,9 @@ Verified on 2026-08-13 (Asia/Shanghai).
 
 ## Tested implementation
 
-- Implementation SHA: `a4cbb5329eb2bf3442920a1355736601f67fb4d8`
+- Implementation SHA: `42f696540066473397632f9c8c66709e11acec1b`
 - Supporting production-contract fixes: `c240040`, `48e4fca`, and `bb21c02`
-- Migration chain: `001` through `071`
+- Migration chain: `001` through `072`
 - Production automatic category recovery: disabled; the V1 structured-error policy remains empty
 
 ## Passing evidence
@@ -18,7 +18,7 @@ Verified on 2026-08-13 (Asia/Shanghai).
 - Vite production build: 4,843 modules transformed, exit zero. The existing large-chunk warning remains.
 - JavaScript syntax checks and changed-range whitespace checks: passed.
 
-The Task 10 E2E used two disposable PostgreSQL 16 databases on loopback ports and a loopback-only fake Ozon transport. The successful source path enters through production `ingestCollectRequestV4`, which persists the real request, raw payload, draft, source pointer and account-shared category row. It then proves the real auto-listing service and preparer, submission pipeline, persistent outbox lifecycle, cache-busted replacement worker and reconciler instances, category recovery service, migration-069 child results, migration-070 confirmation provenance, migration-071 stock continuation, replay idempotency, tenant isolation, destructive migration preflight rollback, and restore/read compatibility. Its only direct recovery seed is a clearly labelled historical terminal error-evidence fixture because the production V1 policy is deliberately empty.
+The Task 10 E2E used two disposable PostgreSQL 16 databases on loopback ports and a loopback-only fake Ozon transport. The successful source path enters through production `ingestCollectRequestV4`, which persists the real request, raw payload, draft, source pointer and account-shared category row. It then proves the real auto-listing service and preparer, submission pipeline, persistent outbox lifecycle, cache-busted replacement worker and reconciler instances, category recovery service, migration-069 child results, migration-070 confirmation provenance, migration-071 stock continuation, migration-072 exact audit binding, replay idempotency, tenant isolation, destructive migration preflight rollback, and restore/read compatibility. Its only direct recovery seed is a clearly labelled historical terminal error-evidence fixture because the production V1 policy is deliberately empty.
 
 The stock crash matrix proves three separate durable barriers: orphaned `IN_FLIGHT` before network sends zero stock on restart and closes ambiguous; Ozon 200 followed by failure to persist `DONE` sends zero second stock and closes ambiguous; and durable `DONE` followed by failure to terminalize the job sends zero stock on replay and completes the job. No Ozon stock idempotency/readback authority is assumed.
 

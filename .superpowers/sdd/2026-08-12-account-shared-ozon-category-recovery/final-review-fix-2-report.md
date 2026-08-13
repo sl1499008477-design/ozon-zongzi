@@ -2,7 +2,7 @@
 
 Date: 2026-08-13
 
-Tested implementation commit: `a4cbb5329eb2bf3442920a1355736601f67fb4d8`.
+Tested implementation commit: `42f696540066473397632f9c8c66709e11acec1b`.
 
 ## Outcome
 
@@ -10,7 +10,7 @@ The listing worker no longer treats `POST /v2/products/stocks` as an unrecorded 
 
 There is no reviewed Ozon business-idempotency key in the existing stock API transport and no existing authoritative read contract that can attribute current stock to this exact request generation. This implementation therefore does not claim exactly-once delivery across an Ozon-200/SIGKILL boundary. It deliberately prefers a possible manual stock reconciliation over a duplicate automatic stock write.
 
-Production category-error policy V1 remains empty. The manual category-confirmation contract and migration 070 are unchanged.
+Production category-error policy V1 remains empty. Follow-up final-review fixes settle the 071 stock state before any RFBS credential, warehouse, or authorization read (`b4e6d9f`) and add migration 072's exact confirmation-audit provenance gate (`42f6965`).
 
 ## Changed contracts and files
 
@@ -24,10 +24,12 @@ Production category-error policy V1 remains empty. The manual category-confirmat
   - adds prepare, begin, complete and ambiguous ports with fixed non-disclosing conflicts;
   - projects exact submission-item identities needed to close stock rows.
 - `server/listing-worker.mjs`
-  - retains the existing PRE_STOCK RFBS authorization on every continuation;
-  - consumes the durable stock state before deciding whether transport is allowed;
+  - consumes the durable stock state before any RFBS credential, warehouse or authorization read;
+  - performs fresh PRE_STOCK RFBS authorization only for `PREPARED`/new work that may reach transport;
   - persists `DONE` before terminal completion and converts unproven prior `IN_FLIGHT` to safe manual review without transport.
 - Tests advance the fresh Task 10/RFBS migration chain to 071, cover the crash barriers and update the stock-specific terminal failure code. No browser or public DTO changed.
+
+Migration 072 preserves historical audit rows as provenance version 1 but requires every new production row to be version 2 and to match the exact immutable manual observation, current source pointer, active shared state and transition event. Cross-item/source/observation/category/type/actor/correlation/hash/time/version direct inserts fail with SQLSTATE `23514`; runtime replay reuses the existing idempotent audit row.
 
 ## TDD evidence
 
@@ -49,8 +51,9 @@ GREEN fault barriers use database triggers and explicit durable states, never sl
 - Focused descriptor-safe contract: **2/2 passed, 0 failed, 0 skipped**.
 - Adjacent unit/category/RFBS/reconciliation gate: **62/62 passed, 0 failed, 0 skipped**.
 - Fresh disposable PostgreSQL 16 RFBS crash/attack matrix: **1/1 passed, 0 failed, 0 skipped**.
-- Fresh disposable PostgreSQL 16 Task 10 central E2E, including migrations 001–071, production one-attempt recovery, 069 child, stock ledger and destructive/restore checks: **4/4 passed, 0 failed, 0 skipped**.
+- Fresh disposable PostgreSQL 16 Task 10 central E2E, including migrations 001–072, production one-attempt recovery, 069 child, stock ledger, exact confirmation audit and destructive/restore checks: **4/4 passed, 0 failed, 0 skipped**.
 - Fresh PostgreSQL Task 7 repository/service composition plus standard upload/stock partial behavior: **6/6 passed, 0 failed, 0 skipped**.
+- Fresh PostgreSQL migration/manual-provenance gate: **14/14 passed, 0 failed, 0 skipped**.
 - Syntax checks for changed JavaScript modules and tests passed; `git diff --check` passed.
 
 All external traffic in these tests used a random loopback fake. No real Ozon, AI, object storage, production database, production credential, deployed service or browser write was used.
@@ -64,6 +67,6 @@ All external traffic in these tests used a random loopback fake. No real Ozon, A
 
 ## Rollback and residual risk
 
-Revert the application implementation commit to return to the previous worker. Migration 071 is additive and should remain installed; preserve intent/events for audit and do not delete them to imitate rollback. A physical schema rollback requires maintenance mode and proof that no 071 rows exist.
+Revert the application implementation commits to return to the previous worker/runtime. Migrations 071–072 are additive and should remain installed; preserve intent/events/audits and do not delete them to imitate rollback. A physical schema rollback requires maintenance mode and proof that no new rows depend on them.
 
 Residual risk is explicit: an Ozon-accepted write followed by failure before local `DONE` may require a human to reconcile stock. This is the chosen fail-safe behavior because duplicate automated stock writes are not provably preventable without platform idempotency or authoritative generation readback.
