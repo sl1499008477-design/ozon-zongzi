@@ -206,8 +206,8 @@ if (!enabled) {
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
       assert.equal(migrations.some((file) => file.startsWith("061_")), true,
         "E2E must include immutable RFBS standard-submission handoff migration 061");
-      assert.equal(migrations.at(-1)?.startsWith("071_"), true,
-        "E2E must apply the complete production migration chain through stock write ledger 071");
+      assert.equal(migrations.at(-1)?.startsWith("072_"), true,
+        "E2E must apply the complete production migration chain through audit provenance 072");
       for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       await admin.query("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
       for (const migration of migrations) {

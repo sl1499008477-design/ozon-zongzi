@@ -29,6 +29,10 @@ const manualConfirmationMigrationUrl = new URL(
   "../db/migrations/070_account_shared_ozon_category_manual_confirmation_evidence.sql",
   import.meta.url,
 );
+const confirmationAuditProvenanceMigrationUrl = new URL(
+  "../db/migrations/072_account_shared_category_confirmation_audit_provenance.sql",
+  import.meta.url,
+);
 
 function normalizedSql(sql) {
   return String(sql).replace(/\s+/g, " ").trim();
@@ -150,6 +154,19 @@ test("070 adds tenant-bound append-only manual confirmation provenance", async (
   assert.match(compact, /append_only/i);
   assert.match(compact, /ERRCODE='23514'/i);
   assert.doesNotMatch(compact, /api_key|credential|vendor_payload|raw_request/i);
+});
+
+test("072 requires every new confirmation audit to match exact manual provenance", async () => {
+  const compact = normalizedSql(await readFile(confirmationAuditProvenanceMigrationUrl, "utf8"));
+  assert.match(compact, /ADD COLUMN provenance_version SMALLINT NOT NULL DEFAULT 1/iu);
+  assert.match(compact, /NEW\.provenance_version<>2 OR NEW\.manual_confirmation_evidence_id IS NULL/iu);
+  assert.match(compact, /observation\.collect_item_id=NEW\.collect_item_id/iu);
+  assert.match(compact, /observation\.request_hash=NEW\.request_hash/iu);
+  assert.match(compact, /current_source\.source_evidence_id=observation\.source_evidence_id/iu);
+  assert.match(compact, /shared_event\.event_type='MANUAL_CATEGORY_CONFIRMED'/iu);
+  assert.match(compact, /NEW\.expected_source_version= 'draft:' \|\| observation\.trigger_product_draft_version::TEXT/iu);
+  assert.match(compact, /BEFORE INSERT ON account_ozon_category_confirmation_audit/iu);
+  assert.match(compact, /USING ERRCODE='23514'/iu);
 });
 
 test("063 guards current transitions, freezes evidence/events, and removes only retired category tables", async () => {

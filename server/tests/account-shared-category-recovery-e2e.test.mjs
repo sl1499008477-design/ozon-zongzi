@@ -32,16 +32,17 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const canonicalSha = (value) => sha(JSON.stringify(canonical(value)));
 
-async function migrationFiles(maximum = 71) {
+async function migrationFiles(maximum = 72) {
   const files = (await readdir(migrationsDir))
     .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= maximum)
     .sort();
   if (maximum === 69) assert.equal(files.at(-1), "069_submission_category_recovery_item_results.sql");
   if (maximum === 71) assert.equal(files.at(-1), "071_submission_stock_write_ledger.sql");
+  if (maximum === 72) assert.equal(files.at(-1), "072_account_shared_category_confirmation_audit_provenance.sql");
   return files;
 }
 
-async function applyMigrations(client, maximum = 71) {
+async function applyMigrations(client, maximum = 72) {
   for (const file of await migrationFiles(maximum)) {
     await client.query(await readFile(path.join(migrationsDir, file), "utf8"));
   }
@@ -454,7 +455,7 @@ if (!enabled) {
     skip: "set ACCOUNT_SHARED_CATEGORY_RECOVERY_E2E=1 and both disposable database URLs",
   }, () => {});
 } else {
-  test("001-071 account-shared category and one recovery use real PG and loopback-only Ozon", { timeout: 180_000 }, async () => {
+  test("001-072 account-shared category and one recovery use real PG and loopback-only Ozon", { timeout: 180_000 }, async () => {
     assert.ok(sourceUrl && restoreUrl && sourceContainer && restoreContainer, "two disposable DB/container identities are required");
     const pool = new Pool({ connectionString: sourceUrl });
     const client = await pool.connect();
@@ -465,9 +466,9 @@ if (!enabled) {
     try {
       await client.query(`CREATE SCHEMA ${q(schema)}`);
       await client.query(`SET search_path TO ${q(schema)}, public`);
-      await applyMigrations(client, 71);
+      await applyMigrations(client, 72);
       await client.query("CREATE TABLE schema_migrations(version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
-      for (const migration of await migrationFiles(71)) {
+      for (const migration of await migrationFiles(72)) {
         await client.query("INSERT INTO schema_migrations(version) VALUES($1)", [migration.replace(/\.sql$/u, "")]);
       }
       const accountA = `account-a-${schema}`;
@@ -559,6 +560,55 @@ if (!enabled) {
       const confirmed = await runtime.confirmManualCategory({ actor: { id: accountA, role: "admin" }, ...confirmation });
       assert.equal(confirmed.categoryResolution.source, "MANUAL");
       assert.deepEqual(await runtime.confirmManualCategory({ actor: { id: accountA, role: "admin" }, ...confirmation }), confirmed, "manual confirmation is idempotently reusable");
+      const exactConfirmationAudit = (await db.query(`SELECT *
+        FROM account_ozon_category_confirmation_audit WHERE account_id=$1`, [accountA])).rows[0];
+      assert.equal(Number(exactConfirmationAudit.provenance_version), 2);
+      assert.ok(exactConfirmationAudit.manual_confirmation_evidence_id);
+      await assert.rejects(db.query(`INSERT INTO account_ozon_category_confirmation_audit(
+        id,account_id,collect_item_id,source_evidence_id,expected_source_version,
+        selected_description_category_id,selected_type_id,taxonomy_scope,actor_id,
+        correlation_id,idempotency_key,request_hash,result_json,confirmed_at,created_at,
+        manual_confirmation_evidence_id,provenance_version)
+        SELECT id||'-null',account_id,collect_item_id,source_evidence_id,expected_source_version,
+          selected_description_category_id,selected_type_id,taxonomy_scope,actor_id,
+          correlation_id,idempotency_key||'-null',request_hash,result_json,confirmed_at,created_at,
+          NULL,2 FROM account_ozon_category_confirmation_audit WHERE id=$1`,
+      [exactConfirmationAudit.id]), (error) => error?.code === "23514");
+      const sourceBEvidence = (await db.query(`SELECT id FROM collect_ozon_category_source_evidence
+        WHERE account_id=$1 AND collect_item_id=$2 ORDER BY captured_at DESC,id DESC LIMIT 1`,
+      [accountA, sourceB.collectItemId])).rows[0].id;
+      const auditAttacks = [
+        { label: "cross-item", collectItemId: sourceB.collectItemId },
+        { label: "cross-source", sourceEvidenceId: sourceBEvidence },
+        { label: "cross-observation", manualEvidenceId: `manual-confirmation:v1:${"f".repeat(64)}` },
+        { label: "selected-category", descriptionCategoryId: 11 },
+        { label: "selected-type", typeId: 21 },
+        { label: "actor", actorId: accountB },
+        { label: "correlation", correlationId: `tampered-correlation-${schema}` },
+        { label: "request-hash", requestHash: "f".repeat(64) },
+        { label: "timestamp", confirmedAt: "2026-08-12T03:00:00.000Z" },
+        { label: "source-version", expectedSourceVersion: "draft:999" },
+      ];
+      for (const attack of auditAttacks) {
+        await assert.rejects(db.query(`INSERT INTO account_ozon_category_confirmation_audit(
+          id,account_id,collect_item_id,source_evidence_id,expected_source_version,
+          selected_description_category_id,selected_type_id,taxonomy_scope,actor_id,
+          correlation_id,idempotency_key,request_hash,result_json,confirmed_at,created_at,
+          manual_confirmation_evidence_id,provenance_version)
+          SELECT id||'-'||$2,account_id,COALESCE($3,collect_item_id),COALESCE($4,source_evidence_id),
+            COALESCE($5,expected_source_version),COALESCE($6,selected_description_category_id),
+            COALESCE($7,selected_type_id),taxonomy_scope,COALESCE($8,actor_id),
+            COALESCE($9,correlation_id),idempotency_key||'-'||$2,COALESCE($10,request_hash),
+            result_json,COALESCE($11::timestamptz,confirmed_at),COALESCE($11::timestamptz,created_at),
+            COALESCE($12,manual_confirmation_evidence_id),2
+          FROM account_ozon_category_confirmation_audit WHERE id=$1`,
+        [exactConfirmationAudit.id, attack.label, attack.collectItemId ?? null,
+          attack.sourceEvidenceId ?? null, attack.expectedSourceVersion ?? null,
+          attack.descriptionCategoryId ?? null, attack.typeId ?? null, attack.actorId ?? null,
+          attack.correlationId ?? null, attack.requestHash ?? null, attack.confirmedAt ?? null,
+          attack.manualEvidenceId ?? null]), (error) => error?.code === "23514",
+        attack.label);
+      }
       const confirmationCounts = (await db.query(`SELECT
         (SELECT COUNT(*)::int FROM account_ozon_shared_categories) AS shared,
         (SELECT COUNT(*)::int FROM account_ozon_category_confirmation_audit) AS confirmations,
@@ -1029,7 +1079,7 @@ if (!enabled) {
       assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM submission_jobs WHERE id=$1 AND status='QUEUE_PENDING'", [job])).rows[0].count, 1);
       assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM submission_events WHERE job_id=$1 AND event_type='TASK10_HISTORY_SENTINEL'", [job])).rows[0].count, 1);
       assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM audit_events WHERE event_id=$1", [`audit-${suffix}`])).rows[0].count, 1);
-      for (const file of (await migrationFiles(71)).filter((name) => Number(name.slice(0, 3)) >= 64)) await sourceClient.query(await readFile(path.join(migrationsDir, file), "utf8"));
+      for (const file of (await migrationFiles(72)).filter((name) => Number(name.slice(0, 3)) >= 64)) await sourceClient.query(await readFile(path.join(migrationsDir, file), "utf8"));
 
       await sourceClient.query(`CREATE SCHEMA ${q(rejectedSchema)}`);
       await sourceClient.query(`SET search_path TO ${q(rejectedSchema)}, public`);

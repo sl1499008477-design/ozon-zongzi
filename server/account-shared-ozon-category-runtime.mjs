@@ -510,8 +510,8 @@ export function createAccountSharedOzonCategoryRuntime({
         });
         const manualObservation = (await client.query(
           `SELECT id FROM collect_ozon_category_manual_confirmation_evidence
-            WHERE account_id=$1 AND source_evidence_id=$2`,
-          [normalized.actor.id, shared.evidenceId],
+            WHERE account_id=$1 AND source_evidence_id=$2 AND collect_item_id=$3`,
+          [normalized.actor.id, shared.evidenceId, normalized.collectItemId],
         )).rows[0];
         if (!manualObservation) throw runtimeError("OZON_CATEGORY_CONFIRMATION_FAILED", 500);
         const insertedConfirmation = await client.query(
@@ -519,8 +519,8 @@ export function createAccountSharedOzonCategoryRuntime({
              id,account_id,collect_item_id,source_evidence_id,expected_source_version,
              selected_description_category_id,selected_type_id,taxonomy_scope,actor_id,
              correlation_id,idempotency_key,request_hash,result_json,confirmed_at,created_at,
-             manual_confirmation_evidence_id
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$2,$9,$10,$11,$12::jsonb,$13,$13,$14)
+             manual_confirmation_evidence_id,provenance_version
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$2,$9,$10,$11,$12::jsonb,$13,$13,$14,2)
            ON CONFLICT (account_id,idempotency_key) DO NOTHING RETURNING id`,
           [eventId, normalized.actor.id, normalized.collectItemId, shared.evidenceId,
             normalized.expectedSourceVersion, normalized.descriptionCategoryId, normalized.typeId,
