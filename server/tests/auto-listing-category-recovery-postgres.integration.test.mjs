@@ -26,6 +26,8 @@ const recoveryMetadata = Object.freeze({
   typeId: 40,
   attributes: Object.freeze([
     Object.freeze({ id: 1, complexId: 0, required: false, dictionaryId: null, dictionaryValues: Object.freeze([]) }),
+    Object.freeze({ id: 2, complexId: 0, required: false, dictionaryId: 6,
+      dictionaryValues: Object.freeze([Object.freeze({ id: 901, value: "simple-canonical" })]) }),
     Object.freeze({ id: 300, complexId: 77, required: true, dictionaryId: 5,
       dictionaryValues: Object.freeze([Object.freeze({ id: 900, value: "canonical" })]) }),
     Object.freeze({ id: 400, complexId: 77, required: false, dictionaryId: null, dictionaryValues: Object.freeze([]) }),
@@ -283,7 +285,12 @@ if (!enabled) {
         safeReviewCode: "AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE",
         transitionedAt: "2026-08-13T00:00:00.250Z",
       }, "CLAIMED");
-      const corrected = [{ offer_id: "offer-a", sku: "sku-a", description_category_id: 30, type_id: 40, attributes: [], price: "1", currency_code: "RUB" }];
+      const corrected = [{ offer_id: "offer-a", sku: "sku-a", description_category_id: 30, type_id: 40,
+        attributes: [
+          { complex_id: 0, id: 1, values: [{ value: "simple-safe", dictionary_value_id: 777 }] },
+          { complex_id: 0, id: 2,
+            values: [{ value: "simple-canonical", dictionary_value_id: 901 }] },
+        ], price: "1", currency_code: "RUB" }];
       await assertCheckRejected(client,
         `UPDATE ${q(schema)}.submission_category_recovery_attempts
             SET status='NEEDS_REVIEW',corrected_items=$2,corrected_items_hash=$3,
@@ -372,6 +379,22 @@ if (!enabled) {
           extra: true,
         }],
       ];
+      const invalidSimpleAttributes = [
+        [{ id: 1, values: [{ value: "safe" }] }],
+        [{ complex_id: 77, id: 1, values: [{ value: "safe" }] }],
+        [{ complex_id: 0, id: 999, values: [{ value: "safe" }] }],
+        [
+          { complex_id: 0, id: 1, values: [{ value: "safe" }] },
+          { complex_id: 0, id: 1, values: [{ value: "safe" }] },
+        ],
+        [{ complex_id: 0, id: 2, values: [{ value: "simple-canonical" }] }],
+        [{ complex_id: 0, id: 2,
+          values: [{ value: "simple-canonical", dictionary_value_id: 902 }] }],
+        [{ complex_id: 0, id: 2,
+          values: [{ value: "wrong", dictionary_value_id: 901 }] }],
+        ...[" ", "\t", "\n", "\u00a0", "\u1680", "\u2007", "\u202f", "\u3000", "\ufeff"]
+          .map((value) => [{ complex_id: 0, id: 1, values: [{ value }] }]),
+      ];
       for (const invalidMetadata of [
         null,
         {},
@@ -404,6 +427,10 @@ if (!enabled) {
         [[{ ...corrected[0], attributes: null }], canonicalSha([{ ...corrected[0], attributes: null }]), ids.shared, 2],
         [[{ ...corrected[0], attributes: {} }], canonicalSha([{ ...corrected[0], attributes: {} }]), ids.shared, 2],
         ...invalidCategoryIdentities.map((item) => [[item], canonicalSha([item]), ids.shared, 2]),
+        ...invalidSimpleAttributes.map((attributes) => {
+          const item = { ...corrected[0], attributes };
+          return [[item], canonicalSha([item]), ids.shared, 2];
+        }),
         ...invalidComplexAttributes.map((complexAttributes) => {
           const item = { ...corrected[0], complex_attributes: complexAttributes };
           return [[item], canonicalSha([item]), ids.shared, 2];

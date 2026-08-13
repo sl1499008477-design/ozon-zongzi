@@ -571,6 +571,94 @@ EXCEPTION WHEN OTHERS THEN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION valid_submission_category_recovery_simple_attributes(
+  value JSONB,
+  metadata JSONB
+)
+RETURNS BOOLEAN LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE
+  simple_attribute JSONB;
+  attribute_value JSONB;
+  metadata_attribute JSONB;
+  identifier_text TEXT;
+  attribute_key TEXT;
+  seen_attribute_keys TEXT[] := ARRAY[]::TEXT[];
+  trimmed_text TEXT;
+  js_whitespace CONSTANT TEXT := U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF';
+BEGIN
+  IF JSONB_TYPEOF(value) IS DISTINCT FROM 'array' OR JSONB_ARRAY_LENGTH(value)>1000 THEN
+    RETURN FALSE;
+  END IF;
+  FOR simple_attribute IN SELECT entry.value FROM JSONB_ARRAY_ELEMENTS(value) AS entry(value)
+  LOOP
+    IF JSONB_TYPEOF(simple_attribute) IS DISTINCT FROM 'object'
+      OR NOT (simple_attribute ?& ARRAY['complex_id','id','values'])
+      OR simple_attribute - ARRAY['complex_id','id','values'] IS DISTINCT FROM '{}'::JSONB
+      OR JSONB_TYPEOF(simple_attribute->'complex_id') IS DISTINCT FROM 'number'
+      OR simple_attribute->>'complex_id'<>'0'
+      OR JSONB_TYPEOF(simple_attribute->'id') IS DISTINCT FROM 'number'
+      OR JSONB_TYPEOF(simple_attribute->'values') IS DISTINCT FROM 'array'
+      OR JSONB_ARRAY_LENGTH(simple_attribute->'values') NOT BETWEEN 1 AND 5000
+    THEN
+      RETURN FALSE;
+    END IF;
+    identifier_text := simple_attribute->>'id';
+    IF identifier_text IS NULL OR LENGTH(identifier_text)>16
+      OR NOT (identifier_text ~ '^[1-9][0-9]*$')
+      OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+    THEN
+      RETURN FALSE;
+    END IF;
+    attribute_key := '0:' || identifier_text;
+    IF attribute_key=ANY(seen_attribute_keys) THEN RETURN FALSE; END IF;
+    seen_attribute_keys := ARRAY_APPEND(seen_attribute_keys,attribute_key);
+    SELECT candidate.value INTO metadata_attribute
+      FROM JSONB_ARRAY_ELEMENTS(metadata->'attributes') AS candidate(value)
+     WHERE candidate.value->>'complexId'='0' AND candidate.value->>'id'=identifier_text;
+    IF metadata_attribute IS NULL THEN RETURN FALSE; END IF;
+    FOR attribute_value IN
+      SELECT entry.value FROM JSONB_ARRAY_ELEMENTS(simple_attribute->'values') AS entry(value)
+    LOOP
+      trimmed_text := CASE WHEN JSONB_TYPEOF(attribute_value->'value')='string'
+        THEN BTRIM(attribute_value->>'value',js_whitespace) ELSE NULL END;
+      IF JSONB_TYPEOF(attribute_value) IS DISTINCT FROM 'object'
+        OR NOT (attribute_value ? 'value')
+        OR attribute_value - ARRAY['value','dictionary_value_id'] IS DISTINCT FROM '{}'::JSONB
+        OR JSONB_TYPEOF(attribute_value->'value') IS DISTINCT FROM 'string'
+        OR trimmed_text='' OR trimmed_text IS DISTINCT FROM attribute_value->>'value'
+      THEN
+        RETURN FALSE;
+      END IF;
+      IF attribute_value ? 'dictionary_value_id' THEN
+        identifier_text := attribute_value->>'dictionary_value_id';
+        IF JSONB_TYPEOF(attribute_value->'dictionary_value_id') IS DISTINCT FROM 'number'
+          OR identifier_text IS NULL OR LENGTH(identifier_text)>16
+          OR NOT (identifier_text ~ '^[1-9][0-9]*$')
+          OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+        THEN
+          RETURN FALSE;
+        END IF;
+      END IF;
+      IF metadata_attribute->'dictionaryId' <> 'null'::JSONB THEN
+        IF NOT (attribute_value ? 'dictionary_value_id')
+          OR JSONB_ARRAY_LENGTH(metadata_attribute->'dictionaryValues')=0
+          OR NOT EXISTS (
+            SELECT 1 FROM JSONB_ARRAY_ELEMENTS(metadata_attribute->'dictionaryValues') AS option(value)
+             WHERE option.value->>'id'=attribute_value->>'dictionary_value_id'
+               AND option.value->>'value'=attribute_value->>'value'
+          )
+        THEN
+          RETURN FALSE;
+        END IF;
+      END IF;
+    END LOOP;
+  END LOOP;
+  RETURN TRUE;
+EXCEPTION WHEN OTHERS THEN
+  RETURN FALSE;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION guard_submission_category_recovery_attempt_transition()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
@@ -663,12 +751,19 @@ BEGIN
               ELSE (corrected_item.value->>'type_id')::NUMERIC > 9007199254740991::NUMERIC
                 OR (corrected_item.value->>'type_id')::NUMERIC <> replacement.current_type_id
             END
-            OR JSONB_TYPEOF(corrected_item.value->'attributes') IS DISTINCT FROM 'array'
             OR CASE
+              WHEN JSONB_TYPEOF(corrected_item.value->'attributes') IS DISTINCT FROM 'array' THEN TRUE
+              WHEN NOT valid_submission_category_recovery_simple_attributes(
+                corrected_item.value->'attributes',NEW.replacement_category_metadata
+              ) THEN TRUE
               WHEN NOT (corrected_item.value ? 'complex_attributes') THEN FALSE
-              ELSE NOT valid_submission_category_recovery_complex_attributes(
+              WHEN NOT valid_submission_category_recovery_complex_attributes(
                 corrected_item.value->'complex_attributes',NEW.replacement_category_metadata
-              )
+              ) THEN TRUE
+              ELSE JSONB_ARRAY_LENGTH(corrected_item.value->'attributes') + (
+                SELECT COALESCE(SUM(JSONB_ARRAY_LENGTH(complex_group.value->'attributes')),0)
+                  FROM JSONB_ARRAY_ELEMENTS(corrected_item.value->'complex_attributes') AS complex_group(value)
+              ) > 1000
             END
       )
     THEN

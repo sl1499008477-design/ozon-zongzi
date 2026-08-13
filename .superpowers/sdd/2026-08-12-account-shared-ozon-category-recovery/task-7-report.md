@@ -12,6 +12,7 @@
 - Fix round 5 SHA: `073a66b` (`fix(listing): close recovery category identifiers`).
 - Fix round 6: user-authorized exception after the five-round review cap (`fix(listing): preserve complex category attributes`).
 - Fix round 7: the user authorized continuing later confirmed review defects without another per-round prompt (`fix(listing): bind complex attributes to refresh metadata`).
+- Fix round 8: automatic continuation under that authorization (`fix(listing): validate simple recovery attributes`).
 - Migration correction: the plan's 064 was already occupied and the repository latest was 067, so Task 7 adds only `068_auto_listing_category_recovery.sql`. Migrations 064–067 were not changed.
 - Product scope is exactly the eight planned Task 7 paths with the corrected 068 number: migration, PostgreSQL repository, pure recovery service, exact offer reconciliation, and four focused tests.
 - No Task 8 worker integration, classifier policy expansion, UI, dependency, lockfile or production configuration changed.
@@ -82,6 +83,16 @@
 - TDD RED evidence: service was 17/18 because the first mixed/metadata-invalid complex result reached `RETRY_PENDING`; migration was 1/2 because no metadata evidence/validator existed; fresh PostgreSQL was 2/3 because direct SQL could not store or validate the refresh metadata and surfaced the missing column rather than fixed `23514`. GREEN: focused 28/28, adjacent Task 4–7/Task 5 account/category/preparer/materialization/empty-policy/rebuilder 180/180, Task 4 lease/upload PostgreSQL 11/11, and Listing Pipeline V3 passed, all with zero skips.
 - No live Ozon seller API, product import, paid AI, object storage, production credential/account/database or production write was used. Tests used injected ports and one loopback-only tmpfs PostgreSQL 16 container.
 
+## User-authorized automatic exceptional fix round 8 — simple and complex attribute parity
+
+- Round 7 closed the complex branch but still accepted arbitrary simple `attributes`. The real Task 5 rebuilder emits simple attributes in the same exact `{complex_id,id,values}` carrier, with `complex_id` exactly zero, so recovery now validates both branches against one refreshed metadata index.
+- Every simple attribute must be closed, own `complex_id: 0`, have a positive safe ID, belong to the exact `(0,id)` refresh metadata entry, and be unique. Simple and complex attributes share one per-item counter capped at 1,000 and one logical `(complex_id,id)` uniqueness contract. Values use the same ECMAScript trim rule and closed optional `dictionary_value_id` shape.
+- Dictionary-backed simple attributes require an exact allowed dictionary value ID paired with its canonical refresh text. For non-dictionary metadata, Task 5's existing optional positive `dictionary_value_id` is deliberately retained and accepted rather than over-constrained.
+- Migration 068 adds an independent `valid_submission_category_recovery_simple_attributes` validator and combines its result with the complex validator and total-count fence before MATCHED. Unknown IDs, wrong/nonzero simple complex IDs, duplicates, blank/Unicode-whitespace values and dictionary ID/text mismatches raise fixed `23514` on direct SQL. The immutable `replacement_category_metadata` audit/replay contract from round 7 is unchanged.
+- TDD RED evidence: service was 19/20 because the first invalid simple carrier reached `RETRY_PENDING`; fresh PostgreSQL was 2/3 because the first invalid simple direct update was accepted instead of raising `23514`. GREEN keeps the real Task 5 rebuilder replacement/addition/removal composition and the legal non-dictionary optional-ID carrier through durable `RETRY_PENDING`.
+- GREEN verification: focused migration/service/real-PG/reconciliation **30/30**, adjacent Task 4–7/Task 5 account/category/preparer/materialization/empty-policy/rebuilder **180/180**, Task 4 lease/upload PostgreSQL **11/11**, and Listing Pipeline V3 passed; every automated run had zero failures and zero skips. Syntax and diff checks passed.
+- No live Ozon seller API, product import, paid AI, object storage, production credential/account/database or production write was used. Tests use injected ports and one loopback-only tmpfs PostgreSQL 16 container.
+
 ## Closed contracts delivered
 
 ### Persistence and tenant boundary
@@ -123,6 +134,7 @@
 
 ## Final verification
 
+- User-authorized automatic round 8 focused command: **30/30 passed, 0 failed, 0 skipped** on fresh tmpfs PostgreSQL 16. Adjacent Task 4–7/Task 5 tests passed **180/180**, Task 4 lease/upload PostgreSQL passed **11/11**, and Listing Pipeline V3 passed, all with zero skips.
 - User-authorized automatic round 7 focused command: **28/28 passed, 0 failed, 0 skipped** on fresh tmpfs PostgreSQL 16. Adjacent Task 4–7/Task 5 account/category/preparer/materialization/empty-policy/rebuilder tests passed **180/180**, Task 4 lease/upload PostgreSQL passed **11/11**, and Listing Pipeline V3 passed; all had zero skips.
 - User-authorized exceptional round 6 focused command: **27/27 passed, 0 failed, 0 skipped** on fresh tmpfs PostgreSQL 16, including the real Task 5 rebuilder → recovery service → migrations 001–068 path and the malformed service/direct-SQL matrices.
 - Round 6 adjacent category/account/preparer/empty-production-policy command: **158/158 passed, 0 failed, 0 skipped**. The two Sharp-dependent adjacent files passed **22/22, 0 skipped** under the pre-existing ad-hoc temporary Node copy, and Listing Pipeline V3 passed against the same disposable PostgreSQL database.

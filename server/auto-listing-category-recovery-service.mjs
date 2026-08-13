@@ -227,45 +227,49 @@ function validComplexAttributeValue(value) {
     && (!Object.hasOwn(value, "dictionary_value_id") || positive(value.dictionary_value_id));
 }
 
-function validComplexAttribute(attribute) {
+function validCategoryAttribute(attribute, complex) {
   return attribute && !Array.isArray(attribute)
     && Object.keys(attribute).length === 3
     && ["complex_id", "id", "values"].every((key) => Object.hasOwn(attribute, key))
-    && positive(attribute.complex_id) && positive(attribute.id)
+    && (complex ? positive(attribute.complex_id) : attribute.complex_id === 0)
+    && positive(attribute.id)
     && Array.isArray(attribute.values)
     && attribute.values.length >= 1 && attribute.values.length <= 5_000
     && attribute.values.every(validComplexAttributeValue);
 }
 
-function validComplexAttributes(item, metadata) {
-  if (!Object.hasOwn(item, "complex_attributes")) return true;
-  const groups = item.complex_attributes;
-  if (!Array.isArray(groups) || groups.length < 1 || groups.length > 1_000) return false;
+function validCategoryAttributes(item, metadata) {
   const metadataByKey = new Map(metadata.attributes.map((attribute) => [
     `${attribute.complexId}:${attribute.id}`, attribute,
   ]));
   const seen = new Set();
   let total = 0;
+  const accept = (attribute, complex) => {
+    if (!validCategoryAttribute(attribute, complex)) return false;
+    total += 1;
+    if (total > 1_000) return false;
+    const key = `${attribute.complex_id}:${attribute.id}`;
+    const refreshed = metadataByKey.get(key);
+    if (!refreshed || seen.has(key)) return false;
+    seen.add(key);
+    if (!refreshed.dictionaryId) return true;
+    if (!refreshed.dictionaryValues.length) return false;
+    const dictionary = new Map(refreshed.dictionaryValues.map((option) => [option.id, option.value]));
+    return attribute.values.every((value) => Object.hasOwn(value, "dictionary_value_id")
+      && dictionary.get(value.dictionary_value_id) === value.value);
+  };
+  if (item.attributes.length > 1_000
+    || !item.attributes.every((attribute) => accept(attribute, false))) return false;
+  if (!Object.hasOwn(item, "complex_attributes")) return true;
+  const groups = item.complex_attributes;
+  if (!Array.isArray(groups) || groups.length < 1 || groups.length > 1_000) return false;
   for (const group of groups) {
     if (!group || Array.isArray(group) || Object.keys(group).length !== 1
       || !Object.hasOwn(group, "attributes") || !Array.isArray(group.attributes)
       || group.attributes.length < 1 || group.attributes.length > 1_000) return false;
-    total += group.attributes.length;
-    if (total > 1_000) return false;
     const complexId = group.attributes[0]?.complex_id;
     for (const attribute of group.attributes) {
-      if (!validComplexAttribute(attribute) || attribute.complex_id !== complexId) return false;
-      const key = `${attribute.complex_id}:${attribute.id}`;
-      const refreshed = metadataByKey.get(key);
-      if (!refreshed || seen.has(key)) return false;
-      seen.add(key);
-      if (!refreshed.dictionaryId) continue;
-      if (!refreshed.dictionaryValues.length) return false;
-      const dictionary = new Map(refreshed.dictionaryValues.map((option) => [option.id, option.value]));
-      for (const value of attribute.values) {
-        if (!Object.hasOwn(value, "dictionary_value_id")
-          || dictionary.get(value.dictionary_value_id) !== value.value) return false;
-      }
+      if (attribute?.complex_id !== complexId || !accept(attribute, true)) return false;
     }
   }
   return true;
@@ -279,7 +283,7 @@ function validCorrection(original, corrected, category) {
     const after = projected[index];
     if (!after || Array.isArray(after)
       || !Object.hasOwn(after, "attributes") || !Array.isArray(after.attributes)
-      || !validComplexAttributes(after, category.metadata)
+      || !validCategoryAttributes(after, category.metadata)
       || after.description_category_id !== category.descriptionCategoryId
       || after.type_id !== category.typeId
       || (Object.hasOwn(after, "descriptionCategoryId")

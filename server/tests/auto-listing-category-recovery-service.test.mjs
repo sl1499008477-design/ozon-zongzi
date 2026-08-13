@@ -484,6 +484,99 @@ test("complex correction is closed against refreshed metadata before any match p
   }
 });
 
+test("simple correction shares the exact refreshed-metadata contract with complex attributes", async () => {
+  const metadataAttributes = [
+    { id: 1, complexId: 0, required: false, dictionaryId: null, dictionaryValues: [] },
+    { id: 2, complexId: 0, required: false, dictionaryId: 5,
+      dictionaryValues: [{ id: 900, value: "canonical" }] },
+    { id: 300, complexId: 77, required: false, dictionaryId: null, dictionaryValues: [] },
+  ];
+  const validSimple = { complex_id: 0, id: 1,
+    values: [{ value: "safe", dictionary_value_id: 777 }] };
+  const cases = [
+    [{ id: 1, values: [{ value: "safe" }] }],
+    [{ complex_id: 77, id: 1, values: [{ value: "safe" }] }],
+    [{ complex_id: 0, id: 999, values: [{ value: "safe" }] }],
+    [validSimple, validSimple],
+    [{ complex_id: 0, id: 2, values: [{ value: "canonical" }] }],
+    [{ complex_id: 0, id: 2, values: [{ value: "canonical", dictionary_value_id: 901 }] }],
+    [{ complex_id: 0, id: 2, values: [{ value: "wrong", dictionary_value_id: 900 }] }],
+    ...[" ", "\t", "\n", "\u00a0", "\u1680", "\u2007", "\u202f", "\u3000", "\ufeff"]
+      .map((value) => [{ complex_id: 0, id: 1, values: [{ value }] }]),
+  ];
+  for (const attributes of cases) {
+    const { service, calls } = harness({
+      refreshCategory: async () => {
+        calls.push("refresh");
+        return { kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+          taxonomyFingerprint: "a".repeat(64), metadata: {
+            descriptionCategoryId: 30, typeId: 40, attributes: metadataAttributes,
+          } };
+      },
+      rebuildItems: async ({ originalItems }) => originalItems.map((item) => ({
+        ...item, description_category_id: 30, type_id: 40, attributes,
+      })),
+    });
+    assert.deepEqual(await service.recover(request), {
+      attemptId: "attempt-a", status: "NEEDS_REVIEW",
+    });
+    assert.equal(calls.includes("save-match"), false);
+    assert.equal(calls.includes("retry-pending"), false);
+    assert.equal(calls.includes("schedule"), false);
+  }
+
+  const legal = harness({
+    refreshCategory: async () => ({ kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+      taxonomyFingerprint: "a".repeat(64), metadata: {
+        descriptionCategoryId: 30, typeId: 40, attributes: metadataAttributes,
+      } }),
+    rebuildItems: async ({ originalItems }) => originalItems.map((item) => ({
+      ...item, description_category_id: 30, type_id: 40, attributes: [
+        validSimple,
+        { complex_id: 0, id: 2,
+          values: [{ value: "canonical", dictionary_value_id: 900 }] },
+      ],
+      complex_attributes: [{ attributes: [
+        { complex_id: 77, id: 300, values: [{ value: "complex-safe" }] },
+      ] }],
+    })),
+  });
+  assert.deepEqual(await legal.service.recover(request), {
+    attemptId: "attempt-a", status: "RETRY_PENDING",
+  });
+});
+
+test("simple and complex correction attributes share one 1000-attribute item limit", async () => {
+  const metadataAttributes = Array.from({ length: 1_000 }, (_, index) => ({
+    id: index + 1, complexId: index === 999 ? 77 : 0, required: false,
+    dictionaryId: null, dictionaryValues: [],
+  }));
+  const { service, calls } = harness({
+    refreshCategory: async () => {
+      calls.push("refresh");
+      return { kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+        taxonomyFingerprint: "a".repeat(64), metadata: {
+          descriptionCategoryId: 30, typeId: 40, attributes: metadataAttributes,
+        } };
+    },
+    rebuildItems: async ({ originalItems }) => originalItems.map((item) => ({
+      ...item, description_category_id: 30, type_id: 40,
+      attributes: metadataAttributes.slice(0, 999).map((attribute) => ({
+        complex_id: 0, id: attribute.id, values: [{ value: "safe" }],
+      })),
+      complex_attributes: [{ attributes: [
+        { complex_id: 77, id: 1_000, values: [{ value: "safe" }] },
+        { complex_id: 77, id: 1_000, values: [{ value: "safe" }] },
+      ] }],
+    })),
+  });
+  assert.deepEqual(await service.recover(request), {
+    attemptId: "attempt-a", status: "NEEDS_REVIEW",
+  });
+  assert.equal(calls.includes("save-match"), false);
+  assert.equal(calls.includes("schedule"), false);
+});
+
 test("cross-account or non-explicit/nonzero-product basis fails before store/Ozon access", async () => {
   for (const mutate of [
     (value) => ({ ...value, accountId: "account-b" }),
