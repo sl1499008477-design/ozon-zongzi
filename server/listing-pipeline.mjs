@@ -69,6 +69,96 @@ function stableId(prefix, ...parts) {
   return `${prefix}_${hash(parts.map((part) => String(part ?? "")).join("|" )).slice(0, 24)}`;
 }
 
+const STOCK_WRITE_COMMAND_KEYS = Object.freeze([
+  "accountId", "jobId", "snapshotId", "storeId", "importOzonTaskId",
+  "recoveryAttemptId", "requestHash", "correlationId", "actorId", "stocks",
+]);
+const STOCK_WRITE_ITEM_KEYS = Object.freeze([
+  "submissionItemId", "offerId", "warehouseId", "quantity",
+]);
+
+function exactDataObject(value, keys) {
+  if (!value || typeof value !== "object" || utilTypes.isProxy(value) || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const names = Object.keys(descriptors);
+  if (names.length !== keys.length || names.some((key) => !keys.includes(key))) return null;
+  if (Object.getOwnPropertySymbols(value).length) return null;
+  for (const key of keys) {
+    const descriptor = descriptors[key];
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) return null;
+  }
+  return descriptors;
+}
+
+function safeStockIdentity(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 240
+    && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function stockCanonicalPart(value) {
+  return `${Buffer.byteLength(value, "utf8")}:${value}`;
+}
+
+export function submissionStockRequestHashV3(rawStocks) {
+  if (!Array.isArray(rawStocks) || utilTypes.isProxy(rawStocks)
+    || Object.getPrototypeOf(rawStocks) !== Array.prototype
+    || rawStocks.length < 1 || rawStocks.length > 1000) return "";
+  const projected = [];
+  const identities = new Set();
+  for (let index = 0; index < rawStocks.length; index += 1) {
+    if (!Object.hasOwn(rawStocks, index)) return "";
+    const descriptors = exactDataObject(rawStocks[index], STOCK_WRITE_ITEM_KEYS);
+    if (!descriptors) return "";
+    const submissionItemId = descriptors.submissionItemId.value;
+    const offerId = descriptors.offerId.value;
+    const warehouseId = descriptors.warehouseId.value;
+    const quantity = descriptors.quantity.value;
+    const identity = `${submissionItemId}\u0000${offerId}`;
+    if (![submissionItemId, offerId, warehouseId].every(safeStockIdentity)
+      || !Number.isSafeInteger(quantity) || quantity < 0 || quantity > 2147483647
+      || identities.has(identity)) return "";
+    identities.add(identity);
+    projected.push({ submissionItemId, offerId, warehouseId, quantity });
+  }
+  projected.sort((left, right) => Buffer.compare(Buffer.from(left.offerId), Buffer.from(right.offerId))
+    || Buffer.compare(Buffer.from(left.submissionItemId), Buffer.from(right.submissionItemId))
+    || Buffer.compare(Buffer.from(left.warehouseId), Buffer.from(right.warehouseId)));
+  const canonicalStocks = projected.map((stock) => [
+    stockCanonicalPart(stock.submissionItemId), stockCanonicalPart(stock.offerId),
+    stockCanonicalPart(stock.warehouseId), String(stock.quantity),
+  ].join(":")).join("|");
+  return crypto.createHash("md5").update(canonicalStocks).digest("hex");
+}
+
+export function projectSubmissionStockWriteCommandV3(value) {
+  const descriptors = exactDataObject(value, STOCK_WRITE_COMMAND_KEYS);
+  if (!descriptors) return null;
+  const fields = Object.fromEntries(STOCK_WRITE_COMMAND_KEYS.map((key) => [key, descriptors[key].value]));
+  if (![fields.accountId, fields.jobId, fields.snapshotId, fields.storeId,
+    fields.importOzonTaskId, fields.correlationId, fields.actorId].every(safeStockIdentity)
+    || !(fields.recoveryAttemptId === null || safeStockIdentity(fields.recoveryAttemptId))
+    || typeof fields.requestHash !== "string" || !/^[a-f0-9]{32}$/u.test(fields.requestHash)
+    || !Array.isArray(fields.stocks) || utilTypes.isProxy(fields.stocks)
+    || Object.getPrototypeOf(fields.stocks) !== Array.prototype) return null;
+  const stocks = [];
+  for (let index = 0; index < fields.stocks.length; index += 1) {
+    if (!Object.hasOwn(fields.stocks, index)) return null;
+    const itemDescriptors = exactDataObject(fields.stocks[index], STOCK_WRITE_ITEM_KEYS);
+    if (!itemDescriptors) return null;
+    stocks.push(Object.freeze(Object.fromEntries(STOCK_WRITE_ITEM_KEYS
+      .map((key) => [key, itemDescriptors[key].value]))));
+  }
+  if (submissionStockRequestHashV3(stocks) !== fields.requestHash) return null;
+  return Object.freeze({
+    accountId: fields.accountId, jobId: fields.jobId, snapshotId: fields.snapshotId,
+    storeId: fields.storeId, importOzonTaskId: fields.importOzonTaskId,
+    recoveryAttemptId: fields.recoveryAttemptId, requestHash: fields.requestHash,
+    correlationId: fields.correlationId, actorId: fields.actorId, stocks: Object.freeze(stocks),
+  });
+}
+
 function clean(value, max = 1000) {
   return String(value ?? "").trim().slice(0, max);
 }
@@ -1796,12 +1886,18 @@ export function projectSubmissionWorkRowV3(row) {
     ? Object.freeze(row.recovery_item_results.map((item) => Object.freeze({
       offerId: item?.offerId, status: item?.status, productId: item?.productId ?? null,
     }))) : Object.freeze([]);
+  const submissionItems = Array.isArray(row.stock_submission_items)
+    ? Object.freeze(row.stock_submission_items.map((item) => Object.freeze({
+      submissionItemId: item?.submissionItemId,
+      offerId: item?.offerId,
+    }))) : Object.freeze([]);
   return {
     ...row,
     items: originalItems,
     effectiveItems: correctionUsable ? correctedItems : originalItems,
     categoryRecovery,
     categoryRecoveryResults,
+    submissionItems,
   };
 }
 
@@ -1865,6 +1961,13 @@ export async function loadSubmissionWorkV3(jobId) {
             recovery.original_ozon_task_id AS recovery_original_ozon_task_id,
             recovery.retry_ozon_task_id AS recovery_retry_ozon_task_id,
             recovery.correlation_id AS recovery_correlation_id,
+            COALESCE((
+              SELECT JSONB_AGG(JSONB_BUILD_OBJECT(
+                'submissionItemId',stock_item.id,'offerId',stock_item.offer_id
+              ) ORDER BY stock_item.sort_order,stock_item.id)
+                FROM submission_items AS stock_item
+               WHERE stock_item.job_id=j.id AND stock_item.snapshot_id=j.snapshot_id
+            ),'[]'::JSONB) AS stock_submission_items,
             COALESCE((
               SELECT JSONB_AGG(JSONB_BUILD_OBJECT(
                 'offerId',child.offer_id,'status',child.status,'productId',child.product_id
@@ -1935,6 +2038,135 @@ export async function loadSubmissionWorkV3(jobId) {
     [jobId],
   );
   return projectSubmissionWorkRowV3(result.rows[0] || null);
+}
+
+function stockWriteConflict() {
+  return Object.assign(new Error("库存写入身份无效，已停止自动写入"), {
+    code: "LISTING_STOCK_WRITE_IDENTITY_CONFLICT",
+    retryable: false,
+    cause: null,
+  });
+}
+
+function stockWriteIntentId(command) {
+  return stableId("stockwrite", command.accountId, command.jobId, command.snapshotId,
+    command.importOzonTaskId, command.recoveryAttemptId || "", command.requestHash);
+}
+
+function sameStockWriteIntent(row, command, { requireActor = true } = {}) {
+  const persistedStocks = Array.isArray(row?.stock_items) ? row.stock_items : [];
+  const sameStocks = persistedStocks.length === command.stocks.length
+    && persistedStocks.every((stock, index) => STOCK_WRITE_ITEM_KEYS
+      .every((key) => stock?.[key] === command.stocks[index]?.[key]));
+  return row && row.id === stockWriteIntentId(command)
+    && row.account_id === command.accountId
+    && row.submission_job_id === command.jobId
+    && row.submission_snapshot_id === command.snapshotId
+    && row.store_id === command.storeId
+    && row.import_ozon_task_id === command.importOzonTaskId
+    && (row.recovery_attempt_id ?? null) === command.recoveryAttemptId
+    && row.request_hash === command.requestHash
+    && row.correlation_id === command.correlationId
+    && (!requireActor || row.actor_id === command.actorId)
+    && Number(row.item_count) === command.stocks.length
+    && sameStocks;
+}
+
+function stockWriteResult(row, replay = false) {
+  return Object.freeze({
+    intentId: row.id,
+    status: row.status,
+    requestHash: row.request_hash,
+    replay,
+  });
+}
+
+export async function prepareSubmissionStockWriteV3(rawCommand) {
+  const command = projectSubmissionStockWriteCommandV3(rawCommand);
+  if (!command) throw stockWriteConflict();
+  try {
+    return await transaction(async (client) => {
+      const id = stockWriteIntentId(command);
+      const inserted = await client.query(
+      `INSERT INTO submission_stock_write_intents(
+         id,account_id,submission_job_id,submission_snapshot_id,store_id,
+         import_ozon_task_id,recovery_attempt_id,request_hash,correlation_id,actor_id,
+         stock_items,item_count,status
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,'PREPARED')
+       ON CONFLICT (id) DO NOTHING RETURNING *`,
+      [id, command.accountId, command.jobId, command.snapshotId, command.storeId,
+        command.importOzonTaskId, command.recoveryAttemptId, command.requestHash,
+        command.correlationId, command.actorId, json(command.stocks), command.stocks.length],
+    );
+      const row = inserted.rows[0] || (await client.query(
+        `SELECT * FROM submission_stock_write_intents
+          WHERE account_id=$1 AND id=$2 FOR UPDATE`, [command.accountId, id],
+      )).rows[0];
+      if (!sameStockWriteIntent(row, command, { requireActor: false })) throw stockWriteConflict();
+      return stockWriteResult(row, !inserted.rowCount);
+    });
+  } catch (error) {
+    if (error?.code === "LISTING_STOCK_WRITE_IDENTITY_CONFLICT") throw error;
+    throw stockWriteConflict();
+  }
+}
+
+async function transitionSubmissionStockWriteV3(rawCommand, { fromStatus, toStatus, failureCode = "" }) {
+  const command = projectSubmissionStockWriteCommandV3(rawCommand);
+  if (!command || !["IN_FLIGHT", "DONE", "AMBIGUOUS"].includes(toStatus)
+    || (toStatus === "AMBIGUOUS"
+      && !["OZON_STOCK_WRITE_AMBIGUOUS", "OZON_STOCK_WRITE_REJECTED"].includes(failureCode))
+    || (toStatus !== "AMBIGUOUS" && failureCode)) throw stockWriteConflict();
+  try {
+    return await transaction(async (client) => {
+      const id = stockWriteIntentId(command);
+      const current = await client.query(
+      `SELECT * FROM submission_stock_write_intents
+        WHERE account_id=$1 AND id=$2 FOR UPDATE`, [command.accountId, id],
+      );
+      const row = current.rows[0];
+      if (!sameStockWriteIntent(row, command, { requireActor: false })) throw stockWriteConflict();
+      if (row.status === toStatus || row.status === "DONE" || row.status === "AMBIGUOUS") {
+        return stockWriteResult(row, true);
+      }
+      if (row.status !== fromStatus) throw stockWriteConflict();
+      const updated = await client.query(
+      `UPDATE submission_stock_write_intents SET
+         status=$3,
+         in_flight_at=CASE WHEN $3='IN_FLIGHT' THEN STATEMENT_TIMESTAMP() ELSE in_flight_at END,
+         done_at=CASE WHEN $3='DONE' THEN STATEMENT_TIMESTAMP() ELSE done_at END,
+         ambiguous_at=CASE WHEN $3='AMBIGUOUS' THEN STATEMENT_TIMESTAMP() ELSE ambiguous_at END,
+         failure_code=$4,actor_id=$6
+       WHERE account_id=$1 AND id=$2 AND status=$5 RETURNING *`,
+      [command.accountId, id, toStatus, failureCode, fromStatus, command.actorId],
+    );
+      if (updated.rowCount !== 1 || !sameStockWriteIntent(updated.rows[0], command)) {
+        throw stockWriteConflict();
+      }
+      return stockWriteResult(updated.rows[0], false);
+    });
+  } catch (error) {
+    if (error?.code === "LISTING_STOCK_WRITE_IDENTITY_CONFLICT") throw error;
+    throw stockWriteConflict();
+  }
+}
+
+export function beginSubmissionStockWriteV3(command) {
+  return transitionSubmissionStockWriteV3(command, {
+    fromStatus: "PREPARED", toStatus: "IN_FLIGHT",
+  });
+}
+
+export function completeSubmissionStockWriteV3(command) {
+  return transitionSubmissionStockWriteV3(command, {
+    fromStatus: "IN_FLIGHT", toStatus: "DONE",
+  });
+}
+
+export function markSubmissionStockWriteAmbiguousV3(command, failureCode = "OZON_STOCK_WRITE_AMBIGUOUS") {
+  return transitionSubmissionStockWriteV3(command, {
+    fromStatus: "IN_FLIGHT", toStatus: "AMBIGUOUS", failureCode,
+  });
 }
 
 export async function scheduleSubmissionCategoryRetryV3({

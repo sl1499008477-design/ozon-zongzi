@@ -32,15 +32,16 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const canonicalSha = (value) => sha(JSON.stringify(canonical(value)));
 
-async function migrationFiles(maximum = 69) {
+async function migrationFiles(maximum = 71) {
   const files = (await readdir(migrationsDir))
     .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= maximum)
     .sort();
   if (maximum === 69) assert.equal(files.at(-1), "069_submission_category_recovery_item_results.sql");
+  if (maximum === 71) assert.equal(files.at(-1), "071_submission_stock_write_ledger.sql");
   return files;
 }
 
-async function applyMigrations(client, maximum = 69) {
+async function applyMigrations(client, maximum = 71) {
   for (const file of await migrationFiles(maximum)) {
     await client.query(await readFile(path.join(migrationsDir, file), "utf8"));
   }
@@ -453,7 +454,7 @@ if (!enabled) {
     skip: "set ACCOUNT_SHARED_CATEGORY_RECOVERY_E2E=1 and both disposable database URLs",
   }, () => {});
 } else {
-  test("001-069 account-shared category and one recovery use real PG and loopback-only Ozon", { timeout: 180_000 }, async () => {
+  test("001-071 account-shared category and one recovery use real PG and loopback-only Ozon", { timeout: 180_000 }, async () => {
     assert.ok(sourceUrl && restoreUrl && sourceContainer && restoreContainer, "two disposable DB/container identities are required");
     const pool = new Pool({ connectionString: sourceUrl });
     const client = await pool.connect();
@@ -464,9 +465,9 @@ if (!enabled) {
     try {
       await client.query(`CREATE SCHEMA ${q(schema)}`);
       await client.query(`SET search_path TO ${q(schema)}, public`);
-      await applyMigrations(client, 69);
+      await applyMigrations(client, 71);
       await client.query("CREATE TABLE schema_migrations(version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
-      for (const migration of await migrationFiles(69)) {
+      for (const migration of await migrationFiles(71)) {
         await client.query("INSERT INTO schema_migrations(version) VALUES($1)", [migration.replace(/\.sql$/u, "")]);
       }
       const accountA = `account-a-${schema}`;
@@ -575,7 +576,9 @@ if (!enabled) {
         "cross-account public confirmation fails before Ozon transport");
 
       const current = (await db.query("SELECT * FROM account_ozon_shared_categories WHERE account_id=$1", [accountA])).rows[0];
-      const sourceEvidence = (await db.query("SELECT * FROM collect_ozon_category_source_evidence WHERE account_id=$1 AND collect_item_id=$2", [accountA, sourceA.collectItemId])).rows[0];
+      const sourceEvidence = (await db.query(`SELECT * FROM collect_ozon_category_source_evidence
+        WHERE account_id=$1 AND collect_item_id=$2 AND id=$3`,
+      [accountA, sourceA.collectItemId, current.source_evidence_id])).rows[0];
       const warehouseId = `warehouse-${schema}`;
       await db.query(`INSERT INTO warehouses(id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived)
         VALUES($1,$2,'platform-fbs-a','FBS','active',TRUE,FALSE)`, [warehouseId, storeA]);
@@ -806,6 +809,33 @@ if (!enabled) {
         clientId: storeA, apiKeyPresent: true,
         body: { stocks: [{ offer_id: "offer-a", warehouse_id: "platform-fbs-a", stock: 5 }] },
       }], "stock continuation preserves the exact store, offer, platform warehouse, and quantity");
+      const stockIntent = (await db.query(`SELECT * FROM submission_stock_write_intents
+        WHERE account_id=$1 AND submission_job_id=$2`, [accountA, jobId])).rows;
+      assert.equal(stockIntent.length, 1);
+      assert.deepEqual({
+        accountId: stockIntent[0].account_id,
+        jobId: stockIntent[0].submission_job_id,
+        snapshotId: stockIntent[0].submission_snapshot_id,
+        storeId: stockIntent[0].store_id,
+        importTaskId: stockIntent[0].import_ozon_task_id,
+        recoveryAttemptId: stockIntent[0].recovery_attempt_id,
+        correlationId: stockIntent[0].correlation_id,
+        status: stockIntent[0].status,
+        stocks: stockIntent[0].stock_items,
+      }, {
+        accountId: accountA, jobId, snapshotId, storeId: storeA,
+        importTaskId: "task-retry", recoveryAttemptId: attempt.id,
+        correlationId: failedWork.correlation_id, status: "DONE",
+        stocks: [{ submissionItemId: itemId, offerId: "offer-a",
+          warehouseId: "platform-fbs-a", quantity: 5 }],
+      });
+      assert.deepEqual((await db.query(`SELECT from_status,to_status,event_type
+        FROM submission_stock_write_events WHERE account_id=$1 AND stock_write_intent_id=$2
+        ORDER BY id`, [accountA, stockIntent[0].id])).rows, [
+        { from_status: "", to_status: "PREPARED", event_type: "submission.stock_write_prepared" },
+        { from_status: "PREPARED", to_status: "IN_FLIGHT", event_type: "submission.stock_write_started" },
+        { from_status: "IN_FLIGHT", to_status: "DONE", event_type: "submission.stock_write_done" },
+      ]);
       const terminalAttempt = (await db.query(`SELECT * FROM submission_category_recovery_attempts
         WHERE account_id=$1 AND submission_job_id=$2`, [accountA, jobId])).rows[0];
       assert.deepEqual({
@@ -999,7 +1029,7 @@ if (!enabled) {
       assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM submission_jobs WHERE id=$1 AND status='QUEUE_PENDING'", [job])).rows[0].count, 1);
       assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM submission_events WHERE job_id=$1 AND event_type='TASK10_HISTORY_SENTINEL'", [job])).rows[0].count, 1);
       assert.equal((await sourceClient.query("SELECT COUNT(*)::int AS count FROM audit_events WHERE event_id=$1", [`audit-${suffix}`])).rows[0].count, 1);
-      for (const file of (await migrationFiles(69)).filter((name) => Number(name.slice(0, 3)) >= 64)) await sourceClient.query(await readFile(path.join(migrationsDir, file), "utf8"));
+      for (const file of (await migrationFiles(71)).filter((name) => Number(name.slice(0, 3)) >= 64)) await sourceClient.query(await readFile(path.join(migrationsDir, file), "utf8"));
 
       await sourceClient.query(`CREATE SCHEMA ${q(rejectedSchema)}`);
       await sourceClient.query(`SET search_path TO ${q(rejectedSchema)}, public`);

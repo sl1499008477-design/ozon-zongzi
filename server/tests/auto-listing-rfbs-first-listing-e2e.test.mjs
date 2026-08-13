@@ -206,8 +206,8 @@ if (!enabled) {
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
       assert.equal(migrations.some((file) => file.startsWith("061_")), true,
         "E2E must include immutable RFBS standard-submission handoff migration 061");
-      assert.equal(migrations.at(-1)?.startsWith("069_"), true,
-        "E2E must apply the complete production migration chain through recovery item results 069");
+      assert.equal(migrations.at(-1)?.startsWith("071_"), true,
+        "E2E must apply the complete production migration chain through stock write ledger 071");
       for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       await admin.query("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
       for (const migration of migrations) {
@@ -702,6 +702,191 @@ if (!enabled) {
         FROM auto_listing_upload_attempts WHERE account_id=$1 AND outcome='RESERVED'`, [success.account]))
         .rows[0].warehouse_validation_evidence_id,
       successSubmission.reservation.warehouseValidationEvidenceId);
+
+      // RED: a stock 200 followed by a crash-equivalent terminal write failure must not send stock again.
+      const terminalCrashCallsStart = calls.length;
+      const terminalCrash = await createScenarioJob(await seedScenario("stock-terminal-crash"));
+      const terminalCrashSubmission = await reserveAndCreateSubmission(terminalCrash);
+      await processListingQueueMessage({
+        submissionJobId: terminalCrashSubmission.submissionJobId, action: "submit",
+      });
+      await pool.query(`CREATE FUNCTION reject_terminal_stock_crash_${suffix}()
+        RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN
+          IF OLD.id='${terminalCrashSubmission.submissionJobId}' AND NEW.status='SUCCEEDED' THEN
+            RAISE EXCEPTION 'controlled crash after stock response';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await pool.query(`CREATE TRIGGER reject_terminal_stock_crash_${suffix}
+        BEFORE UPDATE ON submission_jobs FOR EACH ROW
+        EXECUTE FUNCTION reject_terminal_stock_crash_${suffix}()`);
+      await processListingQueueMessage({
+        submissionJobId: terminalCrashSubmission.submissionJobId, action: "check",
+      });
+      await pool.query(`DROP TRIGGER reject_terminal_stock_crash_${suffix} ON submission_jobs`);
+      await pool.query(`DROP FUNCTION reject_terminal_stock_crash_${suffix}()`);
+      await processListingQueueMessage({
+        submissionJobId: terminalCrashSubmission.submissionJobId, action: "check",
+      });
+      assert.equal(calls.slice(terminalCrashCallsStart)
+        .filter(({ path: value }) => value === "/v2/products/stocks").length, 1,
+      "terminal replay must not send a second stock request after the first response was accepted");
+      assert.equal((await pool.query(`SELECT status FROM submission_stock_write_intents
+        WHERE account_id=$1 AND submission_job_id=$2`,
+      [terminalCrash.account, terminalCrashSubmission.submissionJobId])).rows[0].status, "DONE");
+      const terminalCrashCounts = {
+        imports: calls.slice(terminalCrashCallsStart)
+          .filter(({ path: value }) => value === "/v3/product/import").length,
+        stocks: calls.slice(terminalCrashCallsStart)
+          .filter(({ path: value }) => value === "/v2/products/stocks").length,
+      };
+      await (await import("../listing-pipeline.mjs")).recoverStaleSubmissionJobsV3({
+        workerId: "stock-terminal-watchdog", limit: 100,
+      });
+      await processListingQueueMessage({
+        submissionJobId: terminalCrashSubmission.submissionJobId, action: "check",
+      });
+      assert.deepEqual({
+        imports: calls.slice(terminalCrashCallsStart)
+          .filter(({ path: value }) => value === "/v3/product/import").length,
+        stocks: calls.slice(terminalCrashCallsStart)
+          .filter(({ path: value }) => value === "/v2/products/stocks").length,
+      }, terminalCrashCounts);
+
+      // A 200 followed by failure to persist DONE is durably ambiguous and never resent.
+      const responseCrashCallsStart = calls.length;
+      const responseCrash = await createScenarioJob(await seedScenario("stock-response-crash"));
+      const responseCrashSubmission = await reserveAndCreateSubmission(responseCrash);
+      await processListingQueueMessage({
+        submissionJobId: responseCrashSubmission.submissionJobId, action: "submit",
+      });
+      await pool.query(`CREATE FUNCTION reject_stock_done_${suffix}()
+        RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.submission_job_id='${responseCrashSubmission.submissionJobId}'
+            AND OLD.status='IN_FLIGHT' AND NEW.status='DONE' THEN
+            RAISE EXCEPTION 'controlled crash after stock 200 before DONE';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await pool.query(`CREATE TRIGGER reject_stock_done_${suffix}
+        BEFORE UPDATE ON submission_stock_write_intents FOR EACH ROW
+        EXECUTE FUNCTION reject_stock_done_${suffix}()`);
+      await processListingQueueMessage({
+        submissionJobId: responseCrashSubmission.submissionJobId, action: "check",
+      });
+      await pool.query(`DROP TRIGGER reject_stock_done_${suffix} ON submission_stock_write_intents`);
+      await pool.query(`DROP FUNCTION reject_stock_done_${suffix}()`);
+      await processListingQueueMessage({
+        submissionJobId: responseCrashSubmission.submissionJobId, action: "check",
+      });
+      assert.equal(calls.slice(responseCrashCallsStart)
+        .filter(({ path: value }) => value === "/v2/products/stocks").length, 1);
+      assert.deepEqual((await pool.query(`SELECT intent.status,job.status AS job_status
+        FROM submission_stock_write_intents AS intent
+        JOIN submission_jobs AS job ON job.account_id=intent.account_id AND job.id=intent.submission_job_id
+        WHERE intent.account_id=$1 AND intent.submission_job_id=$2`,
+      [responseCrash.account, responseCrashSubmission.submissionJobId])).rows[0], {
+        status: "AMBIGUOUS", job_status: "PARTIAL_SUCCESS",
+      });
+
+      // An orphaned IN_FLIGHT intent is fail-safe ambiguous: restart never calls stock.
+      const preNetworkCrashCallsStart = calls.length;
+      const preNetworkCrash = await createScenarioJob(await seedScenario("stock-pre-network-crash"));
+      const preNetworkCrashSubmission = await reserveAndCreateSubmission(preNetworkCrash);
+      await processListingQueueMessage({
+        submissionJobId: preNetworkCrashSubmission.submissionJobId, action: "submit",
+      });
+      const preNetworkWork = await loadSubmissionWorkV3(preNetworkCrashSubmission.submissionJobId);
+      await pool.query("UPDATE submission_jobs SET status='CHECKING' WHERE account_id=$1 AND id=$2",
+        [preNetworkCrash.account, preNetworkCrashSubmission.submissionJobId]);
+      const preNetworkStockItems = preNetworkWork.stocks.map((stock) => ({
+        submissionItemId: preNetworkWork.submissionItems.find((entry) => entry.offerId === stock.offer_id)
+          .submissionItemId,
+        offerId: stock.offer_id,
+        warehouseId: stock.warehouse_id,
+        quantity: stock.stock,
+      }));
+      const stockPorts = await import("../listing-pipeline.mjs");
+      const preNetworkCommand = {
+        accountId: preNetworkWork.account_id,
+        jobId: preNetworkWork.id,
+        snapshotId: preNetworkWork.snapshot_id,
+        storeId: preNetworkWork.store_id,
+        importOzonTaskId: preNetworkWork.ozon_task_id,
+        recoveryAttemptId: null,
+        requestHash: stockPorts.submissionStockRequestHashV3(preNetworkStockItems),
+        correlationId: preNetworkWork.correlation_id,
+        actorId: "controlled-crash-worker",
+        stocks: preNetworkStockItems,
+      };
+      await stockPorts.prepareSubmissionStockWriteV3(preNetworkCommand);
+      const mutateStock = (patch) => {
+        const stocks = preNetworkCommand.stocks.map((stock, index) => index === 0
+          ? { ...stock, ...(patch.stock || {}) } : { ...stock });
+        return { ...preNetworkCommand, ...(patch.command || {}), stocks,
+          requestHash: patch.command?.requestHash
+            ?? stockPorts.submissionStockRequestHashV3(stocks) };
+      };
+      for (const hostile of [
+        mutateStock({ command: { accountId: "wrong-account" } }),
+        mutateStock({ command: { jobId: "wrong-job" } }),
+        mutateStock({ command: { snapshotId: "wrong-snapshot" } }),
+        mutateStock({ command: { importOzonTaskId: "wrong-task" } }),
+        mutateStock({ stock: { submissionItemId: "wrong-item" } }),
+        mutateStock({ stock: { offerId: "wrong-offer" } }),
+        mutateStock({ stock: { warehouseId: "wrong-warehouse" } }),
+        mutateStock({ stock: { quantity: 6 } }),
+        mutateStock({ command: { requestHash: "0".repeat(32) } }),
+      ]) {
+        await assert.rejects(stockPorts.prepareSubmissionStockWriteV3(hostile),
+          { code: "LISTING_STOCK_WRITE_IDENTITY_CONFLICT" });
+      }
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
+        FROM submission_stock_write_intents WHERE submission_job_id=$1`,
+      [preNetworkCrashSubmission.submissionJobId])).rows[0].count), 1);
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
+        FROM submission_stock_write_events WHERE submission_job_id=$1`,
+      [preNetworkCrashSubmission.submissionJobId])).rows[0].count), 1);
+      await stockPorts.beginSubmissionStockWriteV3(preNetworkCommand);
+      await processListingQueueMessage({
+        submissionJobId: preNetworkCrashSubmission.submissionJobId, action: "check",
+      });
+      assert.equal(calls.slice(preNetworkCrashCallsStart)
+        .filter(({ path: value }) => value === "/v2/products/stocks").length, 0);
+      assert.deepEqual((await pool.query(`SELECT intent.status,job.status AS job_status,job.error_code
+        FROM submission_stock_write_intents AS intent
+        JOIN submission_jobs AS job ON job.account_id=intent.account_id AND job.id=intent.submission_job_id
+        WHERE intent.account_id=$1 AND intent.submission_job_id=$2`,
+      [preNetworkCrash.account, preNetworkCrashSubmission.submissionJobId])).rows[0], {
+        status: "AMBIGUOUS",
+        job_status: "PARTIAL_SUCCESS",
+        error_code: "OZON_STOCK_RESULT_AMBIGUOUS",
+      });
+      await assert.rejects(pool.query(`UPDATE submission_stock_write_intents
+        SET request_hash=$1 WHERE account_id=$2 AND submission_job_id=$3`,
+      ["f".repeat(32), preNetworkCrash.account, preNetworkCrashSubmission.submissionJobId]),
+      (error) => error?.code === "23514");
+      await assert.rejects(pool.query(`UPDATE submission_stock_write_events
+        SET actor_id='forged' WHERE account_id=$1 AND submission_job_id=$2`,
+      [preNetworkCrash.account, preNetworkCrashSubmission.submissionJobId]),
+      (error) => error?.code === "23514");
+      await assert.rejects(pool.query(`DELETE FROM submission_stock_write_intents
+        WHERE account_id=$1 AND submission_job_id=$2`,
+      [preNetworkCrash.account, preNetworkCrashSubmission.submissionJobId]),
+      (error) => error?.code === "23514");
+      await assert.rejects(pool.query(`INSERT INTO submission_stock_write_intents(
+        id,account_id,submission_job_id,submission_snapshot_id,store_id,
+        import_ozon_task_id,recovery_attempt_id,request_hash,correlation_id,actor_id,
+        stock_items,item_count,status)
+        SELECT id||'-forged',account_id,submission_job_id,submission_snapshot_id,store_id,
+          import_ozon_task_id,recovery_attempt_id,request_hash,correlation_id,actor_id,
+          stock_items,item_count,'DONE'
+        FROM submission_stock_write_intents
+        WHERE account_id=$1 AND submission_job_id=$2`,
+      [preNetworkCrash.account, preNetworkCrashSubmission.submissionJobId]),
+      (error) => error?.code === "23514");
       const handoff = (await pool.query(`SELECT * FROM submission_rfbs_handoffs
         WHERE account_id=$1 AND submission_job_id=$2`,
       [success.account, successSubmission.submissionJobId])).rows[0];
@@ -1085,6 +1270,53 @@ if (!enabled) {
       await processListingQueueMessage({ submissionJobId: stockSubmission.submissionJobId, action: "check" });
       assert.equal(calls.slice(stockFailCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 1);
       assert.equal(calls.slice(stockFailCallsStart).filter(({ path: value }) => value === "/v2/products/stocks").length, 1);
+
+      // Parent cleanup cascades the stock child ledger; ordinary child deletes remain blocked above.
+      const cleanup = {
+        account: `stock-cleanup-account-${suffix}`,
+        store: `stock-cleanup-store-${suffix}`,
+        snapshot: `stock-cleanup-snapshot-${suffix}`,
+        job: `stock-cleanup-job-${suffix}`,
+        item: `stock-cleanup-item-${suffix}`,
+      };
+      await pool.query(`INSERT INTO accounts(id,username,display_name,role,status)
+        VALUES($1,$1,$1,'admin','active')`, [cleanup.account]);
+      await pool.query(`INSERT INTO stores(id,label,company_name,client_id,status,owner_account_id)
+        VALUES($1,$1,$1,$1,'active',$2)`, [cleanup.store, cleanup.account]);
+      const cleanupStocks = [{ offer_id: "cleanup-offer", warehouse_id: "cleanup-platform", stock: 0 }];
+      const cleanupItems = [{ offer_id: "cleanup-offer", sku: "cleanup-sku" }];
+      await pool.query(`INSERT INTO submission_snapshots(
+        id,account_id,store_id,idempotency_key,snapshot_hash,item_count,items,stocks)
+        VALUES($1,$2,$3,$4,$5,1,$6::jsonb,$7::jsonb)`,
+      [cleanup.snapshot, cleanup.account, cleanup.store, `cleanup-${suffix}`, H("e"),
+        JSON.stringify(cleanupItems), JSON.stringify(cleanupStocks)]);
+      await pool.query(`INSERT INTO submission_jobs(
+        id,snapshot_id,account_id,store_id,status,ozon_task_id,item_count,correlation_id)
+        VALUES($1,$2,$3,$4,'CHECKING','cleanup-task',1,'cleanup-correlation')`,
+      [cleanup.job, cleanup.snapshot, cleanup.account, cleanup.store]);
+      await pool.query(`INSERT INTO submission_items(
+        id,job_id,snapshot_id,variant_key,offer_id,status,product_id)
+        VALUES($1,$2,$3,'cleanup','cleanup-offer','SUCCEEDED','1')`,
+      [cleanup.item, cleanup.job, cleanup.snapshot]);
+      const cleanupStockItems = [{ submissionItemId: cleanup.item, offerId: "cleanup-offer",
+        warehouseId: "cleanup-platform", quantity: 0 }];
+      const cleanupCommand = {
+        accountId: cleanup.account, jobId: cleanup.job, snapshotId: cleanup.snapshot,
+        storeId: cleanup.store, importOzonTaskId: "cleanup-task", recoveryAttemptId: null,
+        requestHash: (await import("../listing-pipeline.mjs"))
+          .submissionStockRequestHashV3(cleanupStockItems),
+        correlationId: "cleanup-correlation", actorId: "cleanup-worker", stocks: cleanupStockItems,
+      };
+      await (await import("../listing-pipeline.mjs")).prepareSubmissionStockWriteV3(cleanupCommand);
+      await pool.query("DELETE FROM submission_jobs WHERE account_id=$1 AND id=$2",
+        [cleanup.account, cleanup.job]);
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
+        FROM submission_stock_write_intents WHERE account_id=$1`, [cleanup.account])).rows[0].count), 0);
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
+        FROM submission_stock_write_events WHERE account_id=$1`, [cleanup.account])).rows[0].count), 0);
+      await pool.query("DELETE FROM submission_snapshots WHERE account_id=$1 AND id=$2",
+        [cleanup.account, cleanup.snapshot]);
+      await pool.query("DELETE FROM accounts WHERE id=$1", [cleanup.account]);
     } finally {
       await closePostgresPool?.().catch(() => {});
       await pool?.end().catch(() => {});

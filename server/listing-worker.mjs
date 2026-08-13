@@ -12,15 +12,19 @@ import { dispatchListingOutboxOnce, getListingBoss, stopListingBoss } from "./li
 import {
   LISTING_QUEUE,
   beginSubmissionCategoryRecoveryV3,
+  beginSubmissionStockWriteV3,
   claimSubmissionJobV3,
+  completeSubmissionStockWriteV3,
   completeSubmissionCategoryRecoveryV3,
   enqueueSubmissionActionV3,
   incrementSubmissionStatusCheckV3,
   listingPipelineEnabled,
   loadSubmissionWorkV3,
+  markSubmissionStockWriteAmbiguousV3,
   markSubmissionCategoryRetryAcceptedV3,
   patchLegacyCollectStatusV3,
   persistSubmissionCategoryRetryResultsV3,
+  prepareSubmissionStockWriteV3,
   readStoreCredentialV3,
   recoverStaleSubmissionJobsV3,
   releaseSubmissionLockV3,
@@ -28,6 +32,7 @@ import {
   requireSubmissionCategoryRetryUncertainReviewV3,
   transitionSubmissionJobV3,
   updateSubmissionItemsV3,
+  submissionStockRequestHashV3,
 } from "./listing-pipeline.mjs";
 
 const workerId = `${process.env.HOSTNAME || "local"}_${process.pid}_${crypto.randomUUID()}`;
@@ -421,16 +426,70 @@ async function finishSuccessfulImport(work, statusInfo) {
   let finalStatus = statusInfo.status;
   let statusMessage = statusInfo.statusMessage || "";
   let errorMessage = statusInfo.errorMessage || "";
+  let completionErrorCode = "";
   const stocks = Array.isArray(work.stocks) ? work.stocks : [];
   if (finalStatus === "SUCCEEDED" && stocks.length) {
     try {
       await authorizeListingRfbsWritePhase(work, "PRE_STOCK");
       const credential = await readStoreCredentialV3(work.store_id, work.account_id);
-      await callOzonSellerApi(credential, "/v2/products/stocks", { stocks }, 60000);
-      statusMessage = `商品已上架，${stocks.length} 条库存已同步`;
+      const submissionItems = Array.isArray(work.submissionItems) ? work.submissionItems : [];
+      const itemByOffer = new Map(submissionItems.map((item) => [item?.offerId, item?.submissionItemId]));
+      const stockItems = stocks.map((stock) => ({
+        submissionItemId: itemByOffer.get(stock?.offer_id),
+        offerId: stock?.offer_id,
+        warehouseId: stock?.warehouse_id,
+        quantity: stock?.stock,
+      }));
+      const stockCommand = {
+        accountId: work.account_id,
+        jobId: work.id,
+        snapshotId: work.snapshot_id,
+        storeId: work.store_id,
+        importOzonTaskId: work.ozon_task_id,
+        recoveryAttemptId: work.categoryRecovery?.retryOzonTaskId === work.ozon_task_id
+          ? work.categoryRecovery.attemptId : null,
+        requestHash: submissionStockRequestHashV3(stockItems),
+        correlationId: work.correlation_id,
+        actorId: workerId,
+        stocks: stockItems,
+      };
+      const prepared = await prepareSubmissionStockWriteV3(stockCommand);
+      if (prepared.status === "DONE") {
+        statusMessage = `商品已上架，${stocks.length} 条库存已同步`;
+      } else if (["IN_FLIGHT", "AMBIGUOUS"].includes(prepared.status)) {
+        if (prepared.status === "IN_FLIGHT") {
+          await markSubmissionStockWriteAmbiguousV3(stockCommand);
+        }
+        finalStatus = "PARTIAL_SUCCESS";
+        completionErrorCode = "OZON_STOCK_RESULT_AMBIGUOUS";
+        errorMessage = "商品已上架，但库存写入结果无法确认；系统未自动重发，请人工核对库存后执行库存恢复";
+      } else {
+        const begun = await beginSubmissionStockWriteV3(stockCommand);
+        if (begun.status !== "IN_FLIGHT") {
+          throw Object.assign(new Error("库存写入状态无法安全开始"), {
+            code: "LISTING_STOCK_WRITE_IDENTITY_CONFLICT",
+          });
+        }
+        try {
+          await callOzonSellerApi(credential, "/v2/products/stocks", { stocks }, 60000);
+          await completeSubmissionStockWriteV3(stockCommand);
+          statusMessage = `商品已上架，${stocks.length} 条库存已同步`;
+        } catch (error) {
+          await markSubmissionStockWriteAmbiguousV3(stockCommand,
+            Number.isSafeInteger(error?.status) && error.status > 0
+              ? "OZON_STOCK_WRITE_REJECTED" : "OZON_STOCK_WRITE_AMBIGUOUS");
+          throw error;
+        }
+      }
     } catch (error) {
-      finalStatus = "PARTIAL_SUCCESS";
-      errorMessage = `商品已上架，但库存同步失败：${error?.message || error}`;
+      if (finalStatus !== "PARTIAL_SUCCESS") {
+        finalStatus = "PARTIAL_SUCCESS";
+        completionErrorCode = error?.code === "LISTING_STOCK_WRITE_IDENTITY_CONFLICT"
+          ? "OZON_STOCK_WRITE_BLOCKED" : "OZON_STOCK_WRITE_FAILED";
+        errorMessage = error?.code === "LISTING_STOCK_WRITE_IDENTITY_CONFLICT"
+          ? "商品已上架，但库存写入身份无法安全确认；请人工核对库存"
+          : `商品已上架，但库存同步失败：${error?.message || error}`;
+      }
     }
   }
   if (finalStatus === "SKIPPED") finalStatus = "FAILED";
@@ -438,7 +497,8 @@ async function finishSuccessfulImport(work, statusInfo) {
     successCount: statusInfo.success,
     failedCount: statusInfo.failed,
     skippedCount: statusInfo.skipped,
-    errorCode: finalStatus === "FAILED" || finalStatus === "PARTIAL_SUCCESS" ? "OZON_ITEM_RESULT" : "",
+    errorCode: completionErrorCode
+      || (finalStatus === "FAILED" || finalStatus === "PARTIAL_SUCCESS" ? "OZON_ITEM_RESULT" : ""),
     errorMessage,
     statusMessage,
     resultSummary: {

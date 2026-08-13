@@ -234,7 +234,8 @@ test("standard pipeline retains product success as PARTIAL_SUCCESS when stock sy
          FROM submission_jobs WHERE id=$1`, [ids.submissionJob])).rows[0];
     assert.deepEqual({ status: completed.status, task: completed.ozon_task_id,
       success: completed.success_count, failed: completed.failed_count, code: completed.error_code }, {
-      status: "PARTIAL_SUCCESS", task: "123456", success: 1, failed: 0, code: "OZON_ITEM_RESULT",
+      status: "PARTIAL_SUCCESS", task: "123456", success: 1, failed: 0,
+      code: "OZON_STOCK_WRITE_FAILED",
     });
     assert.deepEqual(completed.result_summary, { success: 1, failed: 0, skipped: 0, stockCount: 1 });
     assert.equal(calls.filter((path) => path === "/v3/product/import").length, 1);

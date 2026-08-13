@@ -38,7 +38,7 @@ const recoveryMetadata = Object.freeze({
 
 async function applyAll(client) {
   const files = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
-  assert.equal(files.at(-1), "069_submission_category_recovery_item_results.sql");
+  assert.equal(files.at(-1), "071_submission_stock_write_ledger.sql");
   for (const file of files) await client.query(await readFile(path.join(migrationsDir, file), "utf8"));
 }
 
@@ -161,7 +161,7 @@ async function insertSuccessfulRetryChild(client, schema, ids, attemptId, retryO
 if (!enabled) {
   test("Task 7 recovery PostgreSQL requires a disposable database", { skip: "requires disposable PG16" }, () => {});
 } else {
-  test("001-069 persists one exact tenant-bound recovery and enforces immutable transitions", { timeout: 120_000 }, async () => {
+  test("001-071 persists one exact tenant-bound recovery and enforces immutable transitions", { timeout: 120_000 }, async () => {
     const pool = new Pool({ connectionString: databaseUrl });
     const client = await pool.connect();
     const suffix = crypto.randomUUID().replaceAll("-", "");
