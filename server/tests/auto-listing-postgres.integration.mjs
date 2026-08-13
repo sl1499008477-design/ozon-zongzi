@@ -1034,6 +1034,32 @@ if (!enabled) {
       assert.equal(await repository.getJob({ accountId: accountB, jobId: created.id }), null);
       assert.deepEqual((await repository.listJobs({ accountId: accountB, limit: 10 })).map((job) => job.id), [other.id]);
 
+      const listOldInput = graph(accountA, "latest-list-old", "latest-list-source");
+      const listNewInput = graph(accountA, "latest-list-new", "latest-list-source");
+      listNewInput.categoryPreparationLeaseId = `category-lease-latest-list-new-${suffix}`;
+      await registerGraphSources(client, listOldInput);
+      await registerGraphSources(client, listNewInput);
+      const listOld = await repository.createJobGraph(listOldInput);
+      const listNew = await repository.createJobGraph(listNewInput);
+      await client.query(
+        "UPDATE auto_listing_jobs SET created_at='2099-01-01T00:00:00Z' WHERE account_id=$1 AND id=$2",
+        [accountA, listOld.id],
+      );
+      await client.query(
+        "UPDATE auto_listing_jobs SET created_at='2100-01-01T00:00:00Z' WHERE account_id=$1 AND id=$2",
+        [accountA, listNew.id],
+      );
+      const latestVisible = await repository.listJobs({ accountId: accountA, limit: 1 });
+      assert.deepEqual(latestVisible.map((job) => [job.id, job.items.map((entry) => entry.sourceRecordId)]), [
+        [listNew.id, ["collect-latest-list-source"]],
+      ], "ranking must remove the old same-source/store item before the visible-row limit");
+      assert.equal((await repository.getJob({ accountId: accountA, jobId: listOld.id })).id, listOld.id,
+        "historical getJob remains available after ordinary-list collapse");
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND id IN ($2,$3)",
+        [accountA, listOld.id, listNew.id],
+      )).rows[0].count), 2, "ordinary-list collapse must not delete history");
+
       const duplicateEvent = graph(accountA, "duplicate-transition-event", "duplicate-transition-event");
       await registerGraphSources(client, duplicateEvent);
       const duplicateJob = await repository.createJobGraph(duplicateEvent);

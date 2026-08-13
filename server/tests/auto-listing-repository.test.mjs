@@ -254,6 +254,79 @@ test("event insertion failure rolls back the status and recovery-point write", a
   assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
 });
 
+test("ordinary list ranks item rows before limit and filters unselected siblings while getJob keeps history", async () => {
+  const calls = [];
+  const jobs = {
+    "job-new": { id: "job-new", account_id: "account-a", source_type: "COLLECT_BOX", status: "CREATED",
+      strategy_version_id: "strategy-a", correlation_id: "corr-new",
+      created_at: new Date("2026-08-12T02:00:00.000Z"), updated_at: new Date("2026-08-12T02:00:00.000Z") },
+    "job-other-store": { id: "job-other-store", account_id: "account-a", source_type: "COLLECT_BOX", status: "CREATED",
+      strategy_version_id: "strategy-a", correlation_id: "corr-other",
+      created_at: new Date("2026-08-12T01:00:00.000Z"), updated_at: new Date("2026-08-12T01:00:00.000Z") },
+  };
+  const itemRows = {
+    "job-new": [
+      { id: "item-new-a", status: "SOURCE_READY", status_version: 1, target_store_id: "store-a",
+        target_warehouse_id: "warehouse-a", source_record_id: "collect-a", source_version: "1",
+        snapshot_hash: "hash-a", created_at: new Date(), updated_at: new Date() },
+      { id: "item-new-sibling", status: "SOURCE_READY", status_version: 1, target_store_id: "store-a",
+        target_warehouse_id: "warehouse-a", source_record_id: "collect-b", source_version: "1",
+        snapshot_hash: "hash-b", created_at: new Date(), updated_at: new Date() },
+    ],
+    "job-other-store": [{ id: "item-other-store", status: "SOURCE_READY", status_version: 1,
+      target_store_id: "store-b", target_warehouse_id: "warehouse-b", source_record_id: "collect-a",
+      source_version: "1", snapshot_hash: "hash-c", created_at: new Date(), updated_at: new Date() }],
+  };
+  const eventRows = {
+    "job-new": [
+      { id: "event-job", item_id: null, event_type: "JOB_CREATED", details: {}, created_at: new Date() },
+      { id: "event-a", item_id: "item-new-a", event_type: "SOURCE_CAPTURED", details: {}, created_at: new Date() },
+      { id: "event-sibling", item_id: "item-new-sibling", event_type: "SOURCE_CAPTURED", details: {}, created_at: new Date() },
+    ],
+    "job-other-store": [],
+  };
+  const pool = {
+    async connect() { return pool; },
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/WITH ranked_items AS/.test(sql)) return { rows: [
+        { job_id: "job-new", item_id: "item-new-a" },
+        { job_id: "job-other-store", item_id: "item-other-store" },
+      ] };
+      if (/SELECT id,account_id,source_type,status,strategy_version_id/.test(sql)) {
+        return { rows: jobs[params[0]] && params[1] === "account-a" ? [jobs[params[0]]] : [] };
+      }
+      if (/FROM auto_listing_job_items i/.test(sql)) {
+        const selectedIds = Array.isArray(params[2]) ? new Set(params[2]) : null;
+        return { rows: itemRows[params[0]].filter((row) => !selectedIds || selectedIds.has(row.id)) };
+      }
+      if (/FROM auto_listing_events/.test(sql)) {
+        const selectedIds = Array.isArray(params[2]) ? new Set(params[2]) : null;
+        return { rows: eventRows[params[0]].filter((row) => !selectedIds || row.item_id === null || selectedIds.has(row.item_id)) };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  };
+  const repository = createAutoListingRepository({ pool });
+  const listed = await repository.listJobs({ accountId: "account-a", limit: 2 });
+  assert.deepEqual(listed.map((job) => [job.id, job.items.map((item) => item.id)]), [
+    ["job-new", ["item-new-a"]], ["job-other-store", ["item-other-store"]],
+  ]);
+  assert.deepEqual(listed[0].events.map((event) => event.id), ["event-job", "event-a"]);
+  const ranked = calls.find(({ sql }) => /WITH ranked_items AS/.test(sql));
+  assert.match(ranked.sql, /PARTITION BY snapshot\.source_record_id,item\.target_store_id/u);
+  assert.match(ranked.sql, /ORDER BY job\.created_at DESC,job\.id DESC,item\.id ASC/u);
+  assert.match(ranked.sql, /WHERE item_rank=1[\s\S]*LIMIT \$2/u);
+  assert.deepEqual(ranked.params, ["account-a", 2]);
+  assert.match(ranked.sql, /job\.account_id=\$1/u);
+  assert.match(ranked.sql, /item\.account_id=job\.account_id/u);
+  assert.match(ranked.sql, /snapshot\.account_id=job\.account_id/u);
+
+  const full = await repository.getJob({ accountId: "account-a", jobId: "job-new" });
+  assert.deepEqual(full.items.map((item) => item.id), ["item-new-a", "item-new-sibling"]);
+  assert.deepEqual(full.events.map((event) => event.id), ["event-job", "event-a", "event-sibling"]);
+});
+
 function warehouseGraph({ itemCount = 1 } = {}) {
   const { config, configHash } = normalizeAndHashAutoListingConfig({
     targetStoreId: "store-a",

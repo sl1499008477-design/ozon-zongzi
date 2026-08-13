@@ -17,6 +17,15 @@ const FAILURE = Object.freeze({
   OZON_SKU_SCRAPE_EMPTY: "暂时无法读取 Ozon 商品资料，可以重试",
   PRODUCT_DIMENSIONS_UNAVAILABLE: "没有可靠的商品尺寸，将不生成尺寸图",
   AUTO_LISTING_CATEGORY_NOT_READY: "商品类目尚未准备完成，可以稍后重试",
+  AUTO_LISTING_CATEGORY_RECOVERY_INVALIDATED: "Ozon 类目已失效，正在自动修复",
+  AUTO_LISTING_CATEGORY_RECOVERY_MATCHED: "类目已重新匹配，正在继续上架",
+  AUTO_LISTING_CATEGORY_RECOVERY_NEEDS_REVIEW: "无法确认商品类目，请人工选择",
+  AUTO_LISTING_CATEGORY_RECOVERY_MATCH_AMBIGUOUS: "无法确认商品类目，请人工选择",
+  AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE: "无法确认商品类目，请人工选择",
+  AUTO_LISTING_CATEGORY_RECOVERY_RETRY_FAILED: "无法确认商品类目，请人工选择",
+  AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED: "无法确认商品类目，请人工选择",
+  AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN: "Ozon 返回结果不明确，正在核对原任务",
+  AUTO_LISTING_CATEGORY_RECOVERY_PRODUCT_UNKNOWN: "Ozon 返回结果不明确，正在核对原任务",
 });
 
 const IMPORT_STATUS = Object.freeze({
@@ -123,4 +132,25 @@ export function autoListingImportRowPresentation(value = {}) {
     errorLabel: errorCode ? (IMPORT_ROW_ERROR[errorCode] || "该行暂时无法处理") : "",
     recoverable: value.recoverable === true,
   });
+}
+
+function canonicalTimestamp(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
+}
+
+export function autoListingTaskRows(jobs) {
+  return (Array.isArray(jobs) ? jobs : []).flatMap((job) => {
+    if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId.trim()
+      || !Array.isArray(job.items)) return [];
+    const jobCreatedAt = canonicalTimestamp(job.createdAt);
+    return job.items.filter((item) => item && typeof item === "object" && !Array.isArray(item))
+      .map((item) => ({ ...item, jobId: job.jobId, jobCreatedAt }));
+  });
+}
+
+export function autoListingCreatedAtLabel(value) {
+  const timestamp = canonicalTimestamp(value);
+  return timestamp ? `${timestamp.slice(0, 10)} ${timestamp.slice(11, 19)}` : "—";
 }

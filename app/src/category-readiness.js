@@ -70,90 +70,75 @@ export function sourceCategoryEvidenceOf(item = {}) {
   });
 }
 
-export function categoryResolutionForStore(resolution, targetStoreId) {
-  if (!resolution || typeof resolution !== "object") return null;
-  const resolutionStoreId = resolution.status === "MATCHED"
-    ? resolution.target?.storeId
-    : resolution.targetStoreId;
-  if (String(resolutionStoreId || "") !== String(targetStoreId || "")) return null;
-  if (resolution.status === "PENDING") return structuredClone(resolution);
-  if (resolution.status !== "MATCHED") return null;
-  if (!cleanText(resolution.method)) return null;
-  if (!positiveNumber(resolution.target?.descriptionCategoryId) || !positiveNumber(resolution.target?.typeId)) return null;
-  return structuredClone(resolution);
-}
+const SHARED_CATEGORY_KEYS = Object.freeze([
+  "status", "taxonomyScope", "sourceDescriptionCategoryId", "sourceTypeId",
+  "currentDescriptionCategoryId", "currentTypeId", "source", "version",
+  "validatedAt", "action", "message",
+]);
 
-export function categoryResolutionForTarget(
-  resolution,
-  { targetStoreId, taxonomyScope = "OZON:DEFAULT" } = {},
-) {
-  if (resolution?.taxonomyScope) {
-    return resolution.taxonomyScope === taxonomyScope ? structuredClone(resolution) : null;
+const positiveSafeInteger = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
+
+function plainDataRecord(value, allowedKeys) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Object.prototype) return null;
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (keys.some((key) => typeof key !== "string" || !allowedKeys.includes(key)
+      || !descriptors[key]?.enumerable || !("value" in descriptors[key]))) return null;
+    return Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
+  } catch {
+    return null;
   }
-  return categoryResolutionForStore(resolution, targetStoreId);
 }
 
-export function categoryResolutionForCollectionTarget(
-  item,
-  { targetStoreId, taxonomyScope = "OZON:DEFAULT", legacyResolution } = {},
-) {
-  const sharedResolution = item?.categoryResolution;
-  if (sharedResolution?.taxonomyScope) {
-    const sharedMatch = categoryResolutionForTarget(sharedResolution, {
-      targetStoreId,
-      taxonomyScope,
-    });
-    if (sharedMatch) return sharedMatch;
-  }
-  const legacyCandidate = legacyResolution === undefined
-    ? item?.listingDraft?.categoryResolution
-    : legacyResolution;
-  const legacy = legacyCandidate?.taxonomyScope
-    ? item?.listingDraft?.categoryResolution
-    : legacyCandidate;
-  return categoryResolutionForStore(legacy, targetStoreId);
-}
-
-export function listingTargetCategoryFieldsForStore(
+export function accountSharedCategoryResolution(
   resolution,
-  targetStoreId,
   { taxonomyScope = "OZON:DEFAULT" } = {},
 ) {
-  const matched = categoryResolutionForTarget(resolution, { targetStoreId, taxonomyScope });
-  if (!matched || matched.status !== "MATCHED") return {};
-  if (!matched.taxonomyScope && !cleanText(matched.method)) return {};
-  const target = matched.taxonomyScope
-    ? matched
-    : matched.target || {};
-  const descriptionCategoryId = positiveNumber(
-    target.targetDescriptionCategoryId ?? target.descriptionCategoryId,
-  );
-  const typeId = positiveNumber(target.targetTypeId ?? target.typeId);
-  if (!descriptionCategoryId || !typeId) return {};
-  return {
-    descriptionCategoryId,
-    typeId,
-  };
+  const safe = plainDataRecord(resolution, SHARED_CATEGORY_KEYS);
+  if (!safe || !["ACTIVE", "INVALIDATED", "NEEDS_REVIEW"].includes(safe.status)
+    || safe.taxonomyScope !== taxonomyScope) return null;
+  return structuredClone(safe);
 }
 
-export function manualCategoryResolution({
-  source,
-  targetStoreId,
-  descriptionCategoryId,
-  typeId,
-  resolvedAt,
-} = {}) {
-  return {
-    status: "MATCHED",
-    method: "MANUAL",
-    source: normalizedSourceCategory(source),
-    target: {
-      storeId: String(targetStoreId || ""),
-      descriptionCategoryId: positiveNumber(descriptionCategoryId),
-      typeId: positiveNumber(typeId),
-    },
-    resolvedAt: String(resolvedAt || new Date().toISOString()),
+export function listingCategoryFields(
+  resolution,
+  { taxonomyScope = "OZON:DEFAULT" } = {},
+) {
+  const shared = accountSharedCategoryResolution(resolution, { taxonomyScope });
+  if (!shared || shared.status !== "ACTIVE") return {};
+  const descriptionCategoryId = positiveSafeInteger(shared.currentDescriptionCategoryId);
+  const typeId = positiveSafeInteger(shared.currentTypeId);
+  return descriptionCategoryId && typeId ? { descriptionCategoryId, typeId } : {};
+}
+
+function confirmationError() {
+  const error = new Error("OZON_CATEGORY_CONFIRMATION_INVALID");
+  error.code = "OZON_CATEGORY_CONFIRMATION_INVALID";
+  return error;
+}
+
+function confirmationText(value) {
+  return typeof value === "string" && value === value.trim() && value.length > 0 && value.length <= 240
+    && !/[\u0000-\u001f\u007f]/u.test(value) ? value : "";
+}
+
+export function categoryConfirmationRequest(input = {}) {
+  const request = {
+    collectItemId: confirmationText(input.collectItemId),
+    expectedSourceVersion: confirmationText(input.expectedSourceVersion),
+    descriptionCategoryId: positiveSafeInteger(input.descriptionCategoryId),
+    typeId: positiveSafeInteger(input.typeId),
+    taxonomyScope: confirmationText(input.taxonomyScope),
+    idempotencyKey: confirmationText(input.idempotencyKey),
+    correlationId: confirmationText(input.correlationId),
   };
+  if (!request.collectItemId || !request.expectedSourceVersion
+    || !request.descriptionCategoryId || !request.typeId
+    || request.taxonomyScope !== "OZON:DEFAULT"
+    || !request.idempotencyKey || !request.correlationId) throw confirmationError();
+  return Object.freeze(request);
 }
 
 export function categoryRequestScope({ storeId, itemId } = {}) {

@@ -40,6 +40,8 @@ import {
   autoListingImportProgress,
   autoListingImportRowPresentation,
   autoListingItemPresentation,
+  autoListingTaskRows,
+  autoListingCreatedAtLabel,
 } from "./auto-listing-view.js";
 import { apiRequest } from "./client-transport.js";
 import "./auto-listing-page.css";
@@ -98,10 +100,13 @@ function visibleCollectIds(localData, requested) {
   return requested.filter((id) => visible.has(id));
 }
 
-function safeRows(jobs) {
-  return (Array.isArray(jobs) ? jobs : []).flatMap((job) => (
-    Array.isArray(job?.items) ? job.items.map((item) => ({ ...item, jobId: job.jobId })) : []
-  ));
+function safeStoreLabel(store) {
+  for (const value of [store?.label, store?.companyName]) {
+    if (typeof value !== "string") continue;
+    const clean = value.trim();
+    if (clean && clean.length <= 160 && !/[\u0000-\u001f\u007f]/u.test(clean)) return clean;
+  }
+  return "未命名店铺";
 }
 
 export default function AutoListingPage({ localData = {}, onRefresh, account = null, navigate = () => {} } = {}) {
@@ -150,7 +155,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     [selectedStore],
   );
   const storeLabels = useMemo(() => new Map(stores.map((store) => [
-    String(store?.id || ""), store?.label || store?.companyName || store?.id,
+    String(store?.id || ""), safeStoreLabel(store),
   ])), [stores]);
   const warehouseChoice = useMemo(() => autoListingWarehouseOptions({
     warehouses,
@@ -441,7 +446,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       Modal.confirm({
         title: "确认上传到 Ozon",
         content: <Space direction="vertical" size={4}>
-          <span>店铺：{evidence.target.storeLabel || evidence.target.storeId}</span>
+          <span>店铺：{storeLabels.get(String(evidence.target.storeId || "")) || "—"}</span>
           <span>仓库：{evidence.target.warehouseLabel || evidence.target.warehouseId}</span>
           <span>库存：{evidence.target.stock}</span>
           <span>上架价格：{reviewPriceText}</span>
@@ -460,14 +465,15 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     }
   };
 
-  const taskRows = safeRows(jobs);
+  const taskRows = autoListingTaskRows(jobs);
   const taskColumns = [
     { title: "商品", dataIndex: "sourceRecordId", render: (value, row) => row.title || row.sku || value || row.itemId },
     { title: "任务进度", dataIndex: "status", render: (_value, row) => {
       const item = autoListingItemPresentation(row);
       return <Space direction="vertical" size={2}><Tag>{item.statusLabel}</Tag>{item.failureLabel ? <span>{item.failureLabel}</span> : null}</Space>;
     } },
-    { title: "上架店铺", dataIndex: "targetStoreId", render: (value) => storeLabels.get(String(value || "")) || value || "—" },
+    { title: "上架店铺", dataIndex: "targetStoreId", render: (value) => storeLabels.get(String(value || "")) || "—" },
+    { title: "创建时间", dataIndex: "jobCreatedAt", render: (value) => autoListingCreatedAtLabel(value) },
     { title: "操作", key: "actions", render: (_value, row) => {
       const item = autoListingItemPresentation(row);
       return <Space wrap>
@@ -513,7 +519,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
             <Form.Item name="targetStoreId" label="上架店铺" rules={[{ required: true, message: "请选择上架店铺" }]}>
               <Select options={stores.map((store) => {
                 const presentation = safeCurrencyPresentation(storeCurrency(store));
-                const label = store.label || store.companyName || store.id;
+                const label = safeStoreLabel(store);
                 return {
                   value: store.id,
                   label: presentation ? `${label}（${presentation.name} ${presentation.currency}）` : `${label}（币种不支持）`,
@@ -567,7 +573,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     <Drawer title="生成结果审核" open={reviewOpen} onClose={closeReview} size="large">
       <Spin spinning={reviewLoading}>
         {review?.error ? <Alert type="error" title={review.error} /> : review ? <>
-          <Card size="small" title="商品与目标"><p>{review.source?.title || review.source?.sku || "—"}</p><p>店铺：{review.target?.storeLabel || review.target?.storeId || "—"}</p><p>仓库：{review.target?.warehouseLabel || review.target?.warehouseId || "—"}</p></Card>
+          <Card size="small" title="商品与目标"><p>{review.source?.title || review.source?.sku || "—"}</p><p>店铺：{storeLabels.get(String(review.target?.storeId || "")) || "—"}</p><p>仓库：{review.target?.warehouseLabel || review.target?.warehouseId || "—"}</p></Card>
           {review.source?.thumbnailUrl ? <Card size="small" title="采集来源图片"><div className="auto-listing-review-images"><img src={review.source.thumbnailUrl} alt="采集来源商品" /></div></Card> : null}
           {(review.visualGroups || []).map((group) => <Card key={group.key} size="small" title={`生成图片组：${group.key}`}>
             <div className="auto-listing-review-images">{(review.images || []).filter((image) => image.visualGroupKey === group.key).map((image) => <Card key={image.id || image.url} size="small" title={image.roleLabel || image.role}><img src={image.url} alt={image.roleLabel || "生成商品图"} /><Tag color={image.accepted ? "green" : "orange"}>{image.accepted ? "已通过检查" : "待检查"}</Tag></Card>)}</div>

@@ -50,6 +50,16 @@ test("page uses focused pure models and stable backend routes without direct Ozo
   assert.doesNotMatch(page, /callOzonSellerApi|\/v[123]\/product\/import|api[_-]?key|prompt/i);
 });
 
+test("ordinary task table uses latest-row presenter, real creation time, and only safe account store labels", () => {
+  assert.match(page, /autoListingTaskRows/);
+  assert.match(page, /autoListingCreatedAtLabel/);
+  assert.match(page, /title:\s*"创建时间"/u);
+  assert.match(page, /storeLabels\.get\(String\(value \|\| ""\)\) \|\| "—"/u);
+  assert.doesNotMatch(page, /storeLabels\.get\(String\(value \|\| ""\)\) \|\| value/u);
+  assert.doesNotMatch(page, /jobCreatedAt[^\n]*(Date\.now|new Date\(\))/u);
+  assert.doesNotMatch(page, /function safeRows/u);
+});
+
 test("Excel UI uses server-provided byte and row limits instead of fixed upload policy", () => {
   assert.match(page, /const \[excelLimits, setExcelLimits\] = useState/);
   assert.match(page, /maxBytes:\s*excelLimits\.maxBytes/);

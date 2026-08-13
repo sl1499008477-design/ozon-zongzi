@@ -363,7 +363,13 @@ function mapJob(row, items, events) {
   };
 }
 
-async function readJobWithClient(client, accountId, jobId) {
+async function readJobWithClient(client, accountId, jobId, selectedItemIds = null) {
+  const selection = Array.isArray(selectedItemIds)
+    ? [...new Set(selectedItemIds.filter((id) => typeof id === "string" && id))]
+    : null;
+  if (Array.isArray(selectedItemIds) && selection.length !== selectedItemIds.length) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
   const jobResult = await client.query(
     `SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id,
             correlation_id,created_at,updated_at
@@ -379,15 +385,17 @@ async function readJobWithClient(client, accountId, jobId) {
        FROM auto_listing_job_items i
        JOIN auto_listing_source_snapshots s ON s.id=i.snapshot_id AND s.account_id=$2
       WHERE i.job_id=$1 AND i.account_id=$2
+        ${selection ? "AND i.id=ANY($3::text[])" : ""}
       ORDER BY i.id ASC`,
-    [jobId, accountId],
+    selection ? [jobId, accountId, selection] : [jobId, accountId],
   );
   const eventResult = await client.query(
     `SELECT id,item_id,from_status,to_status,event_type,correlation_id,details,created_at
        FROM auto_listing_events
       WHERE job_id=$1 AND account_id=$2
+        ${selection ? "AND (item_id IS NULL OR item_id=ANY($3::text[]))" : ""}
       ORDER BY created_at ASC,id ASC`,
-    [jobId, accountId],
+    selection ? [jobId, accountId, selection] : [jobId, accountId],
   );
   return mapJob(job, itemResult.rows, eventResult.rows);
 }
@@ -1808,12 +1816,48 @@ export function createAutoListingRepository({
     async listJobs({ accountId, limit = 20 } = {}) {
       const scope = requiredAccountId(accountId);
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
-      const jobs = await pool.query(
-        `SELECT id FROM auto_listing_jobs WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2`,
+      const ranked = await pool.query(
+        `WITH ranked_items AS (
+           SELECT job.id AS job_id,item.id AS item_id,job.created_at AS job_created_at,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY snapshot.source_record_id,item.target_store_id
+                    ORDER BY job.created_at DESC,job.id DESC,item.id ASC
+                  ) AS item_rank
+             FROM auto_listing_jobs job
+             JOIN auto_listing_job_items item
+               ON item.job_id=job.id AND item.account_id=job.account_id
+             JOIN auto_listing_source_snapshots snapshot
+               ON snapshot.id=item.snapshot_id AND snapshot.account_id=job.account_id
+            WHERE job.account_id=$1
+         ), latest_items AS (
+           SELECT job_id,item_id,job_created_at
+             FROM ranked_items
+            WHERE item_rank=1
+            ORDER BY job_created_at DESC,job_id DESC,item_id ASC
+            LIMIT $2
+         )
+         SELECT job_id,item_id FROM latest_items
+          ORDER BY job_created_at DESC,job_id DESC,item_id ASC`,
         [scope, limit],
       );
+      const selectedByJob = new Map();
+      for (const row of ranked.rows) {
+        if (typeof row?.job_id !== "string" || !row.job_id
+          || typeof row?.item_id !== "string" || !row.item_id) {
+          throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+        }
+        const ids = selectedByJob.get(row.job_id) || [];
+        ids.push(row.item_id);
+        selectedByJob.set(row.job_id, ids);
+      }
       const result = [];
-      for (const row of jobs.rows) result.push(await readJobWithClient(pool, scope, row.id));
+      for (const [jobId, itemIds] of selectedByJob) {
+        const job = await readJobWithClient(pool, scope, jobId, itemIds);
+        if (!job || job.items.length !== itemIds.length) {
+          throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+        }
+        result.push(job);
+      }
       return result;
     },
 

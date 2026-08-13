@@ -69,11 +69,11 @@ import zhCN from "antd/locale/zh_CN";
 import "antd/dist/reset.css";
 import {
   CATEGORY_DATA_ERROR_MESSAGE,
-  categoryResolutionForCollectionTarget,
-  listingTargetCategoryFieldsForStore,
+  accountSharedCategoryResolution,
+  listingCategoryFields,
+  categoryConfirmationRequest,
   categoryItemScopeIsCurrent,
   categoryReadiness,
-  manualCategoryResolution,
   requireCategoryReadiness,
   sourceCategoryEvidenceOf,
 } from "./category-readiness.js";
@@ -3661,7 +3661,7 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account
               },
             },
             {
-              title: "类目匹配",
+              title: "账号共享类目",
               dataIndex: "类目匹配",
               width: 174,
               render: (_value, row) => {
@@ -4120,11 +4120,7 @@ export const collectEditPreviewPayload = ({
     targetStoreId,
     taxonomyScope,
   });
-  const targetFields = listingTargetCategoryFieldsForStore(
-    targetResolution,
-    targetStoreId,
-    { taxonomyScope },
-  );
+  const targetFields = listingCategoryFields(targetResolution, { taxonomyScope });
   const payload = {
     offer_id: offerId,
     name: title || collectEditFirst(item.name, item.title, sku) || `Ozon SKU ${sku}`,
@@ -4995,21 +4991,13 @@ export const collectEditVariantRows = ({
     const rowSku = commercialFields.sku;
     const sourceVariant = collectEditVariantSourceSnapshot(item, variant, rowSku);
     const rowImages = collectEditImages({ ...sourceVariant, ...variant }, images[index] || images[0] || "");
-    const legacyResolution = variant !== item && !variant.categoryResolution?.taxonomyScope
-      ? variant.categoryResolution
-      : item.listingDraft?.categoryResolution;
     const targetResolution = collectEditEffectiveCategoryResolution({
       item,
       itemId: collectEditFirst(item?.id, item?.collectItemId),
       targetStoreId,
       taxonomyScope,
-      legacyResolution,
     });
-    const targetFields = listingTargetCategoryFieldsForStore(
-      targetResolution,
-      targetStoreId,
-      { taxonomyScope },
-    );
+    const targetFields = listingCategoryFields(targetResolution, { taxonomyScope });
     return {
       key: `${rowSku || sku || "sku"}-${index}`,
       index: index + 1,
@@ -5048,361 +5036,63 @@ export const collectEditCategoryPreviewSeed = ({
   taxonomyScope = "OZON:DEFAULT",
   collectCandidate = false,
 } = {}) => {
-  const draft = item?.listingDraft || {};
   const categoryResolution = collectEditEffectiveCategoryResolution({
     item,
     itemId: collectEditFirst(item?.id, item?.collectItemId),
     targetStoreId,
     taxonomyScope,
   });
-  const categoryFields = listingTargetCategoryFieldsForStore(
-    categoryResolution,
-    targetStoreId,
-    { taxonomyScope },
-  );
+  const categoryFields = listingCategoryFields(categoryResolution, { taxonomyScope });
   return {
     categoryResolution,
-    descriptionCategoryId: collectEditFirst(
-      categoryFields.descriptionCategoryId,
-      collectCandidate ? "" : draft.descriptionCategoryId,
-      collectCandidate ? "" : draft.description_category_id,
-      collectCandidate ? "" : item.description_category_id,
-      collectCandidate ? "" : item.descriptionCategoryId,
-    ),
-    typeId: collectEditFirst(
-      categoryFields.typeId,
-      collectCandidate ? "" : draft.typeId,
-      collectCandidate ? "" : draft.type_id,
-      collectCandidate ? "" : item.type_id,
-      collectCandidate ? "" : item.typeId,
-    ),
-  };
-};
-
-const manualOverrideEligibleStatuses = new Set([
-  "NEEDS_REVIEW",
-  "INVALIDATED",
-]);
-
-const collectEditCategoryStatus = (resolution) => String(
-  resolution?.status || "",
-).trim().toUpperCase();
-
-const collectEditPositiveCategoryId = (value) => {
-  const id = Number(value);
-  return Number.isFinite(id) && id > 0 ? id : 0;
-};
-
-const collectEditTargetStoreMatches = (resolution, targetStoreId) => String(
-  resolution?.target?.storeId || "",
-) === String(targetStoreId || "");
-
-const collectEditScopeRecordIsCurrent = ({
-  record = null,
-  itemId = "",
-  targetStoreId = "",
-  taxonomyScope = "OZON:DEFAULT",
-} = {}) => Boolean(
-  record
-  && String(record.itemId || "") === String(itemId || "")
-  && String(record.targetStoreId || "") === String(targetStoreId || "")
-  && String(record.taxonomyScope || "") === String(taxonomyScope || ""),
-);
-
-const collectEditCurrentTargetResolution = ({
-  resolution = null,
-  targetStoreId = "",
-  taxonomyScope = "OZON:DEFAULT",
-} = {}) => {
-  if (!resolution || typeof resolution !== "object") return null;
-  return categoryResolutionForCollectionTarget({
-    categoryResolution: resolution,
-    listingDraft: { categoryResolution: resolution },
-  }, {
-    targetStoreId,
-    taxonomyScope,
-  });
-};
-
-const collectEditCurrentMatchedResolution = ({
-  resolution = null,
-  targetStoreId = "",
-  taxonomyScope = "OZON:DEFAULT",
-} = {}) => {
-  const current = collectEditCurrentTargetResolution({
-    resolution,
-    targetStoreId,
-    taxonomyScope,
-  });
-  const target = listingTargetCategoryFieldsForStore(current, targetStoreId, {
-    taxonomyScope,
-  });
-  return current?.status === "MATCHED" && target.descriptionCategoryId && target.typeId
-    ? current
-    : null;
-};
-
-const collectEditScopedRecoveryResolution = ({
-  recovery = null,
-  itemId = "",
-  targetStoreId = "",
-  taxonomyScope = "OZON:DEFAULT",
-  method = "",
-} = {}) => {
-  if (!collectEditScopeRecordIsCurrent({
-    record: recovery,
-    itemId,
-    targetStoreId,
-    taxonomyScope,
-  })) return null;
-  if (method && recovery?.resolution?.method !== method) return null;
-  if (
-    recovery?.resolution?.method === "MANUAL"
-    && !collectEditTargetStoreMatches(recovery.resolution, targetStoreId)
-  ) return null;
-  return collectEditCurrentMatchedResolution({
-    resolution: recovery?.resolution,
-    targetStoreId,
-    taxonomyScope,
-  });
-};
-
-const collectEditSavedManualRecoveryResolution = ({
-  item = {},
-  itemId = "",
-  targetStoreId = "",
-  taxonomyScope = "OZON:DEFAULT",
-} = {}) => {
-  const saved = item?.listingDraft?.categoryResolution;
-  if (
-    saved?.method !== "MANUAL"
-    || (saved?.itemId && String(saved.itemId) !== String(itemId || ""))
-    || String(saved?.taxonomyScope || "") !== String(taxonomyScope || "")
-    || !collectEditTargetStoreMatches(saved, targetStoreId)
-  ) return null;
-  return collectEditCurrentMatchedResolution({
-    resolution: saved,
-    targetStoreId,
-    taxonomyScope,
-  });
-};
-
-const collectEditLegacyCategoryResolution = ({
-  item = {},
-  targetStoreId = "",
-  taxonomyScope = "OZON:DEFAULT",
-  legacyResolution,
-} = {}) => {
-  const requestedLegacy = legacyResolution === undefined
-    ? item?.listingDraft?.categoryResolution
-    : legacyResolution;
-  const legacy = requestedLegacy?.taxonomyScope
-    && String(requestedLegacy.taxonomyScope) !== String(taxonomyScope || "")
-    ? item?.listingDraft?.categoryResolution
-    : requestedLegacy;
-  if (
-    legacy?.taxonomyScope
-    && String(legacy.taxonomyScope) !== String(taxonomyScope || "")
-  ) return null;
-  return collectEditCurrentTargetResolution({
-    resolution: legacy,
-    targetStoreId,
-    taxonomyScope,
-  });
-};
-
-const collectCategoryPreviewRecoveryMethods = new Set([
-  "AUTO",
-  "MANUAL",
-  "DIRECT_TYPE_ID",
-  "DICTIONARY_VALUE_ID",
-  "TYPE_ID_EXACT",
-  "EXACT_TYPE_ID",
-  "TYPE_NAME_EXACT",
-  "TYPE_NAME_NORMALIZED",
-]);
-
-const collectCategoryPreviewDefaultTaxonomyScope = "OZON:DEFAULT";
-
-export const normalizeCollectCategoryPreviewRecovery = ({
-  item = {},
-  itemId = "",
-  targetStoreId = "",
-  taxonomyScope = collectCategoryPreviewDefaultTaxonomyScope,
-  request = {},
-  responseItems = [],
-} = {}) => {
-  const currentItemId = collectEditFirst(item?.id, item?.collectItemId, itemId);
-  const requestOfferId = String(request?.offerId || "");
-  const requestSku = String(request?.sku || "");
-  if (!currentItemId || !requestOfferId || !requestSku || !Array.isArray(responseItems) || responseItems.length !== 1) return null;
-  const response = responseItems[0];
-  if (!response || typeof response !== "object") return null;
-  if (String(response.offer_id || response.offerId || "") !== requestOfferId) return null;
-  if (String(response.sku || response.scraped_sku || "") !== requestSku) return null;
-
-  const currentItemIds = new Set([
-    item?.id,
-    item?.collectItemId,
-    itemId,
-  ].map((value) => String(value || "")).filter(Boolean));
-  const declaredItemIds = [
-    response.collectItemId,
-    response.collect_item_id,
-    response.id,
-  ].map((value) => String(value || "")).filter(Boolean);
-  if (declaredItemIds.length && !declaredItemIds.some((value) => currentItemIds.has(value))) return null;
-
-  const resolution = response.categoryResolution;
-  const method = String(resolution?.method || "").trim();
-  const requestedTaxonomyScope = String(taxonomyScope || "");
-  const responseHasTaxonomyScope = Object.prototype.hasOwnProperty.call(
-    resolution || {},
-    "taxonomyScope",
-  );
-  const responseTaxonomyScope = String(resolution?.taxonomyScope || "");
-  const validatedTaxonomyScope = responseHasTaxonomyScope
-    ? (responseTaxonomyScope && responseTaxonomyScope === requestedTaxonomyScope
-      ? responseTaxonomyScope
-      : "")
-    : (requestedTaxonomyScope === collectCategoryPreviewDefaultTaxonomyScope
-      ? collectCategoryPreviewDefaultTaxonomyScope
-      : "");
-  const descriptionCategoryId = collectEditPositiveCategoryId(response.description_category_id);
-  const typeId = collectEditPositiveCategoryId(response.type_id);
-  if (
-    !resolution
-    || collectEditCategoryStatus(resolution) !== "MATCHED"
-    || !collectCategoryPreviewRecoveryMethods.has(method)
-    || String(resolution.offerId || "") !== requestOfferId
-    || !collectEditTargetStoreMatches(resolution, targetStoreId)
-    || !validatedTaxonomyScope
-    || !descriptionCategoryId
-    || !typeId
-    || collectEditPositiveCategoryId(resolution.target?.descriptionCategoryId) !== descriptionCategoryId
-    || collectEditPositiveCategoryId(resolution.target?.typeId) !== typeId
-  ) return null;
-
-  return {
-    itemId: currentItemId,
-    targetStoreId: String(targetStoreId || ""),
-    taxonomyScope: validatedTaxonomyScope,
-    resolution: {
-      status: "MATCHED",
-      method,
-      taxonomyScope: validatedTaxonomyScope,
-      targetDescriptionCategoryId: descriptionCategoryId,
-      targetTypeId: typeId,
-      target: {
-        storeId: String(targetStoreId || ""),
-        descriptionCategoryId,
-        typeId,
-      },
-    },
+    descriptionCategoryId: categoryFields.descriptionCategoryId || "",
+    typeId: categoryFields.typeId || "",
   };
 };
 
 export const collectEditEffectiveCategoryResolution = ({
   item = {},
-  itemId = "",
-  targetStoreId = "",
   taxonomyScope = "OZON:DEFAULT",
   interactivePreview = null,
   manualOverride = null,
-  legacyResolution,
   fallbackResolution = null,
 } = {}) => {
-  const currentItemId = collectEditFirst(item?.id, item?.collectItemId, itemId);
-  const shared = item?.categoryResolution;
-  const sharedCurrent = String(shared?.taxonomyScope || "") === String(taxonomyScope || "")
-    ? collectEditCurrentTargetResolution({ resolution: shared, targetStoreId, taxonomyScope })
-    : null;
-  const sharedMatched = collectEditCurrentMatchedResolution({
-    resolution: sharedCurrent,
-    targetStoreId,
-    taxonomyScope,
-  });
-  if (sharedMatched) {
-    const manual = collectEditScopedRecoveryResolution({
-      recovery: manualOverride,
-      itemId: currentItemId,
-      targetStoreId,
-      taxonomyScope,
-      method: "MANUAL",
-    });
-    if (manual) return manual;
-    const savedManual = collectEditSavedManualRecoveryResolution({
-      item,
-      itemId: currentItemId,
-      targetStoreId,
-      taxonomyScope,
-    });
-    return savedManual || sharedMatched;
+  for (const candidate of [
+    manualOverride?.resolution,
+    interactivePreview?.resolution,
+    item?.categoryResolution,
+    fallbackResolution,
+  ]) {
+    const shared = accountSharedCategoryResolution(candidate, { taxonomyScope });
+    if (shared) return shared;
   }
-
-  if (sharedCurrent) {
-    if (manualOverrideEligibleStatuses.has(collectEditCategoryStatus(sharedCurrent))) {
-      const interactive = collectEditScopedRecoveryResolution({
-        recovery: interactivePreview,
-        itemId: currentItemId,
-        targetStoreId,
-        taxonomyScope,
-      });
-      if (interactive) return interactive;
-      const manual = collectEditScopedRecoveryResolution({
-        recovery: manualOverride,
-        itemId: currentItemId,
-        targetStoreId,
-        taxonomyScope,
-        method: "MANUAL",
-      });
-      if (manual) return manual;
-      const savedManual = collectEditSavedManualRecoveryResolution({
-        item,
-        itemId: currentItemId,
-        targetStoreId,
-        taxonomyScope,
-      });
-      if (savedManual) return savedManual;
-    }
-    return sharedCurrent;
-  }
-
-  return collectEditLegacyCategoryResolution({
-    item,
-    targetStoreId,
-    taxonomyScope,
-    legacyResolution,
-  }) || collectEditCurrentTargetResolution({
-    resolution: fallbackResolution,
-    targetStoreId,
-    taxonomyScope,
-  });
+  return null;
 };
 
-export const collectEditManualResolutionOverride = ({
+export const collectCategoryConfirmationIntent = ({
   item = {},
-  itemId = "",
-  targetStoreId = "",
+  descriptionCategoryId,
+  typeId,
   taxonomyScope = "OZON:DEFAULT",
-  manualOverride = null,
+  idempotencyKey,
+  correlationId,
 } = {}) => {
-  const currentItemId = collectEditFirst(item?.id, item?.collectItemId, itemId);
-  const sharedResolution = item?.categoryResolution;
-  const sharedStatus = collectEditCategoryStatus(sharedResolution);
-  const sharedUsesCurrentTaxonomy = String(sharedResolution?.taxonomyScope || "") === String(taxonomyScope || "");
-  if (sharedUsesCurrentTaxonomy && !manualOverrideEligibleStatuses.has(sharedStatus)) return null;
-  return collectEditScopedRecoveryResolution({
-    recovery: manualOverride,
-    itemId: currentItemId,
-    targetStoreId,
+  const draftVersion = Number(item?.draftVersion);
+  if (!Number.isSafeInteger(draftVersion) || draftVersion < 1) {
+    const error = new Error("OZON_CATEGORY_CONFIRMATION_INVALID");
+    error.code = "OZON_CATEGORY_CONFIRMATION_INVALID";
+    throw error;
+  }
+  return categoryConfirmationRequest({
+    collectItemId: String(item?.id || item?.collectItemId || ""),
+    expectedSourceVersion: `draft:${draftVersion}`,
+    descriptionCategoryId: Number(descriptionCategoryId),
+    typeId: Number(typeId),
     taxonomyScope,
-    method: "MANUAL",
+    idempotencyKey,
+    correlationId,
   });
 };
-
-export const collectEditCategoryPreviewAction = (runPreview) => () =>
-  typeof runPreview === "function" ? runPreview({ silent: false }) : null;
 
 export const collectEditDraftVariantCategory = ({
   item = {},
@@ -5424,11 +5114,7 @@ export const collectEditDraftVariantCategory = ({
     legacyResolution: row.categoryResolution || item.listingDraft?.categoryResolution,
     fallbackResolution,
   });
-  const targetFields = listingTargetCategoryFieldsForStore(
-    categoryResolution,
-    targetStoreId,
-    { taxonomyScope },
-  );
+  const targetFields = listingCategoryFields(categoryResolution, { taxonomyScope });
   return {
     categoryResolution,
     descriptionCategoryId: targetFields.descriptionCategoryId || "",
@@ -5436,7 +5122,7 @@ export const collectEditDraftVariantCategory = ({
   };
 };
 
-function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navigate }) {
+function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navigate, account }) {
   const { message } = AntApp.useApp();
   const [loading, setLoading] = useState(false);
   const [listingResult, setListingResult] = useState(null);
@@ -5476,6 +5162,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const collectEditActiveItemIdRef = useRef("");
   const collectEditEnrichmentGenerationRef = useRef(0);
   const listingSubmissionIntentRef = useRef(null);
+  const categoryConfirmationIntentRef = useRef(null);
   const params = new URLSearchParams(window.location.search);
   const itemId = params.get("id") || "";
   const currentStoreId = localStorage.getItem("currentOzonStoreId") || binding?.id || localData?.currentStoreId || "";
@@ -5570,7 +5257,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   }), [categoryStoreId]);
   const categoryTree = useCategoryTreeReadiness({ hasStore: Boolean(categoryStoreId), currentStoreId: categoryStoreId, itemId, readTree: readCategoryTree });
   const { scopedTrees, categoryTreeLoading, categoryDataError, categoryTreeReady, loadCategoryTrees,
-    categoryAutoLoading, beginCategoryAutoRequest, categoryAutoRequestIsCurrent, finishCategoryAutoRequest } = categoryTree;
+    categoryAutoLoading } = categoryTree;
   const listingWarehouseOptions = preparationModel.warehouses
     .map((warehouse) => {
       const id = warehouse.warehouse_id || warehouse.warehouseId;
@@ -5843,116 +5530,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
 
   const productImageList = collectEditImages(item || {}, image);
   const isCollectItem = Boolean(itemScopeCurrent && item?.id && collectItems.some(function(i) { return String(i.id) === String(item.id); }));
-  const runCollectPreview = async function({ silent = false } = {}) {
-    if (!item || !itemScopeCurrent) return null;
-    if (preparationModel.listingBlocked) {
-      if (!silent) {
-        message.warning([enrichmentView.label || "资料补全未完成", enrichmentView.detail].filter(Boolean).join("："));
-      }
-      return null;
+  const handleCategoryPreview = function() {
+    if (account?.role !== "admin") {
+      message.warning("只有管理员可以确认商品类目");
+      return;
     }
-    if (!categoryTreeReady || !categoryDictionaryReady) {
-      const detail = categoryVisibleError || CATEGORY_DATA_ERROR_MESSAGE;
-      setCategoryAutoError(detail);
-      if (!silent) message.error(detail);
-      return null;
-    }
-    if (!categoryStoreId) {
-      if (!silent) message.warning("请先选择上架店铺");
-      return null;
-    }
-    const numericPrice = numberFromMoney(price);
-    if (!sku || !numericPrice || !productImageList.length) {
-      const detail = "自动匹配类目需要 SKU、售价和至少 1 张商品图片";
-      setCategoryAutoError(detail);
-      if (!silent) message.warning(detail);
-      return null;
-    }
-    const request = beginCategoryAutoRequest();
-    const requestIsCurrent = () => categoryAutoRequestIsCurrent(request);
-    if (!silent) {
-      message.loading({ content: "正在根据采集数据自动匹配类目…", key: "collect-category-preview", duration: 0 });
-    }
-    try {
-      const payload = collectEditPreviewPayload({
-        item,
-        sku,
-        title,
-        price,
-        currencyCode: storeCurrencyCode || currencyCode,
-        productImageList,
-        variantRows,
-        brand,
-        modelName,
-        offerPrefix,
-        description,
-        tags,
-        richContent,
-        packageWeight,
-        packageLength,
-        packageWidth,
-        packageHeight,
-        warehouseId: listingWarehouseId,
-        stock: listingStock,
-        targetStoreId: categoryStoreId,
-        taxonomyScope: categoryTaxonomyScope,
-      });
-      const result = await apiRequest("/ozon/products/import/preview", {
-        method: "POST",
-        body: {
-          storeId: categoryStoreId,
-          sku,
-          strictTypeMatch: false,
-          entry: "COLLECT_EDIT_AUTO_CATEGORY",
-          items: [payload],
-          stocks: payload.stocks || [],
-        },
-      });
-      if (!requestIsCurrent()) return null;
-      const recovery = normalizeCollectCategoryPreviewRecovery({
-        item,
-        itemId,
-        targetStoreId: categoryStoreId,
-        taxonomyScope: categoryTaxonomyScope,
-        request: {
-          offerId: payload.offer_id,
-          sku: payload.scraped_sku,
-        },
-        responseItems: result?.items,
-      });
-      if (!recovery) {
-        const detail = "CATEGORY_PREVIEW_RESPONSE_REJECTED";
-        setCategoryAutoError(detail);
-        if (!silent) message.warning({ content: detail, key: "collect-category-preview", duration: 4 });
-        return null;
-      }
-      setPreviewItem({
-        description_category_id: recovery.resolution.targetDescriptionCategoryId,
-        type_id: recovery.resolution.targetTypeId,
-        categoryResolution: recovery.resolution,
-        categoryPreviewOverride: recovery,
-      });
-      setCategoryAutoError("");
-      if (!silent) {
-        message.success({
-          content: `已匹配类目：${recovery.resolution.targetDescriptionCategoryId} / ${recovery.resolution.targetTypeId}`,
-          key: "collect-category-preview",
-          duration: 4,
-        });
-      }
-      return recovery;
-    } catch (error) {
-      if (!requestIsCurrent()) return null;
-      const detail = error?.message || String(error);
-      setCategoryAutoError(detail);
-      if (!silent) message.error({ content: "类目匹配失败: " + detail, key: "collect-category-preview", duration: 5 });
-      return null;
-    } finally {
-      finishCategoryAutoRequest(request);
-    }
+    message.info("请在类目树中选择最末级商品类型并完成管理员确认");
   };
-
-  const handleCategoryPreview = collectEditCategoryPreviewAction(runCollectPreview);
 
   const handlePreview = function() {
     runListingRequest({ dryRun: true });
@@ -6141,12 +5725,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const categoryResolutionViewState = categoryResolution
     ? categoryResolutionView(categoryResolution)
     : null;
-  const categoryNeedsManualSelection = categoryResolutionViewState?.action === "SELECT_MANUALLY";
-  const categoryTargetFields = listingTargetCategoryFieldsForStore(
-    categoryResolution,
-    categoryStoreId,
-    { taxonomyScope: categoryTaxonomyScope },
-  );
+  const categoryNeedsManualSelection = categoryResolutionViewState?.action === "ADMIN_CONFIRM";
+  const categoryTargetFields = listingCategoryFields(categoryResolution, {
+    taxonomyScope: categoryTaxonomyScope,
+  });
   const categoryDescriptionId = collectEditFirst(
     categoryTargetFields.descriptionCategoryId,
     isCollectItem ? "" : scopedPreviewItem?.description_category_id,
@@ -6247,7 +5829,11 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const sourceCategoryLabel = sourceCategory.path.length
     ? sourceCategory.path.join(" / ")
     : sourceCategory.typeName || (sourceCategory.descriptionCategoryId ? `来源类目 ${sourceCategory.descriptionCategoryId}` : "来源类目暂无数据");
-  const handleCategoryChange = function(_, selectedOptions = []) {
+  const handleCategoryChange = async function(_, selectedOptions = []) {
+    if (account?.role !== "admin") {
+      message.warning("只有管理员可以确认商品类目");
+      return;
+    }
     const options = Array.isArray(selectedOptions) ? selectedOptions : [];
     const leaf = options[options.length - 1];
     const nextDescriptionId = [...options].reverse().map((option) => option?.descriptionCategoryId).find(Boolean) || "";
@@ -6260,43 +5846,73 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     const nextRuPath = collectEditCategoryDisplayPath(
       collectEditFindCategoryOptionPath(categoryTreeOptionsRu, nextDescriptionId, nextTypeId),
     ) || nextZhPath;
-    const manualSelection = manualCategoryResolution({
-      source: sourceCategory,
-      targetStoreId: categoryStoreId,
-      descriptionCategoryId: nextDescriptionId,
-      typeId: nextTypeId,
-    });
-    const manualResolution = {
-      ...manualSelection,
-      itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
-      taxonomyScope: categoryTaxonomyScope,
-      targetDescriptionCategoryId: nextDescriptionId,
-      targetTypeId: nextTypeId,
-    };
-    setPreviewItem((prev) => ({
-      ...(prev || {}),
-      description_category_id: nextDescriptionId,
-      type_id: nextTypeId,
-      categoryPath: nextZhPath,
-      categoryPathZh: nextZhPath,
-      categoryPathRu: nextRuPath,
-      category_name: nextZhPath,
-      type_name: collectEditText(leaf?.label),
-      categoryResolution: manualResolution,
-      categoryManualOverride: {
-        itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
-        targetStoreId: categoryStoreId,
+    const selectionKey = `${item?.id || item?.collectItemId || ""}:${item?.draftVersion || ""}:${nextDescriptionId}:${nextTypeId}:${categoryTaxonomyScope}`;
+    let confirmation = categoryConfirmationIntentRef.current;
+    if (!confirmation || confirmation.selectionKey !== selectionKey) {
+      const identity = globalThis.crypto?.randomUUID?.()
+        || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      try {
+        confirmation = {
+          selectionKey,
+          body: collectCategoryConfirmationIntent({
+            item,
+            descriptionCategoryId: nextDescriptionId,
+            typeId: nextTypeId,
+            taxonomyScope: categoryTaxonomyScope,
+            idempotencyKey: `category-confirmation-${identity}`,
+            correlationId: `category-confirmation-${identity}`,
+          }),
+        };
+      } catch {
+        setCategoryAutoError("无法确认商品类目，请人工选择");
+        message.error("当前商品版本无效，请刷新后重新选择类目");
+        return;
+      }
+      categoryConfirmationIntentRef.current = confirmation;
+    }
+    message.loading({ content: "正在提交管理员类目确认…", key: "collect-category-confirmation", duration: 0 });
+    try {
+      const result = await apiRequest("/ozon/category-confirmations", {
+        method: "POST",
+        body: confirmation.body,
+      });
+      const confirmed = accountSharedCategoryResolution(result?.data?.categoryResolution, {
         taxonomyScope: categoryTaxonomyScope,
-        resolution: manualResolution,
-      },
-      categoryPreviewOverride: {
-        itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
-        targetStoreId: categoryStoreId,
-        taxonomyScope: categoryTaxonomyScope,
-        resolution: manualResolution,
-      },
-    }));
-    setCategoryAutoError("");
+      });
+      if (result?.data?.collectItemId !== confirmation.body.collectItemId
+        || confirmed?.status !== "ACTIVE" || confirmed?.source !== "MANUAL"
+        || confirmed.currentDescriptionCategoryId !== Number(nextDescriptionId)
+        || confirmed.currentTypeId !== Number(nextTypeId)) {
+        throw new Error("OZON_CATEGORY_CONFIRMATION_RESPONSE_INVALID");
+      }
+      categoryConfirmationIntentRef.current = null;
+      setPreviewItem((prev) => ({
+        ...(prev || {}),
+        description_category_id: nextDescriptionId,
+        type_id: nextTypeId,
+        categoryPath: nextZhPath,
+        categoryPathZh: nextZhPath,
+        categoryPathRu: nextRuPath,
+        category_name: nextZhPath,
+        type_name: collectEditText(leaf?.label),
+        categoryResolution: confirmed,
+        categoryManualOverride: {
+          itemId: confirmation.body.collectItemId,
+          taxonomyScope: categoryTaxonomyScope,
+          resolution: confirmed,
+        },
+      }));
+      setCategoryAutoError("");
+      message.success({ content: "管理员类目确认已保存", key: "collect-category-confirmation" });
+      try {
+        await onRefresh?.({ silent: true, source: "category-confirmation" });
+      } catch {
+        message.info("类目已保存，列表刷新失败，请稍后手动刷新");
+      }
+    } catch {
+      setCategoryAutoError("无法确认商品类目，请人工选择");
+      message.error({ content: "类目确认失败，请重试或联系管理员", key: "collect-category-confirmation" });
+    }
   };
   const retryCategoryData = function() {
     if (categoryDataError) loadCategoryTrees();
@@ -6545,7 +6161,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   });
   const sectionNav = [
     { title: "店铺与基础", note: hasStore ? "已选 1" : "未绑定" },
-    { title: "产品类目", note: categoryMatched ? "已匹配" : categoryResolutionViewState?.label || (categoryAutoLoading ? "类目匹配中" : "待匹配") },
+    { title: "产品类目", note: categoryResolutionViewState?.label || "商品类目状态暂时无法确认，请联系管理员" },
     { title: "标题与文案", note: title ? "已填写" : "待填写" },
     { title: "物流尺寸", note: packageWeight && packageLength && packageWidth && packageHeight ? "已填写" : "待填写" },
     { title: "类目属性", note: categoryAttributeInputRows.length ? `${categoryAttributeInputRows.length} 项` : categorySchemaLoading ? "加载中" : "待匹配" },
@@ -6780,20 +6396,20 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             <div className="collect-edit-section-head">
               <div>
                 <h2>产品类目</h2>
-                <p>{categoryMatched ? (categoryResolution?.method === "MANUAL" ? "已人工选择目标店铺类目" : "已按采集数据核验目标店铺类目") : categoryNeedsManualSelection ? "当前类目需要人工选择，请从下方类目树选择最末级商品类型" : categoryResolutionViewState?.label || (categoryAutoLoading ? "正在核验目标店铺类目" : "来源类目已保留，目标店铺类目待核验")}</p>
+                <p>{categoryResolutionViewState?.label || "使用采集类目准备上架"}</p>
               </div>
               <Space size={8}>
                 <Button
                   size="small"
                   loading={categoryAutoLoading}
                   disabled={categoryAutoLoading}
-                  aria-label="手动匹配类目"
+                  aria-label="管理员确认类目"
                   onClick={handleCategoryPreview}
                 >
-                  {categoryMatched ? "重新匹配类目" : "手动匹配类目"}
+                  管理员确认类目
                 </Button>
-                <Tooltip rootClassName="prototype-overlay" title={categoryMatched ? "已拿到可用于 Ozon 上架的类目和类型 ID" : categoryResolutionViewState?.label || "等待后台类目匹配结果"}>
-                  <Tag color={categoryMatched ? "green" : collectEnrichmentTagColors[categoryResolutionViewState?.tone || (categoryAutoLoading ? "processing" : "default")]}>{categoryMatched ? "类目已匹配" : categoryResolutionViewState?.label || (categoryAutoLoading ? "类目匹配中" : "待匹配")}</Tag>
+                <Tooltip rootClassName="prototype-overlay" title={categoryResolutionViewState?.label || "商品类目状态暂时无法确认，请联系管理员"}>
+                  <Tag color={categoryMatched ? "green" : collectEnrichmentTagColors[categoryResolutionViewState?.tone || (categoryAutoLoading ? "processing" : "default")]}>{categoryResolutionViewState?.label || "商品类目状态暂时无法确认，请联系管理员"}</Tag>
                 </Tooltip>
               </Space>
             </div>
@@ -6811,13 +6427,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
               <Cascader
                 allowClear={false}
                 className="collect-edit-category-cascader"
-                disabled={!categoryTreeReady}
+                disabled={!categoryTreeReady || account?.role !== "admin"}
                 displayRender={(labels) => labels.length ? labels.join(" / ") : categoryLabel}
                 expandTrigger="click"
                 notFoundContent={categoryTreeLoading ? "正在加载类目..." : "暂无类目"}
                 onChange={handleCategoryChange}
                 options={categoryTreeOptionsZh}
-                placeholder={categoryAutoLoading && !categoryMatched ? "正在根据采集数据自动匹配类目..." : categoryResolutionViewState?.label || categoryLabel}
+                placeholder={categoryResolutionViewState?.label || categoryLabel}
                 showSearch={{
                   filter: (inputValue, path) => path.some((option) =>
                     collectEditText(option.label).toLowerCase().includes(String(inputValue || "").toLowerCase()),
@@ -6834,10 +6450,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             </div>
             <div className="collect-edit-attr-strip">
               <span title={`description_category_id: ${categoryDescriptionId || "—"} / type_id: ${categoryTypeId || "—"}`}>
-                目标店铺：{categoryMatched ? `${categoryRussianLabel}（${categoryDescriptionId} / ${categoryTypeId}）` : categoryNeedsManualSelection ? "请选择目标类目" : categoryResolutionViewState?.label || (categoryAutoLoading ? "正在核验" : "待手动选择或自动核验")}
+                账号共享类目：{categoryMatched ? `${categoryRussianLabel}（${categoryDescriptionId} / ${categoryTypeId}）` : categoryNeedsManualSelection ? "无法确认商品类目，请人工选择" : categoryResolutionViewState?.label || "商品类目状态暂时无法确认，请联系管理员"}
               </span>
             </div>
-            {categoryAutoError || categoryNeedsManualSelection ? <div className="collect-edit-empty-note">目标类目待处理：{categoryAutoError || "请手动选择类目后保存草稿，系统会按 MANUAL 记录该选择。"}</div> : null}
+            {categoryAutoError || categoryNeedsManualSelection ? <div className="collect-edit-empty-note">账号共享类目待处理：{categoryAutoError || "请由管理员选择类目并确认，确认成功后会继续使用同一共享类目。"}</div> : null}
           </section>
 
           <section className="collect-edit-section" id="标题与文案">

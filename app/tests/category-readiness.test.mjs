@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as categoryReadinessModule from "../src/category-readiness.js";
 import {
   CATEGORY_DATA_ERROR_MESSAGE,
   categoryRequestIsCurrent,
@@ -13,11 +14,9 @@ import {
   loadRealCategoryTrees,
   requireCategoryReadiness,
   sourceCategoryEvidenceOf,
-  categoryResolutionForTarget,
-  categoryResolutionForCollectionTarget,
-  categoryResolutionForStore,
-  listingTargetCategoryFieldsForStore,
-  manualCategoryResolution,
+  accountSharedCategoryResolution,
+  listingCategoryFields,
+  categoryConfirmationRequest,
 } from "../src/category-readiness.js";
 
 const validTree = [{
@@ -273,192 +272,107 @@ test("stale empty resolution source does not hide later Seller source evidence",
   });
 });
 
-test("uses a matched resolution only for the currently selected target store", () => {
-  const resolution = {
-    status: "MATCHED",
-    method: "DICTIONARY_VALUE_ID",
-    source: { descriptionCategoryId: 10, typeName: "Source", typeIdCandidate: 20, path: [] },
-    target: { storeId: "store-a", descriptionCategoryId: 30, typeId: 40 },
-    resolvedAt: "2026-08-01T00:00:00.000Z",
-  };
-  assert.deepEqual(categoryResolutionForStore(resolution, "store-a"), resolution);
-  assert.equal(categoryResolutionForStore(resolution, "store-b"), null);
-  assert.deepEqual(listingTargetCategoryFieldsForStore(resolution, "store-a"), {
-    descriptionCategoryId: 30,
-    typeId: 40,
-  });
-  assert.deepEqual(listingTargetCategoryFieldsForStore(resolution, "store-b"), {});
-  assert.deepEqual(listingTargetCategoryFieldsForStore({
-    status: "MATCHED",
-    method: "",
-    source: { descriptionCategoryId: 123, typeIdCandidate: 456 },
-    target: { storeId: "store-a", descriptionCategoryId: 999, typeId: 1000 },
-  }, "store-a"), {}, "an incomplete marker cannot turn source or historical roots into a target");
-});
-
-test("uses taxonomy-scoped shared matches before legacy store-bound drafts", () => {
+test("projects only the account-shared taxonomy and never falls back to a store-bound draft", () => {
   const shared = {
-    status: "MATCHED",
+    status: "ACTIVE",
     taxonomyScope: "OZON:DEFAULT",
-    targetDescriptionCategoryId: 17_028_702,
-    targetTypeId: 94_405,
-    displayPath: { zh: ["运动与休闲", "捞鱼网"], ru: ["Спорт и отдых", "Подсачек"] },
-    method: "TYPE_ID_EXACT",
-    matchedAt: "2026-08-03T10:00:00.000Z",
-    validatedAt: "2026-08-03T10:00:00.000Z",
+    sourceDescriptionCategoryId: 10,
+    sourceTypeId: 20,
+    currentDescriptionCategoryId: 30,
+    currentTypeId: 40,
+    source: "SOURCE_DIRECT",
+    version: 3,
+    validatedAt: "2026-08-12T01:02:03.000Z",
     action: "NONE",
-    message: "类目已匹配",
+    message: "untrusted backend copy",
   };
-
-  const matchedForStoreB = categoryResolutionForTarget(shared, {
-    targetStoreId: "store-b",
-    taxonomyScope: "OZON:DEFAULT",
-  });
-  assert.deepEqual(matchedForStoreB, shared);
-  assert.notStrictEqual(matchedForStoreB, shared);
-  assert.deepEqual(listingTargetCategoryFieldsForStore(shared, "store-b"), {
-    descriptionCategoryId: 17_028_702,
-    typeId: 94_405,
-  });
-  assert.deepEqual(listingTargetCategoryFieldsForStore({
+  const projected = accountSharedCategoryResolution(shared, { taxonomyScope: "OZON:DEFAULT" });
+  assert.deepEqual(projected, shared);
+  assert.notStrictEqual(projected, shared);
+  assert.equal(accountSharedCategoryResolution(shared, { taxonomyScope: "OZON:RU" }), null);
+  assert.equal(accountSharedCategoryResolution({
     status: "MATCHED",
-    taxonomyScope: "OZON:DEFAULT",
-    targetDescriptionCategoryId: 17_028_702,
-    targetTypeId: 94_405,
-    method: "",
-  }, "store-b"), {
-    descriptionCategoryId: 17_028_702,
-    typeId: 94_405,
-  }, "shared taxonomy results do not require a legacy method marker");
-  assert.equal(categoryResolutionForTarget(shared, {
-    targetStoreId: "store-b",
-    taxonomyScope: "OZON:RU",
+    method: "MANUAL",
+    target: { storeId: "store-a", descriptionCategoryId: 30, typeId: 40 },
   }), null);
-
-  const legacy = {
-    status: "MATCHED",
-    method: "MANUAL",
-    target: { storeId: "store-a", descriptionCategoryId: 30, typeId: 40 },
-  };
-  assert.deepEqual(categoryResolutionForTarget(legacy, { targetStoreId: "store-a" }), legacy);
-  assert.equal(categoryResolutionForTarget(legacy, { targetStoreId: "store-b" }), null);
+  assert.equal(categoryReadinessModule.categoryResolutionForStore, undefined);
+  assert.equal(categoryReadinessModule.categoryResolutionForTarget, undefined);
+  assert.equal(categoryReadinessModule.categoryResolutionForCollectionTarget, undefined);
+  assert.equal(categoryReadinessModule.listingTargetCategoryFieldsForStore, undefined);
+  assert.equal(categoryReadinessModule.manualCategoryResolution, undefined);
 });
 
-test("uses a shared summary before a legacy draft only when its taxonomy matches", () => {
-  const shared = {
-    status: "MATCHED",
-    taxonomyScope: "OZON:DEFAULT",
-    targetDescriptionCategoryId: 11,
-    targetTypeId: 22,
-    method: "",
-  };
-  const legacy = {
-    status: "MATCHED",
-    method: "MANUAL",
-    target: { storeId: "store-b", descriptionCategoryId: 33, typeId: 44 },
-  };
-  const item = {
-    categoryResolution: shared,
-    listingDraft: { categoryResolution: legacy },
-  };
-
-  assert.deepEqual(categoryResolutionForCollectionTarget(item, {
-    targetStoreId: "store-b",
-    taxonomyScope: "OZON:DEFAULT",
-  }), shared, "the account-level match must be reusable by another store in the same taxonomy");
-  assert.deepEqual(categoryResolutionForCollectionTarget(item, {
-    targetStoreId: "store-b",
-    taxonomyScope: "OZON:RU",
-  }), legacy, "a taxonomy mismatch must fall back to the compatible legacy draft");
-  assert.deepEqual(categoryResolutionForCollectionTarget({
-    listingDraft: { categoryResolution: legacy },
-  }, {
-    targetStoreId: "store-b",
-    taxonomyScope: "OZON:DEFAULT",
-  }), legacy, "existing store-bound drafts remain readable");
-});
-
-test("does not treat a taxonomy-scoped summary passed as a legacy fallback", () => {
-  const shared = {
-    status: "MATCHED",
-    taxonomyScope: "OZON:DEFAULT",
-    targetDescriptionCategoryId: 11,
-    targetTypeId: 22,
-  };
-  const legacy = {
-    status: "MATCHED",
-    method: "MANUAL",
-    target: { storeId: "store-b", descriptionCategoryId: 33, typeId: 44 },
-  };
-  assert.deepEqual(categoryResolutionForCollectionTarget({
-    categoryResolution: shared,
-    listingDraft: { categoryResolution: legacy },
-  }, {
-    targetStoreId: "store-b",
-    taxonomyScope: "OZON:RU",
-    legacyResolution: shared,
-  }), legacy, "a mismatched shared summary must not shadow the actual legacy draft");
-});
-
-test("uses an explicitly supplied taxonomy scope for fields but keeps direct default reads isolated", () => {
-  const ruSummary = {
-    status: "MATCHED",
-    taxonomyScope: "OZON:RU",
-    targetDescriptionCategoryId: 55,
-    targetTypeId: 66,
-    method: "",
-  };
-  assert.deepEqual(listingTargetCategoryFieldsForStore(ruSummary, "store-b"), {});
-  assert.deepEqual(listingTargetCategoryFieldsForStore(ruSummary, "store-b", {
-    taxonomyScope: "OZON:RU",
-  }), {
-    descriptionCategoryId: 55,
-    typeId: 66,
+test("fails closed without executing accessors or revoked proxies", () => {
+  let getterCalls = 0;
+  const hostile = {};
+  Object.defineProperty(hostile, "status", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return "ACTIVE";
+    },
   });
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+
+  assert.equal(accountSharedCategoryResolution(hostile), null);
+  assert.equal(accountSharedCategoryResolution(proxy), null);
+  assert.equal(getterCalls, 0);
 });
 
-test("does not mark any non-matched or non-positive summary target ready for listing", () => {
-  for (const status of [
-    "WAITING_ENRICHMENT",
-    "WAITING_STORE",
-    "QUEUED",
-    "MATCHING",
-    "RETRYABLE_ERROR",
-    "NEEDS_REVIEW",
-    "INVALIDATED",
-  ]) {
-    assert.deepEqual(listingTargetCategoryFieldsForStore({
-      status,
-      taxonomyScope: "OZON:DEFAULT",
-      targetDescriptionCategoryId: 17_028_702,
-      targetTypeId: 94_405,
-      method: "TYPE_ID_EXACT",
-    }, "store-b"), {}, status);
-  }
+test("uses only a valid ACTIVE account-shared category for listing fields", () => {
+  assert.deepEqual(listingCategoryFields({
+    status: "ACTIVE",
+    taxonomyScope: "OZON:DEFAULT",
+    currentDescriptionCategoryId: 17_028_702,
+    currentTypeId: 94_405,
+  }), { descriptionCategoryId: 17_028_702, typeId: 94_405 });
 
-  for (const [targetDescriptionCategoryId, targetTypeId] of [[0, 94_405], [17_028_702, 0], [-1, 94_405]]) {
-    assert.deepEqual(listingTargetCategoryFieldsForStore({
-      status: "MATCHED",
-      taxonomyScope: "OZON:DEFAULT",
-      targetDescriptionCategoryId,
-      targetTypeId,
-      method: "TYPE_ID_EXACT",
-    }, "store-b"), {});
-  }
+  for (const resolution of [
+    { status: "INVALIDATED", taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 1, currentTypeId: 2 },
+    { status: "NEEDS_REVIEW", taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 1, currentTypeId: 2 },
+    { status: "ACTIVE", taxonomyScope: "OZON:RU", currentDescriptionCategoryId: 1, currentTypeId: 2 },
+    { status: "ACTIVE", taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 0, currentTypeId: 2 },
+    { status: "ACTIVE", taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 1, currentTypeId: -2 },
+  ]) assert.deepEqual(listingCategoryFields(resolution), {});
 });
 
-test("records a manual target-store category selection with its source evidence", () => {
-  assert.deepEqual(manualCategoryResolution({
-    source: { descriptionCategoryId: 10, typeName: "Source", typeIdCandidate: 20, path: ["Root", "Source"] },
-    targetStoreId: "store-a",
-    descriptionCategoryId: 30,
-    typeId: 40,
-    resolvedAt: "2026-08-01T00:00:00.000Z",
-  }), {
-    status: "MATCHED",
-    method: "MANUAL",
-    source: { descriptionCategoryId: 10, typeName: "Source", typeIdCandidate: 20, path: ["Root", "Source"] },
-    target: { storeId: "store-a", descriptionCategoryId: 30, typeId: 40 },
-    resolvedAt: "2026-08-01T00:00:00.000Z",
+test("builds a closed administrator confirmation request with optimistic source identity", () => {
+  const request = categoryConfirmationRequest({
+    collectItemId: "collect-a",
+    expectedSourceVersion: "draft:7",
+    descriptionCategoryId: 17_028_702,
+    typeId: 94_405,
+    taxonomyScope: "OZON:DEFAULT",
+    idempotencyKey: "category-confirmation-a",
+    correlationId: "category-confirmation-correlation-a",
+    targetStoreId: "must-not-leak",
+    rawVendorMessage: "must-not-leak",
   });
+  assert.deepEqual(request, {
+    collectItemId: "collect-a",
+    expectedSourceVersion: "draft:7",
+    descriptionCategoryId: 17_028_702,
+    typeId: 94_405,
+    taxonomyScope: "OZON:DEFAULT",
+    idempotencyKey: "category-confirmation-a",
+    correlationId: "category-confirmation-correlation-a",
+  });
+  assert.deepEqual(Object.keys(request).sort(), [
+    "collectItemId", "correlationId", "descriptionCategoryId", "expectedSourceVersion",
+    "idempotencyKey", "taxonomyScope", "typeId",
+  ]);
+  for (const invalid of [
+    { collectItemId: "", expectedSourceVersion: "draft:7" },
+    { collectItemId: "collect-a", expectedSourceVersion: "" },
+    { collectItemId: "collect-a", expectedSourceVersion: "draft:7", descriptionCategoryId: 0 },
+    { collectItemId: "collect-a", expectedSourceVersion: "draft:7", descriptionCategoryId: 1, typeId: 1.5 },
+  ]) assert.throws(() => categoryConfirmationRequest({
+    descriptionCategoryId: 1,
+    typeId: 2,
+    taxonomyScope: "OZON:DEFAULT",
+    idempotencyKey: "key",
+    correlationId: "correlation",
+    ...invalid,
+  }), { code: "OZON_CATEGORY_CONFIRMATION_INVALID" });
 });
