@@ -726,9 +726,19 @@ if (!enabled) {
       });
       await pool.query(`DROP TRIGGER reject_terminal_stock_crash_${suffix} ON submission_jobs`);
       await pool.query(`DROP FUNCTION reject_terminal_stock_crash_${suffix}()`);
+      const doneReplayCallsStart = calls.length;
+      await pool.query(`UPDATE warehouses SET status='disabled',is_active=FALSE
+        WHERE id=$1 AND store_id=$2`, [terminalCrash.warehouse, terminalCrash.store]);
       await processListingQueueMessage({
         submissionJobId: terminalCrashSubmission.submissionJobId, action: "check",
       });
+      assert.equal((await pool.query("SELECT status FROM submission_jobs WHERE id=$1",
+        [terminalCrashSubmission.submissionJobId])).rows[0].status, "SUCCEEDED");
+      assert.equal(calls.slice(doneReplayCallsStart).some(({ path: value }) =>
+        ["/v2/warehouse/list", "/v2/products/stocks"].includes(value)), false,
+      "DONE replay must not read RFBS state or stock transport");
+      await pool.query(`UPDATE warehouses SET status='active',is_active=TRUE
+        WHERE id=$1 AND store_id=$2`, [terminalCrash.warehouse, terminalCrash.store]);
       assert.equal(calls.slice(terminalCrashCallsStart)
         .filter(({ path: value }) => value === "/v2/products/stocks").length, 1,
       "terminal replay must not send a second stock request after the first response was accepted");
@@ -850,6 +860,8 @@ if (!enabled) {
         FROM submission_stock_write_events WHERE submission_job_id=$1`,
       [preNetworkCrashSubmission.submissionJobId])).rows[0].count), 1);
       await stockPorts.beginSubmissionStockWriteV3(preNetworkCommand);
+      await pool.query(`UPDATE warehouses SET status='disabled',is_active=FALSE
+        WHERE id=$1 AND store_id=$2`, [preNetworkCrash.warehouse, preNetworkCrash.store]);
       await processListingQueueMessage({
         submissionJobId: preNetworkCrashSubmission.submissionJobId, action: "check",
       });
@@ -864,6 +876,8 @@ if (!enabled) {
         job_status: "PARTIAL_SUCCESS",
         error_code: "OZON_STOCK_RESULT_AMBIGUOUS",
       });
+      await pool.query(`UPDATE warehouses SET status='active',is_active=TRUE
+        WHERE id=$1 AND store_id=$2`, [preNetworkCrash.warehouse, preNetworkCrash.store]);
       await assert.rejects(pool.query(`UPDATE submission_stock_write_intents
         SET request_hash=$1 WHERE account_id=$2 AND submission_job_id=$3`,
       ["f".repeat(32), preNetworkCrash.account, preNetworkCrashSubmission.submissionJobId]),

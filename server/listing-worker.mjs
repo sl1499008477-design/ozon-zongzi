@@ -430,8 +430,6 @@ async function finishSuccessfulImport(work, statusInfo) {
   const stocks = Array.isArray(work.stocks) ? work.stocks : [];
   if (finalStatus === "SUCCEEDED" && stocks.length) {
     try {
-      await authorizeListingRfbsWritePhase(work, "PRE_STOCK");
-      const credential = await readStoreCredentialV3(work.store_id, work.account_id);
       const submissionItems = Array.isArray(work.submissionItems) ? work.submissionItems : [];
       const itemByOffer = new Map(submissionItems.map((item) => [item?.offerId, item?.submissionItemId]));
       const stockItems = stocks.map((stock) => ({
@@ -464,6 +462,8 @@ async function finishSuccessfulImport(work, statusInfo) {
         completionErrorCode = "OZON_STOCK_RESULT_AMBIGUOUS";
         errorMessage = "商品已上架，但库存写入结果无法确认；系统未自动重发，请人工核对库存后执行库存恢复";
       } else {
+        await authorizeListingRfbsWritePhase(work, "PRE_STOCK");
+        const credential = await readStoreCredentialV3(work.store_id, work.account_id);
         const begun = await beginSubmissionStockWriteV3(stockCommand);
         if (begun.status !== "IN_FLIGHT") {
           throw Object.assign(new Error("库存写入状态无法安全开始"), {
