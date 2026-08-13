@@ -4,7 +4,7 @@ Verified on 2026-08-13 (Asia/Shanghai).
 
 ## Tested implementation
 
-- Implementation SHA: `42f696540066473397632f9c8c66709e11acec1b`
+- Implementation SHA: `758b4399fe637e1c0056cbc9934639f4a97631cf`
 - Supporting production-contract fixes: `c240040`, `48e4fca`, and `bb21c02`
 - Migration chain: `001` through `072`
 - Production automatic category recovery: disabled; the V1 structured-error policy remains empty
@@ -14,6 +14,7 @@ Verified on 2026-08-13 (Asia/Shanghai).
 - Task 10 production-composition E2E: 4 passed, 0 failed, 0 skipped.
 - Adjacent real RFBS worker E2E: 1 passed, 0 failed, 0 skipped. This includes PRE_IMPORT warehouse absence/status/type/response-loss cases and PRE_STOCK/stock-failure cases with exact product-import and stock-call counts.
 - Fresh Task 7 repository/service plus standard upload/stock PostgreSQL gate: 6 passed, 0 failed, 0 skipped.
+- Current-schema repository/manual/migration gate: 49 passed, 0 failed, 0 skipped.
 - Adjacent Task 7/8, RFBS, reconciliation and stock-contract unit gate: 62 passed, 0 failed, 0 skipped.
 - Vite production build: 4,843 modules transformed, exit zero. The existing large-chunk warning remains.
 - JavaScript syntax checks and changed-range whitespace checks: passed.

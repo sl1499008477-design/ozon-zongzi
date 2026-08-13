@@ -2,7 +2,7 @@
 
 Date: 2026-08-13
 
-Tested implementation commit: `42f696540066473397632f9c8c66709e11acec1b`.
+Tested implementation commit: `758b4399fe637e1c0056cbc9934639f4a97631cf`.
 
 ## Outcome
 
@@ -54,6 +54,7 @@ GREEN fault barriers use database triggers and explicit durable states, never sl
 - Fresh disposable PostgreSQL 16 Task 10 central E2E, including migrations 001–072, production one-attempt recovery, 069 child, stock ledger, exact confirmation audit and destructive/restore checks: **4/4 passed, 0 failed, 0 skipped**.
 - Fresh PostgreSQL Task 7 repository/service composition plus standard upload/stock partial behavior: **6/6 passed, 0 failed, 0 skipped**.
 - Fresh PostgreSQL migration/manual-provenance gate: **14/14 passed, 0 failed, 0 skipped**.
+- Current-schema repository/manual combined gate: **49/49 passed, 0 failed, 0 skipped**; the repository fixture now applies through 072 and creates its cleanup audit through the production confirmation runtime.
 - Syntax checks for changed JavaScript modules and tests passed; `git diff --check` passed.
 
 All external traffic in these tests used a random loopback fake. No real Ozon, AI, object storage, production database, production credential, deployed service or browser write was used.

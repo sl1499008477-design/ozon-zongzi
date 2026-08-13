@@ -4,7 +4,7 @@
 
 This runbook covers the forward-only migration from retired store/collect-item category matches to immutable collected source evidence and one account-shared Ozon category state. The tested migration chain is **001–072**. Migration 063 performs the destructive replacement; 064 adds lookup evidence; 065–069 close lease, graph handoff, recovery-attempt, corrected-item, and recovery-child-result contracts; 070 adds immutable administrator-confirmation provenance; 071 adds the crash-safe stock-write ledger; and 072 binds every new confirmation audit to its exact manual provenance while preserving historical rows.
 
-The authoritative tested implementation SHA is `42f696540066473397632f9c8c66709e11acec1b`, also recorded in `docs/verification/2026-08-12-account-shared-ozon-category-recovery.md`. Deploy only that exact implementation (or a separately reverified descendant) with the matching 001–072 migration set.
+The authoritative tested implementation SHA is `758b4399fe637e1c0056cbc9934639f4a97631cf`, also recorded in `docs/verification/2026-08-12-account-shared-ozon-category-recovery.md`. Deploy only that exact implementation (or a separately reverified descendant) with the matching 001–072 migration set.
 
 > Production automatic category recovery is disabled. The V1 production structured-error allowlist is intentionally empty. The E2E proof uses a clearly labelled, test-only historical evidence fixture inserted only into disposable PostgreSQL. Do not copy that fixture or create an evidence-injection route in production.
 
