@@ -54,6 +54,130 @@ const IMPORT_ROW_ERROR = Object.freeze({
   DUPLICATE_IN_FILE: "该 SKU 在文件中重复",
 });
 
+const ACTION_KEYS = Object.freeze(["review", "approve", "retry", "regenerate", "cancel"]);
+const PRICE_KEYS = Object.freeze([
+  "currency", "branch", "blackKopecks", "greenKopecks", "realPriceKopecks",
+  "adjustmentKopecks", "finalPriceKopecks",
+]);
+
+function descriptorTreeSafe(value, seen = new WeakSet()) {
+  if (value === null || ["string", "number", "boolean", "undefined"].includes(typeof value)) return true;
+  if (typeof value !== "object" || seen.has(value)) return false;
+  try {
+    const array = Array.isArray(value);
+    if (Object.getPrototypeOf(value) !== (array ? Array.prototype : Object.prototype)) return false;
+    seen.add(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
+    if (array) {
+      if (!Object.hasOwn(descriptors, "length") || !("value" in descriptors.length)
+        || descriptors.length.value !== value.length) return false;
+      const indexes = keys.filter((key) => key !== "length");
+      if (indexes.length !== value.length
+        || indexes.some((key, index) => key !== String(index))) return false;
+    }
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (!("value" in descriptor) || (key !== "length" && !descriptor.enumerable)
+        || !descriptorTreeSafe(descriptor.value, seen)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeDataRoot(value, { array = false } = {}) {
+  try {
+    if ((array ? !Array.isArray(value) : Array.isArray(value)) || !descriptorTreeSafe(value)) return null;
+    structuredClone(value);
+    return Object.getOwnPropertyDescriptors(value);
+  } catch {
+    return null;
+  }
+}
+
+function boundedString(value, { required = false } = {}) {
+  return typeof value === "string" && value.length <= 512 && (!required || value.length > 0)
+    ? value : null;
+}
+
+function projectActions(value) {
+  const descriptors = safeDataRoot(value);
+  if (!descriptors || Reflect.ownKeys(descriptors).length !== ACTION_KEYS.length
+    || ACTION_KEYS.some((key) => !descriptors[key]?.enumerable
+      || !("value" in descriptors[key]) || typeof descriptors[key].value !== "boolean")) return null;
+  return Object.freeze(Object.fromEntries(ACTION_KEYS.map((key) => [key, descriptors[key].value])));
+}
+
+function projectPrice(value) {
+  const descriptors = safeDataRoot(value);
+  const keys = descriptors ? Reflect.ownKeys(descriptors) : [];
+  if (!descriptors || keys.some((key) => typeof key !== "string" || !PRICE_KEYS.includes(key))
+    || !descriptors.currency || !descriptors.branch) return null;
+  const currency = descriptors.currency.value;
+  const branch = descriptors.branch.value;
+  if (!descriptors.currency.enumerable || !descriptors.branch.enumerable
+    || !["RUB", "CNY"].includes(currency)
+    || !["BLACK_GTE_80", "BLACK_LT_80"].includes(branch)) return null;
+  const result = { currency, branch };
+  for (const key of PRICE_KEYS.slice(2)) {
+    if (!descriptors[key]) continue;
+    const amount = descriptors[key].value;
+    if (!descriptors[key].enumerable || typeof amount !== "string"
+      || amount.length > 80 || !/^[+-]?\d+$/u.test(amount)) return null;
+    result[key] = amount;
+  }
+  return Object.freeze(result);
+}
+
+function projectItem(value, { allowJobFields = true } = {}) {
+  const descriptors = safeDataRoot(value);
+  if (!descriptors) return null;
+  const field = (key) => descriptors[key]?.value;
+  const itemId = boundedString(field("itemId"), { required: true });
+  const status = boundedString(field("status"), { required: true });
+  if (!itemId || !Object.hasOwn(STATUS, status)) return null;
+  const output = { itemId, status };
+  for (const key of [
+    "createdAt", "updatedAt", "targetStoreId", "targetWarehouseId",
+    "sourceRecordId", "sourceVersion", "sourceHash", "failureCode",
+  ]) {
+    if (!descriptors[key]) continue;
+    const text = boundedString(field(key));
+    if (text === null) return null;
+    output[key] = text;
+  }
+  if (descriptors.statusVersion) {
+    const statusVersion = field("statusVersion");
+    if (!Number.isSafeInteger(statusVersion) || statusVersion < 1) return null;
+    output.statusVersion = statusVersion;
+  }
+  if (descriptors.price) {
+    const price = projectPrice(field("price"));
+    if (!price) return null;
+    output.price = price;
+  }
+  if (descriptors.actions) {
+    const actions = projectActions(field("actions"));
+    if (!actions) return null;
+    output.actions = actions;
+  }
+  if (allowJobFields) {
+    if (descriptors.jobId) {
+      const jobId = boundedString(field("jobId"), { required: true });
+      if (!jobId) return null;
+      output.jobId = jobId;
+    }
+    if (descriptors.jobCreatedAt) {
+      const jobCreatedAt = field("jobCreatedAt");
+      if (jobCreatedAt !== null && canonicalTimestamp(jobCreatedAt) !== jobCreatedAt) return null;
+      output.jobCreatedAt = jobCreatedAt;
+    }
+  }
+  return Object.freeze(output);
+}
+
 export function autoListingActionAvailability(status) {
   if (status === "READY_FOR_REVIEW") return { review: true, approve: true, retry: false, regenerate: true, cancel: true };
   if (status === "RETRYABLE_ERROR") return { review: false, approve: false, retry: false, regenerate: false, cancel: true };
@@ -65,24 +189,17 @@ export function autoListingActionAvailability(status) {
   return { review: false, approve: false, retry: false, regenerate: false, cancel: false };
 }
 
-function serverActions(value, status) {
-  if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.getPrototypeOf(value) !== Object.prototype
-    || Reflect.ownKeys(value).length !== 5
-    || ["review", "approve", "retry", "regenerate", "cancel"].some((key) => typeof value[key] !== "boolean")) {
-    return Object.freeze({ review: false, approve: false, retry: false, regenerate: false, cancel: false });
-  }
-  return Object.freeze({
-    review: value.review, approve: value.approve, retry: value.retry,
-    regenerate: value.regenerate, cancel: value.cancel,
-  });
+function serverActions(value) {
+  return projectActions(value)
+    || Object.freeze({ review: false, approve: false, retry: false, regenerate: false, cancel: false });
 }
 
 export function autoListingItemPresentation(item = {}) {
-  const itemId = typeof item.itemId === "string" ? item.itemId : "";
-  const status = typeof item.status === "string" ? item.status : "";
+  const safe = projectItem(item) || {};
+  const itemId = typeof safe.itemId === "string" ? safe.itemId : "";
+  const status = typeof safe.status === "string" ? safe.status : "";
   const [statusLabel, tone] = STATUS[status] || ["未知状态", "default"];
-  const failureCode = typeof item.failureCode === "string" ? item.failureCode : "";
+  const failureCode = typeof safe.failureCode === "string" ? safe.failureCode : "";
   return Object.freeze({
     itemId,
     status,
@@ -91,7 +208,7 @@ export function autoListingItemPresentation(item = {}) {
     failureLabel: failureCode
       ? (FAILURE[failureCode] || "商品暂时无法继续处理，请检查资料或联系管理员")
       : "",
-    actions: serverActions(item.actions, status),
+    actions: serverActions(safe.actions),
   });
 }
 
@@ -141,13 +258,23 @@ function canonicalTimestamp(value) {
 }
 
 export function autoListingTaskRows(jobs) {
-  return (Array.isArray(jobs) ? jobs : []).flatMap((job) => {
-    if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId.trim()
-      || !Array.isArray(job.items)) return [];
-    const jobCreatedAt = canonicalTimestamp(job.createdAt);
-    return job.items.filter((item) => item && typeof item === "object" && !Array.isArray(item))
-      .map((item) => ({ ...item, jobId: job.jobId, jobCreatedAt }));
-  });
+  const root = safeDataRoot(jobs, { array: true });
+  if (!root) return [];
+  const rows = [];
+  for (let index = 0; index < jobs.length; index += 1) {
+    const job = root[String(index)]?.value;
+    const descriptors = safeDataRoot(job);
+    if (!descriptors) continue;
+    const jobId = boundedString(descriptors.jobId?.value, { required: true });
+    const items = descriptors.items?.value;
+    if (!jobId || !Array.isArray(items)) continue;
+    const jobCreatedAt = canonicalTimestamp(descriptors.createdAt?.value);
+    for (const item of items) {
+      const projected = projectItem(item, { allowJobFields: false });
+      if (projected) rows.push(Object.freeze({ ...projected, jobId, jobCreatedAt }));
+    }
+  }
+  return Object.freeze(rows);
 }
 
 export function autoListingCreatedAtLabel(value) {

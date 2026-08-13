@@ -22,12 +22,29 @@ after(async () => {
 
 test("collection list renders account-shared category states with fixed safe copy", () => {
   assert.equal(typeof appModule.CollectPage, "function");
-  const statuses = [
-    "ACTIVE",
-    "INVALIDATED",
-    "NEEDS_REVIEW",
-    "RECONCILING",
-    "UNKNOWN_VENDOR_STATE",
+  const resolutions = [
+    {
+      status: "ACTIVE", taxonomyScope: "OZON:DEFAULT",
+      sourceDescriptionCategoryId: 10, sourceTypeId: 20,
+      currentDescriptionCategoryId: 30, currentTypeId: 40,
+      source: "SOURCE_DIRECT", version: 1, validatedAt: null,
+      action: "NONE", message: "使用采集类目准备上架",
+    },
+    {
+      status: "INVALIDATED", taxonomyScope: "OZON:DEFAULT",
+      sourceDescriptionCategoryId: 10, sourceTypeId: 20,
+      currentDescriptionCategoryId: 30, currentTypeId: 40,
+      source: "OZON_REFRESH", version: 2, validatedAt: "2026-08-12T01:02:03.000Z",
+      action: "WAIT", message: "Ozon 类目已失效，正在自动修复",
+    },
+    {
+      status: "NEEDS_REVIEW", taxonomyScope: "OZON:DEFAULT",
+      sourceDescriptionCategoryId: null, sourceTypeId: null,
+      currentDescriptionCategoryId: null, currentTypeId: null,
+      source: null, version: null, validatedAt: null,
+      action: "REVIEW", message: "无法确认商品类目，请人工选择",
+    },
+    { status: "UNKNOWN_VENDOR_STATE", raw: "untrusted backend copy must not render" },
   ];
   const markup = renderToStaticMarkup(
     React.createElement(
@@ -41,15 +58,10 @@ test("collection list renders account-shared category states with fixed safe cop
           localData: {
             currentStoreId: "store-a",
             caches: {
-              collectBox: statuses.map((status, index) => ({
+              collectBox: resolutions.map((categoryResolution, index) => ({
                 id: `collect-${index}`,
                 name: `商品 ${index}`,
-                categoryResolution: {
-                  status,
-                  taxonomyScope: "OZON:DEFAULT",
-                  source: status === "ACTIVE" ? "SOURCE_DIRECT" : "OZON_REFRESH",
-                  message: "untrusted backend copy must not render",
-                },
+                categoryResolution,
               })),
             },
           },
@@ -65,7 +77,6 @@ test("collection list renders account-shared category states with fixed safe cop
     "使用采集类目准备上架",
     "Ozon 类目已失效，正在自动修复",
     "无法确认商品类目，请人工选择",
-    "Ozon 返回结果不明确，正在核对原任务",
     "商品类目状态暂时无法确认，请联系管理员",
   ]) {
     assert.match(markup, new RegExp(label));
@@ -80,9 +91,15 @@ test("saved ACTIVE account-shared IDs flow into preview without store rematching
     categoryResolution: {
       status: "ACTIVE",
       taxonomyScope: "OZON:DEFAULT",
+      sourceDescriptionCategoryId: 17_028_702,
+      sourceTypeId: 94_405,
       currentDescriptionCategoryId: 17_028_702,
       currentTypeId: 94_405,
       source: "SOURCE_DIRECT",
+      version: 1,
+      validatedAt: null,
+      action: "NONE",
+      message: "使用采集类目准备上架",
     },
   };
   const preview = appModule.collectEditPreviewPayload({
@@ -106,6 +123,12 @@ test("a confirmed shared manual category replaces an unresolved summary independ
     currentDescriptionCategoryId: 333,
     currentTypeId: 444,
     source: "MANUAL",
+    sourceDescriptionCategoryId: 111,
+    sourceTypeId: 222,
+    version: 2,
+    validatedAt: "2026-08-12T01:02:03.000Z",
+    action: "NONE",
+    message: "使用采集类目准备上架",
   };
   const selected = appModule.collectEditDraftVariantCategory({
     item: {

@@ -75,6 +75,12 @@ const SHARED_CATEGORY_KEYS = Object.freeze([
   "currentDescriptionCategoryId", "currentTypeId", "source", "version",
   "validatedAt", "action", "message",
 ]);
+const SHARED_CATEGORY_SOURCES = new Set(["SOURCE_DIRECT", "OZON_REFRESH", "MANUAL"]);
+const SHARED_CATEGORY_GUIDANCE = Object.freeze({
+  ACTIVE: Object.freeze({ action: "NONE", message: "使用采集类目准备上架" }),
+  INVALIDATED: Object.freeze({ action: "WAIT", message: "Ozon 类目已失效，正在自动修复" }),
+  NEEDS_REVIEW: Object.freeze({ action: "REVIEW", message: "无法确认商品类目，请人工选择" }),
+});
 
 const positiveSafeInteger = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
 
@@ -84,11 +90,23 @@ function plainDataRecord(value, allowedKeys) {
       || Object.getPrototypeOf(value) !== Object.prototype) return null;
     const keys = Reflect.ownKeys(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
-    if (keys.some((key) => typeof key !== "string" || !allowedKeys.includes(key)
+    if (keys.length !== allowedKeys.length
+      || allowedKeys.some((key) => !Object.hasOwn(descriptors, key))
+      || keys.some((key) => typeof key !== "string" || !allowedKeys.includes(key)
       || !descriptors[key]?.enumerable || !("value" in descriptors[key]))) return null;
-    return Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
+    structuredClone(value);
+    return Object.fromEntries(allowedKeys.map((key) => [key, descriptors[key].value]));
   } catch {
     return null;
+  }
+}
+
+function canonicalInstant(value) {
+  if (typeof value !== "string" || !value) return false;
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
   }
 }
 
@@ -97,9 +115,22 @@ export function accountSharedCategoryResolution(
   { taxonomyScope = "OZON:DEFAULT" } = {},
 ) {
   const safe = plainDataRecord(resolution, SHARED_CATEGORY_KEYS);
-  if (!safe || !["ACTIVE", "INVALIDATED", "NEEDS_REVIEW"].includes(safe.status)
-    || safe.taxonomyScope !== taxonomyScope) return null;
-  return structuredClone(safe);
+  const guidance = safe ? SHARED_CATEGORY_GUIDANCE[safe.status] : null;
+  if (!safe || !guidance || safe.taxonomyScope !== taxonomyScope
+    || safe.action !== guidance.action || safe.message !== guidance.message) return null;
+  const ids = [
+    safe.sourceDescriptionCategoryId, safe.sourceTypeId,
+    safe.currentDescriptionCategoryId, safe.currentTypeId,
+  ];
+  const unresolved = ids.every((value) => value === null)
+    && safe.status === "NEEDS_REVIEW" && safe.source === null
+    && safe.version === null && safe.validatedAt === null;
+  const resolved = ids.every((value) => Number.isSafeInteger(value) && value > 0)
+    && SHARED_CATEGORY_SOURCES.has(safe.source)
+    && Number.isSafeInteger(safe.version) && safe.version > 0
+    && (safe.source === "SOURCE_DIRECT"
+      ? safe.validatedAt === null : canonicalInstant(safe.validatedAt));
+  return unresolved || resolved ? Object.freeze(safe) : null;
 }
 
 export function listingCategoryFields(
@@ -139,6 +170,18 @@ export function categoryConfirmationRequest(input = {}) {
     || request.taxonomyScope !== "OZON:DEFAULT"
     || !request.idempotencyKey || !request.correlationId) throw confirmationError();
   return Object.freeze(request);
+}
+
+export function categoryConfirmationResponse(input, request) {
+  const result = plainDataRecord(input, ["collectItemId", "categoryResolution"]);
+  const resolution = result
+    ? accountSharedCategoryResolution(result.categoryResolution, { taxonomyScope: request?.taxonomyScope })
+    : null;
+  if (!resolution || result.collectItemId !== request?.collectItemId
+    || resolution.status !== "ACTIVE" || resolution.source !== "MANUAL"
+    || resolution.currentDescriptionCategoryId !== request?.descriptionCategoryId
+    || resolution.currentTypeId !== request?.typeId) return null;
+  return Object.freeze({ collectItemId: result.collectItemId, categoryResolution: resolution });
 }
 
 export function categoryRequestScope({ storeId, itemId } = {}) {

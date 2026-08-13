@@ -17,6 +17,7 @@ import {
   accountSharedCategoryResolution,
   listingCategoryFields,
   categoryConfirmationRequest,
+  categoryConfirmationResponse,
 } from "../src/category-readiness.js";
 
 const validTree = [{
@@ -282,9 +283,9 @@ test("projects only the account-shared taxonomy and never falls back to a store-
     currentTypeId: 40,
     source: "SOURCE_DIRECT",
     version: 3,
-    validatedAt: "2026-08-12T01:02:03.000Z",
+    validatedAt: null,
     action: "NONE",
-    message: "untrusted backend copy",
+    message: "使用采集类目准备上架",
   };
   const projected = accountSharedCategoryResolution(shared, { taxonomyScope: "OZON:DEFAULT" });
   assert.deepEqual(projected, shared);
@@ -314,26 +315,80 @@ test("fails closed without executing accessors or revoked proxies", () => {
   });
   const { proxy, revoke } = Proxy.revocable({}, {});
   revoke();
+  const transparent = new Proxy({
+    status: "ACTIVE", taxonomyScope: "OZON:DEFAULT",
+    sourceDescriptionCategoryId: 10, sourceTypeId: 20,
+    currentDescriptionCategoryId: 30, currentTypeId: 40,
+    source: "SOURCE_DIRECT", version: 1, validatedAt: null,
+    action: "NONE", message: "使用采集类目准备上架",
+  }, {});
 
   assert.equal(accountSharedCategoryResolution(hostile), null);
   assert.equal(accountSharedCategoryResolution(proxy), null);
+  assert.equal(accountSharedCategoryResolution(transparent), null);
   assert.equal(getterCalls, 0);
 });
 
+test("requires the exact complete public shared-summary state contract", () => {
+  const active = {
+    status: "ACTIVE", taxonomyScope: "OZON:DEFAULT",
+    sourceDescriptionCategoryId: 10, sourceTypeId: 20,
+    currentDescriptionCategoryId: 30, currentTypeId: 40,
+    source: "SOURCE_DIRECT", version: 3, validatedAt: null,
+    action: "NONE", message: "使用采集类目准备上架",
+  };
+  const refreshed = {
+    ...active, status: "INVALIDATED", source: "OZON_REFRESH",
+    validatedAt: "2026-08-12T01:02:03.000Z", action: "WAIT",
+    message: "Ozon 类目已失效，正在自动修复",
+  };
+  const unresolved = {
+    status: "NEEDS_REVIEW", taxonomyScope: "OZON:DEFAULT",
+    sourceDescriptionCategoryId: null, sourceTypeId: null,
+    currentDescriptionCategoryId: null, currentTypeId: null,
+    source: null, version: null, validatedAt: null,
+    action: "REVIEW", message: "无法确认商品类目，请人工选择",
+  };
+  for (const valid of [active, refreshed, unresolved]) {
+    assert.deepEqual(accountSharedCategoryResolution(valid), valid);
+  }
+  const invalid = [
+    { ...active, extra: "raw" },
+    Object.assign(Object.create(null), active),
+    { ...active, source: "LEGACY" },
+    { ...active, version: 0 },
+    { ...active, version: 1.5 },
+    { ...active, validatedAt: "2026-08-12 01:02:03Z" },
+    { ...active, action: "REVIEW" },
+    { ...active, message: "vendor copy" },
+    { ...active, currentTypeId: null },
+    { ...unresolved, sourceDescriptionCategoryId: 10 },
+  ];
+  const withSymbol = { ...active };
+  withSymbol[Symbol("raw")] = "secret";
+  invalid.push(withSymbol);
+  for (const candidate of invalid) assert.equal(accountSharedCategoryResolution(candidate), null);
+});
+
 test("uses only a valid ACTIVE account-shared category for listing fields", () => {
-  assert.deepEqual(listingCategoryFields({
+  const active = {
     status: "ACTIVE",
     taxonomyScope: "OZON:DEFAULT",
+    sourceDescriptionCategoryId: 17_028_702,
+    sourceTypeId: 94_405,
     currentDescriptionCategoryId: 17_028_702,
     currentTypeId: 94_405,
-  }), { descriptionCategoryId: 17_028_702, typeId: 94_405 });
+    source: "SOURCE_DIRECT", version: 1, validatedAt: null,
+    action: "NONE", message: "使用采集类目准备上架",
+  };
+  assert.deepEqual(listingCategoryFields(active), { descriptionCategoryId: 17_028_702, typeId: 94_405 });
 
   for (const resolution of [
-    { status: "INVALIDATED", taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 1, currentTypeId: 2 },
-    { status: "NEEDS_REVIEW", taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 1, currentTypeId: 2 },
-    { status: "ACTIVE", taxonomyScope: "OZON:RU", currentDescriptionCategoryId: 1, currentTypeId: 2 },
-    { status: "ACTIVE", taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 0, currentTypeId: 2 },
-    { status: "ACTIVE", taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 1, currentTypeId: -2 },
+    { ...active, status: "INVALIDATED", action: "WAIT", message: "Ozon 类目已失效，正在自动修复" },
+    { ...active, status: "NEEDS_REVIEW", action: "REVIEW", message: "无法确认商品类目，请人工选择" },
+    { ...active, taxonomyScope: "OZON:RU" },
+    { ...active, currentDescriptionCategoryId: 0 },
+    { ...active, currentTypeId: -2 },
   ]) assert.deepEqual(listingCategoryFields(resolution), {});
 });
 
@@ -375,4 +430,37 @@ test("builds a closed administrator confirmation request with optimistic source 
     correlationId: "correlation",
     ...invalid,
   }), { code: "OZON_CATEGORY_CONFIRMATION_INVALID" });
+});
+
+test("accepts only a complete exact administrator confirmation response", () => {
+  const request = categoryConfirmationRequest({
+    collectItemId: "collect-a", expectedSourceVersion: "draft:7",
+    descriptionCategoryId: 17_028_702, typeId: 94_405,
+    taxonomyScope: "OZON:DEFAULT", idempotencyKey: "key", correlationId: "correlation",
+  });
+  const categoryResolution = {
+    status: "ACTIVE", taxonomyScope: "OZON:DEFAULT",
+    sourceDescriptionCategoryId: 10, sourceTypeId: 20,
+    currentDescriptionCategoryId: 17_028_702, currentTypeId: 94_405,
+    source: "MANUAL", version: 2, validatedAt: "2026-08-12T01:02:03.000Z",
+    action: "NONE", message: "使用采集类目准备上架",
+  };
+  assert.deepEqual(categoryConfirmationResponse({ collectItemId: "collect-a", categoryResolution }, request), {
+    collectItemId: "collect-a", categoryResolution,
+  });
+  let getterCalls = 0;
+  const accessor = { collectItemId: "collect-a" };
+  Object.defineProperty(accessor, "categoryResolution", {
+    enumerable: true,
+    get() { getterCalls += 1; return categoryResolution; },
+  });
+  for (const response of [
+    { collectItemId: "collect-a" },
+    { collectItemId: "collect-a", categoryResolution: { ...categoryResolution, currentTypeId: null } },
+    { collectItemId: "collect-b", categoryResolution },
+    { collectItemId: "collect-a", categoryResolution, raw: "secret" },
+    accessor,
+    new Proxy({ collectItemId: "collect-a", categoryResolution }, {}),
+  ]) assert.equal(categoryConfirmationResponse(response, request), null);
+  assert.equal(getterCalls, 0);
 });

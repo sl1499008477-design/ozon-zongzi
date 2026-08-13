@@ -72,6 +72,7 @@ import {
   accountSharedCategoryResolution,
   listingCategoryFields,
   categoryConfirmationRequest,
+  categoryConfirmationResponse,
   categoryItemScopeIsCurrent,
   categoryReadiness,
   requireCategoryReadiness,
@@ -5876,13 +5877,9 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         method: "POST",
         body: confirmation.body,
       });
-      const confirmed = accountSharedCategoryResolution(result?.data?.categoryResolution, {
-        taxonomyScope: categoryTaxonomyScope,
-      });
-      if (result?.data?.collectItemId !== confirmation.body.collectItemId
-        || confirmed?.status !== "ACTIVE" || confirmed?.source !== "MANUAL"
-        || confirmed.currentDescriptionCategoryId !== Number(nextDescriptionId)
-        || confirmed.currentTypeId !== Number(nextTypeId)) {
+      const confirmationResult = categoryConfirmationResponse(result?.data, confirmation.body);
+      const confirmed = confirmationResult?.categoryResolution;
+      if (!confirmed) {
         throw new Error("OZON_CATEGORY_CONFIRMATION_RESPONSE_INVALID");
       }
       categoryConfirmationIntentRef.current = null;

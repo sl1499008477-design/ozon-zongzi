@@ -22,7 +22,7 @@ const shared = {
   currentTypeId: 44,
   source: "SOURCE_DIRECT",
   version: 7,
-  validatedAt: "2026-08-12T01:02:03.000Z",
+  validatedAt: null,
   action: "NONE",
   message: "使用采集类目准备上架",
 };
