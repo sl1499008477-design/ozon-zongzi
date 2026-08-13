@@ -43,6 +43,10 @@ The approved second review round stays within the existing Task 8 files and migr
 
 Any failure during the single retry submission must either atomically terminate the exact pending attempt/job for review or, when the retry task identity was already durably accepted, resume checking only that exact retry task. Generic reconciliation, original-task lookup, and another import are forbidden. The change remains inside the existing worker/pipeline/test scope and migration 069.
 
+### Automatic fix-round-4 review contract
+
+The stale-job watchdog must resolve an exact account/job/snapshot recovery relation before generic recovery. Pending retry submissions without a persisted retry task terminate atomically for review, accepted retry tasks resume only their own check, and missing/ambiguous/cross-tenant recovery relations fail closed. Ordinary non-recovery watchdog behavior remains unchanged.
+
 ## Closed worker behavior
 
 - Only the first terminal, all-item allowlisted category failure with every `productId` absent may enter Task 7 recovery. Partial success, any product identity, still-processing, unknown, ordinary/non-category failure, response loss, or offer `PRESENT/UNKNOWN` causes zero category refresh.

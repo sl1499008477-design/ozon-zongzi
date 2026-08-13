@@ -204,7 +204,9 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
         'category-source-a','category-shared-a',1,'ozon-task-original',$2,'CLAIMED',
         'submission-correlation-a','2026-08-13T00:00:01.000Z','2026-08-13T00:00:01.000Z')`,
     [accountA, h]);
-    const retrySubmitCases = ["notsent", "local", "persist", "schedule"];
+    const retrySubmitCases = ["notsent", "local", "persist", "schedule",
+      "watchdog-submit", "watchdog-validating", "watchdog-accepted",
+      "watchdog-wrong-tenant", "watchdog-ambiguous"];
     for (const label of retrySubmitCases) {
       await owner.query(`INSERT INTO submission_snapshots(
         id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,
@@ -300,7 +302,7 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
       ["local", { code: "LISTING_RFBS_PHASE_VALIDATION_REQUIRED" }],
       ["persist", { code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT" }],
     ]);
-    for (const label of retrySubmitCases) {
+    for (const label of ["notsent", "local", "persist", "schedule"]) {
       await pipeline.scheduleSubmissionCategoryRetryV3({
         accountId: accountA, jobId: `submission-${label}`,
         snapshotId: `submission-snapshot-${label}`, attemptId: `category-attempt-${label}`,
@@ -377,6 +379,125 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
         AND event_type='listing.check.requested') AS checks`)).rows[0], {
       attempt_status: "RETRY_ACCEPTED", job_status: "CHECKING",
       task_id: "ozon-task-retry-schedule", imports: 1, checks: 1,
+    });
+
+    for (const label of ["watchdog-submit", "watchdog-validating", "watchdog-accepted",
+      "watchdog-wrong-tenant", "watchdog-ambiguous"]) {
+      await pipeline.scheduleSubmissionCategoryRetryV3({
+        accountId: accountA, jobId: `submission-${label}`,
+        snapshotId: `submission-snapshot-${label}`, attemptId: `category-attempt-${label}`,
+        correctedItemsHash: correctedHash, correlationId: `submission-correlation-${label}`,
+      });
+      await owner.query(`UPDATE outbox_events SET status='PUBLISHED',published_at=NOW()
+        WHERE aggregate_id=$1 AND event_type='listing.submit.requested'`, [`submission-${label}`]);
+    }
+    await owner.query(`UPDATE submission_jobs SET status='SUBMITTING',
+      updated_at=NOW()-INTERVAL '10 minutes' WHERE id='submission-watchdog-submit'`);
+    await owner.query(`UPDATE submission_jobs SET status='VALIDATING',
+      updated_at=NOW()-INTERVAL '10 minutes' WHERE id='submission-watchdog-validating'`);
+    await owner.query(`UPDATE submission_jobs SET status='SUBMITTING'
+      WHERE id='submission-watchdog-accepted'`);
+    await pipeline.markSubmissionCategoryRetryAcceptedV3({
+      accountId: accountA, jobId: "submission-watchdog-accepted",
+      snapshotId: "submission-snapshot-watchdog-accepted",
+      evidenceId: "category-error-watchdog-accepted",
+      attemptId: "category-attempt-watchdog-accepted", sourceEvidenceId: "category-source-a",
+      oldSharedCategoryId: "category-shared-a", oldSharedCategoryVersion: 1,
+      originalOzonTaskId: "ozon-task-original-watchdog-accepted",
+      correlationId: "submission-correlation-watchdog-accepted",
+      retryOzonTaskId: "ozon-task-retry-watchdog-accepted",
+    });
+    await owner.query(`UPDATE submission_jobs SET updated_at=NOW()-INTERVAL '10 minutes'
+      WHERE id='submission-watchdog-accepted'`);
+    for (const label of ["watchdog-wrong-tenant", "watchdog-ambiguous"]) {
+      await owner.query(`UPDATE submission_jobs SET status='SUBMITTING',
+        updated_at=NOW()-INTERVAL '10 minutes' WHERE id=$1`, [`submission-${label}`]);
+    }
+    await owner.query("SET session_replication_role='replica'");
+    await owner.query(`UPDATE submission_category_recovery_attempts SET account_id=$1
+      WHERE id='category-attempt-watchdog-wrong-tenant'`, [accountB]);
+    await owner.query(`INSERT INTO submission_category_recovery_attempts(
+        id,account_id,submission_job_id,submission_snapshot_id,triggering_error_evidence_id,
+        source_evidence_id,old_shared_category_id,old_shared_category_version,original_ozon_task_id,
+        original_snapshot_hash,corrected_items,corrected_items_hash,replacement_category_metadata,
+        replacement_shared_category_id,replacement_shared_category_version,retry_ozon_task_id,status,
+        safe_review_code,correlation_id,claimed_at,updated_at,completed_at)
+      SELECT 'category-attempt-watchdog-ambiguous-foreign',$1,submission_job_id,
+        submission_snapshot_id,triggering_error_evidence_id,source_evidence_id,old_shared_category_id,
+        old_shared_category_version,original_ozon_task_id,original_snapshot_hash,corrected_items,
+        corrected_items_hash,replacement_category_metadata,replacement_shared_category_id,
+        replacement_shared_category_version,retry_ozon_task_id,status,safe_review_code,
+        correlation_id,claimed_at,updated_at,completed_at
+      FROM submission_category_recovery_attempts
+      WHERE id='category-attempt-watchdog-ambiguous'`, [accountB]);
+    await owner.query("SET session_replication_role='origin'");
+    await owner.query(`INSERT INTO submission_snapshots(
+      id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,
+      snapshot_hash,item_count,items,stocks)
+      VALUES('submission-snapshot-watchdog-ordinary','collect-a','draft-a',1,$1,'store-a',
+        'snapshot-key-watchdog-ordinary',$2,1,$3::jsonb,'[]'::jsonb)`,
+    [accountA, h, JSON.stringify(originalCategoryItems)]);
+    await owner.query(`INSERT INTO submission_jobs(
+      id,snapshot_id,collect_item_id,account_id,store_id,status,correlation_id,item_count,ozon_task_id,
+      updated_at)
+      VALUES('submission-watchdog-ordinary','submission-snapshot-watchdog-ordinary','collect-a',$1,'store-a',
+        'SUBMITTING','ordinary-correlation',1,'ordinary-original-task',NOW()-INTERVAL '10 minutes')`,
+    [accountA]);
+
+    const watchdogFirst = await pipeline.recoverStaleSubmissionJobsV3({
+      workerId: "task8-fix4-watchdog", limit: 20,
+    });
+    const watchdogSecond = await pipeline.recoverStaleSubmissionJobsV3({
+      workerId: "task8-fix4-watchdog", limit: 20,
+    });
+    assert.deepEqual(watchdogFirst.filter((row) => row.id.startsWith("submission-watchdog-"))
+      .map((row) => ({ id: row.id, fromStatus: row.fromStatus,
+        toStatus: row.toStatus, action: row.action })).sort((a, b) => a.id.localeCompare(b.id)), [
+      { id: "submission-watchdog-accepted", fromStatus: "OZON_ACCEPTED",
+        toStatus: "CHECKING", action: "check" },
+      { id: "submission-watchdog-ordinary", fromStatus: "SUBMITTING",
+        toStatus: "RECONCILING", action: "" },
+      { id: "submission-watchdog-submit", fromStatus: "SUBMITTING",
+        toStatus: "FAILED", action: "" },
+      { id: "submission-watchdog-validating", fromStatus: "VALIDATING",
+        toStatus: "FAILED", action: "" },
+    ]);
+    assert.equal(watchdogSecond.some((row) => row.id.startsWith("submission-watchdog-")), false);
+    assert.deepEqual((await owner.query(`SELECT
+      (SELECT status FROM submission_category_recovery_attempts
+        WHERE id='category-attempt-watchdog-submit') AS submit_attempt,
+      (SELECT safe_review_code FROM submission_category_recovery_attempts
+        WHERE id='category-attempt-watchdog-submit') AS submit_code,
+      (SELECT status FROM submission_category_recovery_attempts
+        WHERE id='category-attempt-watchdog-validating') AS validating_attempt,
+      (SELECT safe_review_code FROM submission_category_recovery_attempts
+        WHERE id='category-attempt-watchdog-validating') AS validating_code,
+      (SELECT status FROM submission_category_recovery_attempts
+        WHERE id='category-attempt-watchdog-accepted') AS accepted_attempt,
+      (SELECT ozon_task_id FROM submission_jobs
+        WHERE id='submission-watchdog-accepted') AS accepted_task,
+      (SELECT count(*)::int FROM outbox_events WHERE aggregate_id IN
+        ('submission-watchdog-submit','submission-watchdog-validating')
+        AND event_type IN ('listing.submit.requested','listing.check.requested')
+        AND status IN ('PENDING','PUBLISHING')) AS pending_bad_outbox,
+      (SELECT count(*)::int FROM outbox_events WHERE aggregate_id='submission-watchdog-accepted'
+        AND event_type='listing.check.requested') AS accepted_checks`)).rows[0], {
+      submit_attempt: "NEEDS_REVIEW", submit_code: "AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN",
+      validating_attempt: "NEEDS_REVIEW",
+      validating_code: "AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED",
+      accepted_attempt: "RETRY_ACCEPTED", accepted_task: "ozon-task-retry-watchdog-accepted",
+      pending_bad_outbox: 0, accepted_checks: 1,
+    });
+    assert.deepEqual((await owner.query(`SELECT
+      (SELECT status FROM submission_jobs WHERE id='submission-watchdog-wrong-tenant') AS wrong_job,
+      (SELECT status FROM submission_jobs WHERE id='submission-watchdog-ambiguous') AS ambiguous_job,
+      (SELECT count(*)::int FROM submission_category_recovery_attempts
+        WHERE submission_job_id='submission-watchdog-ambiguous') AS ambiguous_attempts,
+      (SELECT count(*)::int FROM outbox_events WHERE aggregate_id IN
+        ('submission-watchdog-wrong-tenant','submission-watchdog-ambiguous')
+        AND status IN ('PENDING','PUBLISHING')) AS pending_outbox`)).rows[0], {
+      wrong_job: "SUBMITTING", ambiguous_job: "SUBMITTING", ambiguous_attempts: 2,
+      pending_outbox: 0,
     });
     assert.equal((await pipeline.scheduleSubmissionCategoryRetryV3({
       accountId: accountA, jobId: "submission-a", snapshotId: "submission-snapshot-a",

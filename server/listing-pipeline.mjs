@@ -2724,6 +2724,69 @@ export async function recoverStaleSubmissionJobsV3({ workerId = "listing-watchdo
     );
     const recovered = [];
     for (const row of result.rows) {
+      const recoveryRows = await client.query(
+        `SELECT id,account_id,submission_job_id,submission_snapshot_id,status,
+                original_ozon_task_id,retry_ozon_task_id
+           FROM submission_category_recovery_attempts
+          WHERE submission_job_id=$1
+          FOR UPDATE`,
+        [row.id],
+      );
+      const recovery = recoveryRows.rows[0] || null;
+      if (recoveryRows.rowCount > 1 || (recovery && (recovery.account_id !== row.account_id
+        || recovery.submission_job_id !== row.id
+        || recovery.submission_snapshot_id !== row.snapshot_id))) {
+        continue;
+      }
+      if (recovery?.status === "RETRY_PENDING" && recovery.retry_ozon_task_id === null
+        && ["SUBMITTING", "VALIDATING"].includes(row.status)) {
+        const safeReviewCode = row.status === "SUBMITTING"
+          ? "AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN"
+          : "AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED";
+        const message = row.status === "SUBMITTING"
+          ? "类目修复后的上架请求结果未知，需要人工复核"
+          : "类目修复后的上架请求未完成，需要人工复核";
+        const attempt = await client.query(
+          `UPDATE submission_category_recovery_attempts
+              SET status='NEEDS_REVIEW',safe_review_code=$2,completed_at=COALESCE(completed_at,NOW()),
+                  updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 microsecond')
+            WHERE id=$1 AND account_id=$3 AND submission_job_id=$4 AND submission_snapshot_id=$5
+              AND status='RETRY_PENDING' AND retry_ozon_task_id IS NULL`,
+          [recovery.id, safeReviewCode, row.account_id, row.id, row.snapshot_id],
+        );
+        const job = await client.query(
+          `UPDATE submission_jobs
+              SET status='FAILED',status_version=status_version+1,error_code=$2,error_message=$3,
+                  status_message='',completed_at=COALESCE(completed_at,NOW()),locked_by='',
+                  lock_expires_at=NULL,updated_at=NOW()
+            WHERE id=$1 AND account_id=$4 AND snapshot_id=$5 AND status=$6
+              AND ozon_task_id=$7`,
+          [row.id, safeReviewCode, message, row.account_id, row.snapshot_id, row.status,
+            recovery.original_ozon_task_id],
+        );
+        if (attempt.rowCount !== 1 || job.rowCount !== 1) {
+          throw Object.assign(new Error("类目恢复 watchdog 状态冲突"), {
+            code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT", status: 409,
+          });
+        }
+        await client.query(
+          `INSERT INTO submission_events
+            (job_id,from_status,to_status,event_type,message,actor_type,actor_id,payload)
+           VALUES ($1,$2,'FAILED','submission.category_retry_watchdog_review',$3,'watchdog',$4,$5::jsonb)`,
+          [row.id, row.status, message, workerId,
+            json({ attemptId: recovery.id, safeReviewCode })],
+        );
+        recovered.push({ id: row.id, fromStatus: row.status, toStatus: "FAILED", action: "" });
+        continue;
+      }
+      if (recovery && !(recovery.status === "RETRY_ACCEPTED"
+        && typeof recovery.retry_ozon_task_id === "string" && recovery.retry_ozon_task_id
+        && recovery.retry_ozon_task_id === row.ozon_task_id
+        && ["OZON_ACCEPTED", "CHECKING", "RECONCILING"].includes(row.status))
+        && !(recovery.status === "RETRY_PENDING" && recovery.retry_ozon_task_id === null
+          && ["QUEUE_PENDING", "QUEUED", "RETRY_PENDING"].includes(row.status))) {
+        continue;
+      }
       let nextStatus = row.status;
       let action = "";
       let message = "";
