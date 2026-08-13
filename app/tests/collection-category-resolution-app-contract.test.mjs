@@ -109,3 +109,10 @@ test("collection UI contains no store-category matching language and marks manua
   assert.match(appSource, /使用采集类目准备上架/u);
   assert.match(appSource, /无法确认商品类目，请人工选择/u);
 });
+
+test("history and export calendar dates use the shared executable local-day contract", () => {
+  assert.match(appSource, /import \{ localDayKey \} from "\.\/order-analytics\.js";/u);
+  assert.doesNotMatch(appSource, /localDayFormatter/u);
+  assert.match(appSource, /const todayKey = localDayKey\(new Date\(\)\)/u);
+  assert.match(appSource, /qh-orders-\$\{localDayKey\(new Date\(\)\)\}/u);
+});

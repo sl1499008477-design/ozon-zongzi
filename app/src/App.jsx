@@ -84,6 +84,7 @@ import {
   useCategoryDictionaryReadiness,
 } from "./use-category-dictionary-readiness.js";
 import { postingMoneyGroups } from "./order-money.js";
+import { localDayKey } from "./order-analytics.js";
 import DataScreenPage from "./DataScreenPage.jsx";
 import PricingSettingsPage from "./PricingSettingsPage.jsx";
 import AccountSettingsPage from "./AccountSettingsPage.jsx";
@@ -6749,10 +6750,10 @@ function ImportHistoryPage({ binding, hasStore, localData, onRefresh }) {
   const skippedCount = tasks.filter((task) => importTaskMatchesStatus(task, "已跳过")).length;
   const processingCount = tasks.filter((task) => importTaskMatchesStatus(task, "处理中")).length;
   const failedCount = tasks.filter((task) => importTaskMatchesStatus(task, "失败")).length;
-  const todayKey = localDayFormatter.format(new Date());
+  const todayKey = localDayKey(new Date());
   const todayCount = tasks.filter((task) => {
     const date = new Date(task.createdAt || "");
-    return !Number.isNaN(date.getTime()) && localDayFormatter.format(date) === todayKey;
+    return !Number.isNaN(date.getTime()) && localDayKey(date) === todayKey;
   }).reduce((sum, task) => sum + importTaskCount(task), 0);
   const finishedCount = completedCount + partialCount + skippedCount + failedCount;
   const successRate = finishedCount ? `${Math.round(((completedCount + partialCount) / finishedCount) * 100)}%` : "—";
@@ -7934,7 +7935,7 @@ function PostingsPage({ binding, hasStore, localData, onRefresh }) {
       message.warning("暂无可导出的数据");
       return;
     }
-    downloadCsv(`qh-orders-${localDayFormatter.format(new Date())}.csv`, orderColumns, rows);
+    downloadCsv(`qh-orders-${localDayKey(new Date())}.csv`, orderColumns, rows);
     message.success(`已导出 ${rows.length} 条订单`);
   };
 
