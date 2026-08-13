@@ -371,6 +371,41 @@ test("correction requires each item to own one descriptor-safe attributes array"
   assert.equal(getterRuns, 0);
 });
 
+test("correction accepts only the closed production complex-attributes carrier when present", async () => {
+  const revoked = Proxy.revocable([], {});
+  revoked.revoke();
+  const cases = [
+    null,
+    {},
+    [],
+    [{}],
+    [{ attributes: null }],
+    [{ attributes: [] }],
+    [{ attributes: [null] }],
+    [{ attributes: [{ id: 300, complex_id: 0, values: [{ value: "safe" }] }] }],
+    [{ attributes: [{ id: 0, complex_id: 77, values: [{ value: "safe" }] }] }],
+    [{ attributes: [{ id: 300, complex_id: 77, values: [] }] }],
+    [{ attributes: [{ id: 300, complex_id: 77, values: [{ value: "" }] }] }],
+    [{ attributes: [{ id: 300, complex_id: 77, values: [{ value: "safe", extra: true }] }] }],
+    [{ attributes: [{ id: 300, complex_id: 77, values: [{ value: "safe" }] }], extra: true }],
+    new Proxy([], {}),
+    revoked.proxy,
+  ];
+  for (const complexAttributes of cases) {
+    const { service, calls } = harness({
+      rebuildItems: async ({ originalItems }) => originalItems.map((item) => ({
+        ...item, description_category_id: 30, type_id: 40, attributes: [],
+        complex_attributes: complexAttributes,
+      })),
+    });
+    assert.deepEqual(await service.recover(request), {
+      attemptId: "attempt-a", status: "NEEDS_REVIEW",
+    });
+    assert.equal(calls.includes("save-match"), false);
+    assert.equal(calls.includes("schedule"), false);
+  }
+});
+
 test("cross-account or non-explicit/nonzero-product basis fails before store/Ozon access", async () => {
   for (const mutate of [
     (value) => ({ ...value, accountId: "account-b" }),

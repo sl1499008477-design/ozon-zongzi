@@ -8,6 +8,7 @@ import { Pool } from "pg";
 import { createPostgresAccountSharedOzonCategoryRepository } from "../account-shared-ozon-category-repository.mjs";
 import { createAutoListingCategoryRecoveryPostgres } from "../auto-listing-category-recovery-postgres.mjs";
 import { createAutoListingCategoryRecoveryService } from "../auto-listing-category-recovery-service.mjs";
+import { rebuildOzonItemsForCategory } from "../ozon-category-item-rebuilder.mjs";
 
 const databaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL || "";
 const enabled = process.env.ACCOUNT_SHARED_CATEGORY_POSTGRES_TESTS === "1" && Boolean(databaseUrl);
@@ -40,7 +41,7 @@ function safeEvidence(offerId = "offer-a") {
   };
 }
 
-async function seed(client, suffix) {
+async function seed(client, suffix, itemOverrides = {}) {
   const ids = Object.fromEntries([
     "account", "store", "collect", "raw", "draft", "source", "shared", "snapshot", "job", "item",
   ].map((key) => [key, `${key}-${suffix}`]));
@@ -59,9 +60,12 @@ async function seed(client, suffix) {
   await client.query(`INSERT INTO account_ozon_shared_categories(
     id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
     current_description_category_id,current_type_id,status,source,version,source_evidence_id,created_at,updated_at)
-    VALUES($1,$2,10,20,'OZON:DEFAULT',10,20,'ACTIVE','SOURCE_DIRECT',1,$3,NOW(),NOW())`,
-  [ids.shared, ids.account, ids.source]);
-  const item = { offer_id: "offer-a", sku: "sku-a", description_category_id: 10, type_id: 20, attributes: [], price: "1", currency_code: "RUB" };
+    VALUES($1,$2,10,20,'OZON:DEFAULT',10,20,'ACTIVE','SOURCE_DIRECT',1,$3,$4,$4)`,
+  [ids.shared, ids.account, ids.source, "2026-08-12T00:00:00.000Z"]);
+  const item = {
+    offer_id: "offer-a", sku: "sku-a", description_category_id: 10, type_id: 20,
+    attributes: [], price: "1", currency_code: "RUB", ...itemOverrides,
+  };
   await client.query(`INSERT INTO submission_snapshots(
     id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,snapshot_hash,item_count,items)
     VALUES($1,$2,$3,1,$4,$5,$6,$7,1,$8)`,
@@ -308,6 +312,24 @@ if (!enabled) {
         { ...corrected[0], typeId: 40 },
         { ...corrected[0], typeId: 41 },
       ];
+      const invalidComplexAttributes = [
+        null,
+        {},
+        [],
+        [{}],
+        [{ attributes: null }],
+        [{ attributes: [] }],
+        [{ attributes: [null] }],
+        [{ attributes: [{ id: 300, complex_id: 0, values: [{ value: "safe" }] }] }],
+        [{ attributes: [{ id: 0, complex_id: 77, values: [{ value: "safe" }] }] }],
+        [{ attributes: [{ id: 300, complex_id: 77, values: [] }] }],
+        [{ attributes: [{ id: 300, complex_id: 77, values: [{ value: "" }] }] }],
+        [{ attributes: [{ id: 300, complex_id: 77, values: [{ value: "safe", extra: true }] }] }],
+        [{
+          attributes: [{ id: 300, complex_id: 77, values: [{ value: "safe" }] }],
+          extra: true,
+        }],
+      ];
       for (const [items, hash, replacementId, version] of [
         [{ forged: true }, "a".repeat(64), ids.shared, 2],
         [42, "a".repeat(64), ids.shared, 2],
@@ -321,6 +343,10 @@ if (!enabled) {
         [[{ ...corrected[0], attributes: null }], canonicalSha([{ ...corrected[0], attributes: null }]), ids.shared, 2],
         [[{ ...corrected[0], attributes: {} }], canonicalSha([{ ...corrected[0], attributes: {} }]), ids.shared, 2],
         ...invalidCategoryIdentities.map((item) => [[item], canonicalSha([item]), ids.shared, 2]),
+        ...invalidComplexAttributes.map((complexAttributes) => {
+          const item = { ...corrected[0], complex_attributes: complexAttributes };
+          return [[item], canonicalSha([item]), ids.shared, 2];
+        }),
       ]) {
         await assertCheckRejected(client, directMatchSql, [
           attempt.attemptId, JSON.stringify(items), hash, replacementId, version,
@@ -533,7 +559,12 @@ if (!enabled) {
       await client.query(`CREATE SCHEMA ${q(schema)}`);
       await client.query(`SET search_path TO ${q(schema)}, public`);
       await applyAll(client);
-      const ids = await seed(client, suffix);
+      const ids = await seed(client, suffix, {
+        complex_attributes: [{ attributes: [
+          { id: 300, complex_id: 77, values: [{ value: "old-replaced" }] },
+          { id: 999, complex_id: 77, values: [{ value: "old-removed" }] },
+        ] }],
+      });
       const snapshot = (await client.query(
         `SELECT items,snapshot_hash FROM ${q(schema)}.submission_snapshots WHERE id=$1`, [ids.snapshot],
       )).rows[0];
@@ -574,11 +605,30 @@ if (!enabled) {
         },
         refreshCategory: async () => { externalCalls += 1; return {
           kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
-          taxonomyFingerprint: "c".repeat(64), metadata: { attributes: [] },
+          taxonomyFingerprint: "c".repeat(64), metadata: {
+            descriptionCategoryId: 30, typeId: 40,
+            attributes: [
+              { id: 300, complexId: 77, required: true, dictionaryId: null, dictionaryValues: [] },
+              { id: 400, complexId: 77, required: true, dictionaryId: null, dictionaryValues: [] },
+            ],
+          },
         }; },
-        rebuildItems: async ({ originalItems }) => { externalCalls += 1; return originalItems.map((item) => ({
-          ...item, description_category_id: 30, type_id: 40, attributes: [],
-        })); },
+        rebuildItems: async ({ originalItems, replacementCategory, currentCategoryMetadata }) => {
+          externalCalls += 1;
+          return rebuildOzonItemsForCategory({
+            originalItems,
+            sourceEvidenceAttributes: [[
+              { id: 300, complex_id: 77, values: [{ value: "source-replaced" }] },
+              { id: 400, complex_id: 77, values: [{ value: "source-added" }] },
+            ]],
+            replacementCategory: {
+              kind: replacementCategory.kind,
+              descriptionCategoryId: replacementCategory.descriptionCategoryId,
+              typeId: replacementCategory.typeId,
+            },
+            currentCategoryMetadata,
+          });
+        },
         activateRefreshedCategory: async (input) => {
           externalCalls += 1; return sharedRepository.activateRefreshedCategory(input);
         },
@@ -599,6 +649,13 @@ if (!enabled) {
         WHERE account_id=$1 AND id=$2`, [ids.account, ids.shared])).rows[0];
       assert.deepEqual(result, { attemptId: `recovery-${suffix}`, status: "RETRY_PENDING" },
         JSON.stringify(persisted));
+      const correctedItems = (await client.query(`SELECT corrected_items
+        FROM ${q(schema)}.submission_category_recovery_attempts
+        WHERE account_id=$1 AND submission_job_id=$2`, [ids.account, ids.job])).rows[0].corrected_items;
+      assert.deepEqual(correctedItems[0].complex_attributes, [{ attributes: [
+        { complex_id: 77, id: 300, values: [{ value: "source-replaced" }] },
+        { complex_id: 77, id: 400, values: [{ value: "source-added" }] },
+      ] }]);
       assert.equal(schedules, 1);
       const request = {
         accountId: ids.account, jobId: ids.job, evidenceId, correlationId: `corr-${suffix}`,

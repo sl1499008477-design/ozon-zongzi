@@ -10,6 +10,7 @@ const SHARED_KEYS = [
 ];
 const IMMUTABLE_EXCEPT = new Set([
   "description_category_id", "descriptionCategoryId", "type_id", "typeId", "attributes",
+  "complex_attributes",
 ]);
 
 function failure(code, status = 422) {
@@ -180,6 +181,36 @@ function immutableProjection(item) {
   return Object.fromEntries(Object.entries(item).filter(([key]) => !IMMUTABLE_EXCEPT.has(key)));
 }
 
+function validComplexAttributeValue(value) {
+  if (!value || Array.isArray(value) || !Object.hasOwn(value, "value")
+    || typeof value.value !== "string" || value.value.trim().length < 1) return false;
+  const keys = Object.keys(value);
+  return keys.length === (Object.hasOwn(value, "dictionary_value_id") ? 2 : 1)
+    && keys.every((key) => key === "value" || key === "dictionary_value_id")
+    && (!Object.hasOwn(value, "dictionary_value_id") || positive(value.dictionary_value_id));
+}
+
+function validComplexAttribute(attribute) {
+  return attribute && !Array.isArray(attribute)
+    && Object.keys(attribute).length === 3
+    && ["complex_id", "id", "values"].every((key) => Object.hasOwn(attribute, key))
+    && positive(attribute.complex_id) && positive(attribute.id)
+    && Array.isArray(attribute.values)
+    && attribute.values.length >= 1 && attribute.values.length <= 5_000
+    && attribute.values.every(validComplexAttributeValue);
+}
+
+function validComplexAttributes(item) {
+  if (!Object.hasOwn(item, "complex_attributes")) return true;
+  const groups = item.complex_attributes;
+  if (!Array.isArray(groups) || groups.length < 1 || groups.length > 1_000) return false;
+  return groups.every((group) => group && !Array.isArray(group)
+    && Object.keys(group).length === 1 && Object.hasOwn(group, "attributes")
+    && Array.isArray(group.attributes)
+    && group.attributes.length >= 1 && group.attributes.length <= 1_000
+    && group.attributes.every(validComplexAttribute));
+}
+
 function validCorrection(original, corrected, category) {
   const projected = projectOzonImportCarrier(corrected);
   if (!Array.isArray(projected) || projected.length !== original.length) return null;
@@ -188,6 +219,7 @@ function validCorrection(original, corrected, category) {
     const after = projected[index];
     if (!after || Array.isArray(after)
       || !Object.hasOwn(after, "attributes") || !Array.isArray(after.attributes)
+      || !validComplexAttributes(after)
       || after.description_category_id !== category.descriptionCategoryId
       || after.type_id !== category.typeId
       || (Object.hasOwn(after, "descriptionCategoryId")

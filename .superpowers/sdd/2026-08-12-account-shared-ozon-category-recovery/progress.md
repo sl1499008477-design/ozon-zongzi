@@ -1,0 +1,52 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-08-12-account-shared-ozon-category-recovery.md
+
+Branch base: `411d33b7de78865d6bf23c4eed0b17437b43d113`
+Workspace: `/Users/songliang/Documents/sonli ozon3.0/.worktrees/account-shared-category-recovery`
+
+Task 1: fix round 1/5 (4 addressed, 0 open — tenant-scoped raw provenance; taxonomy fingerprint semantics; PostgreSQL rollback-safe normalization; JSON retired-state cleanup; commits 03a6ba3..e3eeb13)
+Task 1: fix round 2/5 (2 addressed, 0 open — cleanup CAS conflict; ownerAccountId transactional commit; commits e3eeb13..1394c5f)
+Task 1: complete (commits 411d33b..1394c5f, review clean)
+
+Task 2: fix round 1/5 (2 addressed, 2 partial — preload closure; evidence-fenced replay; adapter ordering; taxonomy input safety; commits caa619b..1e5241a)
+Task 2: fix round 2/5 (2 addressed, 0 open — evidence array carrier; taxonomy wrapper; commits 1e5241a..92c8853)
+Task 2: complete (commits 1394c5f..92c8853, review clean)
+
+Task 3: fix round 1/5 (4 addressed, 1 open; 3 new findings — manual shared transition; formal lookup evidence; identity equality; canonical pointers; public freeze; commits 9d6cc75..2f87e4e)
+Task 3: fix round 2/5 (3 addressed, 1 new open — stale lookup pointer; cleanup cascades; final DTO freeze; commits 2f87e4e..e73b71c)
+Task 3: fix round 3/5 (1 addressed, 1 new open — JSON first-lookup private pointer; commits e73b71c..bc55da1)
+Task 3: fix round 4/5 (1 addressed, 0 open — item/draft-scoped lookup observation identity; commits bc55da1..d489bb4)
+Task 3: complete (commits 92c8853..d489bb4, review clean)
+
+Task 4: fix round 1/5 (C1 and I2 addressed; I1 remains open — frozen category controls preparation and Excel replay precedes mutable reads, but unlocked authorization leaves an authorization-to-network version-transition window; commits fe22622..55fbe52)
+Task 4: fix round 2/5 (normal advisory-lease paths addressed; 2 open — lease-backend loss after graph fence can permit stale graph commit, and graph expiry is not consumed before commit; commits 55fbe52..2043b62)
+Task 4: fix round 3/5 (crash/expiry graph windows addressed; 1 new open — replay-loser lease can be audited COMMITTED without an exact finalized job and release retry is not idempotent; commits 2043b62..1e63a6e)
+Task 4: fix round 4/5 (new writes and release retry addressed; 1 migration-upgrade open — 067 does not preflight legacy non-null but incorrect lease↔job bindings; commits 1e63a6e..f940c5e)
+Task 4: fix round 5/5 (067 upgrade preflight and atomic rollback addressed; 0 open — exact bidirectional legacy lease/job bindings, safe orphan downgrade, ambiguous upgrade blocked; commits f940c5e..4db25ff)
+Task 4: complete (commits d489bb4..4db25ff, review clean)
+
+Task 5: fix round 1/5 (3 addressed, 1 open — authoritative source evidence, safe metadata errors and dictionary ordering closed; preparer still executes hostile source-evidence carriers before validation; commits f0dec81..f6570cb)
+Task 5: fix round 2/5 (entry projection added; 2 carrier gaps open — custom-prototype arrays are accepted and revoked proxies reach Array.isArray before proxy rejection; commits f6570cb..e794bbb)
+Task 5: fix round 3/5 (2 addressed, 0 open — proxy-first carrier validation and exact local array prototypes; commits e794bbb..d1c43d9)
+Task 5: complete (commits 4db25ff..d1c43d9, review clean)
+
+Task 6: fix round 1/5 (3 addressed plus cross-account same-root scope closure, 2 new open — fixed private empty V1 policy; account/job/snapshot/task/version locking and item CAS; atomic monotonic/idempotent result persistence; exact FAILED-only evidence and SKIPPED/partial suppression; invalid SUCCEEDED product identity and untested dormant non-empty engine found next; commit 092cb43)
+Task 6: fix round 2/5 (2 addressed, 1 new open — positive-safe canonical product identity at classifier/normalizer/repository; malformed product batches fail/ignore with zero writes; dormant generic/test rule engines removed; normalized DTO was not yet exact/semantically closed; commit 3d76236)
+Task 6: fix round 3/5 (1 addressed, 0 open — exact nine-field normalized DTO rederived from bounded response; classification/state/product/errors/evidence closure; malformed carriers rejected before any pool call; commit f033165)
+
+Task 5: complete (commit f0dec817d4d3e51db0c64a013dc61459ede9bd32; focused 30/30, adjacent 163/163, no migration or live external call)
+Task 5: fix round 1/5 (C0/I4 addressed, 0 open — immutable source authority and variant identity; safe attribute/dictionary failures; source-evidence bounds; preparer-owned sorted dictionary snapshots; commit f6570cbc36dafb1f0f2adc64d30c2f90da2b748e)
+Task 5: fix round 2/5 (remaining I3 addressed, 0 open — descriptor-only entrance/source-item projection; hostile carrier rejection before builder/credential/Ozon/normalizer ports; focused 63/63, adjacent 163/163; commit e794bbba1a7f8853e15159b082e0d7bc7e452e64)
+Task 5: fix round 3/5 (2 same-root projector findings addressed, 0 open — exact local array prototypes and revoked-proxy safe ordering across all contract layers; focused 97/97, adjacent 163/163; commit d1c43d93d3a275b713817f47b71f7bd1c42f949b)
+
+Task 6: complete (commit 68833b7deae3f8cd2aca91345107b299b0d0b386; production V1 allowlist empty because no authoritative category-invalid fixture exists; closed structural classifier/safe evidence; exact offer/account-bound persistence; backend raw/public safe split; focused 10/10 on disposable PostgreSQL through migration 067, adjacent 150/150 and final relevant 53/53; no migration or live external call)
+Task 6: fix round 1/5 evidence (commit 092cb43e5f29ef4382d89526f2ef699934d69515; focused 8/8 plus worker PostgreSQL 2/2 plus adjacent 150/150, all 0 skip; 2 new round-2 findings remained; no migration or live external call)
+Task 6: fix round 2/5 evidence (commit 3d76236cfc342854327ea7ab50423824506620d6; focused 8/8 plus worker PostgreSQL 2/2 plus adjacent 150/150, all 0 skip; 1 new round-3 finding remained; no migration or live external call)
+Task 6: fix round 3/5 complete (commit f033165ec155f67b07e78473c396c8b5fae007f4; focused 9/9 plus worker PostgreSQL 2/2 plus adjacent 150/150, all 0 skip; no migration or live external call)
+
+Task 7: complete (commit cfb7d204a9acf6a17f78715088638a64c8f91007; migration corrected from occupied 064 to new 068; append-only exact safe error evidence and one account/job recovery attempt; closed transition/immutability/task replay contracts; production empty-policy entry remains disabled; one-request conservative offer absence; strict one-shot recovery with corrected items committed before retry scheduling; focused 18/18 and real PG 001–068 2/2 zero skip, adjacent 273/273 plus fresh 063 PG 3/3 and listing pipeline V3 pass; no live external/product write)
+Task 7: fix round 1/5 (C2/I1 addressed, 0 open — 068 exact evidence-to-snapshot/item/source/shared binding and CLAIMED-only attempt insertion; full account/job/snapshot/evidence/source/shared/version/task/correlation/attempt state-port tuple; actual activated-version fail-close with non-swallowed shared/attempt review writes; real-PG direct-SQL and per-port tuple attack matrices; commit 9b1c8a4)
+Task 7: fix round 2/5 (C/I3 addressed, 0 open — real recovery/shared-category PostgreSQL composition; exact load and shared/attempt result DTOs; snapshot items/hash immutability and persistent evidence join; state-exact retry/review shape; direct MATCHED canonical hash, replacement provenance and non-category field preservation; null-attempt exact replay; commit 87f3fd9)
+Task 7: fix round 3/5 (C2/I3 addressed, 0 open — historical tuple/correlation replay before mutable old-version eligibility; pending/accepted/succeeded real-PG replay with zero external deltas; post-absence stale claim creates zero attempts; exact descriptor-safe absence/refresh/review DTOs; replacement source-triple provenance; all malformed MATCHED JSON mapped to 23514; commit 78fe62f)
+Task 7: fix round 4/5 (I3 addressed, 0 open — every corrected item owns a closed safe attributes array; SQL missing/null attributes reject 23514; current job/task/shared/all-item eligibility is locked and revalidated on every CLAIMED insert; post-match correction/replacement/accepted retry provenance remains immutable through review; commit 48329ad)
+Task 7: fix round 5/5 (I1 addressed, 0 open — MATCHED accepts only canonical snake category IDs; missing/null/string/nonpositive/fractional/over-safe IDs and any camel IDs reject 23514; fresh-PG focused 26/26 and adjacent PG 12/12 zero skip; commit 073a66b)
+Task 7: user-authorized exceptional fix round 6 (I1 addressed, 0 open — Task 5 production `complex_attributes` add/replace/remove now crosses service and 068 MATCHED while every other item field remains immutable; present complex groups/attributes/values are descriptor-safe and exact, malformed service carriers fail before persistence/schedule, malformed direct JSON raises 23514; real rebuilder→service→fresh-PG regression; focused 27/27, adjacent 158/158 plus Sharp-dependent 22/22 and Listing Pipeline V3, all zero skip; no live external/product write)

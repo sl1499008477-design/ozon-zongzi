@@ -333,6 +333,86 @@ RETURNS TEXT LANGUAGE SQL IMMUTABLE STRICT AS $$
   END;
 $$;
 
+CREATE OR REPLACE FUNCTION valid_submission_category_recovery_complex_attributes(value JSONB)
+RETURNS BOOLEAN LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE
+  complex_group JSONB;
+  complex_attribute JSONB;
+  attribute_value JSONB;
+  identifier_text TEXT;
+BEGIN
+  IF JSONB_TYPEOF(value) IS DISTINCT FROM 'array'
+    OR JSONB_ARRAY_LENGTH(value) NOT BETWEEN 1 AND 1000
+  THEN
+    RETURN FALSE;
+  END IF;
+  FOR complex_group IN SELECT entry.value FROM JSONB_ARRAY_ELEMENTS(value) AS entry(value)
+  LOOP
+    IF JSONB_TYPEOF(complex_group) IS DISTINCT FROM 'object'
+      OR NOT (complex_group ? 'attributes')
+      OR complex_group - 'attributes' IS DISTINCT FROM '{}'::JSONB
+      OR JSONB_TYPEOF(complex_group->'attributes') IS DISTINCT FROM 'array'
+      OR JSONB_ARRAY_LENGTH(complex_group->'attributes') NOT BETWEEN 1 AND 1000
+    THEN
+      RETURN FALSE;
+    END IF;
+    FOR complex_attribute IN
+      SELECT entry.value FROM JSONB_ARRAY_ELEMENTS(complex_group->'attributes') AS entry(value)
+    LOOP
+      IF JSONB_TYPEOF(complex_attribute) IS DISTINCT FROM 'object'
+        OR NOT (complex_attribute ?& ARRAY['complex_id','id','values'])
+        OR complex_attribute - ARRAY['complex_id','id','values'] IS DISTINCT FROM '{}'::JSONB
+      THEN
+        RETURN FALSE;
+      END IF;
+      FOREACH identifier_text IN ARRAY ARRAY[
+        complex_attribute->>'complex_id',complex_attribute->>'id'
+      ]
+      LOOP
+        IF identifier_text IS NULL OR LENGTH(identifier_text)>16
+          OR NOT (identifier_text ~ '^[1-9][0-9]*$')
+          OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+        THEN
+          RETURN FALSE;
+        END IF;
+      END LOOP;
+      IF JSONB_TYPEOF(complex_attribute->'complex_id') IS DISTINCT FROM 'number'
+        OR JSONB_TYPEOF(complex_attribute->'id') IS DISTINCT FROM 'number'
+        OR JSONB_TYPEOF(complex_attribute->'values') IS DISTINCT FROM 'array'
+        OR JSONB_ARRAY_LENGTH(complex_attribute->'values') NOT BETWEEN 1 AND 5000
+      THEN
+        RETURN FALSE;
+      END IF;
+      FOR attribute_value IN
+        SELECT entry.value FROM JSONB_ARRAY_ELEMENTS(complex_attribute->'values') AS entry(value)
+      LOOP
+        IF JSONB_TYPEOF(attribute_value) IS DISTINCT FROM 'object'
+          OR NOT (attribute_value ? 'value')
+          OR attribute_value - ARRAY['value','dictionary_value_id'] IS DISTINCT FROM '{}'::JSONB
+          OR JSONB_TYPEOF(attribute_value->'value') IS DISTINCT FROM 'string'
+          OR NULLIF(BTRIM(attribute_value->>'value'),'') IS NULL
+        THEN
+          RETURN FALSE;
+        END IF;
+        IF attribute_value ? 'dictionary_value_id' THEN
+          identifier_text := attribute_value->>'dictionary_value_id';
+          IF JSONB_TYPEOF(attribute_value->'dictionary_value_id') IS DISTINCT FROM 'number'
+            OR identifier_text IS NULL OR LENGTH(identifier_text)>16
+            OR NOT (identifier_text ~ '^[1-9][0-9]*$')
+            OR identifier_text::NUMERIC > 9007199254740991::NUMERIC
+          THEN
+            RETURN FALSE;
+          END IF;
+        END IF;
+      END LOOP;
+    END LOOP;
+  END LOOP;
+  RETURN TRUE;
+EXCEPTION WHEN OTHERS THEN
+  RETURN FALSE;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION guard_submission_category_recovery_attempt_transition()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
@@ -392,9 +472,11 @@ BEGIN
          WHERE JSONB_TYPEOF(original_item.value)<>'object'
             OR JSONB_TYPEOF(corrected_item.value)<>'object'
             OR original_item.value - ARRAY[
-              'description_category_id','descriptionCategoryId','type_id','typeId','attributes'
+              'description_category_id','descriptionCategoryId','type_id','typeId','attributes',
+              'complex_attributes'
             ] IS DISTINCT FROM corrected_item.value - ARRAY[
-              'description_category_id','descriptionCategoryId','type_id','typeId','attributes'
+              'description_category_id','descriptionCategoryId','type_id','typeId','attributes',
+              'complex_attributes'
             ]
             OR corrected_item.value ? 'descriptionCategoryId'
             OR corrected_item.value ? 'typeId'
@@ -419,6 +501,12 @@ BEGIN
                 OR (corrected_item.value->>'type_id')::NUMERIC <> replacement.current_type_id
             END
             OR JSONB_TYPEOF(corrected_item.value->'attributes') IS DISTINCT FROM 'array'
+            OR CASE
+              WHEN NOT (corrected_item.value ? 'complex_attributes') THEN FALSE
+              ELSE NOT valid_submission_category_recovery_complex_attributes(
+                corrected_item.value->'complex_attributes'
+              )
+            END
       )
     THEN
       RAISE EXCEPTION 'invalid matched submission category recovery correction'
