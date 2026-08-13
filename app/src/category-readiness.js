@@ -82,12 +82,21 @@ const SHARED_CATEGORY_GUIDANCE = Object.freeze({
   NEEDS_REVIEW: Object.freeze({ action: "REVIEW", message: "无法确认商品类目，请人工选择" }),
 });
 
+const runtimeIsProxy = (() => {
+  try {
+    const candidate = globalThis.process?.getBuiltinModule?.("node:util")?.types?.isProxy;
+    return typeof candidate === "function" ? candidate : () => false;
+  } catch {
+    return () => false;
+  }
+})();
+
 const positiveSafeInteger = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
 
 function plainDataRecord(value, allowedKeys) {
+  if (!value || typeof value !== "object" || runtimeIsProxy(value)) return null;
   try {
-    if (!value || typeof value !== "object" || Array.isArray(value)
-      || Object.getPrototypeOf(value) !== Object.prototype) return null;
+    if (Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return null;
     const keys = Reflect.ownKeys(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
     if (keys.length !== allowedKeys.length

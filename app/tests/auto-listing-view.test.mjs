@@ -133,7 +133,11 @@ test("flattens list DTOs with only the owning job identity and canonical real cr
     itemId: "item-a", sourceRecordId: "collect-a", targetStoreId: "store-a",
     status: "SOURCE_READY", jobId: "forged", jobCreatedAt: "forged",
     actions: { review: false, approve: false, retry: false, regenerate: false, cancel: true },
-    price: { currency: "RUB", branch: "BLACK_GTE_80", finalPriceKopecks: "14500" },
+    price: {
+      currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000",
+      greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0",
+      finalPriceKopecks: "14500",
+    },
     rawVendorPayload: "<script>secret</script>",
   };
   const rows = autoListingTaskRows([{
@@ -150,7 +154,11 @@ test("flattens list DTOs with only the owning job identity and canonical real cr
     itemId: "item-a", sourceRecordId: "collect-a", targetStoreId: "store-a",
     status: "SOURCE_READY",
     actions: { review: false, approve: false, retry: false, regenerate: false, cancel: true },
-    price: { currency: "RUB", branch: "BLACK_GTE_80", finalPriceKopecks: "14500" },
+    price: {
+      currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000",
+      greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0",
+      finalPriceKopecks: "14500",
+    },
     jobId: "job-new", jobCreatedAt: "2026-08-12T01:02:03.456Z",
   }, {
     itemId: "item-b", status: "BLOCKED", jobId: "job-invalid-time", jobCreatedAt: null,
@@ -194,6 +202,13 @@ test("task rows reject hostile carriers and nested authority without executing a
   const transparent = new Proxy({ ...baseItem }, {});
   const { proxy: revokedItem, revoke: revokeItem } = Proxy.revocable({ ...baseItem }, {});
   revokeItem();
+  let trapCalls = 0;
+  const trapProxy = (value) => new Proxy(value, {
+    getPrototypeOf() { trapCalls += 1; return Object.prototype; },
+    ownKeys() { trapCalls += 1; return []; },
+    getOwnPropertyDescriptor() { trapCalls += 1; return undefined; },
+    get() { trapCalls += 1; return undefined; },
+  });
 
   for (const candidate of [
     itemAccessor,
@@ -203,6 +218,9 @@ test("task rows reject hostile carriers and nested authority without executing a
     customPrototype,
     transparent,
     revokedItem,
+    trapProxy({ ...baseItem }),
+    { ...baseItem, actions: trapProxy({ ...baseItem.actions }) },
+    { ...baseItem, price: trapProxy({ currency: "RUB", branch: "BLACK_LT_80", blackKopecks: "7999", realPriceKopecks: "7465", adjustmentKopecks: "0", finalPriceKopecks: "7465" }) },
     { ...baseItem, actions: { ...baseItem.actions, raw: true } },
     { ...baseItem, price: { currency: "RUB", branch: "UNKNOWN", finalPriceKopecks: "14500" } },
   ]) assert.deepEqual(autoListingTaskRows([job(candidate)]), []);
@@ -214,6 +232,7 @@ test("task rows reject hostile carriers and nested authority without executing a
   });
   assert.deepEqual(autoListingTaskRows([jobAccessor]), []);
   assert.deepEqual(autoListingTaskRows([new Proxy(job(baseItem), {})]), []);
+  assert.deepEqual(autoListingTaskRows([trapProxy(job(baseItem))]), []);
   assert.deepEqual(autoListingTaskRows([{ ...job(baseItem), secret: "must-not-copy" }]), [{
     ...baseItem, jobId: "job-a", jobCreatedAt: "2026-08-12T01:02:03.000Z",
   }]);
@@ -221,10 +240,60 @@ test("task rows reject hostile carriers and nested authority without executing a
   revokeJobs();
   assert.deepEqual(autoListingTaskRows(revokedJobs), []);
   assert.equal(getterCalls, 0);
+  assert.equal(trapCalls, 0);
+});
+
+test("task rows accept only the two exact canonical public price branches", () => {
+  const base = {
+    itemId: "item-a", status: "SOURCE_READY", sourceRecordId: "collect-a",
+    targetStoreId: "store-a",
+  };
+  const row = (price) => autoListingTaskRows([{
+    jobId: "job-a", createdAt: "2026-08-12T01:02:03.000Z", items: [{ ...base, price }],
+  }]);
+  const high = {
+    currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000",
+    greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "-500",
+    finalPriceKopecks: "14000",
+  };
+  const low = {
+    currency: "CNY", branch: "BLACK_LT_80", blackKopecks: "7999",
+    realPriceKopecks: "7465", adjustmentKopecks: "0", finalPriceKopecks: "7465",
+  };
+  assert.deepEqual(row(high)[0].price, high);
+  assert.deepEqual(row(low)[0].price, low);
+  for (const invalid of [
+    { ...high, currency: undefined },
+    { ...high, branch: undefined },
+    { ...high, blackKopecks: undefined },
+    { ...high, greenKopecks: undefined },
+    { ...high, realPriceKopecks: undefined },
+    { ...high, adjustmentKopecks: undefined },
+    { ...high, finalPriceKopecks: undefined },
+    { ...low, greenKopecks: "7000" },
+    { ...high, raw: "secret" },
+    { ...high, currency: "USD" },
+    { ...high, branch: "UNKNOWN" },
+    { ...high, blackKopecks: "0" },
+    { ...high, blackKopecks: "-1" },
+    { ...high, greenKopecks: "0" },
+    { ...high, greenKopecks: "-1" },
+    { ...high, realPriceKopecks: "0" },
+    { ...high, realPriceKopecks: "-1" },
+    { ...high, finalPriceKopecks: "0" },
+    { ...high, finalPriceKopecks: "-1" },
+    { ...high, finalPriceKopecks: "+14000" },
+    { ...high, greenKopecks: "01" },
+    { ...high, adjustmentKopecks: "-0" },
+    { ...high, adjustmentKopecks: "+1" },
+    { ...high, adjustmentKopecks: "01" },
+    { ...high, finalPriceKopecks: "1".repeat(31) },
+  ]) assert.deepEqual(row(invalid), [], JSON.stringify(invalid));
 });
 
 test("item presentation fails closed for hostile rows and action carriers", () => {
   let calls = 0;
+  let trapCalls = 0;
   const accessor = {};
   Object.defineProperty(accessor, "status", {
     enumerable: true,
@@ -239,10 +308,18 @@ test("item presentation fails closed for hostile rows and action carriers", () =
     failureLabel: "",
     actions: { review: false, approve: false, retry: false, regenerate: false, cancel: false },
   };
+  const trapped = new Proxy({ itemId: "item-a", status: "SUCCEEDED" }, {
+    getPrototypeOf() { trapCalls += 1; return Object.prototype; },
+    ownKeys() { trapCalls += 1; return []; },
+    getOwnPropertyDescriptor() { trapCalls += 1; return undefined; },
+    get() { trapCalls += 1; return undefined; },
+  });
   assert.deepEqual(autoListingItemPresentation(accessor), fallback);
   assert.deepEqual(autoListingItemPresentation(new Proxy({ itemId: "item-a", status: "SUCCEEDED" }, {})), fallback);
+  assert.deepEqual(autoListingItemPresentation(trapped), fallback);
   assert.deepEqual(autoListingItemPresentation(hostileActions).actions, fallback.actions);
   assert.equal(calls, 0);
+  assert.equal(trapCalls, 0);
 });
 
 test("formats only a persisted timestamp and never substitutes the current time", () => {

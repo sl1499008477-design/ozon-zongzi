@@ -59,10 +59,21 @@ const PRICE_KEYS = Object.freeze([
   "currency", "branch", "blackKopecks", "greenKopecks", "realPriceKopecks",
   "adjustmentKopecks", "finalPriceKopecks",
 ]);
+const HIGH_PRICE_KEYS = Object.freeze(PRICE_KEYS);
+const LOW_PRICE_KEYS = Object.freeze(PRICE_KEYS.filter((key) => key !== "greenKopecks"));
+
+const runtimeIsProxy = (() => {
+  try {
+    const candidate = globalThis.process?.getBuiltinModule?.("node:util")?.types?.isProxy;
+    return typeof candidate === "function" ? candidate : () => false;
+  } catch {
+    return () => false;
+  }
+})();
 
 function descriptorTreeSafe(value, seen = new WeakSet()) {
   if (value === null || ["string", "number", "boolean", "undefined"].includes(typeof value)) return true;
-  if (typeof value !== "object" || seen.has(value)) return false;
+  if (typeof value !== "object" || runtimeIsProxy(value) || seen.has(value)) return false;
   try {
     const array = Array.isArray(value);
     if (Object.getPrototypeOf(value) !== (array ? Array.prototype : Object.prototype)) return false;
@@ -88,6 +99,7 @@ function descriptorTreeSafe(value, seen = new WeakSet()) {
 }
 
 function safeDataRoot(value, { array = false } = {}) {
+  if (!value || typeof value !== "object" || runtimeIsProxy(value)) return null;
   try {
     if ((array ? !Array.isArray(value) : Array.isArray(value)) || !descriptorTreeSafe(value)) return null;
     structuredClone(value);
@@ -113,19 +125,22 @@ function projectActions(value) {
 function projectPrice(value) {
   const descriptors = safeDataRoot(value);
   const keys = descriptors ? Reflect.ownKeys(descriptors) : [];
-  if (!descriptors || keys.some((key) => typeof key !== "string" || !PRICE_KEYS.includes(key))
-    || !descriptors.currency || !descriptors.branch) return null;
+  if (!descriptors || !descriptors.currency || !descriptors.branch) return null;
   const currency = descriptors.currency.value;
   const branch = descriptors.branch.value;
+  const expectedKeys = branch === "BLACK_GTE_80" ? HIGH_PRICE_KEYS
+    : branch === "BLACK_LT_80" ? LOW_PRICE_KEYS : null;
   if (!descriptors.currency.enumerable || !descriptors.branch.enumerable
     || !["RUB", "CNY"].includes(currency)
-    || !["BLACK_GTE_80", "BLACK_LT_80"].includes(branch)) return null;
+    || !expectedKeys || keys.length !== expectedKeys.length
+    || keys.some((key) => typeof key !== "string" || !expectedKeys.includes(key))) return null;
   const result = { currency, branch };
-  for (const key of PRICE_KEYS.slice(2)) {
-    if (!descriptors[key]) continue;
+  for (const key of expectedKeys.slice(2)) {
+    if (!descriptors[key]) return null;
     const amount = descriptors[key].value;
-    if (!descriptors[key].enumerable || typeof amount !== "string"
-      || amount.length > 80 || !/^[+-]?\d+$/u.test(amount)) return null;
+    const pattern = key === "adjustmentKopecks"
+      ? /^(?:0|-?[1-9]\d{0,29})$/u : /^[1-9]\d{0,29}$/u;
+    if (!descriptors[key].enumerable || typeof amount !== "string" || !pattern.test(amount)) return null;
     result[key] = amount;
   }
   return Object.freeze(result);

@@ -322,11 +322,20 @@ test("fails closed without executing accessors or revoked proxies", () => {
     source: "SOURCE_DIRECT", version: 1, validatedAt: null,
     action: "NONE", message: "使用采集类目准备上架",
   }, {});
+  let trapCalls = 0;
+  const trapped = new Proxy({ ...transparent }, {
+    getPrototypeOf() { trapCalls += 1; return Object.prototype; },
+    ownKeys() { trapCalls += 1; return []; },
+    getOwnPropertyDescriptor() { trapCalls += 1; return undefined; },
+    get() { trapCalls += 1; return undefined; },
+  });
 
   assert.equal(accountSharedCategoryResolution(hostile), null);
   assert.equal(accountSharedCategoryResolution(proxy), null);
   assert.equal(accountSharedCategoryResolution(transparent), null);
+  assert.equal(accountSharedCategoryResolution(trapped), null);
   assert.equal(getterCalls, 0);
+  assert.equal(trapCalls, 0);
 });
 
 test("requires the exact complete public shared-summary state contract", () => {
@@ -454,6 +463,13 @@ test("accepts only a complete exact administrator confirmation response", () => 
     enumerable: true,
     get() { getterCalls += 1; return categoryResolution; },
   });
+  let trapCalls = 0;
+  const trapped = new Proxy({ collectItemId: "collect-a", categoryResolution }, {
+    getPrototypeOf() { trapCalls += 1; return Object.prototype; },
+    ownKeys() { trapCalls += 1; return []; },
+    getOwnPropertyDescriptor() { trapCalls += 1; return undefined; },
+    get() { trapCalls += 1; return undefined; },
+  });
   for (const response of [
     { collectItemId: "collect-a" },
     { collectItemId: "collect-a", categoryResolution: { ...categoryResolution, currentTypeId: null } },
@@ -461,6 +477,8 @@ test("accepts only a complete exact administrator confirmation response", () => 
     { collectItemId: "collect-a", categoryResolution, raw: "secret" },
     accessor,
     new Proxy({ collectItemId: "collect-a", categoryResolution }, {}),
+    trapped,
   ]) assert.equal(categoryConfirmationResponse(response, request), null);
   assert.equal(getterCalls, 0);
+  assert.equal(trapCalls, 0);
 });
