@@ -4,8 +4,8 @@ Verified on 2026-08-13 (Asia/Shanghai).
 
 ## Tested implementation
 
-- Implementation SHA: `7f5fa7167e3cc94efc13070d4978ad7c6d34128f`
-- Supporting production-contract fixes: `c240040` and `48e4fca`
+- Implementation SHA: `bb3224741bf4ace4533316ee290af288a018a39d`
+- Supporting production-contract fixes: `c240040`, `48e4fca`, and `bb21c02`
 - Migration chain: `001` through `069`
 - Production automatic category recovery: disabled; the V1 structured-error policy remains empty
 
@@ -16,13 +16,15 @@ Verified on 2026-08-13 (Asia/Shanghai).
 - Vite production build: 4,843 modules transformed, exit zero. The existing large-chunk warning remains.
 - JavaScript syntax checks and changed-range whitespace checks: passed.
 
-The Task 10 E2E used two disposable PostgreSQL 16 databases on loopback ports and a loopback-only fake Ozon transport. It proved the real collection/shared-category repository, auto-listing service and preparer, submission pipeline and worker, category recovery service, retry worker, migration-069 child results, stock continuation, replay idempotency, tenant isolation, destructive migration preflight rollback, and restore/read compatibility. Its only direct recovery seed is a clearly labelled historical terminal error-evidence fixture because the production V1 policy is deliberately empty.
+The Task 10 E2E used two disposable PostgreSQL 16 databases on loopback ports and a loopback-only fake Ozon transport. The successful source path enters through production `ingestCollectRequestV4`, which persists the real request, raw payload, draft, source pointer and account-shared category row. It then proves the real auto-listing service and preparer, submission pipeline, persistent outbox lifecycle, cache-busted replacement worker and reconciler instances, category recovery service, migration-069 child results, stock continuation, replay idempotency, tenant isolation, destructive migration preflight rollback, and restore/read compatibility. Its only direct recovery seed is a clearly labelled historical terminal error-evidence fixture because the production V1 policy is deliberately empty.
+
+The loopback transport captured both `/v3/product/import` requests. The first body exactly equals the immutable submission snapshot and the retry body exactly equals the recovery attempt's persisted corrected items. Both use the same target-store credential; the single stock request preserves the exact offer, platform warehouse and quantity. The retry outbox dedupe key, attempt identity, original/retry task IDs, correlation ID and migration-069 child row form one exact durable chain. Replaying messages after creating new worker and reconciler module instances leaves evidence at one row, attempts at one row, product imports at two calls and stock at one call.
 
 The worker failure matrix used independent jobs. Authentication and throttling failures came from real `/v3/product/import` HTTP responses; brand and currency failures came from real `/v1/product/import/info` item results; stock failure came from a real `/v2/products/stocks` HTTP response after successful product import. All non-category cases created zero category-recovery attempts and zero category-error evidence. The adjacent RFBS suite exercised the production PRE_IMPORT and PRE_STOCK authorization paths. Unknown real Ozon error labels remain unclassified by design and therefore cannot activate category recovery.
 
 ## Read-only browser evidence
 
-The real Vite application and real local API were started from the tested worktree on isolated loopback ports, backed by a disposable PostgreSQL schema and safe seeded records. Browser control used the bundled browser client through the Node REPL; external Playwright was not used. No create, save, confirm, retry, AI, product-import, inventory, or stock control was clicked.
+The real Vite application and real local API were started from the tested worktree on isolated loopback ports 61422 and 61421, backed by safe disposable local records. Browser control used the bundled browser client through the Node REPL; external Playwright was not used. No create, save, confirm, retry, AI, product-import, inventory, or stock control was clicked.
 
 Verified visible behavior:
 
@@ -30,12 +32,13 @@ Verified visible behavior:
 - the persisted creation time was `2026-08-12 10:00:00`, not a current-time fallback;
 - the store label was `粽子测试店铺`, not an internal identifier;
 - the account-shared category column and edit detail used fixed safe Chinese copy with no raw platform text and no retired per-store matching wording;
-- the real collection detail route loaded at `/ozon/products/collect/edit/?id=collect-browser-product`.
+- the real `/ozon/products/import-history` route rendered two persisted task timestamps in newest-first order;
+- clicking the older row's read-only **查看** action opened the real **上架任务详情** modal with `history-task-old`, its Ozon task ID, historical update time, terminal status and fixed safe error copy.
 
 Local screenshot evidence:
 
 - `.superpowers/sdd/2026-08-12-account-shared-ozon-category-recovery/evidence/task10-real-auto-listing-48e4fca.png`
-- `.superpowers/sdd/2026-08-12-account-shared-ozon-category-recovery/evidence/task10-real-collect-detail-48e4fca.png`
+- `.superpowers/sdd/2026-08-12-account-shared-ozon-category-recovery/evidence/task10-real-import-history-detail-round2.png`
 
 ## Not verified / environmental concern
 
