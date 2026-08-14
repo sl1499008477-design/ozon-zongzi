@@ -162,7 +162,7 @@ function projectRequest(raw) {
     correlationId: identifier(value.correlationId),
     sourceReferences: projectSourceReferences(value.sourceReferences),
   };
-  const longestKey = `category-strategy/${projected.accountId}/${projected.draftId}/${projected.sampleSetId}/${projected.sampleId}/${"0".repeat(64)}/${"0".repeat(64)}/thumbnail-${"0".repeat(64)}.webp`;
+  const longestKey = `category-strategy/${projected.accountId}/${projected.draftId}/${projected.sampleSetId}/${projected.sampleId}/${"0".repeat(64)}/${"0".repeat(36)}/${"0".repeat(64)}/thumbnail-${"0".repeat(64)}.webp`;
   if (Buffer.byteLength(longestKey, "utf8") > 1024) throw invalid();
   return Object.freeze(projected);
 }
@@ -188,7 +188,7 @@ function manifestObjectKey(context, inputHash) {
   return `category-strategy/${context.accountId}/${context.draftId}/${context.sampleSetId}/${context.sampleId}/manifests/${inputHash}.json`;
 }
 
-function projectManifestEvidence(raw, context, inputHash) {
+function projectManifestEvidence(raw, context, inputHash, generation) {
   const entries = closedArray(raw);
   if (entries.length !== context.sourceReferences.length) throw invalid();
   return Object.freeze(entries.map((rawEvidence, ordinal) => {
@@ -198,7 +198,7 @@ function projectManifestEvidence(raw, context, inputHash) {
       "thumbnailContentHash", "contentType", "width", "height", "capturedAt",
     ]);
     const source = context.sourceReferences[ordinal];
-    const prefix = `category-strategy/${context.accountId}/${context.draftId}/${context.sampleSetId}/${context.sampleId}/${inputHash}/`;
+    const prefix = `category-strategy/${context.accountId}/${context.draftId}/${context.sampleSetId}/${context.sampleId}/${inputHash}/${generation}/`;
     if (evidence.imageId !== source.imageId || evidence.role !== source.role || evidence.ordinal !== source.ordinal
       || evidence.sourceUrlHost !== source.sourceUrlHost || evidence.sourceRefHash !== sha256(source.sourceUrl)
       || evidence.sourceResponseHash !== source.sourceResponseHash || !HASH.test(evidence.sourceContentHash || "")
@@ -215,18 +215,19 @@ function parseManifest(buffer, storageState, context, inputHash) {
   let parsed;
   try { parsed = JSON.parse(Buffer.from(buffer).toString("utf8")); } catch { throw invalid(); }
   const value = closed(parsed, [
-    "schemaVersion", "state", "inputHash", "accountId", "draftId", "sampleSetId", "sampleId",
+    "schemaVersion", "state", "inputHash", "generation", "accountId", "draftId", "sampleSetId", "sampleId",
     "expectedObjects", "evidence",
   ]);
   if (value.schemaVersion !== MANIFEST_SCHEMA || value.state !== storageState || value.inputHash !== inputHash
+    || !SAFE_ID.test(value.generation || "")
     || value.accountId !== context.accountId || value.draftId !== context.draftId
     || value.sampleSetId !== context.sampleSetId || value.sampleId !== context.sampleId) throw invalid();
-  const evidence = projectManifestEvidence(value.evidence, context, inputHash);
+  const evidence = projectManifestEvidence(value.evidence, context, inputHash, value.generation);
   const rawObjects = closedArray(value.expectedObjects);
   const expectedObjects = Object.freeze(rawObjects.map((rawObject) => {
     const object = closed(rawObject, ["key", "expectedSha256", "maxBytes"]);
     if (typeof object.key !== "string" || object.key.length > 1024 || object.key.includes("..")
-      || !object.key.startsWith(`category-strategy/${context.accountId}/${context.draftId}/${context.sampleSetId}/${context.sampleId}/${inputHash}/`)
+      || !object.key.startsWith(`category-strategy/${context.accountId}/${context.draftId}/${context.sampleSetId}/${context.sampleId}/${inputHash}/${value.generation}/`)
       || !HASH.test(object.expectedSha256 || "") || object.maxBytes !== MAX_NORMALIZED_BYTES) throw invalid();
     return Object.freeze({ ...object });
   }));
@@ -240,11 +241,12 @@ function parseManifest(buffer, storageState, context, inputHash) {
   return Object.freeze({ state: storageState, evidence, expectedObjects });
 }
 
-function manifestBuffer(state, context, inputHash, expectedObjects, evidence) {
+function manifestBuffer(state, context, inputHash, generation, expectedObjects, evidence) {
   return Buffer.from(JSON.stringify({
     schemaVersion: MANIFEST_SCHEMA,
     state,
     inputHash,
+    generation,
     accountId: context.accountId,
     draftId: context.draftId,
     sampleSetId: context.sampleSetId,
@@ -390,11 +392,11 @@ async function normalizeImage(downloaded) {
   }
 }
 
-function objectKeys(context, inputHash, sourceContentHash, normalized) {
+function objectKeys(context, inputHash, generation, sourceContentHash, normalized) {
   const prefix = `category-strategy/${context.accountId}/${context.draftId}/${context.sampleSetId}/${context.sampleId}`;
   return Object.freeze({
-    analysis: `${prefix}/${inputHash}/${sourceContentHash}/analysis-${normalized.analysis.contentHash}.webp`,
-    thumbnail: `${prefix}/${inputHash}/${sourceContentHash}/thumbnail-${normalized.thumbnail.contentHash}.webp`,
+    analysis: `${prefix}/${inputHash}/${generation}/${sourceContentHash}/analysis-${normalized.analysis.contentHash}.webp`,
+    thumbnail: `${prefix}/${inputHash}/${generation}/${sourceContentHash}/thumbnail-${normalized.thumbnail.contentHash}.webp`,
   });
 }
 
@@ -419,16 +421,20 @@ export function createCategoryStrategySampleStore(raw = {}) {
       throw failure("AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_STORAGE_FAILED", true);
     }
     if (existing?.state === "DONE") return projectManifestReplay(existing, context, inputHash, objectStorage);
-    if (existing?.state === "PREPARING") throw failure("AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_IN_PROGRESS", true);
+    if (["PREPARING", "ABORTED"].includes(existing?.state)) {
+      throw failure("AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_IN_PROGRESS", true);
+    }
 
     const capturedAt = timestamp(factory.now);
+    const ownerToken = crypto.randomUUID();
+    const generation = crypto.randomUUID();
     const evidence = [];
     const assets = new Map();
     for (const reference of context.sourceReferences) {
       const downloaded = await boundedFetch(factory.fetchImage, reference, context, factory.maxDownloadBytes);
       const sourceContentHash = sha256(downloaded.buffer);
       const normalized = await normalizeImage(downloaded);
-      const keys = objectKeys(context, inputHash, sourceContentHash, normalized);
+      const keys = objectKeys(context, inputHash, generation, sourceContentHash, normalized);
       for (const asset of [
         { key: keys.analysis, normalized: normalized.analysis },
         { key: keys.thumbnail, normalized: normalized.thumbnail },
@@ -462,16 +468,16 @@ export function createCategoryStrategySampleStore(raw = {}) {
     const expectedObjects = Object.freeze([...assets.values()].map((asset) => Object.freeze({
       key: asset.key, expectedSha256: asset.expectedSha256, maxBytes: asset.maxBytes,
     })));
-    const preparing = manifestBuffer("PREPARING", context, inputHash, expectedObjects, evidence);
-    const ownerToken = crypto.randomUUID();
+    const preparing = manifestBuffer("PREPARING", context, inputHash, generation, expectedObjects, evidence);
     let claim;
     try {
       claim = await objectStorage.claimManifestExpected({
-        accountId: context.accountId, key: manifestKey, ownerToken, buffer: preparing,
+        accountId: context.accountId, key: manifestKey, ownerToken, generation, buffer: preparing,
         expectedSha256: sha256(preparing), maxBytes: MANIFEST_MAX_BYTES,
       });
       if (claim?.status === "DONE") return projectManifestReplay(claim, context, inputHash, objectStorage);
-      if (claim?.status !== "OWNED" || claim.ownerToken !== ownerToken || typeof claim.etag !== "string") {
+      if (claim?.status !== "OWNED" || claim.ownerToken !== ownerToken || claim.generation !== generation
+        || typeof claim.etag !== "string") {
         throw failure("AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_IN_PROGRESS", true);
       }
       for (const asset of assets.values()) {
@@ -484,14 +490,16 @@ export function createCategoryStrategySampleStore(raw = {}) {
           maxBytes: asset.maxBytes,
           manifestKey,
           ownerToken,
+          generation,
+          manifestEtag: claim.etag,
         });
         if (!stored || stored.key !== asset.key || stored.sha256 !== asset.expectedSha256
           || stored.contentType !== asset.contentType || stored.size !== asset.buffer.length
           || stored.created !== true) throw failure("AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_STORAGE_FAILED", true);
       }
-      const done = manifestBuffer("DONE", context, inputHash, expectedObjects, evidence);
+      const done = manifestBuffer("DONE", context, inputHash, generation, expectedObjects, evidence);
       const finalized = await objectStorage.finalizeManifestExpected({
-        accountId: context.accountId, key: manifestKey, ownerToken, expectedEtag: claim.etag,
+        accountId: context.accountId, key: manifestKey, ownerToken, generation, expectedEtag: claim.etag,
         buffer: done, expectedSha256: sha256(done), maxBytes: MANIFEST_MAX_BYTES,
       });
       if (finalized?.status !== "DONE") throw failure("AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_STORAGE_FAILED", true);
@@ -501,9 +509,9 @@ export function createCategoryStrategySampleStore(raw = {}) {
         try {
           const cleaned = await objectStorage.cleanupOwnedManifestExpected({
             accountId: context.accountId, key: manifestKey, ownerToken,
-            expectedEtag: claim.etag, objects: expectedObjects,
+            generation, expectedEtag: claim.etag, objects: expectedObjects,
           });
-          if (!cleaned || !["CLEANED", "DONE"].includes(cleaned.status)) throw new Error("cleanup unverified");
+          if (!cleaned || !["ABORTED", "DONE"].includes(cleaned.status)) throw new Error("cleanup unverified");
         } catch {
           throw failure("AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_CLEANUP_FAILED", true);
         }

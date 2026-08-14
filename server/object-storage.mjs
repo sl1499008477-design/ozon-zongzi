@@ -12,6 +12,8 @@ const EXPECTED_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]
 const MANIFEST_MAX_BYTES = 64 * 1024;
 const META_STATE = "category-state";
 const META_OWNER = "category-owner";
+const META_GENERATION = "category-generation";
+const META_CLAIM_ETAG = "category-claim-etag";
 const META_MANIFEST = "category-manifest-key";
 const META_HASH = "category-content-sha256";
 const CREDENTIAL_MARKER = /(?:credential|password|passwd|secret|bearer|authorization|cookie|private[_-]?key|access[_-]?token|refresh[_-]?token)/iu;
@@ -63,7 +65,7 @@ function closedExpectedStorageArray(raw, maxLength) {
 
 function validateExpectedScope(accountId, key) {
   if (typeof accountId !== "string" || !SAFE_ACCOUNT_SEGMENT.test(accountId)
-    || CREDENTIAL_MARKER.test(accountId) || typeof key !== "string" || key.length > 2048
+    || CREDENTIAL_MARKER.test(accountId) || typeof key !== "string" || Buffer.byteLength(key, "utf8") > 1024
     || !SAFE_EXPECTED_KEY.test(key) || key.includes("..") || CREDENTIAL_MARKER.test(key)
     || !key.startsWith(`category-strategy/${accountId}/`)) {
     throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_SCOPE_INVALID");
@@ -89,6 +91,32 @@ function exactExpectedBytes(bytes, expectedSha256, maxBytes) {
     throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_HASH_MISMATCH");
   }
   return bytes;
+}
+
+export function createVersionFencedObjectRemover(raw = {}) {
+  const ports = closedExpectedStorageInput(raw, ["statObject", "removeVersion"]);
+  if (typeof ports.statObject !== "function" || typeof ports.removeVersion !== "function") {
+    throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_INPUT_INVALID");
+  }
+  return async function removeVersionFenced(key, expectedEtag) {
+    if (typeof key !== "string" || !key || typeof expectedEtag !== "string" || !expectedEtag) {
+      throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_INPUT_INVALID");
+    }
+    const current = await ports.statObject(key);
+    if (current?.etag !== expectedEtag) {
+      const error = new Error("对象已被替换");
+      error.code = "PreconditionFailed";
+      error.statusCode = 412;
+      throw error;
+    }
+    if (typeof current.versionId !== "string" || !current.versionId || current.versionId === "null") {
+      const error = new Error("对象存储未提供可安全删除的不可变版本标识");
+      error.code = "OBJECT_STORAGE_CONDITIONAL_DELETE_UNSUPPORTED";
+      error.statusCode = 409;
+      throw error;
+    }
+    await ports.removeVersion(key, current.versionId);
+  };
 }
 
 /**
@@ -210,6 +238,10 @@ export function createExpectedHashObjectStorage(dependencies) {
   async function removeObjectExpected(raw = {}) {
     const input = closedExpectedStorageInput(raw, ["accountId", "key", "expectedSha256", "maxBytes"]);
     validateExpectedRead(input);
+    const verifiedStat = await statExpected(input.key);
+    if (!verifiedStat) {
+      return Object.freeze({ key: input.key, sha256: input.expectedSha256, removed: false, recovered: false });
+    }
     try {
       await readObjectExpected(input);
     } catch (error) {
@@ -219,16 +251,19 @@ export function createExpectedHashObjectStorage(dependencies) {
       throw error;
     }
     try {
-      await ports.removeObject(input.key, { accountId: input.accountId });
+      await ports.removeObject(input.key, { accountId: input.accountId, expectedEtag: verifiedStat.etag });
+      const latest = await statExpected(input.key);
+      if (latest?.etag === verifiedStat.etag) {
+        throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_CLEANUP_FAILED", true);
+      }
       return Object.freeze({ key: input.key, sha256: input.expectedSha256, removed: true, recovered: false });
     } catch {
-      try {
-        await readObjectExpected(input);
-      } catch (error) {
-        if (error?.code === "EXPECTED_HASH_OBJECT_STORAGE_NOT_FOUND") {
-          return Object.freeze({ key: input.key, sha256: input.expectedSha256, removed: true, recovered: true });
-        }
-        throw error;
+      const latest = await statExpected(input.key);
+      if (!latest) {
+        return Object.freeze({ key: input.key, sha256: input.expectedSha256, removed: true, recovered: true });
+      }
+      if (latest.etag !== verifiedStat.etag) {
+        throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_CLEANUP_FAILED", true);
       }
       throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_UNAVAILABLE", true);
     }
@@ -284,12 +319,14 @@ export function createExpectedHashObjectStorage(dependencies) {
     if (!stat) return null;
     const state = metadataValue(stat.metadata, META_STATE);
     const ownerToken = metadataValue(stat.metadata, META_OWNER);
-    if (!["PREPARING", "DONE"].includes(state) || (state === "PREPARING" && !SAFE_ACCOUNT_SEGMENT.test(ownerToken))) {
+    const generation = metadataValue(stat.metadata, META_GENERATION);
+    if (!["PREPARING", "DONE", "ABORTED"].includes(state)
+      || !SAFE_ACCOUNT_SEGMENT.test(ownerToken) || !SAFE_ACCOUNT_SEGMENT.test(generation)) {
       throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_MANIFEST_INVALID");
     }
     const read = await readStatBytes(input.key, stat, input.maxBytes);
     return Object.freeze({
-      state, ownerToken: ownerToken || null, etag: stat.etag,
+      state, ownerToken, generation, etag: stat.etag,
       sha256: read.expectedSha256, buffer: read.bytes,
     });
   }
@@ -298,64 +335,86 @@ export function createExpectedHashObjectStorage(dependencies) {
     const input = closedExpectedStorageInput(raw, keys);
     validateExpectedScope(input.accountId, input.key);
     if (!input.key.includes("/manifests/") || !input.key.endsWith(".json")
-      || !SAFE_ACCOUNT_SEGMENT.test(input.ownerToken || "") || !Buffer.isBuffer(input.buffer)
+      || !SAFE_ACCOUNT_SEGMENT.test(input.ownerToken || "") || !SAFE_ACCOUNT_SEGMENT.test(input.generation || "")
+      || !Buffer.isBuffer(input.buffer)
       || !EXPECTED_HASH.test(input.expectedSha256 || "") || sha256Buffer(input.buffer) !== input.expectedSha256
       || !Number.isInteger(input.maxBytes) || input.maxBytes < input.buffer.length
       || input.maxBytes > MANIFEST_MAX_BYTES) throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_INPUT_INVALID");
     return input;
   }
 
+  function ownedGenerationPrefix(manifestKey, generation) {
+    const marker = "/manifests/";
+    const markerIndex = manifestKey.indexOf(marker);
+    const manifestName = manifestKey.slice(markerIndex + marker.length, -".json".length);
+    if (markerIndex < 1 || !EXPECTED_HASH.test(manifestName)) {
+      throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_INPUT_INVALID");
+    }
+    return `${manifestKey.slice(0, markerIndex)}/${manifestName}/${generation}/`;
+  }
+
   async function claimManifestExpected(raw = {}) {
-    const input = manifestWriteInput(raw, ["accountId", "key", "ownerToken", "buffer", "expectedSha256", "maxBytes"]);
+    const input = manifestWriteInput(raw, [
+      "accountId", "key", "ownerToken", "generation", "buffer", "expectedSha256", "maxBytes",
+    ]);
     let putError = null;
     try {
       await ports.putObject({
         key: input.key, name: "manifest.json", contentType: "application/json", buffer: input.buffer,
         maxBytes: input.maxBytes, ifNoneMatch: "*", metadata: {
-          [META_STATE]: "PREPARING", [META_OWNER]: input.ownerToken, [META_HASH]: input.expectedSha256,
+          [META_STATE]: "PREPARING", [META_OWNER]: input.ownerToken,
+          [META_GENERATION]: input.generation, [META_HASH]: input.expectedSha256,
         },
       });
     } catch (error) { putError = error; }
     const manifest = await getManifestExpected({ accountId: input.accountId, key: input.key, maxBytes: input.maxBytes });
     if (!manifest) throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_UNAVAILABLE", true);
     if (manifest.state === "DONE") return Object.freeze({ status: "DONE", ...manifest });
-    if (manifest.ownerToken !== input.ownerToken || manifest.sha256 !== input.expectedSha256
+    if (manifest.state === "ABORTED") {
+      return Object.freeze({ status: "IN_PROGRESS", ownerToken: null, generation: null, etag: manifest.etag });
+    }
+    if (manifest.ownerToken !== input.ownerToken || manifest.generation !== input.generation
+      || manifest.sha256 !== input.expectedSha256
       || !manifest.buffer.equals(input.buffer)) {
-      return Object.freeze({ status: "IN_PROGRESS", ownerToken: null, etag: manifest.etag });
+      return Object.freeze({ status: "IN_PROGRESS", ownerToken: null, generation: null, etag: manifest.etag });
     }
     return Object.freeze({
-      status: "OWNED", ownerToken: input.ownerToken, etag: manifest.etag,
+      status: "OWNED", ownerToken: input.ownerToken, generation: input.generation, etag: manifest.etag,
       recovered: Boolean(putError),
     });
   }
 
   async function finalizeManifestExpected(raw = {}) {
     const input = manifestWriteInput(raw, [
-      "accountId", "key", "ownerToken", "expectedEtag", "buffer", "expectedSha256", "maxBytes",
+      "accountId", "key", "ownerToken", "generation", "expectedEtag", "buffer", "expectedSha256", "maxBytes",
     ]);
     if (typeof input.expectedEtag !== "string" || !input.expectedEtag) {
       throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_INPUT_INVALID");
     }
     const before = await getManifestExpected({ accountId: input.accountId, key: input.key, maxBytes: input.maxBytes });
     if (before?.state === "DONE") {
-      if (before.sha256 !== input.expectedSha256 || !before.buffer.equals(input.buffer)) {
+      if (before.ownerToken !== input.ownerToken || before.generation !== input.generation
+        || before.sha256 !== input.expectedSha256 || !before.buffer.equals(input.buffer)) {
         throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_MANIFEST_INVALID");
       }
       return Object.freeze({ status: "DONE", etag: before.etag, recovered: true, buffer: before.buffer });
     }
     if (!before || before.state !== "PREPARING" || before.ownerToken !== input.ownerToken
+      || before.generation !== input.generation
       || before.etag !== input.expectedEtag) throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
     let putError = null;
     try {
       await ports.putObject({
         key: input.key, name: "manifest.json", contentType: "application/json", buffer: input.buffer,
         maxBytes: input.maxBytes, ifMatch: input.expectedEtag, metadata: {
-          [META_STATE]: "DONE", [META_OWNER]: input.ownerToken, [META_HASH]: input.expectedSha256,
+          [META_STATE]: "DONE", [META_OWNER]: input.ownerToken,
+          [META_GENERATION]: input.generation, [META_HASH]: input.expectedSha256,
         },
       });
     } catch (error) { putError = error; }
     const after = await getManifestExpected({ accountId: input.accountId, key: input.key, maxBytes: input.maxBytes });
     if (!after || after.state !== "DONE" || after.ownerToken !== input.ownerToken
+      || after.generation !== input.generation
       || after.sha256 !== input.expectedSha256 || !after.buffer.equals(input.buffer)) {
       throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_UNAVAILABLE", true);
     }
@@ -365,16 +424,20 @@ export function createExpectedHashObjectStorage(dependencies) {
   async function putOwnedObjectExpected(raw = {}) {
     const input = closedExpectedStorageInput(raw, [
       "accountId", "key", "contentType", "buffer", "expectedSha256", "maxBytes", "manifestKey", "ownerToken",
+      "generation", "manifestEtag",
     ]);
     validateExpectedRead(input);
     validateExpectedScope(input.accountId, input.manifestKey);
     if (!EXPECTED_CONTENT_TYPES.has(input.contentType) || !Buffer.isBuffer(input.buffer)
       || input.buffer.length < 1 || input.buffer.length > input.maxBytes
-      || sha256Buffer(input.buffer) !== input.expectedSha256 || !SAFE_ACCOUNT_SEGMENT.test(input.ownerToken || "")) {
+      || sha256Buffer(input.buffer) !== input.expectedSha256 || !SAFE_ACCOUNT_SEGMENT.test(input.ownerToken || "")
+      || !SAFE_ACCOUNT_SEGMENT.test(input.generation || "") || typeof input.manifestEtag !== "string"
+      || !input.manifestEtag || !input.key.startsWith(ownedGenerationPrefix(input.manifestKey, input.generation))) {
       throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_INPUT_INVALID");
     }
     const manifest = await getManifestExpected({ accountId: input.accountId, key: input.manifestKey, maxBytes: MANIFEST_MAX_BYTES });
-    if (!manifest || manifest.state !== "PREPARING" || manifest.ownerToken !== input.ownerToken) {
+    if (!manifest || manifest.state !== "PREPARING" || manifest.ownerToken !== input.ownerToken
+      || manifest.generation !== input.generation || manifest.etag !== input.manifestEtag) {
       throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
     }
     let putError = null;
@@ -383,18 +446,35 @@ export function createExpectedHashObjectStorage(dependencies) {
         key: input.key, name: input.key.slice(input.key.lastIndexOf("/") + 1), contentType: input.contentType,
         buffer: input.buffer, maxBytes: input.maxBytes, ifNoneMatch: "*", metadata: {
           [META_STATE]: "PREPARING", [META_OWNER]: input.ownerToken,
+          [META_GENERATION]: input.generation, [META_CLAIM_ETAG]: input.manifestEtag,
           [META_MANIFEST]: input.manifestKey, [META_HASH]: input.expectedSha256,
         },
       });
     } catch (error) { putError = error; }
     const stat = await statExpected(input.key);
     if (!stat || metadataValue(stat.metadata, META_OWNER) !== input.ownerToken
+      || metadataValue(stat.metadata, META_GENERATION) !== input.generation
+      || metadataValue(stat.metadata, META_CLAIM_ETAG) !== input.manifestEtag
       || metadataValue(stat.metadata, META_MANIFEST) !== input.manifestKey
       || metadataValue(stat.metadata, META_HASH) !== input.expectedSha256) {
       throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
     }
     const read = await readStatBytes(input.key, stat, input.maxBytes);
     if (!read.bytes.equals(input.buffer)) throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_HASH_MISMATCH");
+    const latestManifest = await getManifestExpected({
+      accountId: input.accountId, key: input.manifestKey, maxBytes: MANIFEST_MAX_BYTES,
+    });
+    if (latestManifest?.state === "ABORTED" && latestManifest.ownerToken === input.ownerToken
+      && latestManifest.generation === input.generation) {
+      await removeOwnedKey(input);
+      throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
+    }
+    if (!latestManifest || latestManifest.ownerToken !== input.ownerToken
+      || latestManifest.generation !== input.generation
+      || (latestManifest.state === "PREPARING" && latestManifest.etag !== input.manifestEtag)
+      || !["PREPARING", "DONE"].includes(latestManifest.state)) {
+      throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
+    }
     return Object.freeze({
       key: input.key, contentType: input.contentType, size: input.buffer.length,
       sha256: input.expectedSha256, created: true, recovered: Boolean(putError),
@@ -405,43 +485,91 @@ export function createExpectedHashObjectStorage(dependencies) {
     const stat = await statExpected(input.key);
     if (!stat) return;
     if (metadataValue(stat.metadata, META_OWNER) !== input.ownerToken
+      || metadataValue(stat.metadata, META_GENERATION) !== input.generation
+      || metadataValue(stat.metadata, META_CLAIM_ETAG) !== input.manifestEtag
       || metadataValue(stat.metadata, META_MANIFEST) !== input.manifestKey
-      || metadataValue(stat.metadata, META_HASH) !== input.expectedSha256) return;
-    try { await ports.removeObject(input.key, { accountId: input.accountId }); } catch {
-      if (await statExpected(input.key)) throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_CLEANUP_FAILED", true);
+      || metadataValue(stat.metadata, META_HASH) !== input.expectedSha256) return false;
+    try {
+      await ports.removeObject(input.key, { accountId: input.accountId, expectedEtag: stat.etag });
+    } catch (error) {
+      const latest = await statExpected(input.key);
+      if (!latest) return true;
+      if (latest.etag !== stat.etag) return false;
+      if (error?.code === "OBJECT_STORAGE_CONDITIONAL_DELETE_UNSUPPORTED") return false;
+      throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_CLEANUP_FAILED", true);
     }
+    return !(await statExpected(input.key));
   }
 
   async function cleanupOwnedManifestExpected(raw = {}) {
-    const input = closedExpectedStorageInput(raw, ["accountId", "key", "ownerToken", "expectedEtag", "objects"]);
+    const input = closedExpectedStorageInput(raw, [
+      "accountId", "key", "ownerToken", "generation", "expectedEtag", "objects",
+    ]);
     validateExpectedScope(input.accountId, input.key);
-    if (!SAFE_ACCOUNT_SEGMENT.test(input.ownerToken || "") || typeof input.expectedEtag !== "string") {
+    if (!SAFE_ACCOUNT_SEGMENT.test(input.ownerToken || "") || !SAFE_ACCOUNT_SEGMENT.test(input.generation || "")
+      || typeof input.expectedEtag !== "string" || !input.expectedEtag) {
       throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_INPUT_INVALID");
     }
     const objects = closedExpectedStorageArray(input.objects, 12);
-    const manifest = await getManifestExpected({ accountId: input.accountId, key: input.key, maxBytes: MANIFEST_MAX_BYTES });
-    if (manifest?.state === "DONE") return Object.freeze({ status: "DONE" });
-    if (!manifest) return Object.freeze({ status: "CLEANED" });
-    if (manifest.ownerToken !== input.ownerToken || manifest.etag !== input.expectedEtag) {
-      throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
-    }
-    for (const rawObject of objects) {
+    const validatedObjects = objects.map((rawObject) => {
       const object = closedExpectedStorageInput(rawObject, ["key", "expectedSha256", "maxBytes"]);
       validateExpectedRead({ accountId: input.accountId, ...object });
-      await removeOwnedKey({
-        accountId: input.accountId, key: object.key, expectedSha256: object.expectedSha256,
-        manifestKey: input.key, ownerToken: input.ownerToken,
-      });
-    }
-    const latest = await getManifestExpected({ accountId: input.accountId, key: input.key, maxBytes: MANIFEST_MAX_BYTES });
-    if (latest?.state === "DONE") return Object.freeze({ status: "DONE" });
-    if (!latest || latest.ownerToken !== input.ownerToken || latest.etag !== input.expectedEtag) {
+      if (!object.key.startsWith(ownedGenerationPrefix(input.key, input.generation))) {
+        throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_INPUT_INVALID");
+      }
+      return object;
+    });
+    const manifest = await getManifestExpected({ accountId: input.accountId, key: input.key, maxBytes: MANIFEST_MAX_BYTES });
+    if (manifest?.state === "DONE") return Object.freeze({ status: "DONE" });
+    if (!manifest || manifest.ownerToken !== input.ownerToken || manifest.generation !== input.generation) {
       throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
     }
-    try { await ports.removeObject(input.key, { accountId: input.accountId }); } catch {
-      if (await statExpected(input.key)) throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_CLEANUP_FAILED", true);
+    const abortBuffer = Buffer.from(JSON.stringify({
+      schemaVersion: 1, state: "ABORTED", ownerToken: input.ownerToken,
+      generation: input.generation, preparingEtag: input.expectedEtag,
+      expectedObjects: validatedObjects,
+    }), "utf8");
+    const abortHash = sha256Buffer(abortBuffer);
+    let aborted = manifest;
+    if (manifest.state === "PREPARING") {
+      if (manifest.etag !== input.expectedEtag) {
+        throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
+      }
+      try {
+        await ports.putObject({
+          key: input.key, name: "manifest.json", contentType: "application/json", buffer: abortBuffer,
+          maxBytes: MANIFEST_MAX_BYTES, ifMatch: input.expectedEtag, metadata: {
+            [META_STATE]: "ABORTED", [META_OWNER]: input.ownerToken,
+            [META_GENERATION]: input.generation, [META_HASH]: abortHash,
+          },
+        });
+      } catch { /* response loss or a competing terminal CAS is reconciled below */ }
+      aborted = await getManifestExpected({ accountId: input.accountId, key: input.key, maxBytes: MANIFEST_MAX_BYTES });
+      if (aborted?.state === "DONE") return Object.freeze({ status: "DONE" });
+      if (!aborted || aborted.state !== "ABORTED" || aborted.ownerToken !== input.ownerToken
+        || aborted.generation !== input.generation || aborted.sha256 !== abortHash
+        || !aborted.buffer.equals(abortBuffer)) {
+        throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
+      }
+    } else if (manifest.state !== "ABORTED" || manifest.sha256 !== abortHash
+      || !manifest.buffer.equals(abortBuffer)) {
+      throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
     }
-    return Object.freeze({ status: "CLEANED" });
+    let retainedObjects = false;
+    for (const object of validatedObjects) {
+      const removed = await removeOwnedKey({
+        accountId: input.accountId, key: object.key, expectedSha256: object.expectedSha256,
+        manifestKey: input.key, ownerToken: input.ownerToken, generation: input.generation,
+        manifestEtag: input.expectedEtag,
+      });
+      if (!removed && await statExpected(object.key)) retainedObjects = true;
+    }
+    const latest = await getManifestExpected({ accountId: input.accountId, key: input.key, maxBytes: MANIFEST_MAX_BYTES });
+    if (!latest || latest.state !== "ABORTED" || latest.ownerToken !== input.ownerToken
+      || latest.generation !== input.generation || latest.etag !== aborted.etag) {
+      throw expectedStorageError("EXPECTED_HASH_OBJECT_STORAGE_IN_PROGRESS", true);
+    }
+    return Object.freeze({ status: "ABORTED", retainedObjects });
   }
 
   return Object.freeze({
@@ -620,9 +748,24 @@ export async function statObject(key) {
   return client.statObject(bucketName(), String(key || ""));
 }
 
-export async function removeObject(key) {
+export async function removeObject(key, options = {}) {
   const client = await getClient();
-  await client.removeObject(bucketName(), String(key || ""));
+  const objectKey = String(key || "");
+  const expectedEtag = options?.expectedEtag;
+  if (expectedEtag !== undefined) {
+    if (typeof expectedEtag !== "string" || !expectedEtag) {
+      const error = new Error("对象条件删除参数无效");
+      error.status = 400;
+      throw error;
+    }
+    const removeVersionFenced = createVersionFencedObjectRemover({
+      statObject: (candidateKey) => client.statObject(bucketName(), candidateKey),
+      removeVersion: (candidateKey, versionId) => client.removeObject(bucketName(), candidateKey, { versionId }),
+    });
+    await removeVersionFenced(objectKey, expectedEtag);
+    return;
+  }
+  await client.removeObject(bucketName(), objectKey);
 }
 
 export async function objectStorageHealth() {

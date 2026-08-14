@@ -139,14 +139,17 @@ function memoryStorage({ responseLossAt = -1 } = {}) {
       const buffer = objects.get(key);
       return { etag: etags.get(key), size: buffer.length, metaData: { ...metadata.get(key) } };
     },
-    async removeObject(key) {
+    async removeObject(key, options = {}) {
       calls.removes.push(key);
+      if (options.expectedEtag && etags.get(key) !== options.expectedEtag) {
+        throw Object.assign(new Error("etag changed"), { code: "PreconditionFailed", statusCode: 412 });
+      }
       if (!objects.delete(key)) throw Object.assign(new Error("missing"), { code: "NoSuchKey" });
       metadata.delete(key);
       etags.delete(key);
     },
   };
-  return { objects, calls, raw, api: createExpectedHashObjectStorage(raw) };
+  return { objects, metadata, calls, raw, api: createExpectedHashObjectStorage(raw) };
 }
 
 function sourceReferences(pathname = "/normal.jpg", count = 7) {
@@ -202,7 +205,7 @@ test("stores only MAIN0 plus DETAIL1..5 as exact frozen Task3 evidence and dedup
     assert.equal(evidence.height, 1536);
     assert.equal(evidence.capturedAt, CAPTURED_AT);
     for (const key of [evidence.analysisObjectKey, evidence.thumbnailObjectKey]) {
-      assert.match(key, new RegExp(`^category-strategy/account-a/draft-a/set-a/sample-a/[a-f0-9]{64}/${evidence.sourceContentHash}/`));
+      assert.match(key, new RegExp(`^category-strategy/account-a/draft-a/set-a/sample-a/[a-f0-9]{64}/[a-f0-9-]{36}/${evidence.sourceContentHash}/`));
       assert.doesNotMatch(key, /signature|credential|must-not-persist|https?:/u);
     }
     const analysis = await sharp(storage.objects.get(evidence.analysisObjectKey)).metadata();
@@ -237,6 +240,22 @@ test("maps SSRF, non-image, oversized, redirect, timeout, and decode failures to
     await assert.rejects(service(storage.api).persistSampleImages(input), (error) => error?.code === code);
     assert.equal(storage.objects.size, 0, code);
   }
+});
+
+test("the service timer aborts a never-settling fetch and returns the fixed timeout code", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const storage = memoryStorage();
+  let observedSignal;
+  const pending = service(storage.api, ({ signal }) => {
+    observedSignal = signal;
+    return new Promise(() => {});
+  }).persistSampleImages(request({ sourceReferences: sourceReferences("/slow", 1) }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(observedSignal?.aborted, false);
+  t.mock.timers.tick(10_000);
+  await assert.rejects(pending, { code: "AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_TIMEOUT", retryable: true });
+  assert.equal(observedSignal.aborted, true);
+  assert.equal(storage.objects.size, 0);
 });
 
 test("closed descriptor-safe input rejects accessors and credentials before download or storage", async () => {
@@ -293,8 +312,11 @@ test("a later failure cleans a response-loss-owned object and manifest without p
   await assert.rejects(service(failingStorage).persistSampleImages(request({ sourceReferences: sourceReferences("/normal.jpg", 2) })), {
     code: "AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_STORAGE_FAILED",
   });
-  assert.equal(storage.objects.size, 0);
-  assert.equal(storage.calls.removes.length, 2);
+  assert.equal(storage.objects.size, 1);
+  assert.equal(storage.calls.removes.length, 1);
+  const [tombstoneKey] = storage.objects.keys();
+  assert.match(tombstoneKey, /\/manifests\/[a-f0-9]{64}\.json$/u);
+  assert.equal(storage.metadata.get(tombstoneKey)["category-state"], "ABORTED");
 });
 
 test("two independent factories expose only IN_PROGRESS or exact DONE replay for one concurrent sample scope", async () => {
