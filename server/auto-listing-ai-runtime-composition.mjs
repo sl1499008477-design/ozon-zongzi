@@ -10,6 +10,7 @@ import {
 } from "./auto-listing-ai-queue.mjs";
 import { orchestrateAutoListingAiPhase } from "./auto-listing-ai-orchestrator.mjs";
 import { createPostgresContentPlanRepository } from "./auto-listing-content-plan-repository.mjs";
+import { createPostgresContentPlanEvidenceRepository } from "./auto-listing-content-plan-evidence-postgres.mjs";
 import { createContentPlan } from "./auto-listing-content-planner.mjs";
 import { createPostgresGenerationAttemptRepository } from "./auto-listing-generation-attempt-postgres.mjs";
 import { generateImageSlot } from "./auto-listing-image-generator.mjs";
@@ -34,6 +35,7 @@ const RELAY_PORT_KEYS = new Set([
 ]);
 const PORT_KEYS = new Set([
   "createBoss", "createGateway", "createWorkflow", "createContentPlanRepository",
+  "createContentPlanEvidenceRepository",
   "createSourceMaterializationRepository", "createGenerationRepository",
   "createRichContentRepository", "createDownloader", "createStorage",
   "createSourceAssetLoader", "createContextLoader", "orchestratePhase", "phaseServices",
@@ -225,6 +227,7 @@ const DEFAULT_PORTS = Object.freeze({
     return createPostgresAutoListingAiWorkflow({ pool });
   },
   createContentPlanRepository: ({ pool }) => createPostgresContentPlanRepository({ pool }),
+  createContentPlanEvidenceRepository: ({ pool }) => createPostgresContentPlanEvidenceRepository({ pool }),
   createSourceMaterializationRepository: ({ pool }) => createPostgresSourceMaterializationRepository({ pool }),
   createGenerationRepository: ({ pool }) => createPostgresGenerationAttemptRepository({ pool }),
   createRichContentRepository: ({ pool }) => createPostgresRichContentRepository({ pool }),
@@ -306,6 +309,10 @@ export async function createAutoListingAiProductionDependencies(input = {}) {
       "putObjectFromBuffer", "getObjectBuffer", "removeObject",
     ]);
     const contentPlanRepository = ports.createContentPlanRepository({ pool });
+    const contentPlanEvidenceRepository = assertPortShape(
+      ports.createContentPlanEvidenceRepository({ pool }),
+      ["recordResponse", "recordValidation", "loadOutcome"],
+    );
     const sourceMaterializationRepository = ports.createSourceMaterializationRepository({ pool });
     const generationRepository = ports.createGenerationRepository({ pool });
     const richContentRepository = ports.createRichContentRepository({ pool });
@@ -313,7 +320,7 @@ export async function createAutoListingAiProductionDependencies(input = {}) {
     const sourceAssetLoader = assertPortShape(ports.createSourceAssetLoader({
       pool, repository: sourceMaterializationRepository, storage,
     }), ["loadSourceAsset"]);
-    for (const repository of [contentPlanRepository, sourceMaterializationRepository,
+    for (const repository of [contentPlanRepository, contentPlanEvidenceRepository, sourceMaterializationRepository,
       generationRepository, richContentRepository]) {
       if (!repository || typeof repository !== "object") {
         throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
@@ -323,6 +330,7 @@ export async function createAutoListingAiProductionDependencies(input = {}) {
       pool,
       gateway,
       contentPlanRepository,
+      contentPlanEvidenceRepository,
       sourceMaterializationRepository,
       generationRepository,
       richContentRepository,

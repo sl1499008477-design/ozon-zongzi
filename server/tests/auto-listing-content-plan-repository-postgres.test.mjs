@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createPostgresContentPlanRepository } from "../auto-listing-content-plan-repository.mjs";
+import { createPostgresContentPlanEvidenceRepository } from "../auto-listing-content-plan-evidence-postgres.mjs";
 
 const dedicatedDatabaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(dedicatedDatabaseUrl);
@@ -79,6 +80,7 @@ if (!enabled) {
 
       const repository = createPostgresContentPlanRepository({
         pool: scopedPool,
+        leaseMs: 50,
         token: (() => { let next = 0; return () => `lease-${++next}-${suffix}`; })(),
         id: (() => { let next = 0; return () => `attempt-${++next}-${suffix}`; })(),
         planId: () => `plan-parent-${suffix}`,
@@ -92,7 +94,7 @@ if (!enabled) {
       };
       const claimed = await Promise.all([repository.reserveContentPlan(request), repository.reserveContentPlan(request)]);
       assert.deepEqual(claimed.map((entry) => entry.status).sort(), ["IN_PROGRESS", "RESERVED"]);
-      const owner = claimed.find((entry) => entry.status === "RESERVED");
+      let owner = claimed.find((entry) => entry.status === "RESERVED");
       const plan = { version: 1, language: "ru", slots: [] };
       const facts = [{ factId: "fact-a", kind: "IDENTITY_NAME", value: "Товар", sourcePath: "identity.name", visualGroupKeys: [] }];
       const visualGroups = {
@@ -107,6 +109,41 @@ if (!enabled) {
         }],
         reasonCodes: [], visualGroupsHash: "4".repeat(64),
       };
+      const evidenceRepository = createPostgresContentPlanEvidenceRepository({
+        pool: scopedPool,
+        responseId: () => `response-${suffix}`,
+        validationId: () => `validation-${suffix}`,
+      });
+      const recordedResponse = await evidenceRepository.recordResponse({
+        accountId: ids.account, jobId: ids.job, itemId: ids.item, sourceSnapshotId: ids.snapshot,
+        owner: { kind: "ATTEMPT", id: owner.attemptId }, planningContract: "LEGACY_FULL_PLAN_V3",
+        inputHash: request.inputHash, skeletonHash: null, profileId: ids.profile, profileVersion: 3,
+        modelName: "planner-model", promptTemplateVersion: "planner-v1",
+        gatewayRequestId: "gateway-request-a", response: plan,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      const resumed = await repository.reserveContentPlan(request);
+      assert.equal(resumed.status, "RESERVED");
+      assert.equal(resumed.attemptId, owner.attemptId);
+      assert.equal(resumed.plannerStage, "FILLING_COPY");
+      owner = resumed;
+      await repository.advanceContentPlanStage({
+        accountId: ids.account, jobId: ids.job, itemId: ids.item, sourceSnapshotId: ids.snapshot,
+        attemptId: owner.attemptId, inputHash: request.inputHash, expectedStatusVersion: 7,
+        reservationToken: owner.reservationToken, planningContract: "LEGACY_FULL_PLAN_V3",
+        skeletonHash: null, fromStage: "FILLING_COPY", toStage: "VALIDATING_COPY",
+      });
+      await evidenceRepository.recordValidation({
+        accountId: ids.account, responseId: recordedResponse.id, status: "ACCEPTED",
+        validatorVersion: "AUTO_LISTING_CONTENT_PLAN_VALIDATOR_V1", issues: [],
+      });
+      const recordedOutcome = await evidenceRepository.loadOutcome({
+        accountId: ids.account, jobId: ids.job, itemId: ids.item, sourceSnapshotId: ids.snapshot,
+        owner: { kind: "ATTEMPT", id: owner.attemptId }, planningContract: "LEGACY_FULL_PLAN_V3",
+        inputHash: request.inputHash, skeletonHash: null, profileId: ids.profile, profileVersion: 3,
+      });
+      assert.equal(recordedOutcome.response.id, recordedResponse.id);
+      assert.equal(recordedOutcome.validation.status, "ACCEPTED");
       const stored = await repository.saveContentPlan({
         ...request,
         reservationToken: owner.reservationToken,
@@ -135,6 +172,10 @@ if (!enabled) {
       assert.deepEqual(frozenContract.rows, [{
         planning_contract: "LEGACY_FULL_PLAN_V3", planner_stage: "COMPLETED", skeleton_hash: null,
       }]);
+      await assert.rejects(admin.query(
+        "UPDATE auto_listing_content_plan_responses SET gateway_request_id='forged' WHERE account_id=$1 AND id=$2",
+        [ids.account, recordedResponse.id],
+      ), (error) => error?.code === "23514");
       await assert.rejects(admin.query(
         `INSERT INTO auto_listing_content_plan_attempts (
            id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,input_hash,

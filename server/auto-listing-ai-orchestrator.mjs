@@ -12,7 +12,7 @@ const SERVICE_KEYS = Object.freeze([
 ]);
 const PHASE_INPUT_KEYS = Object.freeze({
   PLAN_CONTENT: Object.freeze([
-    "sourceSnapshotId", "gatewayProfile", "gateway", "repository", "sourceCapture", "strategyCapture",
+    "sourceSnapshotId", "gatewayProfile", "gateway", "repository", "evidenceRepository", "sourceCapture", "strategyCapture",
     "configCapture", "visualGroupsCapture", "promptTemplateVersion", "prohibitedClaims", "regeneration",
     "planningContract",
   ]),

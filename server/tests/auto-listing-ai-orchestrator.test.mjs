@@ -78,7 +78,7 @@ function phaseInput(phase) {
   const plan = derivedPlan();
   const inert = Object.freeze({});
   if (phase === "PLAN_CONTENT") return {
-    sourceSnapshotId: "snapshot-a", gatewayProfile: inert, gateway: inert, repository: inert,
+    sourceSnapshotId: "snapshot-a", gatewayProfile: inert, gateway: inert, repository: inert, evidenceRepository: inert,
     sourceCapture: inert, strategyCapture: inert, configCapture: inert, visualGroupsCapture: inert,
     promptTemplateVersion: "planner-v1", prohibitedClaims: [], regeneration: null,
     planningContract: "LEGACY_FULL_PLAN_V3",

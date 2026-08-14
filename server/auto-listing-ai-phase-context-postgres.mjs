@@ -20,7 +20,7 @@ const REQUIRED_PROHIBITED_CLAIMS = Object.freeze([
   "CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY",
 ]);
 const FACTORY_KEYS = new Set([
-  "pool", "gateway", "contentPlanRepository", "sourceMaterializationRepository",
+  "pool", "gateway", "contentPlanRepository", "contentPlanEvidenceRepository", "sourceMaterializationRepository",
   "generationRepository", "richContentRepository", "downloader", "storage",
   "sourceAssetLoader", "logger", "planPromptTemplateVersion", "prohibitedClaims",
   "maxAttempts", "richContentLeaseOwner",
@@ -338,7 +338,7 @@ function validateOptions(options) {
     || REQUIRED_PROHIBITED_CLAIMS.some((claim) => !options.prohibitedClaims.includes(claim))
     || !validVersion(options.maxAttempts) || options.maxAttempts > 3
     || !isSafeAutoListingAiIdentifier(options.richContentLeaseOwner)) throw invalid();
-  for (const key of ["gateway", "contentPlanRepository", "sourceMaterializationRepository",
+  for (const key of ["gateway", "contentPlanRepository", "contentPlanEvidenceRepository", "sourceMaterializationRepository",
     "generationRepository", "richContentRepository", "downloader", "storage", "sourceAssetLoader"]) {
     if (!options[key] || typeof options[key] !== "object") throw invalid();
   }
@@ -411,6 +411,7 @@ async function loadPlanInput(options, message, boundary) {
     gatewayProfile: gatewayProfile(bundle),
     gateway: options.gateway,
     repository: options.contentPlanRepository,
+    evidenceRepository: options.contentPlanEvidenceRepository,
     sourceCapture: capture,
     strategyCapture: strategyCapture(bundle, rulesResult.rows, capture),
     configCapture: configCapture(bundle),

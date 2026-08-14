@@ -80,10 +80,21 @@ function strategyCapture(style = "BALANCED_DEFAULT") {
 }
 
 const profileRef = { id: "profile-1", configVersion: 7, textModel: "planner-model" };
+const passthroughEvidenceRepository = Object.freeze({
+  async loadOutcome() { return null; },
+  async recordResponse(input) {
+    return Object.freeze({
+      id: "response-test", response: structuredClone(input.response),
+      gatewayRequestId: input.gatewayRequestId,
+    });
+  },
+  async recordValidation(input) { return Object.freeze({ id: "validation-test", ...input }); },
+});
 const runtimeScope = {
   sourceSnapshotId: "snapshot-db-1",
   expectedStatusVersion: 7,
   planningContract: "LEGACY_FULL_PLAN_V3",
+  evidenceRepository: passthroughEvidenceRepository,
 };
 const prohibitedClaims = ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"];
 
@@ -112,6 +123,29 @@ function plannerArgs(overrides = {}) {
   };
 }
 const planner = (overrides = {}) => buildPlannerInput(plannerArgs(overrides));
+
+function reserved(input, overrides = {}) {
+  return {
+    status: "RESERVED",
+    attemptId: "attempt-test",
+    attemptNo: 1,
+    reservationToken: "lease-1",
+    inputHash: input.inputHash,
+    planningContract: input.planningContract,
+    skeletonHash: null,
+    plannerStage: "FILLING_COPY",
+    ...overrides,
+  };
+}
+
+async function advanceStage(input) {
+  return {
+    attemptId: input.attemptId,
+    planningContract: input.planningContract,
+    skeletonHash: input.skeletonHash,
+    plannerStage: input.toStage,
+  };
+}
 
 function validPlan(built) {
   const slots = [];
@@ -253,7 +287,8 @@ test("createContentPlan reserves before one gateway call, persists canonical evi
   let gatewayCalls = 0;
   let record = null;
   const repository = {
-    async reserveContentPlan() { return record ? { status: "EXISTING", record } : { status: "RESERVED", reservationToken: "lease-1" }; },
+    async reserveContentPlan(input) { return record ? { status: "EXISTING", record } : reserved(input); },
+    advanceContentPlanStage: advanceStage,
     async saveContentPlan(input) { record = { id: "plan-1", ...input }; return record; },
     async releaseContentPlanReservation() { throw new Error("not expected"); },
   };
@@ -279,6 +314,134 @@ test("createContentPlan reserves before one gateway call, persists canonical evi
   assert.equal(first.inputHash, built.inputHash);
   assert.equal(first.planHash, hash(output));
   assert.equal(first.gatewayRequestId, "gateway-request-1");
+});
+
+test("planner records the raw response before detailed validation and saves only accepted evidence", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  const events = [];
+  const repository = {
+    async reserveContentPlan() {
+      return {
+        status: "RESERVED", attemptId: "attempt-a", attemptNo: 1,
+        reservationToken: "lease-a", inputHash: built.inputHash,
+        planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null, plannerStage: "FILLING_COPY",
+      };
+    },
+    async advanceContentPlanStage(input) {
+      events.push(`stage:${input.fromStage}->${input.toStage}`);
+      return { attemptId: input.attemptId, planningContract: input.planningContract, skeletonHash: null, plannerStage: input.toStage };
+    },
+    async saveContentPlan(input) {
+      events.push("save");
+      return { id: "plan-a", ...input };
+    },
+    async releaseContentPlanReservation() {},
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) {
+      events.push("response");
+      assert.deepEqual(input.response, output);
+      return Object.freeze({ id: "response-a", response: structuredClone(output) });
+    },
+    async recordValidation(input) {
+      events.push(`validation:${input.status}`);
+      assert.deepEqual(input.issues, []);
+      return Object.freeze({ id: "validation-a", ...input });
+    },
+  };
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() {
+      events.push("gateway");
+      return { value: output, requestId: "gateway-a" };
+    } },
+    repository,
+  });
+  assert.equal(result.id, "plan-a");
+  assert.deepEqual(events, [
+    "gateway", "response", "stage:FILLING_COPY->VALIDATING_COPY", "validation:ACCEPTED", "save",
+  ]);
+});
+
+test("invalid business output keeps rejected evidence and never saves a content plan", async () => {
+  const built = planner();
+  const invalidOutput = validPlan(built);
+  invalidOutput.slots.pop();
+  const events = [];
+  let saves = 0;
+  const repository = {
+    async reserveContentPlan() {
+      return {
+        status: "RESERVED", attemptId: "attempt-a", attemptNo: 1,
+        reservationToken: "lease-a", inputHash: built.inputHash,
+        planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null, plannerStage: "FILLING_COPY",
+      };
+    },
+    async advanceContentPlanStage() { events.push("stage"); },
+    async saveContentPlan() { saves += 1; },
+    async releaseContentPlanReservation() { events.push("release"); },
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) {
+      events.push("response");
+      return { id: "response-a", response: structuredClone(input.response) };
+    },
+    async recordValidation(input) {
+      events.push(`validation:${input.status}`);
+      assert.ok(input.issues.some((issue) => issue.code === "SLOT_COUNT_MISMATCH"));
+      return { id: "validation-a", ...input };
+    },
+  };
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { events.push("gateway"); return { value: invalidOutput, requestId: "gateway-a" }; } },
+    repository,
+  }), { code: "AUTO_LISTING_CONTENT_PLAN_INVALID" });
+  assert.deepEqual(events, ["gateway", "response", "stage", "validation:REJECTED", "release"]);
+  assert.equal(saves, 0);
+});
+
+test("response-loss replay resumes exact recorded evidence without a second gateway request", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  let gatewayCalls = 0;
+  let stageCalls = 0;
+  let saved = 0;
+  const repository = {
+    async reserveContentPlan(input) { return reserved(input, { plannerStage: "VALIDATING_COPY" }); },
+    async advanceContentPlanStage() { stageCalls += 1; throw new Error("already validating"); },
+    async saveContentPlan(input) { saved += 1; return { id: "plan-replayed", ...input }; },
+    async releaseContentPlanReservation() {},
+  };
+  const evidenceRepository = {
+    async loadOutcome() {
+      return {
+        response: { id: "response-a", response: structuredClone(output), gatewayRequestId: "gateway-original" },
+        validation: null,
+      };
+    },
+    async recordResponse() { throw new Error("must not record twice"); },
+    async recordValidation(input) { return { id: "validation-a", ...input }; },
+  };
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { gatewayCalls += 1; throw new Error("must not call"); } },
+    repository,
+  });
+  assert.equal(result.id, "plan-replayed");
+  assert.equal(result.gatewayRequestId, "gateway-original");
+  assert.equal(gatewayCalls, 0);
+  assert.equal(stageCalls, 0);
+  assert.equal(saved, 1);
 });
 
 test("reused corrupted or cross-scope rows fail closed, and gateway failures persist no half-plan", async () => {
@@ -311,7 +474,8 @@ test("reused corrupted or cross-scope rows fail closed, and gateway failures per
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse() { throw Object.assign(new Error("gateway"), { code: "RETRYABLE_GATEWAY" }); } },
     repository: {
-      async reserveContentPlan() { return { status: "RESERVED", reservationToken: "lease-1" }; },
+      async reserveContentPlan(input) { return reserved(input); },
+      advanceContentPlanStage: advanceStage,
       async saveContentPlan() { saves += 1; },
       async releaseContentPlanReservation() { releases += 1; },
     },
@@ -385,7 +549,8 @@ test("canonical URL media remains plannable and persistable only as hash evidenc
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model" },
     gateway: { async createTextResponse() { return { value: validPlan(built), requestId: "gateway-url-evidence" }; } },
     repository: {
-      async reserveContentPlan() { return { status: "RESERVED", reservationToken: "lease-url-evidence" }; },
+      async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease-url-evidence" }); },
+      advanceContentPlanStage: advanceStage,
       async saveContentPlan(input) { savedInput = structuredClone(input); return { id: "plan-url-evidence", ...input }; },
     },
   });
@@ -411,11 +576,12 @@ test("repository reservation serializes concurrent same-input planning so the ga
   let gatewayCalls = 0;
   const waiters = [];
   const repository = {
-    async reserveContentPlan() {
+    async reserveContentPlan(input) {
       if (record) return { status: "EXISTING", record };
-      if (!ownerIssued) { ownerIssued = true; return { status: "RESERVED", reservationToken: "lease-1" }; }
+      if (!ownerIssued) { ownerIssued = true; return reserved(input); }
       return new Promise((resolve) => waiters.push(resolve));
     },
+    advanceContentPlanStage: advanceStage,
     async saveContentPlan(input) {
       record = { id: "plan-concurrent", ...input };
       waiters.splice(0).forEach((resolve) => resolve({ status: "EXISTING", record }));
@@ -445,7 +611,11 @@ test("production repository port receives frozen snapshot, profile, request, and
   const repository = {
     async reserveContentPlan(input) {
       calls.push(["reserve", input]);
-      return { status: "RESERVED", reservationToken: "lease-1" };
+      return reserved(input);
+    },
+    async advanceContentPlanStage(input) {
+      calls.push(["stage", input]);
+      return advanceStage(input);
     },
     async saveContentPlan(input) {
       calls.push(["save", input]);
@@ -459,6 +629,7 @@ test("production repository port receives frozen snapshot, profile, request, and
     accountId: "account-a", jobId: "job-1", itemId: "item-1",
     sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
     planningContract: "LEGACY_FULL_PLAN_V3",
+    evidenceRepository: passthroughEvidenceRepository,
     ...planningArgs,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse() { return { value: validPlan(built), requestId: "gateway-one" }; } },
@@ -471,12 +642,17 @@ test("production repository port receives frozen snapshot, profile, request, and
   assert.equal(calls[0][1].sourceSnapshotId, "snapshot-db-1");
   assert.equal(calls[0][1].expectedStatusVersion, 7);
   assert.equal(calls[0][1].profileId, "profile-1");
-  assert.equal(calls[1][1].sourceSnapshotId, "snapshot-db-1");
-  assert.equal(calls[1][1].expectedStatusVersion, 7);
-  assert.equal(calls[1][1].requestKey, calls[0][1].requestKey);
-  assert.equal(calls[1][1].strategyVersionId, "strategy-v1");
-  assert.deepEqual(calls[1][1].factRegistry, built.plannerInput.factRegistry);
-  assert.equal(calls[1][1].factRegistryHash, hash(built.plannerInput.factRegistry));
+  const stage = calls.find(([name]) => name === "stage")[1];
+  const save = calls.find(([name]) => name === "save")[1];
+  assert.equal(stage.attemptId, "attempt-test");
+  assert.equal(stage.fromStage, "FILLING_COPY");
+  assert.equal(stage.toStage, "VALIDATING_COPY");
+  assert.equal(save.sourceSnapshotId, "snapshot-db-1");
+  assert.equal(save.expectedStatusVersion, 7);
+  assert.equal(save.requestKey, calls[0][1].requestKey);
+  assert.equal(save.strategyVersionId, "strategy-v1");
+  assert.deepEqual(save.factRegistry, built.plannerInput.factRegistry);
+  assert.equal(save.factRegistryHash, hash(built.plannerInput.factRegistry));
 });
 
 test("source text that resembles a prompt remains delimited as untrusted data and cannot add writable planner fields", async () => {
@@ -490,7 +666,8 @@ test("source text that resembles a prompt remains delimited as untrusted data an
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse(input) { capturedPrompt = input.prompt; throw Object.assign(new Error("stop"), { code: "RETRYABLE_GATEWAY" }); } },
     repository: {
-      async reserveContentPlan() { return { status: "RESERVED", reservationToken: "lease" }; },
+      async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease" }); },
+      advanceContentPlanStage: advanceStage,
       async releaseContentPlanReservation() {},
     },
   }), (error) => error?.code === "RETRYABLE_GATEWAY");
@@ -711,7 +888,8 @@ test("claims are field-bound and stored plans retain visual evidence plus a safe
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model" },
     gateway: { async createTextResponse() { return { value: output, requestId: "gateway-1" }; } },
     repository: {
-      async reserveContentPlan() { return { status: "RESERVED", reservationToken: "lease" }; },
+      async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease" }); },
+      advanceContentPlanStage: advanceStage,
       async saveContentPlan(row) { stored = { id: "plan", ...row }; return stored; },
       async releaseContentPlanReservation() {},
     },

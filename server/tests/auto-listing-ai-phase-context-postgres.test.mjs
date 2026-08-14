@@ -190,6 +190,7 @@ function dependencies(pool, overrides = {}) {
     pool,
     gateway: { name: "gateway" },
     contentPlanRepository: { name: "plan-repository" },
+    contentPlanEvidenceRepository: { name: "plan-evidence-repository" },
     sourceMaterializationRepository: { name: "materialization-repository" },
     generationRepository: { name: "generation-repository" },
     richContentRepository: { name: "rich-repository" },
@@ -251,12 +252,13 @@ test("PLAN_CONTENT loads the exact snapshot, frozen config/strategy and configur
   assert.deepEqual(Object.keys(context.phaseInput).sort(), [
     "sourceSnapshotId", "gatewayProfile", "gateway", "repository", "sourceCapture", "strategyCapture",
     "configCapture", "visualGroupsCapture", "promptTemplateVersion", "prohibitedClaims", "regeneration",
-    "planningContract",
+    "planningContract", "evidenceRepository",
   ].sort());
   assert.equal(context.phaseInput.sourceSnapshotId, "snapshot-a");
   assert.equal(context.phaseInput.planningContract, "LEGACY_FULL_PLAN_V3");
   assert.equal(context.phaseInput.gateway, options.gateway);
   assert.equal(context.phaseInput.repository, options.contentPlanRepository);
+  assert.equal(context.phaseInput.evidenceRepository, options.contentPlanEvidenceRepository);
   assert.equal(context.phaseInput.gatewayProfile.apiKeyEnvName, "SUB2API_ENCRYPTED_KEY");
   assert.equal(context.phaseInput.gatewayProfile.apiKey, undefined);
   assert.equal(context.phaseInput.gatewayProfile.enabled, true);

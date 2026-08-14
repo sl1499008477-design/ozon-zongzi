@@ -92,6 +92,14 @@ function testPorts(events) {
       });
     },
     createContentPlanRepository({ pool }) { events.push(["content", pool]); return repository("content"); },
+    createContentPlanEvidenceRepository({ pool }) {
+      events.push(["content-evidence", pool]);
+      return Object.freeze({
+        async recordResponse() {},
+        async recordValidation() {},
+        async loadOutcome() {},
+      });
+    },
     createSourceMaterializationRepository({ pool }) { events.push(["source", pool]); return repository("source"); },
     createGenerationRepository({ pool }) { events.push(["generation", pool]); return repository("generation"); },
     createRichContentRepository({ pool }) { events.push(["rich", pool]); return repository("rich"); },
@@ -150,7 +158,7 @@ test("production composition keeps account/job-frozen profiles per message and h
   assert.equal(events.filter(([name]) => name === "boss").length, 0);
   const options = events.find(([name]) => name === "context-loader")[1];
   assert.deepEqual(Object.keys(options).sort(), [
-    "contentPlanRepository", "downloader", "gateway", "generationRepository", "logger", "maxAttempts",
+    "contentPlanEvidenceRepository", "contentPlanRepository", "downloader", "gateway", "generationRepository", "logger", "maxAttempts",
     "planPromptTemplateVersion", "pool", "prohibitedClaims", "richContentLeaseOwner",
     "richContentRepository", "sourceAssetLoader", "sourceMaterializationRepository", "storage",
   ]);
@@ -271,6 +279,25 @@ test("production composition input and ports are closed before database or exter
     }),
     (error) => error?.code === "AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID",
   );
+});
+
+test("production composition rejects an incomplete content-plan evidence repository before loading context", async () => {
+  const events = [];
+  const ports = testPorts(events);
+  await assert.rejects(
+    createAutoListingAiProductionDependencies({
+      env: enabledEnv(),
+      resolvePool: async () => Object.freeze({ async query() {}, async connect() {} }),
+      ports: Object.freeze({
+        ...ports,
+        createContentPlanEvidenceRepository() {
+          return Object.freeze({ async recordResponse() {} });
+        },
+      }),
+    }),
+    (error) => error?.code === "AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED",
+  );
+  assert.equal(events.some(([name]) => name === "context-loader"), false);
 });
 
 test("production composition accepts the host process.env object shape while still projecting closed configuration", async () => {

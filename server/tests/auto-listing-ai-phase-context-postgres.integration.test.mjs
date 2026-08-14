@@ -86,6 +86,19 @@ if (!enabled) {
           images: [{ assetId: "source-a", contentHash: H("3") }],
           variants: [{ sku: "sku-a", offerId: "offer-a", name: "Товар A", images: [{ assetId: "source-a", contentHash: H("3") }] }],
         } },
+        categoryEvidence: {
+          id: `category-evidence-${suffix}`, accountId: ids.accountA,
+          sourceDescriptionCategoryId: 170, sourceTypeId: 99, taxonomyScope: "OZON:DEFAULT",
+        },
+        sharedCategory: {
+          id: `shared-category-${suffix}`, accountId: ids.accountA, version: 1,
+          evidenceId: `category-evidence-${suffix}`, status: "ACTIVE", source: "SOURCE_DIRECT",
+          sourceDescriptionCategoryId: 170, sourceTypeId: 99,
+          currentDescriptionCategoryId: 170, currentTypeId: 99,
+          taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null,
+        },
+        targetStoreId: ids.store,
+        targetStoreCurrency: "RUB",
         productDraft: { id: `draft-${suffix}`, version: 1 }, rawResponseRef: `raw-${suffix}`, rawResponseHash: H("9"),
       });
       const frozen = normalizeAndHashAutoListingConfig({
@@ -121,7 +134,7 @@ if (!enabled) {
       );
       const options = {
         pool: scopedPool,
-        gateway: inert(), contentPlanRepository: inert(), sourceMaterializationRepository: inert(),
+        gateway: inert(), contentPlanRepository: inert(), contentPlanEvidenceRepository: inert(), sourceMaterializationRepository: inert(),
         generationRepository: inert(), richContentRepository: inert(), downloader: inert(), storage: inert(),
         sourceAssetLoader: inert(), logger: null, planPromptTemplateVersion: "planner-v1",
         prohibitedClaims: ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"],
