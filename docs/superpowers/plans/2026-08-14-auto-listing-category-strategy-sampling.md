@@ -129,6 +129,7 @@ git commit -m "feat(auto-listing): define category strategy contracts"
 测试要求 075 创建以下账号隔离实体：
 
 - `auto_listing_category_strategy_drafts`
+- `auto_listing_category_strategy_account_settings`
 - `auto_listing_category_strategy_sampling_sessions`
 - `auto_listing_category_strategy_sample_sets`
 - `auto_listing_category_strategy_samples`
@@ -171,12 +172,13 @@ published_strategy_version_id text
 数据库必须约束：
 
 - 同账号同类目作用域最多一个未结束草稿；
+- 每个账号只有一条带版本号的策略门禁设置，默认 `LEGACY_FALLBACK`，只有显式切换到 `REQUIRE_EXACT_STRATEGY` 才阻止缺策略任务；设置变更记录操作者、相关 ID 和审计事件；
 - 会话只属于同账号、同草稿和同作用域，`expires_at` 使用数据库时间；
 - 样本 SKU 在同一 sample set 内唯一；图片 `(sample_id, role, ordinal)` 唯一；
 - 样本集、图片证据、AI 原始结果和已发布结果不可变；
 - parent-only cleanup 允许账号/草稿整体清理测试数据，禁止绕过 append-only 审计；
 - 每次分析 attempt 绑定 immutable sample set hash、模型配置快照、预计费用确认和 idempotency key；
-- 发布事件绑定现有账号级 `auto_listing_ai_strategy_versions`，不复制店铺 ID。
+- 发布事件绑定现有账号级 `ai_content_strategy_versions`，不复制店铺 ID。
 
 - [ ] **Step 4: 用临时 PostgreSQL 16 跑真实迁移攻击矩阵**
 
@@ -225,6 +227,10 @@ await repository.startSamplingSession({
 await repository.commitSampleSet({
   accountId, actorId, draftId, sessionId, expectedDraftVersion,
   samples, sampleSetHash, idempotencyKey, correlationId,
+});
+await repository.transitionAccountPolicy({
+  accountId, actorId, expectedVersion, mode: 'REQUIRE_EXACT_STRATEGY',
+  idempotencyKey, correlationId,
 });
 ```
 
@@ -275,6 +281,7 @@ const published = await publishCategoryStrategyDraft({
 - 同账号两店读取相同规则；不同账号看不到对方；
 - response loss 后按 idempotency exact replay；
 - wrong actor/account/scope/version 全部零写。
+- account policy 的版本冲突和 replay 受同一 closed tenant/idempotency 合同约束。
 
 - [ ] **Step 6: 运行 repository/admin 测试**
 
@@ -376,6 +383,8 @@ git commit -m "feat(auto-listing): store bounded strategy samples"
 
 ```text
 GET    /admin/auto-listing/category-strategies
+GET    /admin/auto-listing/category-strategies/settings
+PATCH  /admin/auto-listing/category-strategies/settings
 GET    /admin/auto-listing/category-strategies/:draftId
 POST   /admin/auto-listing/category-strategies/drafts
 POST   /admin/auto-listing/category-strategies/:draftId/sampling-sessions
@@ -397,7 +406,7 @@ Expected: FAIL，模块和 route handler 不存在。
 
 - [ ] **Step 3: 实现权限和 exact source category revalidation**
 
-所有写操作先在后端要求 `AI_CONTENT_MANAGE`，再读取当前账号共享类目证据并逐项比较 scope。创建会话返回：
+所有写操作先在后端要求 `AI_CONTENT_MANAGE`，再读取当前账号共享类目证据并逐项比较 scope。settings 写接口只接受 `expectedVersion/mode/idempotencyKey/correlationId`，用于账号级灰度且不接受店铺 ID。创建会话返回：
 
 ```js
 {
