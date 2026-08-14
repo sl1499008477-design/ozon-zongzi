@@ -34,7 +34,7 @@ async function expectCode(promise, code = "23514") {
 
 async function applyMigrations(client) {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
-  assert.equal(migrations.at(-1), "075_auto_listing_category_strategy_sampling.sql");
+  assert.equal(migrations.at(-1), "076_auto_listing_category_strategy_analysis_edits.sql");
   for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
 }
 
@@ -503,6 +503,77 @@ if (!postgresEnabled) {
            FROM auto_listing_category_strategy_analysis_attempts WHERE id=$7`,
         [result, H("b"), H("c"), `result-a-key-${suffix}`, `result-a-correlation-${suffix}`, H("d"), attempt],
       );
+      assert.deepEqual((await client.query(
+        "SELECT source_kind,edited_by,edited_at,base_analysis_attempt_id FROM auto_listing_category_strategy_analysis_results WHERE id=$1",
+        [result],
+      )).rows, [{ source_kind: "AI", edited_by: null, edited_at: null, base_analysis_attempt_id: null }]);
+      await expectCode(client.query(
+        `INSERT INTO auto_listing_category_strategy_analysis_results
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+            sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         SELECT $1,account_id,draft_id,taxonomy_scope,description_category_id,type_id,id,sample_set_id,
+           sample_set_hash,analysis_input_hash,'{"duplicate":"ai"}'::JSONB,$2,'{"overallStyle":"duplicate"}'::JSONB,$3,$4,$5,$6,account_id
+           FROM auto_listing_category_strategy_analysis_attempts WHERE id=$7`,
+        [`duplicate-ai-${suffix}`, H("1"), H("2"), `duplicate-ai-key-${suffix}`,
+          `duplicate-ai-correlation-${suffix}`, H("3"), attempt],
+      ), "23505");
+      await expectCode(client.query(
+        `INSERT INTO auto_listing_category_strategy_analysis_results
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+            sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+            source_kind,idempotency_key,correlation_id,request_hash,actor_account_id)
+         SELECT $1,account_id,draft_id,taxonomy_scope,description_category_id,type_id,id,sample_set_id,
+           sample_set_hash,analysis_input_hash,'{"sourceKind":"MANUAL","baseAnalysisAttemptId":"missing"}'::JSONB,
+           $2,'{"overallStyle":"edit"}'::JSONB,$3,'MANUAL',$4,$5,$6,account_id
+           FROM auto_listing_category_strategy_analysis_attempts WHERE id=$7`,
+        [`manual-missing-${suffix}`, H("4"), H("5"), `manual-missing-key-${suffix}`,
+          `manual-missing-correlation-${suffix}`, H("6"), attempt],
+      ));
+      await expectCode(client.query(
+        `INSERT INTO auto_listing_category_strategy_analysis_results
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+            sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+            source_kind,edited_by,edited_at,base_analysis_attempt_id,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         SELECT $1,account_id,draft_id,taxonomy_scope,description_category_id,type_id,id,sample_set_id,
+           sample_set_hash,analysis_input_hash,jsonb_build_object('sourceKind','MANUAL','baseAnalysisAttemptId',id),
+           $2,'{"overallStyle":"cross-account"}'::JSONB,$3,'MANUAL',$4,STATEMENT_TIMESTAMP(),id,$5,$6,$7,$4
+           FROM auto_listing_category_strategy_analysis_attempts WHERE id=$8`,
+        [`manual-cross-account-${suffix}`, H("d"), H("e"), accountB,
+          `manual-cross-account-key-${suffix}`, `manual-cross-account-correlation-${suffix}`, H("f"), attempt],
+      ));
+      const manualResult = `manual-result-${suffix}`;
+      await client.query(
+        `INSERT INTO auto_listing_category_strategy_analysis_results
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+            sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+            source_kind,edited_by,edited_at,base_analysis_attempt_id,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         SELECT $1,account_id,draft_id,taxonomy_scope,description_category_id,type_id,id,sample_set_id,
+           sample_set_hash,analysis_input_hash,jsonb_build_object('sourceKind','MANUAL','baseAnalysisAttemptId',id),
+           $2,'{"overallStyle":"edited"}'::JSONB,$3,'MANUAL',account_id,STATEMENT_TIMESTAMP(),id,$4,$5,$6,account_id
+           FROM auto_listing_category_strategy_analysis_attempts WHERE id=$7`,
+        [manualResult, H("7"), H("8"), `manual-result-key-${suffix}`,
+          `manual-result-correlation-${suffix}`, H("9"), attempt],
+      );
+      await expectCode(client.query(
+        "UPDATE auto_listing_category_strategy_analysis_results SET edited_by=$2 WHERE id=$1",
+        [manualResult, accountB],
+      ));
+      await expectCode(client.query(
+        `INSERT INTO auto_listing_category_strategy_analysis_results
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+            sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+            source_kind,edited_by,edited_at,base_analysis_attempt_id,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         SELECT $1,account_id,draft_id,taxonomy_scope,description_category_id,type_id,id,sample_set_id,
+           sample_set_hash,analysis_input_hash,jsonb_build_object('sourceKind','MANUAL','baseAnalysisAttemptId',id,'vendorRaw','forbidden'),
+           $2,'{"overallStyle":"edited"}'::JSONB,$3,'MANUAL',account_id,STATEMENT_TIMESTAMP(),id,$4,$5,$6,account_id
+           FROM auto_listing_category_strategy_analysis_attempts WHERE id=$7`,
+        [`manual-vendor-${suffix}`, H("a"), H("b"), `manual-vendor-key-${suffix}`,
+          `manual-vendor-correlation-${suffix}`, H("c"), attempt],
+      ));
       const strategy = `strategy-${suffix}`;
       await client.query(
         "INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash) VALUES ($1,$2,'category-strategy',1,'DRAFT','{}'::JSONB,$3)",
@@ -553,6 +624,7 @@ if (!postgresEnabled) {
       for (const [table, id] of [
         ["auto_listing_category_strategy_sample_sets", sampleSetA],
         ["auto_listing_category_strategy_analysis_results", result],
+        ["auto_listing_category_strategy_analysis_results", manualResult],
         ["auto_listing_category_strategy_events", publishedEvent],
       ]) {
         await expectCode(client.query(`UPDATE ${table} SET correlation_id='mutated' WHERE id=$1`, [id]));

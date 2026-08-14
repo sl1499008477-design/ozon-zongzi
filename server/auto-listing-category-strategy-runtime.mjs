@@ -3,6 +3,7 @@ import { types } from "node:util";
 
 import { createAutoListingAiAdminPostgres } from "./auto-listing-ai-admin-postgres.mjs";
 import { createAutoListingAiAdminService } from "./auto-listing-ai-admin-service.mjs";
+import { createCategoryStrategyAnalyzer } from "./auto-listing-category-strategy-analyzer.mjs";
 import { createAutoListingCategoryStrategyPostgres } from "./auto-listing-category-strategy-postgres.mjs";
 import { createCategoryStrategySampleStore } from "./auto-listing-category-strategy-sample-store.mjs";
 import { createAutoListingCategoryStrategyService } from "./auto-listing-category-strategy-service.mjs";
@@ -431,6 +432,47 @@ function createPublicationService({ pool, createRepository, createService }) {
   });
 }
 
+export function createCategoryStrategyAnalysisConfigurationResolver({ pool } = {}) {
+  if (!pool || typeof pool.query !== "function") {
+    throw new TypeError("Category strategy analysis configuration resolver requires PostgreSQL");
+  }
+  return Object.freeze({
+    async resolve({ accountId } = {}) {
+      if (typeof accountId !== "string" || !SAFE_ID.test(accountId) || accountId !== accountId.trim()) {
+        throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_CONFIGURATION_INVALID", 400, false);
+      }
+      const result = await pool.query(
+        `SELECT id,config_version,text_model
+           FROM ai_gateway_profiles
+          WHERE account_id=$1 AND enabled IS TRUE
+          ORDER BY id,config_version
+          LIMIT 2`,
+        [accountId],
+      );
+      if (result.rows.length !== 1) {
+        throw runtimeError(result.rows.length === 0
+          ? "AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_PROFILE_NOT_CONFIGURED"
+          : "AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_PROFILE_AMBIGUOUS", 409, false);
+      }
+      const row = result.rows[0];
+      return Object.freeze({
+        analyzerVersion: "category-strategy-v1",
+        promptVersion: "category-strategy-prompt-v1",
+        profileId: row.id,
+        profileVersion: Number(row.config_version),
+        model: row.text_model,
+      });
+    },
+  });
+}
+
+function absentAnalysisAiAdapter() {
+  const notReady = async () => {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_NOT_READY", 409, false);
+  };
+  return Object.freeze({ assertReady: notReady, analyze: notReady, recover: notReady });
+}
+
 export function createAutoListingCategoryStrategyRuntime({
   env = process.env,
   getPostgresPool: resolvePool = getPostgresPool,
@@ -438,6 +480,8 @@ export function createAutoListingCategoryStrategyRuntime({
   createStrategyReadModel = createReadModel,
   createSampleStore = createCategoryStrategySampleStore,
   createObjectStorage = createExpectedHashObjectStorage,
+  createAnalyzer = createCategoryStrategyAnalyzer,
+  analysisAiAdapter = null,
   createService = createAutoListingCategoryStrategyService,
   createPublicationRepository = createAutoListingAiAdminPostgres,
   createAdminService = createAutoListingAiAdminService,
@@ -451,6 +495,9 @@ export function createAutoListingCategoryStrategyRuntime({
   if (!env || typeof env !== "object" || Array.isArray(env) || typeof resolvePool !== "function"
     || typeof createRepository !== "function" || typeof createStrategyReadModel !== "function"
     || typeof createSampleStore !== "function" || typeof createObjectStorage !== "function"
+    || typeof createAnalyzer !== "function"
+    || !(analysisAiAdapter === null || (typeof analysisAiAdapter?.analyze === "function"
+      && typeof analysisAiAdapter?.recover === "function"))
     || typeof createService !== "function" || typeof createPublicationRepository !== "function"
     || typeof createAdminService !== "function"
     || !(exactProductFacts === null || typeof exactProductFacts?.verify === "function")
@@ -490,9 +537,12 @@ export function createAutoListingCategoryStrategyRuntime({
           const sampleStore = createSampleStore({
             fetchImage: sampleImageFetcher(downloadImage), objectStorage, now, maxDownloadBytes,
           });
+          const analyzer = createAnalyzer({ repository, objectStorage,
+            aiAdapter: analysisAiAdapter ?? absentAnalysisAiAdapter(),
+            configurationResolver: createCategoryStrategyAnalysisConfigurationResolver({ pool }) });
           const publicationService = createPublicationService({ pool,
             createRepository: createPublicationRepository, createService: createAdminService });
-          return createService({ repository, readModel, sampleStore,
+          return createService({ repository, readModel, sampleStore, analyzer,
             exactProductFacts: factsPort,
             extensionSessionChannel: sessionChannel, publicationService, now,
             deriveSessionIdentity: deriveSessionIdentity ?? createSessionIdentityDeriver(env) });

@@ -2138,13 +2138,21 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
                ON sample_set.account_id=result.account_id AND sample_set.id=result.sample_set_id
               AND sample_set.draft_id=result.draft_id AND sample_set.status='SEALED'
               AND sample_set.sample_set_hash=result.sample_set_hash
+             JOIN auto_listing_category_strategy_events final_event
+               ON final_event.account_id=result.account_id AND final_event.draft_id=result.draft_id
+              AND final_event.taxonomy_scope=result.taxonomy_scope
+              AND final_event.description_category_id=result.description_category_id
+              AND final_event.type_id=result.type_id AND final_event.event_type='DRAFT_EVENT'
+              AND final_event.event_payload->>'resultId'=result.id
+              AND final_event.event_payload->>'draftVersion'=$6::TEXT
+              AND final_event.event_payload->>'status'='DRAFT_READY'
+              AND final_event.event_payload->>'event' IN ('ANALYSIS_RESULT_RECORDED','ANALYSIS_MANUAL_EDITED')
             WHERE result.account_id=$1 AND result.draft_id=$2
               AND result.taxonomy_scope=$3 AND result.description_category_id=$4 AND result.type_id=$5
-            ORDER BY result.created_at DESC,result.id DESC LIMIT 1
-            FOR UPDATE OF result,attempt,sample_set`,
+            FOR UPDATE OF result,attempt,sample_set,final_event`,
           [input.accountId, input.draftId, draft.taxonomy_scope,
-            draft.description_category_id, draft.type_id]);
-        if (!analysis.rows[0]) throw repositoryError("AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", 409);
+            draft.description_category_id, draft.type_id, input.expectedDraftVersion]);
+        if (analysis.rows.length !== 1) throw repositoryError("AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", 409);
         let guidance;
         try {
           guidance = projectCategoryStrategyGuidanceV2(analysis.rows[0].guidance);

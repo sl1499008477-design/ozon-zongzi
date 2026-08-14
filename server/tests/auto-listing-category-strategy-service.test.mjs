@@ -58,6 +58,16 @@ function imageEvidence(reference, sampleId, sampleSetId) {
   };
 }
 
+function guidance(label = "clean") {
+  return {
+    overallStyle: `${label} catalogue`, prohibitedPatterns: ["avoid copying brand marks"],
+    roles: Object.fromEntries([
+      "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+    ].map((role) => [role, { composition: `${label} composition`, background: `${label} background`,
+      textDensity: role === "MAIN" ? "NONE" : "LIGHT", layout: `${label} layout` }])),
+  };
+}
+
 function harness({ currentDraft = draft(), verify = factFor, persistFailure = null,
   commitFailure = null, publicationExtra = false, repositoryTransform = (_method, value) => value,
   handoffFailure = null, handoffWait = null, handoffReadyFailure = null, sessionValidationFailure = null,
@@ -69,6 +79,8 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   const calls = { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
     handoff: 0, publish: 0, rollback: 0 };
   const records = { session: [], handoff: [], persist: [], commit: [], identity: [] };
+  records.analysis = [];
+  records.edit = [];
   let currentPolicyMode = policyMode;
   let storedSession = sessionReplay;
   const repository = {
@@ -169,9 +181,26 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
       ...(publicationExtra ? { vendorSecret: "must-not-leak" } : {}),
     }; },
   };
+  const analyzer = {
+    async analyze(input) {
+      records.analysis.push(input);
+      return { attemptId: "attempt-a", resultId: "result-a", status: "DRAFT_READY", draftVersion: 4,
+        duplicate: false, safeCode: null, guidance: guidance(),
+        evidenceSummary: { commonPatterns: [], differences: [], cautions: [] },
+        editedBy: null, editedAt: null, baseAnalysisAttemptId: null };
+    },
+    async editGuidance(input) {
+      records.edit.push(input);
+      return { attemptId: input.baseAnalysisAttemptId, resultId: "manual-result-a", status: "DRAFT_READY",
+        draftVersion: input.expectedDraftVersion + 1, duplicate: false, safeCode: null,
+        guidance: input.guidance, evidenceSummary: null,
+        editedBy: input.actorId, editedAt: "2026-08-15T01:00:00.000Z",
+        baseAnalysisAttemptId: input.baseAnalysisAttemptId };
+    },
+  };
   const service = createAutoListingCategoryStrategyService({
     repository, readModel, sampleStore, exactProductFacts, extensionSessionChannel,
-    publicationService,
+    publicationService, analyzer,
     now: () => new Date(now),
     async deriveSessionIdentity(input) {
       records.identity.push(input);
@@ -568,22 +597,40 @@ test("repository result DTOs are exact descriptor-safe server boundaries", async
   assert.equal(accessor.calls.handoff, 0);
 });
 
-test("analysis, edit, and sample removal are closed zero-side-effect boundaries before their repositories exist", async () => {
+test("analysis and manual edit use the analyzer while sample removal remains fail-closed", async () => {
   const h = harness();
-  await assert.rejects(h.service.createAnalysisAttempt({
+  assert.equal((await h.service.createAnalysisAttempt({
     actor: ACTOR, draftId: "draft-a", costConfirmed: true,
     idempotencyKey: "analysis-a", correlationId: "correlation-a",
-  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_NOT_READY", status: 409 });
-  await assert.rejects(h.service.updateDraft({
-    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1, patch: {},
+  })).resultId, "result-a");
+  assert.equal((await h.service.updateDraft({
+    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 4,
+    patch: { guidance: guidance("edited"), baseAnalysisAttemptId: "attempt-a" },
     idempotencyKey: "edit-a", correlationId: "correlation-a",
-  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_EDIT_NOT_READY", status: 409 });
+  })).resultId, "manual-result-a");
+  assert.equal(h.records.analysis.length, 1);
+  assert.equal(h.records.edit.length, 1);
+  assert.deepEqual(h.records.analysis[0], { accountId: "account-a", actorId: "account-a", draftId: "draft-a",
+    costConfirmed: true, idempotencyKey: "analysis-a", correlationId: "correlation-a" });
+  assert.equal(h.records.edit[0].baseAnalysisAttemptId, "attempt-a");
   await assert.rejects(h.service.removeSample({
     actor: ACTOR, draftId: "draft-a", sampleId: "sample-a",
     expectedDraftVersion: 1, idempotencyKey: "remove-a", correlationId: "correlation-a",
   }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_CHANGE_NOT_READY", status: 409 });
   assert.deepEqual(h.calls, { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
     handoff: 0, publish: 0, rollback: 0 });
+});
+
+test("analysis requires exact true before policy or analyzer calls", async () => {
+  const h = harness();
+  for (const costConfirmed of [false, null, 1, "true"]) {
+    await assert.rejects(h.service.createAnalysisAttempt({ actor: ACTOR, draftId: "draft-a",
+      costConfirmed, idempotencyKey: "analysis-a", correlationId: "correlation-a" }), {
+      code: "AUTO_LISTING_CATEGORY_STRATEGY_COST_CONFIRMATION_REQUIRED", status: 409,
+    });
+  }
+  assert.equal(h.records.analysis.length, 0);
+  assert.equal(h.calls.policy, 0);
 });
 
 test("every service write rejects an ordinary user before repository, storage, verification, or publication", async () => {

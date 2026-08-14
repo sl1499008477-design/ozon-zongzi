@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import { types } from "node:util";
 
 import { assertPermission, PERMISSIONS } from "./permissions.mjs";
-import { projectCategoryStrategyScope } from "./auto-listing-category-strategy-contract.mjs";
+import {
+  projectCategoryStrategyGuidanceV2,
+  projectCategoryStrategyScope,
+} from "./auto-listing-category-strategy-contract.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
@@ -11,8 +14,9 @@ const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const REPLAY_CACHE_TTL_MS = 30 * 60 * 1000;
 const FACTORY_KEYS = new Set([
   "repository", "readModel", "sampleStore", "exactProductFacts", "extensionSessionChannel",
-  "publicationService", "now", "deriveSessionIdentity",
+  "publicationService", "analyzer", "now", "deriveSessionIdentity",
 ]);
+const FACTORY_KEYS_WITHOUT_ANALYZER = new Set([...FACTORY_KEYS].filter((key) => key !== "analyzer"));
 
 function failure(code, status = 422, retryable = false) {
   return Object.assign(new Error(code), { code, status, retryable });
@@ -400,10 +404,49 @@ function publicationDto(raw) {
   }
 }
 
+function analysisDto(raw) {
+  return dependencyDto(() => {
+    const value = closed(raw, new Set([
+      "attemptId", "resultId", "status", "draftVersion", "duplicate", "safeCode", "guidance",
+      "evidenceSummary", "editedBy", "editedAt", "baseAnalysisAttemptId",
+    ]));
+    if (!["DRAFT_READY", "NEEDS_REVIEW"].includes(value.status)
+      || typeof value.duplicate !== "boolean"
+      || !(value.safeCode === null || (typeof value.safeCode === "string"
+        && /^AUTO_LISTING_CATEGORY_STRATEGY_[A-Z0-9_:-]+$/u.test(value.safeCode)))) throw invalid();
+    let guidance;
+    try { guidance = projectCategoryStrategyGuidanceV2(value.guidance); } catch { throw invalid(); }
+    let evidenceSummary = null;
+    if (value.evidenceSummary !== null) {
+      discardClosedJson(value.evidenceSummary);
+      evidenceSummary = JSON.parse(JSON.stringify(value.evidenceSummary));
+    }
+    const editedBy = value.editedBy === null ? null : identifier(value.editedBy);
+    const editedAt = value.editedAt === null ? null : exactIsoDate(value.editedAt);
+    const baseAnalysisAttemptId = value.baseAnalysisAttemptId === null
+      ? null : identifier(value.baseAnalysisAttemptId);
+    if ((editedBy === null) !== (editedAt === null) || (editedBy === null) !== (baseAnalysisAttemptId === null)) {
+      throw invalid();
+    }
+    return freeze({ attemptId: identifier(value.attemptId), resultId: identifier(value.resultId),
+      status: value.status, draftVersion: positive(value.draftVersion), duplicate: value.duplicate,
+      safeCode: value.safeCode, guidance, evidenceSummary,
+      editedBy, editedAt, baseAnalysisAttemptId });
+  });
+}
+
+function absentAnalyzer() {
+  const notReady = () => { throw failure("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_NOT_READY", 409); };
+  return Object.freeze({ analyze: notReady, editGuidance: notReady });
+}
+
 export function createAutoListingCategoryStrategyService(rawOptions = {}) {
-  const options = closed(rawOptions, FACTORY_KEYS);
+  const analyzerDescriptor = !types.isProxy(rawOptions)
+    ? Object.getOwnPropertyDescriptor(rawOptions, "analyzer") : null;
+  const options = closed(rawOptions, analyzerDescriptor ? FACTORY_KEYS : FACTORY_KEYS_WITHOUT_ANALYZER);
   const { repository, readModel, sampleStore, exactProductFacts, extensionSessionChannel,
-    publicationService, now, deriveSessionIdentity } = options;
+    publicationService, analyzer, now, deriveSessionIdentity } = options;
+  const analysisPort = analyzer ?? absentAnalyzer();
   if (!["getDraftReplay", "createDraft", "startSamplingSession", "getSamplingSessionReplay", "validateSamplingSession",
     "getCommittedSampleSetReplay", "commitSampleSetCanonical", "transitionAccountPolicy",
     "getAccountPolicy"].every((method) => typeof repository?.[method] === "function")
@@ -413,6 +456,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
     || typeof extensionSessionChannel?.putSession !== "function"
     || typeof publicationService?.publishCategoryStrategyDraft !== "function"
     || typeof publicationService?.rollbackCategoryStrategyVersion !== "function"
+    || typeof analysisPort?.analyze !== "function" || typeof analysisPort?.editGuidance !== "function"
     || typeof now !== "function" || typeof deriveSessionIdentity !== "function") {
     throw new TypeError("Auto-listing category strategy service dependencies are required");
   }
@@ -722,14 +766,29 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
 
     async createAnalysisAttempt(raw = {}) {
       const input = closed(raw, new Set(["actor", "draftId", "costConfirmed", "idempotencyKey", "correlationId"]));
-      await requireEnabled(actorAccount(input.actor));
-      throw failure("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_NOT_READY", 409);
+      const accountId = actorAccount(input.actor);
+      if (input.costConfirmed !== true) {
+        throw failure("AUTO_LISTING_CATEGORY_STRATEGY_COST_CONFIRMATION_REQUIRED", 409);
+      }
+      await requireEnabled(accountId);
+      try {
+        return analysisDto(await analysisPort.analyze({ accountId, actorId: accountId,
+          draftId: identifier(input.draftId), costConfirmed: true,
+          idempotencyKey: identifier(input.idempotencyKey), correlationId: identifier(input.correlationId) }));
+      } catch (error) { dependencyError(error); }
     },
 
     async updateDraft(raw = {}) {
       const input = closed(raw, new Set(["actor", "draftId", "expectedDraftVersion", "patch", "idempotencyKey", "correlationId"]));
-      await requireEnabled(actorAccount(input.actor));
-      throw failure("AUTO_LISTING_CATEGORY_STRATEGY_EDIT_NOT_READY", 409);
+      const accountId = actorAccount(input.actor);
+      const patch = closed(input.patch, new Set(["guidance", "baseAnalysisAttemptId"]));
+      await requireEnabled(accountId);
+      try {
+        return analysisDto(await analysisPort.editGuidance({ accountId, actorId: accountId,
+          draftId: identifier(input.draftId), expectedDraftVersion: positive(input.expectedDraftVersion),
+          baseAnalysisAttemptId: identifier(patch.baseAnalysisAttemptId), guidance: patch.guidance,
+          idempotencyKey: identifier(input.idempotencyKey), correlationId: identifier(input.correlationId) }));
+      } catch (error) { dependencyError(error); }
     },
 
     async publishDraft(raw = {}) {

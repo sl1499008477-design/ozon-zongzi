@@ -159,6 +159,16 @@ async function seedPublishableCategoryDraft(client, { accountId, suffix, descrip
       h(`analysis-input-${suffix}`), h(`raw-${suffix}`), JSON.stringify(guidance), h(JSON.stringify(guidance)),
       `seed-result-${suffix}`, `seed-result-corr-${suffix}`, h(`seed-result-${suffix}`)],
   );
+  await client.query(
+    `INSERT INTO auto_listing_category_strategy_events
+       (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,event_payload,
+        idempotency_key,correlation_id,request_hash,actor_account_id)
+     VALUES ($1,$2,$3,'OZON:DEFAULT',$4,$5,'DRAFT_EVENT',$6::JSONB,$7,$8,$9,$2)`,
+    [`seed-result-event-${suffix}`, accountId, draftId, descriptionCategoryId, typeId,
+      JSON.stringify({ event: "ANALYSIS_RESULT_RECORDED", draftVersion: 4, status: "DRAFT_READY",
+        attemptId, resultId }), `seed-result-event-key-${suffix}`, `seed-result-event-corr-${suffix}`,
+      h(`seed-result-event-${suffix}`)],
+  );
   return { draftId, sampleSetHash, attemptId, resultId, guidance };
 }
 
@@ -1991,6 +2001,59 @@ if (!enabled) {
       const draft = await seedPublishableCategoryDraft(admin, {
         accountId: accountA, suffix, descriptionCategoryId: 170, typeId: 99,
       });
+      const manualResultId = `zz-manual-result-${suffix}`;
+      const manualGuidance = { ...draft.guidance, overallStyle: "manually reviewed category style" };
+      await admin.query(
+        `INSERT INTO auto_listing_category_strategy_analysis_results
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+            sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+            source_kind,edited_by,edited_at,base_analysis_attempt_id,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         SELECT $1,account_id,draft_id,taxonomy_scope,description_category_id,type_id,id,sample_set_id,
+           sample_set_hash,analysis_input_hash,jsonb_build_object('sourceKind','MANUAL','baseAnalysisAttemptId',id),
+           $2,$3::JSONB,$4,'MANUAL',account_id,NOW(),id,$5,$6,$7,account_id
+           FROM auto_listing_category_strategy_analysis_attempts WHERE account_id=$8 AND id=$9`,
+        [manualResultId, crypto.createHash("sha256").update(`manual-raw-${suffix}`).digest("hex"),
+          JSON.stringify(manualGuidance), crypto.createHash("sha256")
+            .update(JSON.stringify(manualGuidance)).digest("hex"), `manual-result-key-${suffix}`,
+          `manual-result-correlation-${suffix}`, crypto.createHash("sha256")
+            .update(`manual-result-request-${suffix}`).digest("hex"),
+          accountA, draft.attemptId],
+      );
+      await admin.query(
+        `UPDATE auto_listing_category_strategy_drafts
+            SET draft_version=5,status='DRAFT_READY',updated_at=NOW()
+          WHERE account_id=$1 AND id=$2 AND draft_version=4`,
+        [accountA, draft.draftId],
+      );
+      await admin.query(
+        `INSERT INTO auto_listing_category_strategy_events
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,event_payload,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         VALUES ($1,$2,$3,'OZON:DEFAULT',170,99,'DRAFT_EVENT',$4::JSONB,$5,$6,$7,$2)`,
+        [`manual-result-event-${suffix}`, accountA, draft.draftId,
+          JSON.stringify({ event: "ANALYSIS_MANUAL_EDITED", draftVersion: 5, status: "DRAFT_READY",
+            attemptId: draft.attemptId, resultId: manualResultId }), `manual-result-event-key-${suffix}`,
+          `manual-result-event-correlation-${suffix}`, crypto.createHash("sha256")
+            .update(`manual-result-event-${suffix}`).digest("hex")],
+      );
+      const unselectedGuidance = { ...manualGuidance, overallStyle: "unselected later row" };
+      await admin.query(
+        `INSERT INTO auto_listing_category_strategy_analysis_results
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+            sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+            source_kind,edited_by,edited_at,base_analysis_attempt_id,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         SELECT $1,account_id,draft_id,taxonomy_scope,description_category_id,type_id,id,sample_set_id,
+           sample_set_hash,analysis_input_hash,jsonb_build_object('sourceKind','MANUAL','baseAnalysisAttemptId',id),
+           $2,$3::JSONB,$4,'MANUAL',account_id,NOW()+INTERVAL '1 second',id,$5,$6,$7,account_id
+           FROM auto_listing_category_strategy_analysis_attempts WHERE account_id=$8 AND id=$9`,
+        [`zzz-unselected-result-${suffix}`, crypto.createHash("sha256").update(`unselected-raw-${suffix}`).digest("hex"),
+          JSON.stringify(unselectedGuidance), crypto.createHash("sha256")
+            .update(JSON.stringify(unselectedGuidance)).digest("hex"), `unselected-result-key-${suffix}`,
+          `unselected-result-correlation-${suffix}`, crypto.createHash("sha256")
+            .update(`unselected-result-request-${suffix}`).digest("hex"), accountA, draft.attemptId],
+      );
       const reverseDraft = await seedPublishableCategoryDraft(admin, {
         accountId: accountA, suffix: `reverse-${suffix}`, descriptionCategoryId: 172, typeId: 101,
       });
@@ -2048,7 +2111,7 @@ if (!enabled) {
       pool = new Pool({ connectionString, max: 8, options: `-c search_path=${schema},public` });
       const repository = createAutoListingAiAdminPostgres({ pool });
       const base = {
-        accountId: accountA, actorId: accountA, draftId: draft.draftId, expectedDraftVersion: 4,
+        accountId: accountA, actorId: accountA, draftId: draft.draftId, expectedDraftVersion: 5,
         expectedPublishedStrategyVersionId: currentId,
       };
       const categoryLedgerKeys = [
@@ -2178,6 +2241,10 @@ if (!enabled) {
       assert.equal(published.status, "PUBLISHED");
       assert.equal(published.rules.length, 3);
       assert.equal(published.rules.filter((rule) => rule.scope?.descriptionCategoryId === 170).length, 1);
+      assert.equal(published.rules.find((rule) => rule.scope?.descriptionCategoryId === 170).analysisResultId,
+        manualResultId);
+      assert.equal(published.rules.find((rule) => rule.scope?.descriptionCategoryId === 170).overallStyle,
+        manualGuidance.overallStyle);
       assert.equal(published.rules.find((rule) => rule.scope?.descriptionCategoryId === 170).sampleSetHash,
         draft.sampleSetHash);
       assert.equal(published.rules.find((rule) => rule.scope?.descriptionCategoryId === 171).ruleId, bRule.ruleId);

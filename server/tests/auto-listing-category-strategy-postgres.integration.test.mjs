@@ -12,13 +12,17 @@ const enabled = process.env.AUTO_LISTING_CATEGORY_STRATEGY_POSTGRES_TESTS === "1
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
 const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const sha = (value) => crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
+const canonical = (value) => Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+const jsonHash = (value) => sha(JSON.stringify(canonical(value)));
 const adminAuditId = (action, accountId, idempotencyKey) => `audit_ai_admin_${sha(
   [action, accountId, idempotencyKey].join("\0"),
 ).slice(0, 40)}`;
 
 async function applyMigrations(client) {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
-  assert.equal(migrations.at(-1), "075_auto_listing_category_strategy_sampling.sql");
+  assert.equal(migrations.at(-1), "076_auto_listing_category_strategy_analysis_edits.sql");
   for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
 }
 
@@ -102,6 +106,29 @@ function sample({ suffix, ordinal, scope, accountId, draftId, sampleSetId }) {
     }],
   };
 }
+
+function guidance(label = "clean") {
+  return {
+    overallStyle: `${label} commercial catalogue`,
+    prohibitedPatterns: ["avoid copying brand marks"],
+    roles: Object.fromEntries([
+      "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+    ].map((role) => [role, {
+      composition: `${label} ${role} composition`, background: `${label} neutral background`,
+      textDensity: role === "MAIN" ? "NONE" : "LIGHT", layout: `${label} clear hierarchy`,
+    }])),
+  };
+}
+
+test("repository exposes the durable analysis and manual-edit ports", () => {
+  const repository = createAutoListingCategoryStrategyPostgres({
+    pool: { async query() {}, async connect() {} },
+  });
+  for (const method of [
+    "getAnalysisReplay", "loadAnalysisEvidence", "reserveAnalysisAttempt", "completeAnalysisAttempt",
+    "appendManualAnalysisResult",
+  ]) assert.equal(typeof repository[method], "function", method);
+});
 
 async function expectedSampleSetHash(pool, { accountId, draftId, sessionId, scope, samples }) {
   const client = await pool.connect();
@@ -384,6 +411,111 @@ if (!enabled) {
       });
       assert.deepEqual({ hash: durableCanonicalReplay.sampleSetHash,
         duplicate: durableCanonicalReplay.duplicate }, { hash: canonicalExpectedHash, duplicate: true });
+
+      const analysisEvidence = await repository.loadAnalysisEvidence({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+      });
+      assert.deepEqual({ status: analysisEvidence.status, sampleSetHash: analysisEvidence.sampleSetHash,
+        sampleCount: analysisEvidence.samples.length }, {
+        status: "SAMPLES_READY", sampleSetHash: canonicalExpectedHash, sampleCount: 5,
+      });
+      assert.equal(analysisEvidence.samples.every((entry) => entry.images.every((image) => image.state === "READY")), true);
+
+      const analysisInputHash = sha(`analysis-input-${suffix}`);
+      const modelConfigSnapshot = {
+        analyzerVersion: "category-strategy-v1", promptVersion: "prompt-v1", profileId: "profile-a",
+        profileVersion: 7, model: "vision-model-a",
+      };
+      const reserveInput = {
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        expectedDraftVersion: 2, sampleSetId: canonicalSampleSetId,
+        sampleSetHash: canonicalExpectedHash, analysisInputHash,
+        modelConfigSnapshot, modelConfigHash: jsonHash(modelConfigSnapshot), costConfirmed: true,
+        idempotencyKey: `analysis-${suffix}`, correlationId: `analysis-correlation-${suffix}`,
+      };
+      const reserved = await repository.reserveAnalysisAttempt(reserveInput);
+      assert.deepEqual({ duplicate: reserved.duplicate, result: reserved.result }, { duplicate: false, result: null });
+      const reservedReplay = await repository.reserveAnalysisAttempt(reserveInput);
+      assert.deepEqual({ attemptId: reservedReplay.attemptId, duplicate: reservedReplay.duplicate,
+        result: reservedReplay.result }, { attemptId: reserved.attemptId, duplicate: true, result: null });
+      await assert.rejects(repository.reserveAnalysisAttempt({
+        ...reserveInput, analysisInputHash: sha("different-analysis-input"),
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
+
+      const acceptedGuidance = guidance("accepted");
+      const completeInput = {
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        attemptId: reserved.attemptId, expectedDraftVersion: 3, analysisInputHash,
+        outcome: "ACCEPTED", safeCode: null,
+        rawResponse: { validationStatus: "ACCEPTED", safeCode: null, response: { schemaVersion: 2 } },
+        rawResponseHash: jsonHash({ validationStatus: "ACCEPTED", safeCode: null,
+          response: { schemaVersion: 2 }, evidenceSummary: { commonPatterns: [], differences: [], cautions: [] } }),
+        guidance: acceptedGuidance,
+        guidanceHash: jsonHash(acceptedGuidance),
+        evidenceSummary: { commonPatterns: [], differences: [], cautions: [] },
+        idempotencyKey: reserveInput.idempotencyKey, correlationId: reserveInput.correlationId,
+      };
+      const completed = await repository.completeAnalysisAttempt(completeInput);
+      assert.deepEqual({ status: completed.status, duplicate: completed.duplicate,
+        attemptId: completed.attemptId }, { status: "DRAFT_READY", duplicate: false, attemptId: reserved.attemptId });
+      assert.equal((await repository.completeAnalysisAttempt(completeInput)).duplicate, true);
+      assert.equal((await repository.getAnalysisReplay({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        idempotencyKey: reserveInput.idempotencyKey, correlationId: reserveInput.correlationId,
+      })).result.resultId, completed.resultId);
+      await assert.rejects(repository.getAnalysisReplay({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        idempotencyKey: reserveInput.idempotencyKey, correlationId: "wrong-correlation",
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
+      const resultReplay = await repository.reserveAnalysisAttempt(reserveInput);
+      assert.deepEqual({ duplicate: resultReplay.duplicate, resultId: resultReplay.result.resultId },
+        { duplicate: true, resultId: completed.resultId });
+
+      const editedGuidance = guidance("edited");
+      const edited = await repository.appendManualAnalysisResult({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        expectedDraftVersion: 4, baseAnalysisAttemptId: reserved.attemptId,
+        guidance: editedGuidance, guidanceHash: jsonHash(editedGuidance),
+        idempotencyKey: `edit-${suffix}`, correlationId: `edit-correlation-${suffix}`,
+      });
+      assert.deepEqual({ status: edited.status, editedBy: edited.editedBy,
+        baseAnalysisAttemptId: edited.baseAnalysisAttemptId, duplicate: edited.duplicate }, {
+        status: "DRAFT_READY", editedBy: accountB,
+        baseAnalysisAttemptId: reserved.attemptId, duplicate: false,
+      });
+      assert.equal((await repository.appendManualAnalysisResult({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        expectedDraftVersion: 4, baseAnalysisAttemptId: reserved.attemptId,
+        guidance: editedGuidance, guidanceHash: jsonHash(editedGuidance),
+        idempotencyKey: `edit-${suffix}`, correlationId: `edit-correlation-${suffix}`,
+      })).duplicate, true);
+      const secondEditedGuidance = guidance("edited-again");
+      const secondEdited = await repository.appendManualAnalysisResult({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        expectedDraftVersion: 5, baseAnalysisAttemptId: reserved.attemptId,
+        guidance: secondEditedGuidance, guidanceHash: jsonHash(secondEditedGuidance),
+        idempotencyKey: `edit-again-${suffix}`, correlationId: `edit-again-correlation-${suffix}`,
+      });
+      assert.equal(secondEdited.draftVersion, 6);
+      assert.equal((await repository.completeAnalysisAttempt(completeInput)).draftVersion, 4);
+      assert.equal((await repository.reserveAnalysisAttempt(reserveInput)).result.draftVersion, 4);
+      assert.equal((await repository.reserveAnalysisAttempt({
+        ...reserveInput, expectedDraftVersion: 6,
+      })).result.resultId, completed.resultId);
+      assert.equal((await repository.appendManualAnalysisResult({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        expectedDraftVersion: 4, baseAnalysisAttemptId: reserved.attemptId,
+        guidance: editedGuidance, guidanceHash: jsonHash(editedGuidance),
+        idempotencyKey: `edit-${suffix}`, correlationId: `edit-correlation-${suffix}`,
+      })).draftVersion, 5);
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_analysis_results WHERE account_id=$1 AND attempt_id=$2 AND source_kind='AI'",
+        [accountB, reserved.attemptId],
+      )).rows[0].count), 1);
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_analysis_results WHERE account_id=$1 AND attempt_id=$2 AND source_kind='MANUAL'",
+        [accountB, reserved.attemptId],
+      )).rows[0].count), 2);
       await assert.rejects(repository.getCommittedSampleSetReplay({
         accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
         sessionId: canonicalSession.sessionId, sessionSecretHash: canonicalSessionInput.sessionSecretHash,

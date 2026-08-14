@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 import { types } from "node:util";
 
-import { projectCategoryStrategyScope } from "./auto-listing-category-strategy-contract.mjs";
+import {
+  projectCategoryStrategyGuidanceV2,
+  projectCategoryStrategyScope,
+} from "./auto-listing-category-strategy-contract.mjs";
 
 const FACTORY_KEYS = new Set(["pool"]);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
@@ -106,6 +109,47 @@ function canonical(value) {
   }));
 }
 
+function boundedCanonical(value, maximumBytes, state = { nodes: 0, active: new WeakSet() }, depth = 0) {
+  if (depth > 32 || state.nodes++ > 20_000) throw invalid();
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw invalid();
+    return value;
+  }
+  if (!value || typeof value !== "object" || types.isProxy(value) || state.active.has(value)) throw invalid();
+  state.active.add(value);
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (Array.isArray(value)) {
+      const length = descriptors.length?.value;
+      if (Object.getPrototypeOf(value) !== Array.prototype || !Number.isSafeInteger(length)
+        || length < 0 || length > 10_000 || keys.length !== length + 1) throw invalid();
+      return Array.from({ length }, (_, index) => {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, "value")) throw invalid();
+        return boundedCanonical(descriptor.value, maximumBytes, state, depth + 1);
+      });
+    }
+    if (![Object.prototype, null].includes(Object.getPrototypeOf(value)) || keys.length > 10_000) throw invalid();
+    const projected = {};
+    for (const key of keys.sort()) {
+      const descriptor = descriptors[key];
+      if (typeof key !== "string" || key.length > 1_024
+        || ["__proto__", "constructor", "prototype"].includes(key)
+        || descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) throw invalid();
+      projected[key] = boundedCanonical(descriptor.value, maximumBytes, state, depth + 1);
+    }
+    if (depth === 0 && Buffer.byteLength(JSON.stringify(projected), "utf8") > maximumBytes) throw invalid();
+    return projected;
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REPOSITORY_INVALID") throw error;
+    throw invalid();
+  } finally {
+    state.active.delete(value);
+  }
+}
+
 function requestHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
 }
@@ -183,6 +227,29 @@ function sampleSetRow(row, duplicate = false) {
   };
 }
 
+function analysisResultRow(row, duplicate = false, draftVersion = null, draftStatus = null) {
+  if (!row) return null;
+  let guidance;
+  try { guidance = projectCategoryStrategyGuidanceV2(row.guidance); } catch { throw databaseFailed(); }
+  const raw = row.raw_response;
+  const original = row.result_event_payload;
+  const status = draftStatus ?? original?.status
+    ?? (raw?.validationStatus === "ACCEPTED" ? "DRAFT_READY" : "NEEDS_REVIEW");
+  return {
+    attemptId: row.attempt_id,
+    resultId: row.id,
+    status,
+    draftVersion: Number(draftVersion ?? original?.draftVersion ?? row.draft_version),
+    duplicate,
+    safeCode: raw?.safeCode ?? null,
+    guidance,
+    evidenceSummary: raw?.evidenceSummary ?? null,
+    editedBy: row.edited_by ?? null,
+    editedAt: row.edited_at instanceof Date ? row.edited_at.toISOString() : (row.edited_at ?? null),
+    baseAnalysisAttemptId: row.base_analysis_attempt_id ?? null,
+  };
+}
+
 function policyRow(row, duplicate = false) {
   if (!row) return null;
   return {
@@ -247,6 +314,9 @@ async function requireCompatibleEventIdempotency(client, { accountId, idempotenc
        WHEN event_payload->>'event'='DRAFT_CREATED' THEN 'CREATE_DRAFT'
        WHEN event_payload->>'event'='SAMPLING_SESSION_STARTED' THEN 'START_SAMPLING_SESSION'
        WHEN event_payload->>'event'='SAMPLE_SET_COMMITTED' THEN 'COMMIT_SAMPLE_SET'
+       WHEN event_payload->>'event'='ANALYSIS_ATTEMPT_RESERVED' THEN 'RESERVE_ANALYSIS_ATTEMPT'
+       WHEN event_payload->>'event'='ANALYSIS_RESULT_RECORDED' THEN 'COMPLETE_ANALYSIS_ATTEMPT'
+       WHEN event_payload->>'event'='ANALYSIS_MANUAL_EDITED' THEN 'APPEND_MANUAL_ANALYSIS_RESULT'
        ELSE 'UNKNOWN'
      END AS action,request_hash
        FROM auto_listing_category_strategy_events
@@ -260,10 +330,104 @@ async function requireCompatibleEventIdempotency(client, { accountId, idempotenc
        FROM audit_events
       WHERE account_id=$1 AND event_id=ANY($2::TEXT[]) FOR UPDATE`,
     [accountId, auditIds]);
-  const entries = [...categoryEvents.rows, ...adminAudits.rows];
-  if (entries.some((entry) => entry.action !== action || entry.request_hash !== hash)) {
+  const attempts = await query(client,
+    `SELECT 'RESERVE_ANALYSIS_ATTEMPT' AS action,request_hash
+       FROM auto_listing_category_strategy_analysis_attempts
+      WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+    [accountId, idempotencyKey]);
+  const results = await query(client,
+    `SELECT CASE WHEN source_kind='MANUAL' THEN 'APPEND_MANUAL_ANALYSIS_RESULT'
+                 ELSE 'COMPLETE_ANALYSIS_ATTEMPT' END AS action,request_hash
+       FROM auto_listing_category_strategy_analysis_results
+      WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+    [accountId, idempotencyKey]);
+  const entries = [...categoryEvents.rows, ...adminAudits.rows, ...attempts.rows, ...results.rows];
+  if (entries.some((entry) => !(entry.action === action && entry.request_hash === hash)
+    && !(action === "RESERVE_ANALYSIS_ATTEMPT" && entry.action === "COMPLETE_ANALYSIS_ATTEMPT"))) {
     throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
   }
+}
+
+function analysisEvidenceRequest(raw) {
+  const value = closed(raw, new Set(["accountId", "actorId", "draftId"]));
+  const accountId = sameActor(value);
+  return { accountId, actorId: accountId, draftId: id(value.draftId) };
+}
+
+function analysisReplayRequest(raw) {
+  const value = closed(raw, new Set([
+    "accountId", "actorId", "draftId", "idempotencyKey", "correlationId",
+  ]));
+  const accountId = sameActor(value);
+  return { accountId, actorId: accountId, draftId: id(value.draftId),
+    idempotencyKey: id(value.idempotencyKey), correlationId: id(value.correlationId) };
+}
+
+function modelSnapshot(raw) {
+  const value = closed(raw, new Set([
+    "analyzerVersion", "promptVersion", "profileId", "profileVersion", "model",
+  ]));
+  return { analyzerVersion: id(value.analyzerVersion), promptVersion: id(value.promptVersion),
+    profileId: id(value.profileId), profileVersion: positiveInteger(value.profileVersion), model: id(value.model) };
+}
+
+function reserveAnalysisRequest(raw) {
+  const value = closed(raw, new Set([
+    "accountId", "actorId", "draftId", "expectedDraftVersion", "sampleSetId", "sampleSetHash",
+    "analysisInputHash", "modelConfigSnapshot", "modelConfigHash", "costConfirmed",
+    "idempotencyKey", "correlationId",
+  ]));
+  const accountId = sameActor(value);
+  if (value.costConfirmed !== true) throw invalid();
+  return { accountId, actorId: accountId, draftId: id(value.draftId),
+    expectedDraftVersion: positiveInteger(value.expectedDraftVersion), sampleSetId: id(value.sampleSetId),
+    sampleSetHash: sha256(value.sampleSetHash), analysisInputHash: sha256(value.analysisInputHash),
+    modelConfigSnapshot: modelSnapshot(value.modelConfigSnapshot), modelConfigHash: sha256(value.modelConfigHash),
+    costConfirmed: true, idempotencyKey: id(value.idempotencyKey), correlationId: id(value.correlationId) };
+}
+
+function completeAnalysisRequest(raw) {
+  const value = closed(raw, new Set([
+    "accountId", "actorId", "draftId", "attemptId", "expectedDraftVersion", "analysisInputHash",
+    "outcome", "safeCode", "rawResponse", "rawResponseHash", "guidance", "guidanceHash",
+    "evidenceSummary", "idempotencyKey", "correlationId",
+  ]));
+  const accountId = sameActor(value);
+  if (!['ACCEPTED', 'REJECTED'].includes(value.outcome)
+    || (value.outcome === 'ACCEPTED' ? value.safeCode !== null
+      : !(typeof value.safeCode === 'string' && /^AUTO_LISTING_CATEGORY_STRATEGY_AI_[A-Z0-9_:-]+$/u.test(value.safeCode)))) {
+    throw invalid();
+  }
+  let guidance;
+  try { guidance = projectCategoryStrategyGuidanceV2(value.guidance); } catch { throw invalid(); }
+  const rawResponse = boundedCanonical(value.rawResponse, 4 * 1024 * 1024);
+  const evidenceSummary = value.evidenceSummary === null ? null
+    : boundedCanonical(value.evidenceSummary, 256 * 1024);
+  const persistedRaw = { ...rawResponse, evidenceSummary };
+  if (requestHash(persistedRaw) !== value.rawResponseHash
+    || requestHash(guidance) !== value.guidanceHash) throw invalid();
+  return { accountId, actorId: accountId, draftId: id(value.draftId), attemptId: id(value.attemptId),
+    expectedDraftVersion: positiveInteger(value.expectedDraftVersion),
+    analysisInputHash: sha256(value.analysisInputHash), outcome: value.outcome, safeCode: value.safeCode,
+    rawResponse: persistedRaw, rawResponseHash: value.rawResponseHash, guidance,
+    guidanceHash: value.guidanceHash, idempotencyKey: id(value.idempotencyKey),
+    correlationId: id(value.correlationId) };
+}
+
+function manualAnalysisRequest(raw) {
+  const value = closed(raw, new Set([
+    "accountId", "actorId", "draftId", "expectedDraftVersion", "baseAnalysisAttemptId",
+    "guidance", "guidanceHash", "idempotencyKey", "correlationId",
+  ]));
+  const accountId = sameActor(value);
+  let guidance;
+  try { guidance = projectCategoryStrategyGuidanceV2(value.guidance); } catch { throw invalid(); }
+  if (requestHash(guidance) !== value.guidanceHash) throw invalid();
+  return { accountId, actorId: accountId, draftId: id(value.draftId),
+    expectedDraftVersion: positiveInteger(value.expectedDraftVersion),
+    baseAnalysisAttemptId: id(value.baseAnalysisAttemptId), guidance,
+    guidanceHash: sha256(value.guidanceHash), idempotencyKey: id(value.idempotencyKey),
+    correlationId: id(value.correlationId) };
 }
 
 async function requireCurrentSource(client, { accountId, sourceCollectItemId, expectedSourceVersion, scope }) {
@@ -498,6 +662,20 @@ async function insertDraftEvent(client, input, draft, eventName, hash) {
       input.idempotencyKey, input.correlationId, hash]);
 }
 
+async function insertAnalysisEvent(client, input, draft, eventName, hash, attemptId, resultId = null) {
+  const eventKey = deterministicId("category_analysis_event_key", input.accountId, eventName,
+    input.idempotencyKey, resultId ?? attemptId);
+  await query(client,
+    `INSERT INTO auto_listing_category_strategy_events
+       (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,event_payload,
+        idempotency_key,correlation_id,request_hash,actor_account_id)
+     VALUES ($1,$2,$3,$4,$5,$6,'DRAFT_EVENT',$7::JSONB,$8,$9,$10,$2)`,
+    [deterministicId("category_analysis_event", input.accountId, eventName, resultId ?? attemptId),
+      input.accountId, draft.id, draft.taxonomy_scope, draft.description_category_id, draft.type_id,
+      JSON.stringify({ event: eventName, draftVersion: Number(draft.draft_version), status: draft.status,
+        attemptId, ...(resultId ? { resultId } : {}) }), eventKey, input.correlationId, hash]);
+}
+
 export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
   const options = closed(rawOptions, FACTORY_KEYS);
   const { pool } = options;
@@ -626,6 +804,37 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
   }
 
   return Object.freeze({
+    async getAnalysisReplay(raw = {}) {
+      const input = analysisReplayRequest(raw);
+      const attemptResult = await query(pool,
+        `SELECT * FROM auto_listing_category_strategy_analysis_attempts
+          WHERE account_id=$1 AND draft_id=$2 AND idempotency_key=$3`,
+        [input.accountId, input.draftId, input.idempotencyKey]);
+      const attempt = attemptResult.rows[0];
+      if (!attempt) return null;
+      if (attempt.correlation_id !== input.correlationId) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
+      }
+      const result = await query(pool,
+        `SELECT result.*,draft.draft_version,draft.status AS draft_status,
+                history.event_payload AS result_event_payload
+           FROM auto_listing_category_strategy_analysis_results result
+           JOIN auto_listing_category_strategy_drafts draft
+             ON draft.account_id=result.account_id AND draft.id=result.draft_id
+           LEFT JOIN auto_listing_category_strategy_events history
+             ON history.account_id=result.account_id AND history.draft_id=result.draft_id
+            AND history.taxonomy_scope=result.taxonomy_scope
+            AND history.description_category_id=result.description_category_id
+            AND history.type_id=result.type_id AND history.event_type='DRAFT_EVENT'
+            AND history.event_payload->>'resultId'=result.id
+          WHERE result.account_id=$1 AND result.attempt_id=$2 AND result.source_kind='AI'`,
+        [input.accountId, attempt.id]);
+      return { attemptId: attempt.id, analysisInputHash: attempt.analysis_input_hash,
+        modelConfigSnapshot: attempt.model_config_snapshot, sampleSetId: attempt.sample_set_id,
+        sampleSetHash: attempt.sample_set_hash,
+        result: result.rows[0] ? analysisResultRow(result.rows[0], true) : null };
+    },
+
     async getDraftReplay(raw = {}) {
       const input = createDraftRequest(raw);
       const requestHashValue = requestHash({ action: "CREATE_DRAFT", ...input });
@@ -827,6 +1036,301 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
 
     async commitSampleSetCanonical(raw = {}) {
       return commitSampleSetCommand(raw, true);
+    },
+
+    async loadAnalysisEvidence(raw = {}) {
+      const input = analysisEvidenceRequest(raw);
+      const draftResult = await query(pool,
+        `SELECT * FROM auto_listing_category_strategy_drafts
+          WHERE account_id=$1 AND id=$2`,
+        [input.accountId, input.draftId]);
+      const draft = draftResult.rows[0];
+      if (!draft) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND", 404);
+      if (!["SAMPLES_READY", "ANALYZING", "DRAFT_READY", "NEEDS_REVIEW"].includes(draft.status)) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_EVIDENCE_NOT_READY", 409);
+      }
+      const setResult = await query(pool,
+        `SELECT * FROM auto_listing_category_strategy_sample_sets
+          WHERE account_id=$1 AND draft_id=$2 AND taxonomy_scope=$3
+            AND description_category_id=$4 AND type_id=$5 AND status='SEALED'
+          ORDER BY sealed_at DESC,id DESC LIMIT 1`,
+        [input.accountId, input.draftId, draft.taxonomy_scope,
+          draft.description_category_id, draft.type_id]);
+      const set = setResult.rows[0];
+      if (!set || Number(set.sample_count) < 5 || Number(set.sample_count) > 20) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_EVIDENCE_NOT_READY", 409);
+      }
+      const sampleResult = await query(pool,
+        `SELECT * FROM auto_listing_category_strategy_samples
+          WHERE account_id=$1 AND draft_id=$2 AND sample_set_id=$3
+          ORDER BY ordinal ASC,id ASC`,
+        [input.accountId, input.draftId, set.id]);
+      if (sampleResult.rows.length !== Number(set.sample_count)
+        || new Set(sampleResult.rows.map((entry) => entry.sku)).size !== sampleResult.rows.length) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_EVIDENCE_NOT_READY", 409);
+      }
+      const imageResult = await query(pool,
+        `SELECT * FROM auto_listing_category_strategy_sample_images
+          WHERE account_id=$1 AND draft_id=$2 AND sample_set_id=$3
+          ORDER BY sample_id ASC,ordinal ASC,id ASC`,
+        [input.accountId, input.draftId, set.id]);
+      const imagesBySample = new Map();
+      for (const image of imageResult.rows) {
+        const images = imagesBySample.get(image.sample_id) ?? [];
+        images.push({ evidenceId: image.id, state: "READY", role: image.role,
+          ordinal: Number(image.ordinal), analysisObjectKey: image.analysis_object_key,
+          analysisContentHash: image.analysis_content_hash, contentType: image.content_type });
+        imagesBySample.set(image.sample_id, images);
+      }
+      const samples = sampleResult.rows.map((sample) => ({
+        sampleId: sample.id, sku: sample.sku, productFacts: { sku: sample.sku },
+        images: imagesBySample.get(sample.id) ?? [],
+      }));
+      if (samples.some((sample) => sample.images.length < 1 || sample.images.length > 6)) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_EVIDENCE_NOT_READY", 409);
+      }
+      return { accountId: input.accountId, draftId: input.draftId,
+        draftVersion: Number(draft.draft_version), status: draft.status,
+        scope: { accountId: input.accountId, taxonomyScope: draft.taxonomy_scope,
+          descriptionCategoryId: Number(draft.description_category_id), typeId: Number(draft.type_id) },
+        sampleSetId: set.id, sampleSetHash: set.sample_set_hash, samples };
+    },
+
+    async reserveAnalysisAttempt(raw = {}) {
+      const input = reserveAnalysisRequest(raw);
+      if (requestHash(input.modelConfigSnapshot) !== input.modelConfigHash) throw invalid();
+      const action = "RESERVE_ANALYSIS_ATTEMPT";
+      const { expectedDraftVersion: _concurrencyGuard, ...identity } = input;
+      const hash = requestHash({ action, ...identity });
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        await requireCompatibleEventIdempotency(client, input, action, hash);
+        const replay = await query(client,
+          `SELECT * FROM auto_listing_category_strategy_analysis_attempts
+            WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+          [input.accountId, input.idempotencyKey]);
+        if (replay.rows[0]) {
+          if (replay.rows[0].request_hash !== hash) {
+            throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
+          }
+          const result = await query(client,
+            `SELECT result.*,draft.draft_version,draft.status AS draft_status,
+                    history.event_payload AS result_event_payload
+               FROM auto_listing_category_strategy_analysis_results result
+               JOIN auto_listing_category_strategy_drafts draft
+                 ON draft.account_id=result.account_id AND draft.id=result.draft_id
+               LEFT JOIN auto_listing_category_strategy_events history
+                 ON history.account_id=result.account_id AND history.draft_id=result.draft_id
+                AND history.taxonomy_scope=result.taxonomy_scope
+                AND history.description_category_id=result.description_category_id
+                AND history.type_id=result.type_id AND history.event_type='DRAFT_EVENT'
+                AND history.event_payload->>'resultId'=result.id
+              WHERE result.account_id=$1 AND result.attempt_id=$2 AND result.source_kind='AI'
+              FOR UPDATE OF result,draft`,
+            [input.accountId, replay.rows[0].id]);
+          return { attemptId: replay.rows[0].id, duplicate: true,
+            result: result.rows[0] ? analysisResultRow(result.rows[0], true) : null };
+        }
+        await requireMutationEnabled(client, input.accountId);
+        const draftResult = await query(client,
+          `SELECT * FROM auto_listing_category_strategy_drafts
+            WHERE account_id=$1 AND id=$2 FOR UPDATE`,
+          [input.accountId, input.draftId]);
+        const draft = draftResult.rows[0];
+        if (!draft) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND", 404);
+        if (Number(draft.draft_version) !== input.expectedDraftVersion
+          || !["SAMPLES_READY", "DRAFT_READY", "NEEDS_REVIEW"].includes(draft.status)) {
+          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
+        }
+        await requireDraftCurrentSource(client, draft);
+        const set = await query(client,
+          `SELECT * FROM auto_listing_category_strategy_sample_sets
+            WHERE account_id=$1 AND draft_id=$2 AND taxonomy_scope=$3
+              AND description_category_id=$4 AND type_id=$5 AND id=$6
+              AND sample_set_hash=$7 AND status='SEALED' FOR UPDATE`,
+          [input.accountId, input.draftId, draft.taxonomy_scope, draft.description_category_id,
+            draft.type_id, input.sampleSetId, input.sampleSetHash]);
+        if (!set.rows[0]) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_EVIDENCE_NOT_READY", 409);
+        const attemptId = deterministicId("category_analysis_attempt", input.accountId, input.idempotencyKey);
+        const inserted = await query(client,
+          `INSERT INTO auto_listing_category_strategy_analysis_attempts
+             (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,sample_set_id,
+              sample_set_hash,analysis_input_hash,model_config_snapshot,model_config_hash,cost_confirmed,
+              idempotency_key,correlation_id,request_hash,actor_account_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::JSONB,$11,TRUE,$12,$13,$14,$2)
+           RETURNING *`,
+          [attemptId, input.accountId, input.draftId, draft.taxonomy_scope,
+            draft.description_category_id, draft.type_id, input.sampleSetId, input.sampleSetHash,
+            input.analysisInputHash, JSON.stringify(input.modelConfigSnapshot), input.modelConfigHash,
+            input.idempotencyKey, input.correlationId, hash]);
+        const advanced = await query(client,
+          `UPDATE auto_listing_category_strategy_drafts
+              SET status='ANALYZING',draft_version=draft_version+1,updated_at=STATEMENT_TIMESTAMP()
+            WHERE account_id=$1 AND id=$2 AND draft_version=$3
+              AND status IN ('SAMPLES_READY','DRAFT_READY','NEEDS_REVIEW') RETURNING *`,
+          [input.accountId, input.draftId, input.expectedDraftVersion]);
+        if (!advanced.rows[0]) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
+        await insertAnalysisEvent(client, input, advanced.rows[0], "ANALYSIS_ATTEMPT_RESERVED",
+          hash, inserted.rows[0].id);
+        return { attemptId: inserted.rows[0].id, duplicate: false, result: null };
+      });
+    },
+
+    async completeAnalysisAttempt(raw = {}) {
+      const input = completeAnalysisRequest(raw);
+      const action = "COMPLETE_ANALYSIS_ATTEMPT";
+      const hash = requestHash({ action, ...input });
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        const attemptResult = await query(client,
+          `SELECT * FROM auto_listing_category_strategy_analysis_attempts
+            WHERE account_id=$1 AND id=$2 FOR UPDATE`,
+          [input.accountId, input.attemptId]);
+        const attempt = attemptResult.rows[0];
+        if (!attempt || attempt.draft_id !== input.draftId
+          || attempt.idempotency_key !== input.idempotencyKey
+          || attempt.correlation_id !== input.correlationId
+          || attempt.analysis_input_hash !== input.analysisInputHash) {
+          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_ATTEMPT_CONFLICT", 409);
+        }
+        const replay = await query(client,
+          `SELECT result.*,draft.draft_version,draft.status AS draft_status,
+                  history.event_payload AS result_event_payload
+             FROM auto_listing_category_strategy_analysis_results result
+             JOIN auto_listing_category_strategy_drafts draft
+               ON draft.account_id=result.account_id AND draft.id=result.draft_id
+             LEFT JOIN auto_listing_category_strategy_events history
+               ON history.account_id=result.account_id AND history.draft_id=result.draft_id
+              AND history.taxonomy_scope=result.taxonomy_scope
+              AND history.description_category_id=result.description_category_id
+              AND history.type_id=result.type_id AND history.event_type='DRAFT_EVENT'
+              AND history.event_payload->>'resultId'=result.id
+            WHERE result.account_id=$1 AND result.attempt_id=$2 AND result.source_kind='AI'
+            FOR UPDATE OF result,draft`,
+          [input.accountId, input.attemptId]);
+        if (replay.rows[0]) {
+          if (replay.rows[0].request_hash !== hash) {
+            throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
+          }
+          return analysisResultRow(replay.rows[0], true);
+        }
+        await requireMutationEnabled(client, input.accountId);
+        const draftResult = await query(client,
+          `SELECT * FROM auto_listing_category_strategy_drafts
+            WHERE account_id=$1 AND id=$2 FOR UPDATE`,
+          [input.accountId, input.draftId]);
+        const draft = draftResult.rows[0];
+        if (!draft || Number(draft.draft_version) !== input.expectedDraftVersion || draft.status !== "ANALYZING") {
+          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
+        }
+        await requireDraftCurrentSource(client, draft);
+        const resultId = deterministicId("category_analysis_result", input.accountId, input.idempotencyKey);
+        const inserted = await query(client,
+          `INSERT INTO auto_listing_category_strategy_analysis_results
+             (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,
+              sample_set_id,sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,
+              guidance,guidance_hash,source_kind,idempotency_key,correlation_id,request_hash,actor_account_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::JSONB,$12,$13::JSONB,$14,'AI',$15,$16,$17,$2)
+           RETURNING *`,
+          [resultId, input.accountId, input.draftId, attempt.taxonomy_scope,
+            attempt.description_category_id, attempt.type_id, input.attemptId, attempt.sample_set_id,
+            attempt.sample_set_hash, input.analysisInputHash, JSON.stringify(input.rawResponse),
+            input.rawResponseHash, JSON.stringify(input.guidance), input.guidanceHash,
+            input.idempotencyKey, input.correlationId, hash]);
+        const nextStatus = input.outcome === "ACCEPTED" ? "DRAFT_READY" : "NEEDS_REVIEW";
+        const advanced = await query(client,
+          `UPDATE auto_listing_category_strategy_drafts
+              SET status=$4,draft_version=draft_version+1,updated_at=STATEMENT_TIMESTAMP()
+            WHERE account_id=$1 AND id=$2 AND draft_version=$3 AND status='ANALYZING' RETURNING *`,
+          [input.accountId, input.draftId, input.expectedDraftVersion, nextStatus]);
+        if (!advanced.rows[0]) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
+        await insertAnalysisEvent(client, input, advanced.rows[0], "ANALYSIS_RESULT_RECORDED",
+          hash, input.attemptId, resultId);
+        return analysisResultRow(inserted.rows[0], false,
+          Number(advanced.rows[0].draft_version), advanced.rows[0].status);
+      });
+    },
+
+    async appendManualAnalysisResult(raw = {}) {
+      const input = manualAnalysisRequest(raw);
+      const action = "APPEND_MANUAL_ANALYSIS_RESULT";
+      const hash = requestHash({ action, ...input });
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        await requireCompatibleEventIdempotency(client, input, action, hash);
+        const replay = await query(client,
+          `SELECT result.*,draft.draft_version,draft.status AS draft_status,
+                  history.event_payload AS result_event_payload
+             FROM auto_listing_category_strategy_analysis_results result
+             JOIN auto_listing_category_strategy_drafts draft
+               ON draft.account_id=result.account_id AND draft.id=result.draft_id
+             LEFT JOIN auto_listing_category_strategy_events history
+               ON history.account_id=result.account_id AND history.draft_id=result.draft_id
+              AND history.taxonomy_scope=result.taxonomy_scope
+              AND history.description_category_id=result.description_category_id
+              AND history.type_id=result.type_id AND history.event_type='DRAFT_EVENT'
+              AND history.event_payload->>'resultId'=result.id
+            WHERE result.account_id=$1 AND result.idempotency_key=$2 AND result.source_kind='MANUAL'
+            FOR UPDATE OF result,draft`,
+          [input.accountId, input.idempotencyKey]);
+        if (replay.rows[0]) {
+          if (replay.rows[0].request_hash !== hash) {
+            throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
+          }
+          return analysisResultRow(replay.rows[0], true);
+        }
+        await requireMutationEnabled(client, input.accountId);
+        const draftResult = await query(client,
+          `SELECT * FROM auto_listing_category_strategy_drafts
+            WHERE account_id=$1 AND id=$2 FOR UPDATE`,
+          [input.accountId, input.draftId]);
+        const draft = draftResult.rows[0];
+        if (!draft || Number(draft.draft_version) !== input.expectedDraftVersion
+          || !["DRAFT_READY", "NEEDS_REVIEW"].includes(draft.status)) {
+          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
+        }
+        await requireDraftCurrentSource(client, draft);
+        const attemptResult = await query(client,
+          `SELECT attempt.* FROM auto_listing_category_strategy_analysis_attempts attempt
+            WHERE attempt.account_id=$1 AND attempt.draft_id=$2 AND attempt.taxonomy_scope=$3
+              AND attempt.description_category_id=$4 AND attempt.type_id=$5 AND attempt.id=$6
+            FOR UPDATE`,
+          [input.accountId, input.draftId, draft.taxonomy_scope, draft.description_category_id,
+            draft.type_id, input.baseAnalysisAttemptId]);
+        const attempt = attemptResult.rows[0];
+        if (!attempt) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_ATTEMPT_CONFLICT", 409);
+        const baseAi = await query(client,
+          `SELECT id FROM auto_listing_category_strategy_analysis_results
+            WHERE account_id=$1 AND attempt_id=$2 AND source_kind='AI' FOR UPDATE`,
+          [input.accountId, input.baseAnalysisAttemptId]);
+        if (!baseAi.rows[0]) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_ATTEMPT_CONFLICT", 409);
+        const resultId = deterministicId("category_manual_analysis_result", input.accountId, input.idempotencyKey);
+        const manualRaw = { sourceKind: "MANUAL", baseAnalysisAttemptId: input.baseAnalysisAttemptId };
+        const inserted = await query(client,
+          `INSERT INTO auto_listing_category_strategy_analysis_results
+             (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,
+              sample_set_id,sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,
+              guidance,guidance_hash,source_kind,edited_by,edited_at,base_analysis_attempt_id,
+              idempotency_key,correlation_id,request_hash,actor_account_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::JSONB,$12,$13::JSONB,$14,
+             'MANUAL',$2,STATEMENT_TIMESTAMP(),$7,$15,$16,$17,$2) RETURNING *`,
+          [resultId, input.accountId, input.draftId, attempt.taxonomy_scope,
+            attempt.description_category_id, attempt.type_id, input.baseAnalysisAttemptId,
+            attempt.sample_set_id, attempt.sample_set_hash, attempt.analysis_input_hash,
+            JSON.stringify(manualRaw), requestHash(manualRaw), JSON.stringify(input.guidance),
+            input.guidanceHash, input.idempotencyKey, input.correlationId, hash]);
+        const advanced = await query(client,
+          `UPDATE auto_listing_category_strategy_drafts
+              SET status='DRAFT_READY',draft_version=draft_version+1,updated_at=STATEMENT_TIMESTAMP()
+            WHERE account_id=$1 AND id=$2 AND draft_version=$3
+              AND status IN ('DRAFT_READY','NEEDS_REVIEW') RETURNING *`,
+          [input.accountId, input.draftId, input.expectedDraftVersion]);
+        if (!advanced.rows[0]) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
+        await insertAnalysisEvent(client, input, advanced.rows[0], "ANALYSIS_MANUAL_EDITED",
+          hash, input.baseAnalysisAttemptId, resultId);
+        return analysisResultRow(inserted.rows[0], false,
+          Number(advanced.rows[0].draft_version), advanced.rows[0].status);
+      });
     },
 
     async transitionAccountPolicy(raw = {}) {

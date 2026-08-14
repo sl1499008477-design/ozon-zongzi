@@ -24,9 +24,9 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 
-test("configurable fixed-skeleton migration suite tracks 075 without weakening its 074 upgrade coverage", async () => {
+test("configurable fixed-skeleton migration suite tracks 076 without weakening its 074 upgrade coverage", async () => {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
-  assert.equal(migrations.at(-1), "075_auto_listing_category_strategy_sampling.sql");
+  assert.equal(migrations.at(-1), "076_auto_listing_category_strategy_analysis_edits.sql");
 });
 
 const roles = Object.freeze({
@@ -273,7 +273,7 @@ if (!enabled) {
     skip: "requires AUTO_LISTING_CONFIGURABLE_SKELETON_PG_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
   }, () => {});
 } else {
-  test("fresh PostgreSQL applies 001-075 with the closed planning and diagnostic schema", { timeout: 30_000 }, async () => {
+  test("fresh PostgreSQL applies 001-076 with the closed planning and diagnostic schema", { timeout: 30_000 }, async () => {
     const { Pool } = await import("pg");
     const root = new Pool({ connectionString: databaseUrl, max: 1 });
     const client = await root.connect();
@@ -282,7 +282,7 @@ if (!enabled) {
       await client.query(`CREATE SCHEMA ${quote(schema)}`);
       await client.query(`SET search_path TO ${quote(schema)}, public`);
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
-      assert.equal(migrations.at(-1)?.startsWith("075_"), true);
+      assert.equal(migrations.at(-1), "076_auto_listing_category_strategy_analysis_edits.sql");
       for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       const schemaRows = await client.query(
         `SELECT table_name,column_name FROM information_schema.columns

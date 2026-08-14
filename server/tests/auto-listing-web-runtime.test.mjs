@@ -5,8 +5,40 @@ import test from "node:test";
 import { createAutoListingWebRuntime } from "../auto-listing-web-runtime.mjs";
 import {
   createAutoListingCategoryStrategyRuntime,
+  createCategoryStrategyAnalysisConfigurationResolver,
   createCategoryStrategyExtensionChannel,
 } from "../auto-listing-category-strategy-runtime.mjs";
+
+test("analysis configuration resolver is account-scoped and requires exactly one enabled profile", async () => {
+  const calls = [];
+  const resolver = createCategoryStrategyAnalysisConfigurationResolver({ pool: {
+    async query(sql, parameters) {
+      calls.push({ sql, parameters });
+      return { rows: [{ id: "profile-a", config_version: "7", text_model: "vision-a" }] };
+    },
+  } });
+  assert.deepEqual(await resolver.resolve({ accountId: "account-a" }), {
+    analyzerVersion: "category-strategy-v1", promptVersion: "category-strategy-prompt-v1",
+    profileId: "profile-a", profileVersion: 7, model: "vision-a",
+  });
+  assert.deepEqual(calls[0].parameters, ["account-a"]);
+  assert.match(calls[0].sql, /WHERE account_id=\$1 AND enabled IS TRUE/u);
+
+  for (const rows of [[], [
+    { id: "profile-a", config_version: 7, text_model: "a" },
+    { id: "profile-b", config_version: 1, text_model: "b" },
+  ]]) {
+    const closedResolver = createCategoryStrategyAnalysisConfigurationResolver({
+      pool: { async query() { return { rows }; } },
+    });
+    await assert.rejects(closedResolver.resolve({ accountId: "account-a" }), {
+      code: rows.length === 0
+        ? "AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_PROFILE_NOT_CONFIGURED"
+        : "AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_PROFILE_AMBIGUOUS",
+      status: 409,
+    });
+  }
+});
 import {
   createAutoListingCategoryStrategyExtensionHttpHandler,
   createAutoListingCategoryStrategyHttpHandler,
@@ -142,6 +174,8 @@ test("web runtime mounts the authenticated extension sampling route on the same 
 test("category strategy runtime composes real non-analysis ports and fails exact facts closed until Task 6 wiring", async () => {
   const service = Object.freeze({ marker: "category-service" });
   let captured;
+  let analyzerInput;
+  const objectStorage = {};
   let poolReads = 0;
   const runtime = createAutoListingCategoryStrategyRuntime({
     env: { AUTO_LISTING_ENABLED: "true",
@@ -150,7 +184,9 @@ test("category strategy runtime composes real non-analysis ports and fails exact
     createRepository() { return {}; },
     createStrategyReadModel() { return {}; },
     createSampleStore() { return {}; },
-    createObjectStorage() { return {}; },
+    createObjectStorage() { return objectStorage; },
+    createAnalyzer(input) { analyzerInput = input; return { analyze() {}, editGuidance() {} }; },
+    analysisAiAdapter: { assertReady() {}, analyze() {}, recover() {} },
     createPublicationRepository() { return {}; },
     createAdminService() { return { publishCategoryStrategyDraft() {}, rollbackCategoryStrategyVersion() {} }; },
     createService(input) { captured = input; return service; },
@@ -158,6 +194,11 @@ test("category strategy runtime composes real non-analysis ports and fails exact
   assert.equal(poolReads, 0);
   assert.equal(await runtime.getService(), service);
   assert.equal(poolReads, 1);
+  assert.equal(captured.analyzer.analyze instanceof Function, true);
+  assert.equal(analyzerInput.repository, captured.repository);
+  assert.equal(analyzerInput.objectStorage, objectStorage);
+  assert.equal(analyzerInput.aiAdapter.analyze instanceof Function, true);
+  assert.equal(typeof analyzerInput.configurationResolver.resolve, "function");
   await assert.rejects(captured.exactProductFacts.verify({
     accountId: "account-a", draftId: "draft-a", sessionId: "session-a",
     sessionSecretHash: "a".repeat(64),
@@ -215,7 +256,8 @@ test("default category runtime session route returns NOT_READY before a database
       }; },
     }; },
     createSampleStore() { return { async persistSampleImages() { throw new Error("not used"); } }; },
-    createObjectStorage() { return {}; },
+    createObjectStorage() { return { async readObjectExpected() { throw new Error("not used"); } }; },
+    createAnalyzer() { return { async analyze() {}, async editGuidance() {} }; },
     createPublicationRepository() { return {}; },
     createAdminService() { return {
       async publishCategoryStrategyDraft() { throw new Error("not used"); },
