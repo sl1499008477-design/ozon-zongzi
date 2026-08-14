@@ -24,6 +24,12 @@ ALTER TABLE auto_listing_content_plan_attempts
   ADD COLUMN IF NOT EXISTS skeleton_hash TEXT,
   ADD COLUMN IF NOT EXISTS planner_stage TEXT;
 
+-- The 032 terminal guard correctly rejects every UPDATE of an ACCEPTED or
+-- FAILED attempt. Suspend only that trigger for this deterministic additive
+-- backfill, then restore it before installing the stricter 074 stage guard.
+DROP TRIGGER IF EXISTS auto_listing_content_plan_attempts_terminal_immutable
+  ON auto_listing_content_plan_attempts;
+
 UPDATE auto_listing_content_plan_attempts
    SET planner_stage=CASE status
      WHEN 'ACCEPTED' THEN 'COMPLETED'
@@ -31,6 +37,10 @@ UPDATE auto_listing_content_plan_attempts
      ELSE 'FILLING_COPY'
    END
  WHERE planner_stage IS NULL;
+
+CREATE TRIGGER auto_listing_content_plan_attempts_terminal_immutable
+BEFORE UPDATE OR DELETE ON auto_listing_content_plan_attempts
+FOR EACH ROW EXECUTE FUNCTION auto_listing_runtime_reject_terminal_attempt_mutation();
 
 ALTER TABLE auto_listing_content_plan_attempts
   ALTER COLUMN planner_stage SET DEFAULT 'FILLING_COPY',

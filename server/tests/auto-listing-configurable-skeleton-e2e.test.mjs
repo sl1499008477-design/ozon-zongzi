@@ -298,6 +298,101 @@ if (!enabled) {
     }
   });
 
+  test("074 upgrades existing terminal planner attempts without weakening their immutability", { timeout: 30_000 }, async () => {
+    const { Pool } = await import("pg");
+    const root = new Pool({ connectionString: databaseUrl, max: 1 });
+    const client = await root.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schema = `fixed_upgrade_${suffix}`;
+    const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
+    try {
+      await client.query(`CREATE SCHEMA ${quote(schema)}`);
+      await client.query(`SET search_path TO ${quote(schema)}, public`);
+      for (const migration of migrations.filter((file) => file < "074_")) {
+        await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      }
+      const ids = Object.fromEntries(["account", "store", "warehouse", "strategy", "snapshot", "job", "item", "profile", "attempt"]
+        .map((name) => [name, `${name}-${suffix}`]));
+      await client.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
+        [ids.account, `admin-${suffix}`],
+      );
+      await client.query(
+        "INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,$2,$2,$3,'active',$4)",
+        [ids.store, `Store ${suffix}`, `client-${suffix}`, ids.account],
+      );
+      await client.query(
+        "INSERT INTO warehouses (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived) VALUES ($1,$2,$3,'FBS','active',TRUE,FALSE)",
+        [ids.warehouse, ids.store, `platform-${suffix}`],
+      );
+      await client.query(
+        `INSERT INTO ai_gateway_profiles (
+           id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+           text_model,image_model,config_version,enabled
+         ) VALUES ($1,$2,'Upgrade profile','https://gateway.example.test/tenant/v1','TEST_AI_KEY',
+           'SUB2API_RESPONSES','SUB2API_OPENAI_IMAGES','text-model-a','image-model-a',3,TRUE)`,
+        [ids.profile, ids.account],
+      );
+      await client.query(
+        "INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash) VALUES ($1,$2,'default',1,'DRAFT','{}'::JSONB,$3)",
+        [ids.strategy, ids.account, "strategy-hash"],
+      );
+      await client.query(
+        "UPDATE ai_content_strategy_versions SET status='PUBLISHED',published_at=NOW(),published_by=$2 WHERE id=$1",
+        [ids.strategy, ids.account],
+      );
+      const source = sourceCapture();
+      const { config, configHash } = normalizeAndHashAutoListingConfig({
+        targetStoreId: ids.store, targetWarehouseId: ids.warehouse, stock: 5, priceAdjustmentKopecks: "0",
+        image: { ratio: "3:4", resolution: "1K", quality: "Medium", language: "ru", roles: roles.six },
+      });
+      await client.query(
+        `INSERT INTO auto_listing_source_snapshots
+           (id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash,raw_response_ref)
+         VALUES ($1,$2,'COLLECT_BOX',$3,'draft:7',$4::JSONB,$5,$6)`,
+        [ids.snapshot, ids.account, `collect-${suffix}`, JSON.stringify(source.snapshot), source.snapshotHash, `raw-${suffix}`],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_jobs (
+           id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,
+           strategy_version_id,ai_profile_id,ai_profile_version,correlation_id
+         ) VALUES ($1,$2,'COLLECT_BOX','PLANNING',$3,$4::JSONB,$5,$6,$7,3,$8)`,
+        [ids.job, ids.account, `job-intent-${suffix}`, JSON.stringify(config), configHash,
+          ids.strategy, ids.profile, `job-correlation-${suffix}`],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_job_items
+           (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,failure_code)
+         VALUES ($1,$2,$3,$4,$5,$6,'BLOCKED',7,'AUTO_LISTING_CONTENT_PLAN_INVALID')`,
+        [ids.item, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouse],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_content_plan_attempts (
+           id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,input_hash,
+           attempt_no,status,error_code,error_retryable,expected_status_version,request_key
+         ) VALUES ($1,$2,$3,$4,$5,$6,3,$7,1,'FAILED','AUTO_LISTING_CONTENT_PLAN_INVALID',FALSE,7,$8)`,
+        [ids.attempt, ids.account, ids.job, ids.item, ids.snapshot, ids.profile, H("9"), `auto-listing-plan-${H("8")}`],
+      );
+      await client.query(await readFile(path.join(migrationsDir, migrations.find((file) => file.startsWith("074_"))), "utf8"));
+      const upgraded = await client.query(
+        "SELECT status,planning_contract,skeleton_hash,planner_stage FROM auto_listing_content_plan_attempts WHERE id=$1",
+        [ids.attempt],
+      );
+      assert.deepEqual(upgraded.rows, [{
+        status: "FAILED", planning_contract: "LEGACY_FULL_PLAN_V3", skeleton_hash: null, planner_stage: "FAILED",
+      }]);
+      await assert.rejects(client.query(
+        "UPDATE auto_listing_content_plan_attempts SET planner_stage='FILLING_COPY' WHERE id=$1",
+        [ids.attempt],
+      ), (error) => error?.code === "23514");
+    } finally {
+      await client.query("SET search_path TO public");
+      await client.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
+      client.release();
+      await root.end();
+    }
+  });
+
   test("6, 8 and 13 configured slots each make one text fill, exact image calls, and stop at review", async () => {
     for (const [name, roleCounts] of Object.entries(roles)) {
       const expected = Object.values(roleCounts).reduce((sum, value) => sum + value, 0);
