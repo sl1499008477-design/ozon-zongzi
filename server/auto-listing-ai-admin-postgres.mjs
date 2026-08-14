@@ -252,6 +252,16 @@ async function lockAccount(client, accountId) {
   if (!result?.rows?.[0]) throw repositoryError("AUTO_LISTING_AI_ADMIN_SCOPE_NOT_FOUND", 404);
 }
 
+async function requireCategoryStrategyMutationEnabled(client, accountId) {
+  const result = await query(client,
+    `SELECT mode FROM auto_listing_category_strategy_account_settings
+      WHERE account_id=$1 FOR UPDATE`,
+    [accountId]);
+  if (result.rows[0]?.mode !== "REQUIRE_EXACT_STRATEGY") {
+    throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", 409);
+  }
+}
+
 function auditIdentity(action, accountId, idempotencyKey) {
   return deterministicId("audit_ai_admin", action, accountId, idempotencyKey);
 }
@@ -2072,6 +2082,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           delete replay.storedRules;
           return { ...replay, status: "PUBLISHED", idempotencyKey: input.idempotencyKey, duplicate: true };
         }
+        await requireCategoryStrategyMutationEnabled(client, input.accountId);
         const draftResult = await query(client,
           `SELECT * FROM auto_listing_category_strategy_drafts
             WHERE account_id=$1 AND id=$2 FOR UPDATE`,
@@ -2283,6 +2294,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           delete replay.storedRules;
           return { ...replay, status: "PUBLISHED", idempotencyKey: input.idempotencyKey, duplicate: true };
         }
+        await requireCategoryStrategyMutationEnabled(client, input.accountId);
         const currentResult = await query(client,
           `SELECT id FROM ai_content_strategy_versions
             WHERE account_id=$1 AND strategy_key='default' AND status='PUBLISHED' FOR UPDATE`,

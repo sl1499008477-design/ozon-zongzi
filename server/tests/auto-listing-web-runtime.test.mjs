@@ -2,17 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createAutoListingWebRuntime } from "../auto-listing-web-runtime.mjs";
+import { createAutoListingCategoryStrategyRuntime } from "../auto-listing-category-strategy-runtime.mjs";
 
 function build({ settingsStartError = null } = {}) {
   const events = [];
   const service = Object.freeze({ marker: "settings-service" });
   const diagnosticService = Object.freeze({ marker: "diagnostic-service" });
+  const categoryStrategyService = Object.freeze({ marker: "category-strategy-service" });
   const settingsRuntime = Object.freeze({
     async getService() { return service; },
     async startWorker() { events.push("settings-start"); if (settingsStartError) throw settingsStartError; return true; },
     async stopWorker() { events.push("settings-stop"); },
   });
   const diagnosticRuntime = Object.freeze({ async getService() { return diagnosticService; } });
+  const categoryStrategyRuntime = Object.freeze({ async getService() { return categoryStrategyService; } });
   const userRuntime = Object.freeze({
     async getService() { return {}; },
     async startWorkers() { events.push("user-start"); return true; },
@@ -24,6 +27,7 @@ function build({ settingsStartError = null } = {}) {
   });
   let settingsHandlerInput;
   let diagnosticHandlerInput;
+  let categoryStrategyHandlerInput;
   const runtime = createAutoListingWebRuntime({
     authenticate: async () => ({ id: "account-a", role: "admin" }),
     getAutoListingService: async () => ({}),
@@ -43,6 +47,14 @@ function build({ settingsStartError = null } = {}) {
       diagnosticHandlerInput = input;
       return async (_req, _res, url) => url.pathname.startsWith("/admin/auto-listing/plan-diagnostics/");
     },
+    createCategoryStrategyRuntime(input) {
+      events.push(["category-strategy-runtime", input]);
+      return categoryStrategyRuntime;
+    },
+    createCategoryStrategyHandler(input) {
+      categoryStrategyHandlerInput = input;
+      return async (_req, _res, url) => url.pathname.startsWith("/admin/auto-listing/category-strategies");
+    },
     createPublicationRuntime() { throw new Error("publication must stay lazy"); },
     createUploadRuntime() { throw new Error("upload must stay lazy"); },
     createReconciliationRuntime() { throw new Error("reconciliation must stay lazy"); },
@@ -52,9 +64,10 @@ function build({ settingsStartError = null } = {}) {
     assertDirectSystemReady: async () => true,
   });
   return {
-    runtime, events, service, diagnosticService,
+    runtime, events, service, diagnosticService, categoryStrategyService,
     settingsHandler: () => settingsHandlerInput,
     diagnosticHandler: () => diagnosticHandlerInput,
+    categoryStrategyHandler: () => categoryStrategyHandlerInput,
   };
 }
 
@@ -78,6 +91,53 @@ test("web runtime mounts the stable AI settings handler without touching Postgre
   assert.deepEqual(h.events.find((entry) => Array.isArray(entry) && entry[0] === "read-json"),
     ["read-json", { maxBytes: 64 * 1024, requireBody: true }]);
   assert.equal(h.events.some((entry) => entry === "settings-start"), false);
+});
+
+test("web runtime mounts category strategy administration independently and keeps PostgreSQL lazy", async () => {
+  const h = build();
+  assert.equal(await h.runtime.handleCategoryStrategyAdminRoute({}, {}, new URL(
+    "https://example.test/admin/auto-listing/category-strategies/settings",
+  )), true);
+  assert.equal(await h.categoryStrategyHandler().getService(), h.categoryStrategyService);
+  await h.categoryStrategyHandler().readJson({});
+  assert.deepEqual(h.events.find((entry) => Array.isArray(entry) && entry[0] === "read-json"),
+    ["read-json", { maxBytes: 256 * 1024, requireBody: true }]);
+  assert.equal(h.events.some((entry) => entry === "pool"), false);
+});
+
+test("category strategy runtime composes real non-analysis ports and fails exact facts closed until Task 6 wiring", async () => {
+  const service = Object.freeze({ marker: "category-service" });
+  let captured;
+  let poolReads = 0;
+  const runtime = createAutoListingCategoryStrategyRuntime({
+    env: { AUTO_LISTING_ENABLED: "true",
+      APP_ENCRYPTION_KEY: "test-only-category-session-key-at-least-32-characters" },
+    async getPostgresPool() { poolReads += 1; return { async query() {}, async connect() {} }; },
+    createRepository() { return {}; },
+    createStrategyReadModel() { return {}; },
+    createSampleStore() { return {}; },
+    createObjectStorage() { return {}; },
+    createPublicationRepository() { return {}; },
+    createAdminService() { return { publishCategoryStrategyDraft() {}, rollbackCategoryStrategyVersion() {} }; },
+    createService(input) { captured = input; return service; },
+  });
+  assert.equal(poolReads, 0);
+  assert.equal(await runtime.getService(), service);
+  assert.equal(poolReads, 1);
+  await assert.rejects(captured.exactProductFacts.verify({}), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_EXACT_FACTS_NOT_READY", status: 409,
+  });
+  const sessionIdentityInput = { accountId: "account-a", draftId: "draft-a", expectedDraftVersion: 1,
+    idempotencyKey: "session-a", correlationId: "correlation-a" };
+  const identity = await captured.deriveSessionIdentity(sessionIdentityInput);
+  assert.deepEqual(await captured.deriveSessionIdentity(sessionIdentityInput), identity);
+  assert.equal(identity.sessionId.startsWith("session-"), true);
+  assert.equal(identity.sessionSecret.length, 64);
+  assert.notEqual((await captured.deriveSessionIdentity({ ...sessionIdentityInput,
+    idempotencyKey: "session-b" })).sessionSecret, identity.sessionSecret);
+  assert.equal(typeof captured.extensionSessionChannel.putSession, "function");
+  assert.equal(await runtime.getService(), service);
+  assert.equal(poolReads, 1);
 });
 
 test("settings worker startup failure unwinds settings, operations, and user workers in reverse order", async () => {

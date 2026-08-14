@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createAutoListingAiAdminPostgres } from "../auto-listing-ai-admin-postgres.mjs";
+import { createAutoListingCategoryStrategyPostgres } from "../auto-listing-category-strategy-postgres.mjs";
 import { createAiGatewayProfileService } from "../ai-gateway-profile-service.mjs";
 import { createAutoListingAiCapabilityCredentialResolver } from "../auto-listing-ai-credential-resolver.mjs";
 import { createAutoListingAiSettingsPostgres } from "../auto-listing-ai-settings-postgres.mjs";
@@ -2132,7 +2133,7 @@ if (!enabled) {
       await assert.rejects(repository.publishCategoryStrategyDraft({
         ...base, accountId: accountB, actorId: accountB,
         idempotencyKey: `wrong-account-${suffix}`, correlationId: `wrong-account-corr-${suffix}`,
-      }), { code: "AUTO_LISTING_AI_STRATEGY_NOT_FOUND", status: 404 });
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", status: 409 });
       assert.equal((await pool.query(
         "SELECT COUNT(*)::INTEGER AS count FROM ai_content_strategy_versions WHERE account_id=$1",
         [accountA],
@@ -2276,6 +2277,75 @@ if (!enabled) {
         duplicate: retiredRollbackReplay.duplicate }, {
         id: rolledBack.id, status: "PUBLISHED", duplicate: true,
       });
+      const categoryRepository = createAutoListingCategoryStrategyPostgres({ pool });
+      await categoryRepository.transitionAccountPolicy({
+        accountId: accountA, actorId: accountA, expectedVersion: 2, mode: "LEGACY_FALLBACK",
+        idempotencyKey: `disable-after-publication-${suffix}`,
+        correlationId: `disable-after-publication-corr-${suffix}`,
+      });
+      const disabledSnapshot = {
+        versions: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        audits: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM audit_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        events: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+      };
+      assert.equal((await repository.publishCategoryStrategyDraft(winningInput)).id, published.id);
+      assert.equal((await repository.rollbackCategoryStrategyVersion(rollbackInput)).id, rolledBack.id);
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        accountId: accountA, actorId: accountA, draftId: reverseDraft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: laterRollback.id,
+        idempotencyKey: `disabled-publish-${suffix}`, correlationId: `disabled-publish-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", status: 409 });
+      await assert.rejects(repository.rollbackCategoryStrategyVersion({
+        accountId: accountA, actorId: accountA, targetStrategyVersionId: published.id,
+        expectedPublishedStrategyVersionId: laterRollback.id,
+        idempotencyKey: `disabled-rollback-${suffix}`, correlationId: `disabled-rollback-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", status: 409 });
+      assert.deepEqual({
+        versions: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        audits: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM audit_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        events: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+      }, disabledSnapshot);
+
+      await categoryRepository.transitionAccountPolicy({
+        accountId: accountA, actorId: accountA, expectedVersion: 3, mode: "REQUIRE_EXACT_STRATEGY",
+        idempotencyKey: `enable-before-race-${suffix}`, correlationId: `enable-before-race-corr-${suffix}`,
+      });
+      const racePublishInput = {
+        accountId: accountA, actorId: accountA, draftId: reverseDraft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: laterRollback.id,
+        idempotencyKey: `race-publish-${suffix}`, correlationId: `race-publish-corr-${suffix}`,
+      };
+      const versionsBeforeRace = Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountA],
+      )).rows[0].count);
+      const [disableOutcome, publishOutcome] = await Promise.allSettled([
+        categoryRepository.transitionAccountPolicy({
+          accountId: accountA, actorId: accountA, expectedVersion: 4, mode: "LEGACY_FALLBACK",
+          idempotencyKey: `race-disable-${suffix}`, correlationId: `race-disable-corr-${suffix}`,
+        }),
+        repository.publishCategoryStrategyDraft(racePublishInput),
+      ]);
+      assert.equal(disableOutcome.status, "fulfilled");
+      assert.equal(publishOutcome.status === "fulfilled"
+        || (publishOutcome.status === "rejected"
+          && publishOutcome.reason?.code === "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY"), true);
+      const versionsAfterRace = Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountA],
+      )).rows[0].count);
+      assert.equal(versionsAfterRace, versionsBeforeRace + (publishOutcome.status === "fulfilled" ? 1 : 0));
+      assert.equal((await categoryRepository.getAccountPolicy({ accountId: accountA })).mode, "LEGACY_FALLBACK");
     } finally {
       await pool?.end().catch(() => {});
       await admin.query("SET search_path TO public").catch(() => {});

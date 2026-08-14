@@ -2,6 +2,8 @@ import { createAutoListingAiAdminHttpHandler } from "./auto-listing-ai-admin-rou
 import { createAutoListingAiAdminRuntime } from "./auto-listing-ai-admin-runtime.mjs";
 import { createAutoListingAiSettingsHttpHandler } from "./auto-listing-ai-settings-routes.mjs";
 import { createAutoListingAiSettingsRuntime } from "./auto-listing-ai-settings-runtime.mjs";
+import { createAutoListingCategoryStrategyHttpHandler } from "./auto-listing-category-strategy-routes.mjs";
+import { createAutoListingCategoryStrategyRuntime } from "./auto-listing-category-strategy-runtime.mjs";
 import { createAutoListingDirectSystemReadiness } from "./auto-listing-direct-system-readiness.mjs";
 import { createAutoListingItemHttpHandler } from "./auto-listing-item-routes.mjs";
 import { createAutoListingItemRuntime } from "./auto-listing-item-runtime.mjs";
@@ -50,6 +52,8 @@ export function createAutoListingWebRuntime({
   createAiSettingsHandler = createAutoListingAiSettingsHttpHandler,
   createPlanDiagnosticRuntime = createAutoListingPlanDiagnosticRuntime,
   createPlanDiagnosticHandler = createAutoListingPlanDiagnosticHttpHandler,
+  createCategoryStrategyRuntime = createAutoListingCategoryStrategyRuntime,
+  createCategoryStrategyHandler = createAutoListingCategoryStrategyHttpHandler,
   storage = publicationStorage,
   probePublicPolicy = createListingAssetPublicationProbe({ storage }),
   assertDirectSystemReady = createAutoListingDirectSystemReadiness({ env, resolvePool }),
@@ -61,6 +65,7 @@ export function createAutoListingWebRuntime({
     || typeof createOperationsRuntime !== "function" || typeof createUserWorkflowRuntime !== "function"
     || typeof createAiSettingsRuntime !== "function" || typeof createAiSettingsHandler !== "function"
     || typeof createPlanDiagnosticRuntime !== "function" || typeof createPlanDiagnosticHandler !== "function"
+    || typeof createCategoryStrategyRuntime !== "function" || typeof createCategoryStrategyHandler !== "function"
     || typeof assertDirectSystemReady !== "function" || typeof probePublicPolicy !== "function") {
     throw new TypeError("AUTO_LISTING_WEB_RUNTIME_DEPENDENCY_REQUIRED");
   }
@@ -68,6 +73,7 @@ export function createAutoListingWebRuntime({
   const adminRuntime = createAutoListingAiAdminRuntime();
   const settingsRuntime = createAiSettingsRuntime({ env, getPostgresPool: resolvePool });
   const planDiagnosticRuntime = createPlanDiagnosticRuntime({ env, getPostgresPool: resolvePool });
+  const categoryStrategyRuntime = createCategoryStrategyRuntime({ env, getPostgresPool: resolvePool });
   const userWorkflowRuntime = createUserWorkflowRuntime({
     env,
     getAutoListingService,
@@ -167,6 +173,12 @@ export function createAutoListingWebRuntime({
     readJson: (req) => readJson(req, { maxBytes: 64 * 1024, requireBody: true }),
     sendJson,
   });
+  const handleCategoryStrategyAdminRoute = createCategoryStrategyHandler({
+    authenticate,
+    getService: categoryStrategyRuntime.getService,
+    readJson: (req) => readJson(req, { maxBytes: 256 * 1024, requireBody: true }),
+    sendJson,
+  });
   async function handleAiAdminRoute(req, res, url) {
     if (await handlePlanDiagnosticRoute(req, res, url)) return true;
     if (await handleAiSettingsRoute(req, res, url)) return true;
@@ -246,6 +258,7 @@ export function createAutoListingWebRuntime({
     handleAiAdminRoute,
     handlePlanDiagnosticRoute,
     handleAiSettingsRoute,
+    handleCategoryStrategyAdminRoute,
     handleUserWorkflowRoute,
     handleReviewAssetRoute,
     handleItemRoute,

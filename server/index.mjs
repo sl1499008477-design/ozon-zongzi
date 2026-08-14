@@ -2621,6 +2621,7 @@ export function createHttpHandler({
   if (await autoListingWebRuntime.handleItemRoute(req, res, url)) return;
   if (await handleAutoListingRoute(req, res, url)) return;
   if (await autoListingWebRuntime.handleUserWorkflowRoute(req, res, url)) return;
+  if (await autoListingWebRuntime.handleCategoryStrategyAdminRoute(req, res, url)) return;
   if (await autoListingWebRuntime.handleAiAdminRoute(req, res, url)) return;
   if (await autoListingWebRuntime.handleAdminRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {

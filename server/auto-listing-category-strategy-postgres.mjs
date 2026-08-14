@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { types } from "node:util";
 
 import { projectCategoryStrategyScope } from "./auto-listing-category-strategy-contract.mjs";
 
@@ -27,13 +28,31 @@ function databaseFailed() {
 
 function closed(value, keys) {
   try {
-    if (!value || typeof value !== "object" || Array.isArray(value)
-      || Object.getPrototypeOf(value) !== Object.prototype) throw invalid();
+    if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw invalid();
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const ownKeys = Reflect.ownKeys(value);
     if (ownKeys.length !== keys.size || ownKeys.some((key) => typeof key !== "string" || !keys.has(key)
       || descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) throw invalid();
     return Object.fromEntries(ownKeys.map((key) => [key, descriptors[key].value]));
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REPOSITORY_INVALID") throw error;
+    throw invalid();
+  }
+}
+
+function closedArray(value, minimum, maximum) {
+  try {
+    if (types.isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
+      || value.length < minimum || value.length > maximum) throw invalid();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const ownKeys = Reflect.ownKeys(descriptors);
+    if (ownKeys.length !== value.length + 1 || descriptors.length?.value !== value.length) throw invalid();
+    return Array.from({ length: value.length }, (_, ordinal) => {
+      const descriptor = descriptors[String(ordinal)];
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, "value")) throw invalid();
+      return descriptor.value;
+    });
   } catch (error) {
     if (error?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REPOSITORY_INVALID") throw error;
     throw invalid();
@@ -75,11 +94,15 @@ function canonical(value) {
     if (!Number.isFinite(value)) throw invalid();
     return value;
   }
+  if (types.isProxy(value)) throw invalid();
   if (Array.isArray(value)) return value.map(canonical);
-  if (!value || typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) throw invalid();
-  return Object.fromEntries(Object.keys(value).sort().map((key) => {
+  if (!value || typeof value !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  return Object.fromEntries(Reflect.ownKeys(descriptors).sort().map((key) => {
+    if (typeof key !== "string" || descriptors[key]?.enumerable !== true
+      || !Object.hasOwn(descriptors[key], "value")) throw invalid();
     if (["__proto__", "constructor", "prototype"].includes(key)) throw invalid();
-    return [key, canonical(value[key])];
+    return [key, canonical(descriptors[key].value)];
   }));
 }
 
@@ -206,6 +229,16 @@ async function lockAccount(client, accountId) {
   if (!result.rows[0]) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ACCOUNT_NOT_FOUND", 404);
 }
 
+async function requireMutationEnabled(client, accountId) {
+  const result = await query(client,
+    `SELECT mode FROM auto_listing_category_strategy_account_settings
+      WHERE account_id=$1 FOR UPDATE`,
+    [accountId]);
+  if (result.rows[0]?.mode !== "REQUIRE_EXACT_STRATEGY") {
+    throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", 409);
+  }
+}
+
 async function requireCompatibleEventIdempotency(client, { accountId, idempotencyKey }, action, hash) {
   const categoryEvents = await query(client,
     `SELECT CASE
@@ -310,6 +343,49 @@ function sessionRequest(raw) {
   };
 }
 
+function sessionReplayRequest(raw) {
+  const value = closed(raw, new Set([
+    "accountId", "actorId", "draftId", "expectedDraftVersion", "sessionId", "sessionSecretHash",
+    "idempotencyKey", "correlationId",
+  ]));
+  const accountId = sameActor(value);
+  return { accountId, actorId: accountId, draftId: id(value.draftId),
+    expectedDraftVersion: positiveInteger(value.expectedDraftVersion),
+    sessionId: id(value.sessionId), sessionSecretHash: sha256(value.sessionSecretHash),
+    idempotencyKey: id(value.idempotencyKey), correlationId: id(value.correlationId) };
+}
+
+function sessionValidationRequest(raw) {
+  const value = closed(raw, new Set([
+    "accountId", "actorId", "draftId", "expectedDraftVersion", "sessionId", "sessionSecretHash",
+  ]));
+  const accountId = sameActor(value);
+  return { accountId, actorId: accountId, draftId: id(value.draftId),
+    expectedDraftVersion: positiveInteger(value.expectedDraftVersion), sessionId: id(value.sessionId),
+    sessionSecretHash: sha256(value.sessionSecretHash) };
+}
+
+function sampleSelection(raw) {
+  const value = closed(raw, new Set(["sku", "sourceProductId", "sourceProductRef"]));
+  return { sku: id(value.sku), sourceProductId: platformId(value.sourceProductId),
+    sourceProductRef: id(value.sourceProductRef) };
+}
+
+function sampleReplayRequest(raw) {
+  const value = closed(raw, new Set([
+    "accountId", "actorId", "draftId", "sessionId", "sessionSecretHash", "expectedDraftVersion",
+    "selections", "idempotencyKey", "correlationId",
+  ]));
+  const accountId = sameActor(value);
+  const selections = closedArray(value.selections, 5, 20).map(sampleSelection);
+  if (new Set(selections.map((entry) => entry.sku)).size !== selections.length
+    || new Set(selections.map((entry) => entry.sourceProductId)).size !== selections.length) throw invalid();
+  return { accountId, actorId: accountId, draftId: id(value.draftId), sessionId: id(value.sessionId),
+    sessionSecretHash: sha256(value.sessionSecretHash),
+    expectedDraftVersion: positiveInteger(value.expectedDraftVersion), selections,
+    idempotencyKey: id(value.idempotencyKey), correlationId: id(value.correlationId) };
+}
+
 function imageEvidence(raw, context) {
   const value = closed(raw, new Set([
     "imageId", "role", "ordinal", "sourceUrlHost", "sourceRefHash", "sourceResponseHash",
@@ -349,9 +425,8 @@ function sampleEvidence(raw, context) {
   const sampleId = id(value.sampleId);
   if (value.taxonomyScope !== context.scope.taxonomyScope
     || value.descriptionCategoryId !== context.scope.descriptionCategoryId
-    || value.typeId !== context.scope.typeId || !Array.isArray(value.images)
-    || value.images.length < 1 || value.images.length > 6) throw invalid();
-  const images = value.images.map((image) => imageEvidence(image, {
+    || value.typeId !== context.scope.typeId) throw invalid();
+  const images = closedArray(value.images, 1, 6).map((image) => imageEvidence(image, {
     ...context, sampleSetId, sampleId,
   }));
   if (images.some((image, ordinal) => image.ordinal !== ordinal
@@ -365,18 +440,21 @@ function sampleEvidence(raw, context) {
   };
 }
 
-function commitRequest(raw) {
-  const value = closed(raw, new Set([
+function commitRequest(raw, { canonical = false } = {}) {
+  const keys = [
     "accountId", "actorId", "draftId", "sessionId", "sessionSecretHash", "expectedDraftVersion", "samples",
-    "sampleSetHash", "idempotencyKey", "correlationId",
-  ]));
+    "idempotencyKey", "correlationId",
+  ];
+  if (!canonical) keys.push("sampleSetHash");
+  const value = closed(raw, new Set(keys));
   const accountId = sameActor(value);
-  if (!Array.isArray(value.samples) || value.samples.length < 5 || value.samples.length > 20) throw invalid();
+  const sampleValues = closedArray(value.samples, 5, 20);
   const input = {
     accountId, actorId: accountId, draftId: id(value.draftId), sessionId: id(value.sessionId),
     sessionSecretHash: sha256(value.sessionSecretHash),
     expectedDraftVersion: positiveInteger(value.expectedDraftVersion),
-    sampleSetHash: sha256(value.sampleSetHash), idempotencyKey: id(value.idempotencyKey),
+    ...(canonical ? {} : { sampleSetHash: sha256(value.sampleSetHash) }),
+    idempotencyKey: id(value.idempotencyKey),
     correlationId: id(value.correlationId),
   };
   const rawScope = value.samples[0];
@@ -385,7 +463,7 @@ function commitRequest(raw) {
     descriptionCategoryId: rawScope?.descriptionCategoryId,
     typeId: rawScope?.typeId,
   };
-  input.samples = value.samples.map((entry) => sampleEvidence(entry, input));
+  input.samples = sampleValues.map((entry) => sampleEvidence(entry, input));
   if (new Set(input.samples.map((entry) => entry.sampleSetId)).size !== 1
     || new Set(input.samples.map((entry) => entry.sampleId)).size !== input.samples.length
     || new Set(input.samples.map((entry) => entry.sku)).size !== input.samples.length
@@ -423,7 +501,144 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
   const { pool } = options;
   if (!pool || typeof pool.connect !== "function" || typeof pool.query !== "function") throw invalid();
 
+  async function commitSampleSetCommand(raw, canonical) {
+    const input = commitRequest(raw, { canonical });
+    const action = "COMMIT_SAMPLE_SET";
+    const hash = requestHash({ action, ...input });
+    return transaction(pool, async (client) => {
+      await lockAccount(client, input.accountId);
+      await requireCompatibleEventIdempotency(client, input, action, hash);
+      const replay = await query(client,
+        `SELECT sample_set.id AS sample_set_id,sample_set.account_id,sample_set.draft_id,
+                sample_set.sample_set_hash,sample_set.sample_count,sample_set.idempotency_key,
+                sample_set.request_hash,
+                draft.draft_version,draft.status AS draft_status
+           FROM auto_listing_category_strategy_sample_sets sample_set
+           JOIN auto_listing_category_strategy_drafts draft
+             ON draft.account_id=sample_set.account_id AND draft.id=sample_set.draft_id
+          WHERE sample_set.account_id=$1 AND sample_set.idempotency_key=$2 FOR UPDATE OF sample_set,draft`,
+        [input.accountId, input.idempotencyKey]);
+      if (replay.rows[0]) {
+        if (replay.rows[0].request_hash !== hash
+          || (!canonical && replay.rows[0].sample_set_hash !== input.sampleSetHash)) {
+          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
+        }
+        return sampleSetRow({ ...replay.rows[0], draft_status: "SAMPLES_READY",
+          draft_version: input.expectedDraftVersion + 1 }, true);
+      }
+      await requireMutationEnabled(client, input.accountId);
+      const draftResult = await query(client,
+        `SELECT * FROM auto_listing_category_strategy_drafts
+          WHERE account_id=$1 AND id=$2 FOR UPDATE`,
+        [input.accountId, input.draftId]);
+      const draft = draftResult.rows[0];
+      if (!draft) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND", 404);
+      if (Number(draft.draft_version) !== input.expectedDraftVersion || draft.status !== "COLLECTING") {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
+      }
+      if (draft.taxonomy_scope !== input.scope.taxonomyScope
+        || Number(draft.description_category_id) !== input.scope.descriptionCategoryId
+        || Number(draft.type_id) !== input.scope.typeId) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SCOPE_CONFLICT", 409);
+      }
+      await requireDraftCurrentSource(client, draft);
+      const sessionResult = await query(client,
+        `SELECT *,expires_at>STATEMENT_TIMESTAMP() AS unexpired
+           FROM auto_listing_category_strategy_sampling_sessions
+          WHERE account_id=$1 AND draft_id=$2 AND taxonomy_scope=$3
+            AND description_category_id=$4 AND type_id=$5 AND id=$6 FOR UPDATE`,
+        [input.accountId, input.draftId, draft.taxonomy_scope, draft.description_category_id,
+          draft.type_id, input.sessionId]);
+      const session = sessionResult.rows[0];
+      if (!session) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_NOT_FOUND", 404);
+      if (session.state !== "ACTIVE" || session.unexpired !== true) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_EXPIRED", 409);
+      }
+      if (!sameHash(session.session_secret_hash, input.sessionSecretHash)) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_SECRET_MISMATCH", 409);
+      }
+      await query(client,
+        `INSERT INTO auto_listing_category_strategy_sample_sets
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,session_id,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$2)`,
+        [input.sampleSetId, input.accountId, input.draftId, draft.taxonomy_scope,
+          draft.description_category_id, draft.type_id, input.sessionId,
+          input.idempotencyKey, input.correlationId, hash]);
+      for (const [ordinal, sample] of input.samples.entries()) {
+        const childKey = deterministicId("category_sample_command", input.accountId, input.idempotencyKey, sample.sampleId);
+        await query(client,
+          `INSERT INTO auto_listing_category_strategy_samples
+             (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,sample_set_id,ordinal,
+              sku,source_product_id,source_product_ref,source_product_response_hash,
+              idempotency_key,correlation_id,request_hash,actor_account_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$2)`,
+          [sample.sampleId, input.accountId, input.draftId, draft.taxonomy_scope,
+            draft.description_category_id, draft.type_id, input.sampleSetId, ordinal, sample.sku,
+            sample.sourceProductId, sample.sourceProductRef, sample.sourceProductResponseHash,
+            childKey, input.correlationId, hash]);
+        for (const image of sample.images) {
+          const imageKey = deterministicId("category_image_command", input.accountId, input.idempotencyKey, image.imageId);
+          await query(client,
+            `INSERT INTO auto_listing_category_strategy_sample_images
+               (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,sample_set_id,sample_id,
+                image_id,role,ordinal,source_url_host,source_ref_hash,source_response_hash,source_content_hash,
+                analysis_object_key,analysis_content_hash,thumbnail_object_key,thumbnail_content_hash,
+                content_type,width,height,captured_at,idempotency_key,correlation_id,request_hash,actor_account_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$1,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+               $22::TIMESTAMPTZ,$23,$24,$25,$2)`,
+            [image.imageId, input.accountId, input.draftId, draft.taxonomy_scope,
+              draft.description_category_id, draft.type_id, input.sampleSetId, sample.sampleId,
+              image.role, image.ordinal, image.sourceUrlHost, image.sourceRefHash, image.sourceResponseHash,
+              image.sourceContentHash, image.analysisObjectKey, image.analysisContentHash,
+              image.thumbnailObjectKey, image.thumbnailContentHash, image.contentType, image.width,
+              image.height, image.capturedAt, imageKey, input.correlationId, hash]);
+        }
+      }
+      const canonicalHash = (await query(client,
+        "SELECT auto_listing_category_strategy_canonical_sample_set_hash($1,$2) AS hash",
+        [input.accountId, input.sampleSetId])).rows[0]?.hash;
+      if (typeof canonicalHash !== "string" || !SHA256.test(canonicalHash)) {
+        throw databaseFailed();
+      }
+      if (!canonical && canonicalHash !== input.sampleSetHash) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_SET_HASH_MISMATCH", 409);
+      }
+      const sealed = await query(client,
+        `UPDATE auto_listing_category_strategy_sample_sets
+            SET status='SEALED',sample_set_hash=$3
+          WHERE account_id=$1 AND id=$2 AND status='BUILDING'
+          RETURNING id AS sample_set_id,account_id,draft_id,sample_set_hash,sample_count,idempotency_key`,
+        [input.accountId, input.sampleSetId, canonicalHash]);
+      const advanced = await query(client,
+        `UPDATE auto_listing_category_strategy_drafts
+            SET status='SAMPLES_READY',draft_version=draft_version+1,updated_at=STATEMENT_TIMESTAMP()
+          WHERE account_id=$1 AND id=$2 AND draft_version=$3 AND status='COLLECTING'
+          RETURNING *`,
+        [input.accountId, input.draftId, input.expectedDraftVersion]);
+      if (!advanced.rows[0]) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
+      await insertDraftEvent(client, input, advanced.rows[0], "SAMPLE_SET_COMMITTED", hash);
+      return sampleSetRow({ ...sealed.rows[0], draft_version: advanced.rows[0].draft_version,
+        draft_status: advanced.rows[0].status }, false);
+    });
+  }
+
   return Object.freeze({
+    async getDraftReplay(raw = {}) {
+      const input = createDraftRequest(raw);
+      const requestHashValue = requestHash({ action: "CREATE_DRAFT", ...input });
+      const replay = await query(pool,
+        `SELECT * FROM auto_listing_category_strategy_drafts
+          WHERE account_id=$1 AND idempotency_key=$2`,
+        [input.accountId, input.idempotencyKey]);
+      const row = replay.rows[0];
+      if (!row) return null;
+      if (row.request_hash !== requestHashValue) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
+      }
+      return draftRow({ ...row, status: "COLLECTING", draft_version: 1 }, true);
+    },
+
     async createDraft(raw = {}) {
       const input = createDraftRequest(raw);
       const action = "CREATE_DRAFT";
@@ -441,6 +656,7 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
           }
           return draftRow({ ...replay.rows[0], status: "COLLECTING", draft_version: 1 }, true);
         }
+        await requireMutationEnabled(client, input.accountId);
         await requireCurrentSource(client, input);
         const productDraftVersion = Number(input.expectedSourceVersion.slice("draft:".length));
         const source = await query(client,
@@ -465,6 +681,96 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
       });
     },
 
+    async getSamplingSessionReplay(raw = {}) {
+      const input = sessionReplayRequest(raw);
+      const result = await query(pool,
+        `SELECT session.*,event.event_payload,event.correlation_id AS event_correlation_id
+           FROM auto_listing_category_strategy_sampling_sessions session
+           LEFT JOIN auto_listing_category_strategy_events event
+             ON event.account_id=session.account_id AND event.draft_id=session.draft_id
+            AND event.idempotency_key=session.idempotency_key
+          WHERE session.account_id=$1 AND session.idempotency_key=$2`,
+        [input.accountId, input.idempotencyKey]);
+      const row = result.rows[0];
+      if (!row) return null;
+      if (row.id !== input.sessionId || row.draft_id !== input.draftId
+        || !sameHash(row.session_secret_hash, input.sessionSecretHash)
+        || row.correlation_id !== input.correlationId
+        || row.event_correlation_id !== input.correlationId
+        || row.event_payload?.event !== "SAMPLING_SESSION_STARTED"
+        || Number(row.event_payload?.draftVersion) !== input.expectedDraftVersion) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
+      }
+      return sessionRow({ ...row, state: "ACTIVE" }, true);
+    },
+
+    async validateSamplingSession(raw = {}) {
+      const input = sessionValidationRequest(raw);
+      const draftResult = await query(pool,
+        `SELECT * FROM auto_listing_category_strategy_drafts
+          WHERE account_id=$1 AND id=$2`,
+        [input.accountId, input.draftId]);
+      const draft = draftResult.rows[0];
+      if (!draft) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND", 404);
+      if (Number(draft.draft_version) !== input.expectedDraftVersion || draft.status !== "COLLECTING") {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
+      }
+      await requireDraftCurrentSource(pool, draft);
+      const sessionResult = await query(pool,
+        `SELECT *,expires_at>STATEMENT_TIMESTAMP() AS unexpired
+           FROM auto_listing_category_strategy_sampling_sessions
+          WHERE account_id=$1 AND draft_id=$2 AND taxonomy_scope=$3
+            AND description_category_id=$4 AND type_id=$5 AND id=$6`,
+        [input.accountId, input.draftId, draft.taxonomy_scope, draft.description_category_id,
+          draft.type_id, input.sessionId]);
+      const session = sessionResult.rows[0];
+      if (!session) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_NOT_FOUND", 404);
+      if (session.state !== "ACTIVE" || session.unexpired !== true) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_EXPIRED", 409);
+      }
+      if (!sameHash(session.session_secret_hash, input.sessionSecretHash)) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_SECRET_MISMATCH", 409);
+      }
+      return sessionRow(session, false);
+    },
+
+    async getCommittedSampleSetReplay(raw = {}) {
+      const input = sampleReplayRequest(raw);
+      const result = await query(pool,
+        `SELECT sample_set.*,session.session_secret_hash,event.event_payload,
+                event.correlation_id AS event_correlation_id
+           FROM auto_listing_category_strategy_sample_sets sample_set
+           JOIN auto_listing_category_strategy_sampling_sessions session
+             ON session.account_id=sample_set.account_id AND session.id=sample_set.session_id
+           LEFT JOIN auto_listing_category_strategy_events event
+             ON event.account_id=sample_set.account_id AND event.draft_id=sample_set.draft_id
+            AND event.idempotency_key=sample_set.idempotency_key
+          WHERE sample_set.account_id=$1 AND sample_set.idempotency_key=$2`,
+        [input.accountId, input.idempotencyKey]);
+      const row = result.rows[0];
+      if (!row) return null;
+      if (row.status !== "SEALED" || row.draft_id !== input.draftId || row.session_id !== input.sessionId
+        || row.correlation_id !== input.correlationId || row.event_correlation_id !== input.correlationId
+        || row.event_payload?.event !== "SAMPLE_SET_COMMITTED"
+        || Number(row.event_payload?.draftVersion) !== input.expectedDraftVersion + 1
+        || !sameHash(row.session_secret_hash, input.sessionSecretHash)) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
+      }
+      const samples = await query(pool,
+        `SELECT sku,source_product_id,source_product_ref
+           FROM auto_listing_category_strategy_samples
+          WHERE account_id=$1 AND sample_set_id=$2 ORDER BY ordinal ASC`,
+        [input.accountId, row.id]);
+      if (samples.rows.length !== input.selections.length
+        || samples.rows.some((sample, ordinal) => sample.sku !== input.selections[ordinal].sku
+          || Number(sample.source_product_id) !== input.selections[ordinal].sourceProductId
+          || sample.source_product_ref !== input.selections[ordinal].sourceProductRef)) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
+      }
+      return sampleSetRow({ ...row, sample_set_id: row.id,
+        draft_version: input.expectedDraftVersion + 1, draft_status: "SAMPLES_READY" }, true);
+    },
+
     async startSamplingSession(raw = {}) {
       const input = sessionRequest(raw);
       const action = "START_SAMPLING_SESSION";
@@ -483,6 +789,7 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
           }
           return sessionRow({ ...replay.rows[0], state: "ACTIVE" }, true);
         }
+        await requireMutationEnabled(client, input.accountId);
         const draftResult = await query(client,
           `SELECT * FROM auto_listing_category_strategy_drafts
             WHERE account_id=$1 AND id=$2 FOR UPDATE`,
@@ -513,121 +820,11 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
     },
 
     async commitSampleSet(raw = {}) {
-      const input = commitRequest(raw);
-      const action = "COMMIT_SAMPLE_SET";
-      const hash = requestHash({ action, ...input });
-      return transaction(pool, async (client) => {
-        await lockAccount(client, input.accountId);
-        await requireCompatibleEventIdempotency(client, input, action, hash);
-        const replay = await query(client,
-          `SELECT sample_set.id AS sample_set_id,sample_set.account_id,sample_set.draft_id,
-                  sample_set.sample_set_hash,sample_set.sample_count,sample_set.idempotency_key,
-                  sample_set.request_hash,
-                  draft.draft_version,draft.status AS draft_status
-             FROM auto_listing_category_strategy_sample_sets sample_set
-             JOIN auto_listing_category_strategy_drafts draft
-               ON draft.account_id=sample_set.account_id AND draft.id=sample_set.draft_id
-            WHERE sample_set.account_id=$1 AND sample_set.idempotency_key=$2 FOR UPDATE OF sample_set,draft`,
-          [input.accountId, input.idempotencyKey]);
-        if (replay.rows[0]) {
-          if (replay.rows[0].request_hash !== hash
-            || replay.rows[0].sample_set_hash !== input.sampleSetHash) {
-            throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
-          }
-          return sampleSetRow({ ...replay.rows[0], draft_status: "SAMPLES_READY",
-            draft_version: input.expectedDraftVersion + 1 }, true);
-        }
-        const draftResult = await query(client,
-          `SELECT * FROM auto_listing_category_strategy_drafts
-            WHERE account_id=$1 AND id=$2 FOR UPDATE`,
-          [input.accountId, input.draftId]);
-        const draft = draftResult.rows[0];
-        if (!draft) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND", 404);
-        if (Number(draft.draft_version) !== input.expectedDraftVersion || draft.status !== "COLLECTING") {
-          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
-        }
-        if (draft.taxonomy_scope !== input.scope.taxonomyScope
-          || Number(draft.description_category_id) !== input.scope.descriptionCategoryId
-          || Number(draft.type_id) !== input.scope.typeId) {
-          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SCOPE_CONFLICT", 409);
-        }
-        await requireDraftCurrentSource(client, draft);
-        const sessionResult = await query(client,
-          `SELECT *,expires_at>STATEMENT_TIMESTAMP() AS unexpired
-             FROM auto_listing_category_strategy_sampling_sessions
-            WHERE account_id=$1 AND draft_id=$2 AND taxonomy_scope=$3
-              AND description_category_id=$4 AND type_id=$5 AND id=$6 FOR UPDATE`,
-          [input.accountId, input.draftId, draft.taxonomy_scope, draft.description_category_id,
-            draft.type_id, input.sessionId]);
-        const session = sessionResult.rows[0];
-        if (!session) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_NOT_FOUND", 404);
-        if (session.state !== "ACTIVE" || session.unexpired !== true) {
-          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_EXPIRED", 409);
-        }
-        if (!sameHash(session.session_secret_hash, input.sessionSecretHash)) {
-          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_SECRET_MISMATCH", 409);
-        }
-        await query(client,
-          `INSERT INTO auto_listing_category_strategy_sample_sets
-             (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,session_id,
-              idempotency_key,correlation_id,request_hash,actor_account_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$2)`,
-          [input.sampleSetId, input.accountId, input.draftId, draft.taxonomy_scope,
-            draft.description_category_id, draft.type_id, input.sessionId,
-            input.idempotencyKey, input.correlationId, hash]);
-        for (const [ordinal, sample] of input.samples.entries()) {
-          const childKey = deterministicId("category_sample_command", input.accountId, input.idempotencyKey, sample.sampleId);
-          await query(client,
-            `INSERT INTO auto_listing_category_strategy_samples
-               (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,sample_set_id,ordinal,
-                sku,source_product_id,source_product_ref,source_product_response_hash,
-                idempotency_key,correlation_id,request_hash,actor_account_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$2)`,
-            [sample.sampleId, input.accountId, input.draftId, draft.taxonomy_scope,
-              draft.description_category_id, draft.type_id, input.sampleSetId, ordinal, sample.sku,
-              sample.sourceProductId, sample.sourceProductRef, sample.sourceProductResponseHash,
-              childKey, input.correlationId, hash]);
-          for (const image of sample.images) {
-            const imageKey = deterministicId("category_image_command", input.accountId, input.idempotencyKey, image.imageId);
-            await query(client,
-              `INSERT INTO auto_listing_category_strategy_sample_images
-                 (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,sample_set_id,sample_id,
-                  image_id,role,ordinal,source_url_host,source_ref_hash,source_response_hash,source_content_hash,
-                  analysis_object_key,analysis_content_hash,thumbnail_object_key,thumbnail_content_hash,
-                  content_type,width,height,captured_at,idempotency_key,correlation_id,request_hash,actor_account_id)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$1,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                 $22::TIMESTAMPTZ,$23,$24,$25,$2)`,
-              [image.imageId, input.accountId, input.draftId, draft.taxonomy_scope,
-                draft.description_category_id, draft.type_id, input.sampleSetId, sample.sampleId,
-                image.role, image.ordinal, image.sourceUrlHost, image.sourceRefHash, image.sourceResponseHash,
-                image.sourceContentHash, image.analysisObjectKey, image.analysisContentHash,
-                image.thumbnailObjectKey, image.thumbnailContentHash, image.contentType, image.width,
-                image.height, image.capturedAt, imageKey, input.correlationId, hash]);
-          }
-        }
-        const canonicalHash = (await query(client,
-          "SELECT auto_listing_category_strategy_canonical_sample_set_hash($1,$2) AS hash",
-          [input.accountId, input.sampleSetId])).rows[0]?.hash;
-        if (canonicalHash !== input.sampleSetHash) {
-          throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_SET_HASH_MISMATCH", 409);
-        }
-        const sealed = await query(client,
-          `UPDATE auto_listing_category_strategy_sample_sets
-              SET status='SEALED',sample_set_hash=$3
-            WHERE account_id=$1 AND id=$2 AND status='BUILDING'
-            RETURNING id AS sample_set_id,account_id,draft_id,sample_set_hash,sample_count,idempotency_key`,
-          [input.accountId, input.sampleSetId, canonicalHash]);
-        const advanced = await query(client,
-          `UPDATE auto_listing_category_strategy_drafts
-              SET status='SAMPLES_READY',draft_version=draft_version+1,updated_at=STATEMENT_TIMESTAMP()
-            WHERE account_id=$1 AND id=$2 AND draft_version=$3 AND status='COLLECTING'
-            RETURNING *`,
-          [input.accountId, input.draftId, input.expectedDraftVersion]);
-        if (!advanced.rows[0]) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
-        await insertDraftEvent(client, input, advanced.rows[0], "SAMPLE_SET_COMMITTED", hash);
-        return sampleSetRow({ ...sealed.rows[0], draft_version: advanced.rows[0].draft_version,
-          draft_status: advanced.rows[0].status }, false);
-      });
+      return commitSampleSetCommand(raw, false);
+    },
+
+    async commitSampleSetCanonical(raw = {}) {
+      return commitSampleSetCommand(raw, true);
     },
 
     async transitionAccountPolicy(raw = {}) {

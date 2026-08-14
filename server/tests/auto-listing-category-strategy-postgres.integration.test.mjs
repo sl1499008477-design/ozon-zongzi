@@ -155,6 +155,35 @@ async function expectedSampleSetHash(pool, { accountId, draftId, sessionId, scop
   }
 }
 
+test("repository commands reject top-level and nested proxies without executing traps", async () => {
+  const repository = createAutoListingCategoryStrategyPostgres({
+    pool: {
+      async query() { throw new Error("database must not be reached"); },
+      async connect() { throw new Error("database must not be reached"); },
+    },
+  });
+  let traps = 0;
+  const hostile = new Proxy({}, {
+    getPrototypeOf() { traps += 1; return Object.prototype; },
+    ownKeys() { traps += 1; return []; },
+    getOwnPropertyDescriptor() { traps += 1; return undefined; },
+  });
+  await assert.rejects(repository.commitSampleSetCanonical(hostile), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_REPOSITORY_INVALID", status: 422,
+  });
+  assert.equal(traps, 0);
+
+  const nested = {
+    accountId: "account-a", actorId: "account-a", draftId: "draft-a", sessionId: "session-a",
+    sessionSecretHash: sha("secret"), expectedDraftVersion: 1, selections: hostile,
+    idempotencyKey: "replay-a", correlationId: "correlation-a",
+  };
+  await assert.rejects(repository.getCommittedSampleSetReplay(nested), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_REPOSITORY_INVALID", status: 422,
+  });
+  assert.equal(traps, 0);
+});
+
 if (!enabled) {
   test("category strategy PostgreSQL integration requires explicit disposable database opt-in", {
     skip: "requires AUTO_LISTING_CATEGORY_STRATEGY_POSTGRES_TESTS=1 and TEST_DATABASE_URL",
@@ -183,9 +212,24 @@ if (!enabled) {
       }
       const sourceA = await seedSource(admin, { accountId: accountA, suffix });
       const sourceB = await seedSource(admin, { accountId: accountB, suffix });
+      const canonicalSourceB = await seedSource(admin, { accountId: accountB,
+        suffix: `canonical-${suffix}`, descriptionCategoryId: 171, typeId: 101 });
+      const draftRaceSource = await seedSource(admin, { accountId: accountA,
+        suffix: `draft-race-${suffix}`, descriptionCategoryId: 180, typeId: 110 });
+      const sessionRaceSource = await seedSource(admin, { accountId: accountA,
+        suffix: `session-race-${suffix}`, descriptionCategoryId: 181, typeId: 111 });
+      const commitRaceSource = await seedSource(admin, { accountId: accountA,
+        suffix: `commit-race-${suffix}`, descriptionCategoryId: 182, typeId: 112 });
       pool = new Pool({ connectionString: databaseUrl, max: 8, options: `-c search_path=${schema},public` });
       const repository = createAutoListingCategoryStrategyPostgres({ pool });
       const scope = { accountId: accountA, taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 };
+      for (const accountId of [accountA, accountB]) {
+        await repository.transitionAccountPolicy({
+          accountId, actorId: accountId, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+          idempotencyKey: `enable-category-strategy-${accountId}-${suffix}`,
+          correlationId: `enable-category-strategy-corr-${accountId}-${suffix}`,
+        });
+      }
 
       const concurrentDraftInput = {
         accountId: accountB, actorId: accountB, scope: { ...scope, accountId: accountB },
@@ -232,15 +276,98 @@ if (!enabled) {
       ]);
       assert.equal(new Set(concurrentCommits.map((result) => result.sampleSetId)).size, 1);
       assert.deepEqual(concurrentCommits.map((result) => result.duplicate).sort(), [false, true]);
+
+      const canonicalScope = { accountId: accountB, taxonomyScope: "OZON:DEFAULT",
+        descriptionCategoryId: 171, typeId: 101 };
+      const canonicalDraft = await repository.createDraft({
+        accountId: accountB, actorId: accountB, scope: canonicalScope,
+        sourceCollectItemId: canonicalSourceB.collectItemId,
+        expectedSourceVersion: canonicalSourceB.expectedSourceVersion,
+        idempotencyKey: `canonical-draft-${suffix}`, correlationId: `canonical-draft-corr-${suffix}`,
+      });
+      assert.equal((await repository.getDraftReplay({
+        accountId: accountB, actorId: accountB, scope: canonicalScope,
+        sourceCollectItemId: canonicalSourceB.collectItemId,
+        expectedSourceVersion: canonicalSourceB.expectedSourceVersion,
+        idempotencyKey: `canonical-draft-${suffix}`, correlationId: `canonical-draft-corr-${suffix}`,
+      })).duplicate, true);
+      const canonicalSessionInput = {
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId, expectedDraftVersion: 1,
+        sessionId: `canonical-session-${suffix}`, sessionSecretHash: sha(`canonical-secret-${suffix}`),
+        expiresAt: new Date(Date.now() + (2 * 60 * 60 * 1000)).toISOString(),
+        idempotencyKey: `canonical-session-command-${suffix}`,
+        correlationId: `canonical-session-corr-${suffix}`,
+      };
+      const canonicalSession = await repository.startSamplingSession(canonicalSessionInput);
+      assert.equal((await repository.getSamplingSessionReplay({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId, expectedDraftVersion: 1,
+        sessionId: canonicalSession.sessionId, sessionSecretHash: canonicalSessionInput.sessionSecretHash,
+        idempotencyKey: canonicalSessionInput.idempotencyKey,
+        correlationId: canonicalSessionInput.correlationId,
+      })).duplicate, true);
+      assert.equal((await repository.validateSamplingSession({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId, expectedDraftVersion: 1,
+        sessionId: canonicalSession.sessionId, sessionSecretHash: canonicalSessionInput.sessionSecretHash,
+      })).sessionId, canonicalSession.sessionId);
+      const canonicalSampleSetId = `canonical-sample-set-${suffix}`;
+      const canonicalSamples = Array.from({ length: 5 }, (_, ordinal) => sample({
+        suffix: `canonical-${suffix}`, ordinal, scope: canonicalScope,
+        accountId: accountB, draftId: canonicalDraft.draftId, sampleSetId: canonicalSampleSetId,
+      }));
+      const canonicalExpectedHash = await expectedSampleSetHash(pool, {
+        accountId: accountB, draftId: canonicalDraft.draftId, sessionId: canonicalSession.sessionId,
+        scope: canonicalScope, samples: canonicalSamples,
+      });
+      const canonicalCommitInput = {
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        sessionId: canonicalSession.sessionId, sessionSecretHash: canonicalSessionInput.sessionSecretHash,
+        expectedDraftVersion: 1, samples: canonicalSamples,
+        idempotencyKey: `canonical-commit-${suffix}`, correlationId: `canonical-commit-corr-${suffix}`,
+      };
+      const canonicalCommitted = await repository.commitSampleSetCanonical(canonicalCommitInput);
+      assert.deepEqual({ hash: canonicalCommitted.sampleSetHash, duplicate: canonicalCommitted.duplicate }, {
+        hash: canonicalExpectedHash, duplicate: false,
+      });
+      assert.deepEqual({
+        hash: (await repository.commitSampleSetCanonical(canonicalCommitInput)).sampleSetHash,
+        duplicate: (await repository.commitSampleSetCanonical(canonicalCommitInput)).duplicate,
+      }, { hash: canonicalExpectedHash, duplicate: true });
+      const durableCanonicalReplay = await repository.getCommittedSampleSetReplay({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        sessionId: canonicalSession.sessionId, sessionSecretHash: canonicalSessionInput.sessionSecretHash,
+        expectedDraftVersion: 1,
+        selections: canonicalSamples.map(({ sku, sourceProductId, sourceProductRef }) => ({
+          sku, sourceProductId, sourceProductRef,
+        })),
+        idempotencyKey: canonicalCommitInput.idempotencyKey,
+        correlationId: canonicalCommitInput.correlationId,
+      });
+      assert.deepEqual({ hash: durableCanonicalReplay.sampleSetHash,
+        duplicate: durableCanonicalReplay.duplicate }, { hash: canonicalExpectedHash, duplicate: true });
+      await assert.rejects(repository.getCommittedSampleSetReplay({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        sessionId: canonicalSession.sessionId, sessionSecretHash: canonicalSessionInput.sessionSecretHash,
+        expectedDraftVersion: 1,
+        selections: canonicalSamples.map(({ sku, sourceProductId, sourceProductRef }, ordinal) => ({
+          sku: ordinal === 0 ? `${sku}-changed` : sku, sourceProductId, sourceProductRef,
+        })),
+        idempotencyKey: canonicalCommitInput.idempotencyKey,
+        correlationId: canonicalCommitInput.correlationId,
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
+      await assert.rejects(repository.commitSampleSetCanonical({
+        ...canonicalCommitInput,
+        samples: canonicalSamples.map((entry, ordinal) => ordinal === 0
+          ? { ...entry, sourceProductResponseHash: sha("changed-product-response") } : entry),
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
       const concurrentPolicyInput = {
-        accountId: accountB, actorId: accountB, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+        accountId: accountB, actorId: accountB, expectedVersion: 2, mode: "LEGACY_FALLBACK",
         idempotencyKey: `concurrent-policy-${suffix}`, correlationId: `concurrent-policy-corr-${suffix}`,
       };
       const concurrentPolicies = await Promise.all([
         repository.transitionAccountPolicy(concurrentPolicyInput),
         repository.transitionAccountPolicy(concurrentPolicyInput),
       ]);
-      assert.deepEqual(concurrentPolicies.map((result) => result.version), [2, 2]);
+      assert.deepEqual(concurrentPolicies.map((result) => result.version), [3, 3]);
       assert.deepEqual(concurrentPolicies.map((result) => result.duplicate).sort(), [false, true]);
 
       const draftInput = {
@@ -260,7 +387,7 @@ if (!enabled) {
       await assert.rejects(repository.createDraft({
         ...draftInput, accountId: accountB, actorId: accountB, scope: { ...scope, accountId: accountB },
         idempotencyKey: `foreign-draft-${suffix}`,
-      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_SOURCE_NOT_FOUND", status: 404 });
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", status: 409 });
 
       const expiresAt = new Date(Date.now() + (2 * 60 * 60 * 1000)).toISOString();
       await assert.rejects(repository.startSamplingSession({
@@ -491,48 +618,162 @@ if (!enabled) {
       });
 
       await assert.rejects(repository.transitionAccountPolicy({
-        accountId: accountA, actorId: accountA, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+        accountId: accountA, actorId: accountA, expectedVersion: 2, mode: "LEGACY_FALLBACK",
         idempotencyKey: draftInput.idempotencyKey,
         correlationId: `cross-command-policy-corr-${suffix}`,
       }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
-      assert.equal((await repository.getAccountPolicy({ accountId: accountA })).version, 1);
+      assert.equal((await repository.getAccountPolicy({ accountId: accountA })).version, 2);
 
       const settings = await repository.transitionAccountPolicy({
-        accountId: accountA, actorId: accountA, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+        accountId: accountA, actorId: accountA, expectedVersion: 2, mode: "LEGACY_FALLBACK",
         idempotencyKey: `policy-${suffix}`, correlationId: `policy-corr-${suffix}`,
       });
       assert.deepEqual({ mode: settings.mode, version: settings.version, duplicate: settings.duplicate }, {
-        mode: "REQUIRE_EXACT_STRATEGY", version: 2, duplicate: false,
+        mode: "LEGACY_FALLBACK", version: 3, duplicate: false,
       });
       assert.equal((await repository.transitionAccountPolicy({
-        accountId: accountA, actorId: accountA, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+        accountId: accountA, actorId: accountA, expectedVersion: 2, mode: "LEGACY_FALLBACK",
         idempotencyKey: `policy-${suffix}`, correlationId: `policy-corr-${suffix}`,
       })).duplicate, true);
       await assert.rejects(repository.transitionAccountPolicy({
-        accountId: accountA, actorId: accountA, expectedVersion: 1, mode: "LEGACY_FALLBACK",
+        accountId: accountA, actorId: accountA, expectedVersion: 2, mode: "REQUIRE_EXACT_STRATEGY",
         idempotencyKey: `policy-${suffix}`, correlationId: `policy-corr-${suffix}`,
       }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
       await assert.rejects(repository.transitionAccountPolicy({
-        accountId: accountA, actorId: accountA, expectedVersion: 1, mode: "LEGACY_FALLBACK",
+        accountId: accountA, actorId: accountA, expectedVersion: 2, mode: "REQUIRE_EXACT_STRATEGY",
         idempotencyKey: `stale-policy-${suffix}`, correlationId: `stale-policy-corr-${suffix}`,
       }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_POLICY_VERSION_CONFLICT", status: 409 });
       await assert.rejects(repository.transitionAccountPolicy({
-        accountId: accountA, actorId: accountB, expectedVersion: 2, mode: "LEGACY_FALLBACK",
+        accountId: accountA, actorId: accountB, expectedVersion: 3, mode: "REQUIRE_EXACT_STRATEGY",
         idempotencyKey: `wrong-actor-${suffix}`, correlationId: `wrong-actor-corr-${suffix}`,
       }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_REPOSITORY_INVALID", status: 422 });
       const laterSettings = await repository.transitionAccountPolicy({
-        accountId: accountA, actorId: accountA, expectedVersion: 2, mode: "LEGACY_FALLBACK",
+        accountId: accountA, actorId: accountA, expectedVersion: 3, mode: "REQUIRE_EXACT_STRATEGY",
         idempotencyKey: `later-policy-${suffix}`, correlationId: `later-policy-corr-${suffix}`,
       });
-      assert.equal(laterSettings.version, 3);
+      assert.equal(laterSettings.version, 4);
       const historicalReplay = await repository.transitionAccountPolicy({
-        accountId: accountA, actorId: accountA, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+        accountId: accountA, actorId: accountA, expectedVersion: 2, mode: "LEGACY_FALLBACK",
         idempotencyKey: `policy-${suffix}`, correlationId: `policy-corr-${suffix}`,
       });
       assert.deepEqual({ mode: historicalReplay.mode, version: historicalReplay.version, duplicate: historicalReplay.duplicate }, {
-        mode: "REQUIRE_EXACT_STRATEGY", version: 2, duplicate: true,
+        mode: "LEGACY_FALLBACK", version: 3, duplicate: true,
       });
-      assert.equal((await repository.getAccountPolicy({ accountId: accountA })).version, 3);
+      assert.equal((await repository.getAccountPolicy({ accountId: accountA })).version, 4);
+
+      const draftRaceInput = {
+        accountId: accountA, actorId: accountA,
+        scope: { accountId: accountA, taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 180, typeId: 110 },
+        sourceCollectItemId: draftRaceSource.collectItemId,
+        expectedSourceVersion: draftRaceSource.expectedSourceVersion,
+        idempotencyKey: `draft-disable-race-${suffix}`, correlationId: `draft-disable-race-corr-${suffix}`,
+      };
+      const [draftDisable, draftMutation] = await Promise.allSettled([
+        repository.transitionAccountPolicy({
+          accountId: accountA, actorId: accountA, expectedVersion: 4, mode: "LEGACY_FALLBACK",
+          idempotencyKey: `draft-race-disable-${suffix}`, correlationId: `draft-race-disable-corr-${suffix}`,
+        }),
+        repository.createDraft(draftRaceInput),
+      ]);
+      assert.equal(draftDisable.status, "fulfilled");
+      assert.equal(draftMutation.status === "fulfilled"
+        || (draftMutation.status === "rejected"
+          && draftMutation.reason?.code === "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY"), true);
+      if (draftMutation.status === "fulfilled") {
+        assert.equal((await repository.createDraft(draftRaceInput)).duplicate, true);
+      } else {
+        assert.equal(Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_drafts WHERE account_id=$1 AND idempotency_key=$2",
+          [accountA, draftRaceInput.idempotencyKey],
+        )).rows[0].count), 0);
+      }
+
+      await repository.transitionAccountPolicy({
+        accountId: accountA, actorId: accountA, expectedVersion: 5, mode: "REQUIRE_EXACT_STRATEGY",
+        idempotencyKey: `session-race-enable-${suffix}`, correlationId: `session-race-enable-corr-${suffix}`,
+      });
+      const sessionRaceDraft = await repository.createDraft({
+        accountId: accountA, actorId: accountA,
+        scope: { accountId: accountA, taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 181, typeId: 111 },
+        sourceCollectItemId: sessionRaceSource.collectItemId,
+        expectedSourceVersion: sessionRaceSource.expectedSourceVersion,
+        idempotencyKey: `session-race-draft-${suffix}`, correlationId: `session-race-draft-corr-${suffix}`,
+      });
+      const sessionRaceInput = {
+        accountId: accountA, actorId: accountA, draftId: sessionRaceDraft.draftId, expectedDraftVersion: 1,
+        sessionId: `session-disable-race-${suffix}`, sessionSecretHash: sha(`session-disable-race-secret-${suffix}`),
+        expiresAt: new Date(Date.now() + (2 * 60 * 60 * 1000)).toISOString(),
+        idempotencyKey: `session-disable-race-${suffix}`, correlationId: `session-disable-race-corr-${suffix}`,
+      };
+      const [sessionDisable, sessionMutation] = await Promise.allSettled([
+        repository.transitionAccountPolicy({
+          accountId: accountA, actorId: accountA, expectedVersion: 6, mode: "LEGACY_FALLBACK",
+          idempotencyKey: `session-race-disable-${suffix}`, correlationId: `session-race-disable-corr-${suffix}`,
+        }),
+        repository.startSamplingSession(sessionRaceInput),
+      ]);
+      assert.equal(sessionDisable.status, "fulfilled");
+      assert.equal(sessionMutation.status === "fulfilled"
+        || (sessionMutation.status === "rejected"
+          && sessionMutation.reason?.code === "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY"), true);
+      if (sessionMutation.status === "fulfilled") {
+        assert.equal((await repository.startSamplingSession(sessionRaceInput)).duplicate, true);
+      } else {
+        assert.equal(Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_sampling_sessions WHERE account_id=$1 AND id=$2",
+          [accountA, sessionRaceInput.sessionId],
+        )).rows[0].count), 0);
+      }
+
+      await repository.transitionAccountPolicy({
+        accountId: accountA, actorId: accountA, expectedVersion: 7, mode: "REQUIRE_EXACT_STRATEGY",
+        idempotencyKey: `commit-race-enable-${suffix}`, correlationId: `commit-race-enable-corr-${suffix}`,
+      });
+      const commitRaceScope = { accountId: accountA, taxonomyScope: "OZON:DEFAULT",
+        descriptionCategoryId: 182, typeId: 112 };
+      const commitRaceDraft = await repository.createDraft({
+        accountId: accountA, actorId: accountA, scope: commitRaceScope,
+        sourceCollectItemId: commitRaceSource.collectItemId,
+        expectedSourceVersion: commitRaceSource.expectedSourceVersion,
+        idempotencyKey: `commit-race-draft-${suffix}`, correlationId: `commit-race-draft-corr-${suffix}`,
+      });
+      const commitRaceSessionInput = {
+        accountId: accountA, actorId: accountA, draftId: commitRaceDraft.draftId, expectedDraftVersion: 1,
+        sessionId: `commit-race-session-${suffix}`, sessionSecretHash: sha(`commit-race-secret-${suffix}`),
+        expiresAt: new Date(Date.now() + (2 * 60 * 60 * 1000)).toISOString(),
+        idempotencyKey: `commit-race-session-${suffix}`, correlationId: `commit-race-session-corr-${suffix}`,
+      };
+      const commitRaceSession = await repository.startSamplingSession(commitRaceSessionInput);
+      const commitRaceSetId = `commit-race-set-${suffix}`;
+      const commitRaceSamples = Array.from({ length: 5 }, (_, ordinal) => sample({
+        suffix: `commit-race-${suffix}`, ordinal, scope: commitRaceScope,
+        accountId: accountA, draftId: commitRaceDraft.draftId, sampleSetId: commitRaceSetId,
+      }));
+      const commitRaceInput = {
+        accountId: accountA, actorId: accountA, draftId: commitRaceDraft.draftId,
+        sessionId: commitRaceSession.sessionId, sessionSecretHash: commitRaceSessionInput.sessionSecretHash,
+        expectedDraftVersion: 1, samples: commitRaceSamples,
+        idempotencyKey: `commit-disable-race-${suffix}`, correlationId: `commit-disable-race-corr-${suffix}`,
+      };
+      const [commitDisable, commitMutation] = await Promise.allSettled([
+        repository.transitionAccountPolicy({
+          accountId: accountA, actorId: accountA, expectedVersion: 8, mode: "LEGACY_FALLBACK",
+          idempotencyKey: `commit-race-disable-${suffix}`, correlationId: `commit-race-disable-corr-${suffix}`,
+        }),
+        repository.commitSampleSetCanonical(commitRaceInput),
+      ]);
+      assert.equal(commitDisable.status, "fulfilled");
+      assert.equal(commitMutation.status === "fulfilled"
+        || (commitMutation.status === "rejected"
+          && commitMutation.reason?.code === "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY"), true);
+      if (commitMutation.status === "fulfilled") {
+        assert.equal((await repository.commitSampleSetCanonical(commitRaceInput)).duplicate, true);
+      } else {
+        assert.equal(Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_sample_sets WHERE account_id=$1 AND id=$2",
+          [accountA, commitRaceSetId],
+        )).rows[0].count), 0);
+      }
     } finally {
       await pool?.end().catch(() => {});
       await admin.query("RESET search_path").catch(() => {});
