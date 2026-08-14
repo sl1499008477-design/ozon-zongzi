@@ -12,6 +12,9 @@ const enabled = process.env.AUTO_LISTING_CATEGORY_STRATEGY_POSTGRES_TESTS === "1
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
 const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const sha = (value) => crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
+const adminAuditId = (action, accountId, idempotencyKey) => `audit_ai_admin_${sha(
+  [action, accountId, idempotencyKey].join("\0"),
+).slice(0, 40)}`;
 
 async function applyMigrations(client) {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
@@ -278,7 +281,46 @@ if (!enabled) {
       const session = await repository.startSamplingSession(sessionInput);
       assert.equal(session.sessionId, sessionInput.sessionId);
       assert.equal(session.state, "ACTIVE");
+      assert.equal(typeof session.createdAt, "string");
+      assert.equal(Date.parse(session.expiresAt) - Date.parse(session.createdAt), 2 * 60 * 60 * 1000);
       assert.equal((await repository.startSamplingSession(sessionInput)).duplicate, true);
+      await pool.query(
+        `UPDATE auto_listing_category_strategy_sampling_sessions SET state='CANCELLED'
+          WHERE account_id=$1 AND id=$2 AND state='ACTIVE'`,
+        [accountA, session.sessionId],
+      );
+      const eventsBeforeCancelledReplay = Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1 AND idempotency_key=$2",
+        [accountA, sessionInput.idempotencyKey],
+      )).rows[0].count);
+      const cancelledSessionReplay = await repository.startSamplingSession(sessionInput);
+      assert.deepEqual({
+        sessionId: cancelledSessionReplay.sessionId,
+        draftId: cancelledSessionReplay.draftId,
+        accountId: cancelledSessionReplay.accountId,
+        state: cancelledSessionReplay.state,
+        createdAt: cancelledSessionReplay.createdAt,
+        expiresAt: cancelledSessionReplay.expiresAt,
+        duplicate: cancelledSessionReplay.duplicate,
+      }, {
+        sessionId: session.sessionId,
+        draftId: session.draftId,
+        accountId: session.accountId,
+        state: "ACTIVE",
+        createdAt: session.createdAt,
+        expiresAt: session.expiresAt,
+        duplicate: true,
+      });
+      assert.deepEqual((await pool.query(
+        `SELECT state,COUNT(*) OVER ()::INTEGER AS count
+           FROM auto_listing_category_strategy_sampling_sessions
+          WHERE account_id=$1 AND id=$2`,
+        [accountA, session.sessionId],
+      )).rows[0], { state: "CANCELLED", count: 1 });
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1 AND idempotency_key=$2",
+        [accountA, sessionInput.idempotencyKey],
+      )).rows[0].count), eventsBeforeCancelledReplay);
       await assert.rejects(repository.startSamplingSession({ ...sessionInput, sessionSecretHash: sha("wrong") }), {
         code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409,
       });
@@ -323,6 +365,72 @@ if (!enabled) {
         expectedDraftVersion: 1, samples: initialSamples,
         idempotencyKey: `commit-${suffix}`, correlationId: `commit-corr-${suffix}`,
       };
+      const adminLedgerCommands = [
+        { action: "AUTO_LISTING_CATEGORY_STRATEGY_PUBLISH", idempotencyKey: `admin-publish-ledger-${suffix}` },
+        { action: "AUTO_LISTING_CATEGORY_STRATEGY_ROLLBACK", idempotencyKey: `admin-rollback-ledger-${suffix}` },
+      ];
+      for (const command of adminLedgerCommands) {
+        await pool.query(
+          `INSERT INTO audit_events
+             (event_id,account_id,action,status,actor_type,actor_id,source,entity_type,entity_id,
+              correlation_id,metadata,occurred_at,created_at)
+           VALUES ($1,$2,$3,'SUCCESS','account',$2,'auto-listing-ai-admin',
+             'ai_content_strategy_version',$4,$5,$6::JSONB,NOW(),NOW())`,
+          [adminAuditId(command.action, accountA, command.idempotencyKey), accountA, command.action,
+            `admin-ledger-version-${suffix}`, `admin-ledger-corr-${suffix}`,
+            JSON.stringify({ requestHash: sha(`${command.action}-request`), entityId: `admin-ledger-version-${suffix}` })],
+        );
+      }
+      const crossNamespaceBefore = {
+        drafts: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_drafts WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        sessions: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_sampling_sessions WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        sampleSets: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_sample_sets WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        events: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        policyVersion: (await repository.getAccountPolicy({ accountId: accountA })).version,
+      };
+      for (const command of adminLedgerCommands) {
+        await assert.rejects(repository.createDraft({
+          ...draftInput, idempotencyKey: command.idempotencyKey,
+          correlationId: `create-with-${command.action}-${suffix}`,
+        }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
+        await assert.rejects(repository.startSamplingSession({
+          ...sessionInput, idempotencyKey: command.idempotencyKey,
+          correlationId: `session-with-${command.action}-${suffix}`,
+        }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
+        await assert.rejects(repository.commitSampleSet({
+          ...commitBase, sampleSetHash: sha(`commit-with-${command.action}`),
+          idempotencyKey: command.idempotencyKey,
+          correlationId: `commit-with-${command.action}-${suffix}`,
+        }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
+        await assert.rejects(repository.transitionAccountPolicy({
+          accountId: accountA, actorId: accountA, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+          idempotencyKey: command.idempotencyKey,
+          correlationId: `policy-with-${command.action}-${suffix}`,
+        }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", status: 409 });
+      }
+      assert.deepEqual({
+        drafts: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_drafts WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        sessions: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_sampling_sessions WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        sampleSets: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_sample_sets WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        events: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        policyVersion: (await repository.getAccountPolicy({ accountId: accountA })).version,
+      }, crossNamespaceBefore);
       await assert.rejects(repository.commitSampleSet({
         ...commitBase, sampleSetHash: sha("cross-command-commit"),
         idempotencyKey: draftInput.idempotencyKey,

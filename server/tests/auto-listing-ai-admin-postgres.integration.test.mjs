@@ -1988,6 +1988,9 @@ if (!enabled) {
       const draft = await seedPublishableCategoryDraft(admin, {
         accountId: accountA, suffix, descriptionCategoryId: 170, typeId: 99,
       });
+      const reverseDraft = await seedPublishableCategoryDraft(admin, {
+        accountId: accountA, suffix: `reverse-${suffix}`, descriptionCategoryId: 172, typeId: 101,
+      });
       const currentId = `current-account-strategy-${suffix}`;
       const currentContent = { schemaVersion: "V2" };
       await admin.query(
@@ -2045,6 +2048,64 @@ if (!enabled) {
         accountId: accountA, actorId: accountA, draftId: draft.draftId, expectedDraftVersion: 4,
         expectedPublishedStrategyVersionId: currentId,
       };
+      const categoryLedgerKeys = [
+        ["create", "DRAFT_CREATED"],
+        ["session", "SAMPLING_SESSION_STARTED"],
+        ["commit", "SAMPLE_SET_COMMITTED"],
+      ].map(([label, event]) => ({
+        label, event, idempotencyKey: `category-ledger-${label}-${suffix}`,
+      }));
+      for (const command of categoryLedgerKeys) {
+        await pool.query(
+          `INSERT INTO auto_listing_category_strategy_events
+             (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,event_payload,
+              idempotency_key,correlation_id,request_hash,actor_account_id)
+           VALUES ($1,$2,$3,'OZON:DEFAULT',170,99,'DRAFT_EVENT',$4::JSONB,$5,$6,$7,$2)`,
+          [`category-ledger-${command.label}-event-${suffix}`, accountA, draft.draftId,
+            JSON.stringify({ event: command.event }), command.idempotencyKey,
+            `category-ledger-${command.label}-corr-${suffix}`, crypto.createHash("sha256")
+              .update(`category-ledger-${command.label}`).digest("hex")],
+        );
+      }
+      const policyLedgerKey = `category-ledger-policy-${suffix}`;
+      await pool.query(
+        `UPDATE auto_listing_category_strategy_account_settings
+            SET mode='REQUIRE_EXACT_STRATEGY',version=version+1,idempotency_key=$2,
+                correlation_id=$3,request_hash=$4,actor_account_id=$1
+          WHERE account_id=$1 AND version=1`,
+        [accountA, policyLedgerKey, `category-ledger-policy-corr-${suffix}`,
+          crypto.createHash("sha256").update("category-ledger-policy").digest("hex")],
+      );
+      categoryLedgerKeys.push({ label: "policy", idempotencyKey: policyLedgerKey });
+      const categoryLedgerState = async () => ({
+        versions: (await pool.query(
+          `SELECT id,version,status FROM ai_content_strategy_versions
+            WHERE account_id=$1 ORDER BY version,id`, [accountA],
+        )).rows,
+        drafts: (await pool.query(
+          `SELECT id,draft_version,status FROM auto_listing_category_strategy_drafts
+            WHERE account_id=$1 ORDER BY id`, [accountA],
+        )).rows,
+        audits: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM audit_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        events: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+      });
+      for (const command of categoryLedgerKeys) {
+        const beforeConflict = await categoryLedgerState();
+        await assert.rejects(repository.publishCategoryStrategyDraft({
+          ...base, idempotencyKey: command.idempotencyKey,
+          correlationId: `publish-with-${command.label}-key-${suffix}`,
+        }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+        await assert.rejects(repository.rollbackCategoryStrategyVersion({
+          accountId: accountA, actorId: accountA, targetStrategyVersionId: currentId,
+          expectedPublishedStrategyVersionId: currentId, idempotencyKey: command.idempotencyKey,
+          correlationId: `rollback-with-${command.label}-key-${suffix}`,
+        }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+        assert.deepEqual(await categoryLedgerState(), beforeConflict);
+      }
       const before = await pool.query(
         "SELECT COUNT(*)::INTEGER AS count FROM ai_content_strategy_versions WHERE account_id=$1",
         [accountA],
@@ -2142,6 +2203,15 @@ if (!enabled) {
         idempotencyKey: `rollback-category-${suffix}`,
         correlationId: `rollback-category-corr-${suffix}`,
       };
+      const beforePublishKeyRollback = await repository.listStrategyVersions({
+        accountId: accountA, strategyKey: "default",
+      });
+      await assert.rejects(repository.rollbackCategoryStrategyVersion({
+        ...rollbackInput, idempotencyKey: winningInput.idempotencyKey,
+        correlationId: `rollback-with-publish-key-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+      assert.deepEqual(await repository.listStrategyVersions({ accountId: accountA, strategyKey: "default" }),
+        beforePublishKeyRollback);
       const rolledBack = await repository.rollbackCategoryStrategyVersion(rollbackInput);
       assert.equal(rolledBack.version, 9);
       assert.equal(rolledBack.status, "PUBLISHED");
@@ -2155,6 +2225,17 @@ if (!enabled) {
       const afterRollback = await repository.listStrategyVersions({ accountId: accountA, strategyKey: "default" });
       assert.deepEqual(afterRollback.map((row) => row.status), ["RETIRED", "RETIRED", "PUBLISHED"]);
       assert.equal(afterRollback[0].rules.find((rule) => rule.scope?.descriptionCategoryId === 170).overallStyle, "old A");
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        accountId: accountA, actorId: accountA, draftId: reverseDraft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: rolledBack.id, idempotencyKey: rollbackInput.idempotencyKey,
+        correlationId: `publish-with-rollback-key-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+      assert.equal((await pool.query(
+        "SELECT status FROM auto_listing_category_strategy_drafts WHERE account_id=$1 AND id=$2",
+        [accountA, reverseDraft.draftId],
+      )).rows[0].status, "DRAFT_READY");
+      assert.equal((await repository.listStrategyVersions({ accountId: accountA, strategyKey: "default" })).length,
+        afterRollback.length);
       const retiredPublishReplay = await repository.publishCategoryStrategyDraft(winningInput);
       assert.deepEqual({ id: retiredPublishReplay.id, status: retiredPublishReplay.status,
         duplicate: retiredPublishReplay.duplicate }, {

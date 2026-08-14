@@ -97,6 +97,69 @@ test("admin PostgreSQL repository factory is closed and requires a real pool", (
   });
 });
 
+test("category publish and rollback reject hidden fields, accessors, custom prototypes, and proxies before traps or I/O", async () => {
+  let poolCalls = 0;
+  let getterRuns = 0;
+  let proxyTrapRuns = 0;
+  const pool = {
+    async connect() { poolCalls += 1; throw new Error("database must not be reached"); },
+    async query() { poolCalls += 1; throw new Error("database must not be reached"); },
+  };
+  const repository = createAutoListingAiAdminPostgres({ pool });
+  const commands = [{
+    method: "publishCategoryStrategyDraft",
+    input: {
+      accountId: "account-a", actorId: "account-a", draftId: "draft-a", expectedDraftVersion: 4,
+      expectedPublishedStrategyVersionId: "strategy-a", idempotencyKey: "publish-a", correlationId: "corr-a",
+    },
+  }, {
+    method: "rollbackCategoryStrategyVersion",
+    input: {
+      accountId: "account-a", actorId: "account-a", targetStrategyVersionId: "strategy-old",
+      expectedPublishedStrategyVersionId: "strategy-a", idempotencyKey: "rollback-a", correlationId: "corr-a",
+    },
+  }];
+  const hostileInputs = [
+    (input) => Object.assign({ ...input }, { [Symbol("hidden")]: "secret" }),
+    (input) => {
+      const value = { ...input };
+      Object.defineProperty(value, "hidden", { value: "secret", enumerable: false });
+      return value;
+    },
+    (input) => {
+      const value = { ...input };
+      Object.defineProperty(value, "hidden", {
+        enumerable: true,
+        get() { getterRuns += 1; throw new Error("getter-secret"); },
+      });
+      return value;
+    },
+    (input) => Object.assign(Object.create({ inherited: true }), input),
+    (input) => new Proxy({ ...input }, {
+      getPrototypeOf() { proxyTrapRuns += 1; throw new Error("proxy-secret"); },
+      ownKeys() { proxyTrapRuns += 1; throw new Error("proxy-secret"); },
+      getOwnPropertyDescriptor() { proxyTrapRuns += 1; throw new Error("proxy-secret"); },
+      get() { proxyTrapRuns += 1; throw new Error("proxy-secret"); },
+    }),
+    (input) => new Proxy({ ...input }, {}),
+    (input) => {
+      const revoked = Proxy.revocable({ ...input }, {});
+      revoked.revoke();
+      return revoked.proxy;
+    },
+  ];
+  for (const { method, input } of commands) {
+    for (const hostile of hostileInputs) {
+      await assert.rejects(repository[method](hostile(input)), {
+        code: "AUTO_LISTING_AI_ADMIN_REPOSITORY_INVALID", status: 422,
+      });
+    }
+  }
+  assert.equal(getterRuns, 0);
+  assert.equal(proxyTrapRuns, 0);
+  assert.equal(poolCalls, 0);
+});
+
 test("profile creation serializes by account, persists only an env reference, and writes idempotent audit evidence", async () => {
   const { pool, calls, remaining } = scriptedPool([
     { rows: [] },

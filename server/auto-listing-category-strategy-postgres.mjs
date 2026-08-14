@@ -8,6 +8,10 @@ const SHA256 = /^[a-f0-9]{64}$/u;
 const SAFE_HOST = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/u;
 const SAFE_OBJECT_KEY = /^[A-Za-z0-9._/-]+$/u;
 const MODES = new Set(["LEGACY_FALLBACK", "REQUIRE_EXACT_STRATEGY"]);
+const ADMIN_CATEGORY_STRATEGY_ACTIONS = [
+  "AUTO_LISTING_CATEGORY_STRATEGY_PUBLISH",
+  "AUTO_LISTING_CATEGORY_STRATEGY_ROLLBACK",
+];
 
 function repositoryError(code, status = 422, retryable = false) {
   return Object.assign(new Error(code), { code, status, retryable });
@@ -135,6 +139,7 @@ function sessionRow(row, duplicate = false) {
     draftId: row.draft_id,
     accountId: row.account_id,
     state: row.state,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : row.expires_at,
     duplicate,
   };
@@ -201,12 +206,29 @@ async function lockAccount(client, accountId) {
   if (!result.rows[0]) throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_ACCOUNT_NOT_FOUND", 404);
 }
 
-async function requireCompatibleEventIdempotency(client, { accountId, idempotencyKey }, hash) {
-  const result = await query(client,
-    `SELECT request_hash FROM auto_listing_category_strategy_events
+async function requireCompatibleEventIdempotency(client, { accountId, idempotencyKey }, action, hash) {
+  const categoryEvents = await query(client,
+    `SELECT CASE
+       WHEN event_type='PUBLISHED' THEN 'AUTO_LISTING_CATEGORY_STRATEGY_PUBLISH'
+       WHEN event_type='ACCOUNT_SETTINGS_CHANGED' THEN 'TRANSITION_ACCOUNT_POLICY'
+       WHEN event_payload->>'event'='DRAFT_CREATED' THEN 'CREATE_DRAFT'
+       WHEN event_payload->>'event'='SAMPLING_SESSION_STARTED' THEN 'START_SAMPLING_SESSION'
+       WHEN event_payload->>'event'='SAMPLE_SET_COMMITTED' THEN 'COMMIT_SAMPLE_SET'
+       ELSE 'UNKNOWN'
+     END AS action,request_hash
+       FROM auto_listing_category_strategy_events
       WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE`,
     [accountId, idempotencyKey]);
-  if (result.rows[0] && result.rows[0].request_hash !== hash) {
+  const auditIds = ADMIN_CATEGORY_STRATEGY_ACTIONS.map((adminAction) => deterministicId(
+    "audit_ai_admin", adminAction, accountId, idempotencyKey,
+  ));
+  const adminAudits = await query(client,
+    `SELECT action,metadata->>'requestHash' AS request_hash
+       FROM audit_events
+      WHERE account_id=$1 AND event_id=ANY($2::TEXT[]) FOR UPDATE`,
+    [accountId, auditIds]);
+  const entries = [...categoryEvents.rows, ...adminAudits.rows];
+  if (entries.some((entry) => entry.action !== action || entry.request_hash !== hash)) {
     throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
   }
 }
@@ -404,10 +426,11 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
   return Object.freeze({
     async createDraft(raw = {}) {
       const input = createDraftRequest(raw);
-      const hash = requestHash({ action: "CREATE_DRAFT", ...input });
+      const action = "CREATE_DRAFT";
+      const hash = requestHash({ action, ...input });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
-        await requireCompatibleEventIdempotency(client, input, hash);
+        await requireCompatibleEventIdempotency(client, input, action, hash);
         const replay = await query(client,
           `SELECT * FROM auto_listing_category_strategy_drafts
             WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE`,
@@ -444,10 +467,11 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
 
     async startSamplingSession(raw = {}) {
       const input = sessionRequest(raw);
-      const hash = requestHash({ action: "START_SAMPLING_SESSION", ...input });
+      const action = "START_SAMPLING_SESSION";
+      const hash = requestHash({ action, ...input });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
-        await requireCompatibleEventIdempotency(client, input, hash);
+        await requireCompatibleEventIdempotency(client, input, action, hash);
         const replay = await query(client,
           `SELECT *,expires_at>STATEMENT_TIMESTAMP() AS unexpired
              FROM auto_listing_category_strategy_sampling_sessions
@@ -457,7 +481,7 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
           if (replay.rows[0].request_hash !== hash) {
             throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
           }
-          return sessionRow(replay.rows[0], true);
+          return sessionRow({ ...replay.rows[0], state: "ACTIVE" }, true);
         }
         const draftResult = await query(client,
           `SELECT * FROM auto_listing_category_strategy_drafts
@@ -490,10 +514,11 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
 
     async commitSampleSet(raw = {}) {
       const input = commitRequest(raw);
-      const hash = requestHash({ action: "COMMIT_SAMPLE_SET", ...input });
+      const action = "COMMIT_SAMPLE_SET";
+      const hash = requestHash({ action, ...input });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
-        await requireCompatibleEventIdempotency(client, input, hash);
+        await requireCompatibleEventIdempotency(client, input, action, hash);
         const replay = await query(client,
           `SELECT sample_set.id AS sample_set_id,sample_set.account_id,sample_set.draft_id,
                   sample_set.sample_set_hash,sample_set.sample_count,sample_set.idempotency_key,
@@ -607,10 +632,11 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
 
     async transitionAccountPolicy(raw = {}) {
       const input = policyRequest(raw);
-      const hash = requestHash({ action: "TRANSITION_ACCOUNT_POLICY", ...input });
+      const action = "TRANSITION_ACCOUNT_POLICY";
+      const hash = requestHash({ action, ...input });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
-        await requireCompatibleEventIdempotency(client, input, hash);
+        await requireCompatibleEventIdempotency(client, input, action, hash);
         const replay = await query(client,
           `SELECT event.account_id,event.request_hash,event.event_payload,
                   event.settings_version AS version,event.event_payload->>'mode' AS mode

@@ -1,13 +1,24 @@
 import crypto from "node:crypto";
+import { types } from "node:util";
 
 import { projectCategoryStrategyGuidanceV2 } from "./auto-listing-category-strategy-contract.mjs";
 
 const FACTORY_KEYS = new Set(["pool"]);
+const CATEGORY_STRATEGY_PUBLISH_KEYS = new Set([
+  "accountId", "actorId", "draftId", "expectedDraftVersion",
+  "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId",
+]);
+const CATEGORY_STRATEGY_ROLLBACK_KEYS = new Set([
+  "accountId", "actorId", "targetStrategyVersionId",
+  "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId",
+]);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const CAPABILITY_AUTHORIZATION_SCHEMA = "AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1";
 const CAPABILITY_AUTHORIZATION_ACTION = "AUTO_LISTING_AI_PROFILE_CAPABILITY_AUTHORIZED";
 const CAPABILITY_SUBCALL_TERMINAL_ACTION = "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_TERMINATED";
+const CATEGORY_STRATEGY_PUBLISH_ACTION = "AUTO_LISTING_CATEGORY_STRATEGY_PUBLISH";
+const CATEGORY_STRATEGY_ROLLBACK_ACTION = "AUTO_LISTING_CATEGORY_STRATEGY_ROLLBACK";
 const CAPABILITY_SUBCALL_COMPLETION_REASONS = new Map([
   ["PRE_SEND_ABORTED", "FAILED"],
   ["PRE_SEND_FAILED", "FAILED"],
@@ -55,6 +66,21 @@ function closedFactory(raw) {
     if (keys.length !== FACTORY_KEYS.size || keys.some((key) => typeof key !== "string" || !FACTORY_KEYS.has(key)
       || descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) throw invalid();
     return { pool: descriptors.pool.value };
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_AI_ADMIN_REPOSITORY_INVALID") throw error;
+    throw invalid();
+  }
+}
+
+function closedCategoryStrategyCommand(raw, keys) {
+  try {
+    if (!raw || typeof raw !== "object" || types.isProxy(raw) || Array.isArray(raw)
+      || Object.getPrototypeOf(raw) !== Object.prototype) throw invalid();
+    const ownKeys = Reflect.ownKeys(raw);
+    const descriptors = Object.getOwnPropertyDescriptors(raw);
+    if (ownKeys.length !== keys.size || ownKeys.some((key) => typeof key !== "string" || !keys.has(key)
+      || descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) throw invalid();
+    return Object.fromEntries(ownKeys.map((key) => [key, descriptors[key].value]));
   } catch (error) {
     if (error?.code === "AUTO_LISTING_AI_ADMIN_REPOSITORY_INVALID") throw error;
     throw invalid();
@@ -242,6 +268,36 @@ async function loadAudit(client, { action, accountId, idempotencyKey, requestHas
   if (!metadata) return { eventId, metadata: null, activation: null };
   if (metadata.requestHash !== requestHash) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
   return { eventId, metadata, activation: activationFromAuditRow(result.rows[0]) };
+}
+
+async function requireCategoryStrategyCommandLedger(client, {
+  action, accountId, idempotencyKey, requestHash,
+}) {
+  const categoryEvents = await query(client,
+    `SELECT CASE
+       WHEN event_type='PUBLISHED' THEN '${CATEGORY_STRATEGY_PUBLISH_ACTION}'
+       WHEN event_type='ACCOUNT_SETTINGS_CHANGED' THEN 'TRANSITION_ACCOUNT_POLICY'
+       WHEN event_payload->>'event'='DRAFT_CREATED' THEN 'CREATE_DRAFT'
+       WHEN event_payload->>'event'='SAMPLING_SESSION_STARTED' THEN 'START_SAMPLING_SESSION'
+       WHEN event_payload->>'event'='SAMPLE_SET_COMMITTED' THEN 'COMMIT_SAMPLE_SET'
+       ELSE 'UNKNOWN'
+     END AS action,request_hash
+       FROM auto_listing_category_strategy_events
+      WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+    [accountId, idempotencyKey]);
+  const auditIds = [
+    auditIdentity(CATEGORY_STRATEGY_PUBLISH_ACTION, accountId, idempotencyKey),
+    auditIdentity(CATEGORY_STRATEGY_ROLLBACK_ACTION, accountId, idempotencyKey),
+  ];
+  const adminAudits = await query(client,
+    `SELECT action,metadata->>'requestHash' AS request_hash
+       FROM audit_events
+      WHERE account_id=$1 AND event_id=ANY($2::TEXT[]) FOR UPDATE`,
+    [accountId, auditIds]);
+  const entries = [...categoryEvents.rows, ...adminAudits.rows];
+  if (entries.some((entry) => entry.action !== action || entry.request_hash !== requestHash)) {
+    throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+  }
 }
 
 async function insertAudit(client, {
@@ -973,11 +1029,7 @@ function strategyPublishRequest(input) {
 }
 
 function categoryStrategyPublishRequest(rawInput) {
-  const input = canonical(rawInput);
-  const keys = ["accountId", "actorId", "draftId", "expectedDraftVersion",
-    "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId"];
-  if (!input || Object.keys(input).length !== keys.length
-    || keys.some((key) => !Object.hasOwn(input, key))) throw invalid();
+  const input = closedCategoryStrategyCommand(rawInput, CATEGORY_STRATEGY_PUBLISH_KEYS);
   const accountId = sameActor(input);
   return {
     accountId,
@@ -991,11 +1043,7 @@ function categoryStrategyPublishRequest(rawInput) {
 }
 
 function categoryStrategyRollbackRequest(rawInput) {
-  const input = canonical(rawInput);
-  const keys = ["accountId", "actorId", "targetStrategyVersionId",
-    "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId"];
-  if (!input || Object.keys(input).length !== keys.length
-    || keys.some((key) => !Object.hasOwn(input, key))) throw invalid();
+  const input = closedCategoryStrategyCommand(rawInput, CATEGORY_STRATEGY_ROLLBACK_KEYS);
   const accountId = sameActor(input);
   return {
     accountId,
@@ -2004,10 +2052,13 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
 
     async publishCategoryStrategyDraft(rawInput = {}) {
       const input = categoryStrategyPublishRequest(rawInput);
-      const action = "AUTO_LISTING_CATEGORY_STRATEGY_PUBLISH";
+      const action = CATEGORY_STRATEGY_PUBLISH_ACTION;
       const commandHash = hash({ action, ...input });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
+        await requireCategoryStrategyCommandLedger(client, {
+          ...input, action, requestHash: commandHash,
+        });
         const audit = await loadAudit(client, { ...input, action, requestHash: commandHash });
         if (audit.metadata) {
           const replay = await loadStrategyBundle(client, {
@@ -2212,10 +2263,13 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
 
     async rollbackCategoryStrategyVersion(rawInput = {}) {
       const input = categoryStrategyRollbackRequest(rawInput);
-      const action = "AUTO_LISTING_CATEGORY_STRATEGY_ROLLBACK";
+      const action = CATEGORY_STRATEGY_ROLLBACK_ACTION;
       const commandHash = hash({ action, ...input });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
+        await requireCategoryStrategyCommandLedger(client, {
+          ...input, action, requestHash: commandHash,
+        });
         const audit = await loadAudit(client, { ...input, action, requestHash: commandHash });
         if (audit.metadata) {
           const replay = await loadStrategyBundle(client, {
