@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createAutoListingWebRuntime } from "../auto-listing-web-runtime.mjs";
 import { createAutoListingCategoryStrategyRuntime } from "../auto-listing-category-strategy-runtime.mjs";
+import { createAutoListingCategoryStrategyHttpHandler } from "../auto-listing-category-strategy-routes.mjs";
 
 function build({ settingsStartError = null } = {}) {
   const events = [];
@@ -135,9 +136,70 @@ test("category strategy runtime composes real non-analysis ports and fails exact
   assert.equal(identity.sessionSecret.length, 64);
   assert.notEqual((await captured.deriveSessionIdentity({ ...sessionIdentityInput,
     idempotencyKey: "session-b" })).sessionSecret, identity.sessionSecret);
+  await assert.rejects(captured.extensionSessionChannel.assertReady(), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY", status: 409,
+  });
   assert.equal(typeof captured.extensionSessionChannel.putSession, "function");
   assert.equal(await runtime.getService(), service);
   assert.equal(poolReads, 1);
+});
+
+test("default category runtime session route returns NOT_READY before a database session write", async () => {
+  let sessionWrites = 0;
+  const repository = {
+    async getDraftReplay() { return null; },
+    async createDraft() { throw new Error("not used"); },
+    async getSamplingSessionReplay() { return null; },
+    async startSamplingSession() { sessionWrites += 1; throw new Error("must not write"); },
+    async validateSamplingSession() { throw new Error("not used"); },
+    async getCommittedSampleSetReplay() { return null; },
+    async commitSampleSetCanonical() { throw new Error("not used"); },
+    async transitionAccountPolicy() { throw new Error("not used"); },
+    async getAccountPolicy() {
+      return { accountId: "account-a", mode: "REQUIRE_EXACT_STRATEGY", version: 1, duplicate: false };
+    },
+  };
+  const runtime = createAutoListingCategoryStrategyRuntime({
+    env: { AUTO_LISTING_ENABLED: "true",
+      APP_ENCRYPTION_KEY: "test-only-category-session-key-at-least-32-characters" },
+    async getPostgresPool() { return { async query() {}, async connect() {} }; },
+    createRepository() { return repository; },
+    createStrategyReadModel() { return {
+      async listStrategies() { return []; },
+      async getDraft() { return {
+        draftId: "draft-a", accountId: "account-a",
+        scope: { accountId: "account-a", taxonomyScope: "OZON:DEFAULT",
+          descriptionCategoryId: 170, typeId: 99 },
+        draftVersion: 1, status: "COLLECTING", sampleCount: 0,
+        sourceCollectItemId: "collect-a", expectedSourceVersion: "draft:1",
+        browserUrl: "https://www.ozon.ru/category/170/",
+      }; },
+    }; },
+    createSampleStore() { return { async persistSampleImages() { throw new Error("not used"); } }; },
+    createObjectStorage() { return {}; },
+    createPublicationRepository() { return {}; },
+    createAdminService() { return {
+      async publishCategoryStrategyDraft() { throw new Error("not used"); },
+      async rollbackCategoryStrategyVersion() { throw new Error("not used"); },
+    }; },
+  });
+  let response;
+  const handler = createAutoListingCategoryStrategyHttpHandler({
+    authenticate: async () => ({ id: "account-a", role: "admin" }),
+    getService: runtime.getService,
+    readJson: async () => ({ expectedDraftVersion: 1,
+      idempotencyKey: "session-no-transport", correlationId: "correlation-a" }),
+    sendJson(_res, status, payload) { response = { status, payload }; },
+  });
+
+  assert.equal(await handler({ method: "POST" }, {}, new URL(
+    "https://example.test/admin/auto-listing/category-strategies/draft-a/sampling-sessions",
+  )), true);
+  assert.deepEqual(response, { status: 409, payload: {
+    ok: false, code: "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY",
+    message: "类目策略请求无法完成",
+  } });
+  assert.equal(sessionWrites, 0);
 });
 
 test("settings worker startup failure unwinds settings, operations, and user workers in reverse order", async () => {

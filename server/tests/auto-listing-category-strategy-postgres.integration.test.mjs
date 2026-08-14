@@ -173,6 +173,46 @@ test("repository commands reject top-level and nested proxies without executing 
   });
   assert.equal(traps, 0);
 
+  const scope = { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 };
+  const accountId = "account-a";
+  const draftId = "draft-a";
+  const sampleSetId = "sample-set-a";
+  const validSamples = Array.from({ length: 5 }, (_, ordinal) => sample({
+    suffix: `hostile-${ordinal}`, ordinal, scope, accountId, draftId, sampleSetId,
+  }));
+  const canonical = (samples) => ({
+    accountId, actorId: accountId, draftId, sessionId: "session-a",
+    sessionSecretHash: sha("secret"), expectedDraftVersion: 1, samples,
+    idempotencyKey: "canonical-hostile", correlationId: "canonical-hostile-correlation",
+  });
+  const accessor = { ...validSamples[0] };
+  Object.defineProperty(accessor, "taxonomyScope", {
+    enumerable: true,
+    get() { traps += 1; return "OZON:DEFAULT"; },
+  });
+  const transparent = new Proxy(validSamples[0], {
+    get(target, key, receiver) { traps += 1; return Reflect.get(target, key, receiver); },
+  });
+  const revoked = Proxy.revocable(validSamples[0], {});
+  revoked.revoke();
+  const hostileImage = new Proxy(validSamples[0].images[0], {
+    get(target, key, receiver) { traps += 1; return Reflect.get(target, key, receiver); },
+  });
+  const imageCarrier = { ...validSamples[0], images: [hostileImage] };
+  for (const samples of [
+    [hostile, ...validSamples.slice(1)],
+    [accessor, ...validSamples.slice(1)],
+    [transparent, ...validSamples.slice(1)],
+    [revoked.proxy, ...validSamples.slice(1)],
+    [validSamples[0], hostile, ...validSamples.slice(2)],
+    [imageCarrier, ...validSamples.slice(1)],
+  ]) {
+    await assert.rejects(repository.commitSampleSetCanonical(canonical(samples)), {
+      code: "AUTO_LISTING_CATEGORY_STRATEGY_REPOSITORY_INVALID", status: 422,
+    });
+  }
+  assert.equal(traps, 0);
+
   const nested = {
     accountId: "account-a", actorId: "account-a", draftId: "draft-a", sessionId: "session-a",
     sessionSecretHash: sha("secret"), expectedDraftVersion: 1, selections: hostile,

@@ -416,11 +416,13 @@ function imageEvidence(raw, context) {
   };
 }
 
+const SAMPLE_EVIDENCE_KEYS = new Set([
+  "sampleSetId", "sampleId", "sku", "sourceProductId", "sourceProductRef", "sourceProductResponseHash",
+  "taxonomyScope", "descriptionCategoryId", "typeId", "images",
+]);
+
 function sampleEvidence(raw, context) {
-  const value = closed(raw, new Set([
-    "sampleSetId", "sampleId", "sku", "sourceProductId", "sourceProductRef", "sourceProductResponseHash",
-    "taxonomyScope", "descriptionCategoryId", "typeId", "images",
-  ]));
+  const value = closed(raw, SAMPLE_EVIDENCE_KEYS);
   const sampleSetId = id(value.sampleSetId);
   const sampleId = id(value.sampleId);
   if (value.taxonomyScope !== context.scope.taxonomyScope
@@ -457,11 +459,11 @@ function commitRequest(raw, { canonical = false } = {}) {
     idempotencyKey: id(value.idempotencyKey),
     correlationId: id(value.correlationId),
   };
-  const rawScope = value.samples[0];
+  const rawScope = closed(sampleValues[0], SAMPLE_EVIDENCE_KEYS);
   input.scope = {
-    taxonomyScope: rawScope?.taxonomyScope,
-    descriptionCategoryId: rawScope?.descriptionCategoryId,
-    typeId: rawScope?.typeId,
+    taxonomyScope: rawScope.taxonomyScope,
+    descriptionCategoryId: rawScope.descriptionCategoryId,
+    typeId: rawScope.typeId,
   };
   input.samples = sampleValues.map((entry) => sampleEvidence(entry, input));
   if (new Set(input.samples.map((entry) => entry.sampleSetId)).size !== 1

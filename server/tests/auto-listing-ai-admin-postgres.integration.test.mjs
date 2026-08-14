@@ -6,7 +6,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createAutoListingAiAdminPostgres } from "../auto-listing-ai-admin-postgres.mjs";
+import { createAutoListingAiAdminService } from "../auto-listing-ai-admin-service.mjs";
 import { createAutoListingCategoryStrategyPostgres } from "../auto-listing-category-strategy-postgres.mjs";
+import { createAutoListingCategoryStrategyService } from "../auto-listing-category-strategy-service.mjs";
 import { createAiGatewayProfileService } from "../ai-gateway-profile-service.mjs";
 import { createAutoListingAiCapabilityCredentialResolver } from "../auto-listing-ai-credential-resolver.mjs";
 import { createAutoListingAiSettingsPostgres } from "../auto-listing-ai-settings-postgres.mjs";
@@ -2346,6 +2348,113 @@ if (!enabled) {
       )).rows[0].count);
       assert.equal(versionsAfterRace, versionsBeforeRace + (publishOutcome.status === "fulfilled" ? 1 : 0));
       assert.equal((await categoryRepository.getAccountPolicy({ accountId: accountA })).mode, "LEGACY_FALLBACK");
+    } finally {
+      await pool?.end().catch(() => {});
+      await admin.query("SET search_path TO public").catch(() => {});
+      await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
+      admin.release();
+      await adminPool.end();
+    }
+  });
+
+  test("real category service composition returns safe publish and rollback summaries on first call and replay", {
+    timeout: 60_000,
+  }, async () => {
+    const { Pool } = await import("pg");
+    const adminPool = new Pool({ connectionString, max: 1 });
+    const admin = await adminPool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schema = `category_composition_${suffix}`;
+    const schemaSql = quote(schema);
+    const accountId = `account-composition-${suffix}`;
+    let pool;
+    try {
+      await admin.query(`CREATE SCHEMA ${schemaSql}`);
+      await admin.query(`SET search_path TO ${schemaSql}, public`);
+      const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
+      for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      await admin.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$1,$1,'admin','active')",
+        [accountId],
+      );
+      const draft = await seedPublishableCategoryDraft(admin, {
+        accountId, suffix, descriptionCategoryId: 270, typeId: 199,
+      });
+      const currentId = `composition-current-${suffix}`;
+      await admin.query(
+        `INSERT INTO ai_content_strategy_versions
+           (id,account_id,strategy_key,version,status,content,content_hash,published_at,published_by,created_by)
+         VALUES ($1,$2,'default',1,'PUBLISHED','{"schemaVersion":"V2"}'::JSONB,$3,NOW(),$2,$2)`,
+        [currentId, accountId, crypto.createHash("sha256").update(`current-${suffix}`).digest("hex")],
+      );
+      pool = new Pool({ connectionString, max: 4, options: `-c search_path=${schema},public` });
+      const categoryRepository = createAutoListingCategoryStrategyPostgres({ pool });
+      await categoryRepository.transitionAccountPolicy({
+        accountId, actorId: accountId, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+        idempotencyKey: `enable-composition-${suffix}`,
+        correlationId: `enable-composition-correlation-${suffix}`,
+      });
+      const publicationRepository = createAutoListingAiAdminPostgres({ pool });
+      const publicationService = createAutoListingAiAdminService({
+        repository: publicationRepository,
+        capabilityService: { async testGatewayCapabilities() { throw new Error("not used"); } },
+      });
+      const service = createAutoListingCategoryStrategyService({
+        repository: categoryRepository,
+        readModel: {
+          async listStrategies() { return []; },
+          async getDraft() { return {
+            draftId: draft.draftId, accountId,
+            scope: { accountId, taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 270, typeId: 199 },
+            draftVersion: 4, status: "DRAFT_READY", sampleCount: 5,
+            sourceCollectItemId: `source-${suffix}`, expectedSourceVersion: "draft:7",
+            browserUrl: "https://www.ozon.ru/category/270/",
+          }; },
+        },
+        sampleStore: { async persistSampleImages() { throw new Error("not used"); } },
+        exactProductFacts: { async verify() { throw new Error("not used"); } },
+        extensionSessionChannel: {
+          async assertReady() { throw new Error("not used"); },
+          async putSession() { throw new Error("not used"); },
+        },
+        publicationService,
+        now: () => new Date("2026-08-15T00:00:00.000Z"),
+        async deriveSessionIdentity() { throw new Error("not used"); },
+      });
+      const actor = { id: accountId, role: "admin" };
+      const publishInput = {
+        actor, draftId: draft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: currentId,
+        idempotencyKey: `composition-publish-${suffix}`,
+        correlationId: `composition-publish-correlation-${suffix}`,
+      };
+      const published = await service.publishDraft(publishInput);
+      assert.deepEqual(Reflect.ownKeys(published), ["id", "strategyKey", "version", "status", "duplicate"]);
+      assert.deepEqual({ strategyKey: published.strategyKey, version: published.version,
+        status: published.status, duplicate: published.duplicate }, {
+        strategyKey: "default", version: 2, status: "PUBLISHED", duplicate: false,
+      });
+      assert.deepEqual(await service.publishDraft(publishInput), { ...published, duplicate: true });
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountId],
+      )).rows[0].count), 2);
+
+      const rollbackInput = {
+        actor, draftId: draft.draftId, targetStrategyVersionId: currentId,
+        expectedPublishedStrategyVersionId: published.id,
+        idempotencyKey: `composition-rollback-${suffix}`,
+        correlationId: `composition-rollback-correlation-${suffix}`,
+      };
+      const rolledBack = await service.rollbackDraft(rollbackInput);
+      assert.deepEqual(Reflect.ownKeys(rolledBack), ["id", "strategyKey", "version", "status", "duplicate"]);
+      assert.deepEqual({ strategyKey: rolledBack.strategyKey, version: rolledBack.version,
+        status: rolledBack.status, duplicate: rolledBack.duplicate }, {
+        strategyKey: "default", version: 3, status: "PUBLISHED", duplicate: false,
+      });
+      assert.deepEqual(await service.rollbackDraft(rollbackInput), { ...rolledBack, duplicate: true });
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountId],
+      )).rows[0].count), 3);
     } finally {
       await pool?.end().catch(() => {});
       await admin.query("SET search_path TO public").catch(() => {});

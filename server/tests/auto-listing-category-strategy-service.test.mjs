@@ -60,7 +60,7 @@ function imageEvidence(reference, sampleId, sampleSetId) {
 
 function harness({ currentDraft = draft(), verify = factFor, persistFailure = null,
   commitFailure = null, publicationExtra = false, repositoryTransform = (_method, value) => value,
-  handoffFailure = null, handoffWait = null, sessionValidationFailure = null,
+  handoffFailure = null, handoffWait = null, handoffReadyFailure = null, sessionValidationFailure = null,
   draftReplay = null, sessionReplay = null, committedReplay = null,
   policyMode = "REQUIRE_EXACT_STRATEGY",
   publicationFailure = null,
@@ -143,6 +143,9 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
     async verify(input) { calls.verify += 1; return verify(input); },
   };
   const extensionSessionChannel = {
+    async assertReady() {
+      if (handoffReadyFailure) throw handoffReadyFailure;
+    },
     async putSession(input) {
       calls.handoff += 1;
       records.handoff.push(input);
@@ -155,11 +158,13 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   const publicationService = {
     async publishCategoryStrategyDraft() { calls.publish += 1; if (publicationFailure) throw publicationFailure; return {
       id: "strategy-v2", strategyKey: "default", version: 2, status: "PUBLISHED", duplicate: false,
+      content: { schemaVersion: "V2" }, rules: [],
       ...publicationOverrides,
       ...(publicationExtra ? { vendorSecret: "must-not-leak" } : {}),
     }; },
     async rollbackCategoryStrategyVersion() { calls.rollback += 1; if (publicationFailure) throw publicationFailure; return {
       id: "strategy-v3", strategyKey: "default", version: 3, status: "PUBLISHED", duplicate: false,
+      content: { schemaVersion: "V2" }, rules: [],
       ...publicationOverrides,
       ...(publicationExtra ? { vendorSecret: "must-not-leak" } : {}),
     }; },
@@ -298,6 +303,22 @@ test("sampling session handoff retry keeps the original secret identity without 
   assert.equal(JSON.stringify(result).includes("secret"), false);
 });
 
+test("sampling session does not write the database when the authenticated handoff is not ready", async () => {
+  const notReady = Object.assign(new Error("no extension transport"), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY", status: 409,
+  });
+  const h = harness({ handoffReadyFailure: notReady });
+
+  await assert.rejects(h.service.startSamplingSession({
+    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+    idempotencyKey: "session-no-handoff", correlationId: "correlation-a",
+  }), { code: notReady.code, status: 409 });
+
+  assert.equal(h.records.session.length, 0);
+  assert.equal(h.calls.handoff, 0);
+  assert.equal(h.records.identity.length, 0);
+});
+
 test("successful replay cache entries expire and re-enter durable replay", async () => {
   const clock = new Date("2026-08-15T00:00:00.000Z");
   const h = harness({ now: clock });
@@ -389,6 +410,29 @@ test("durable repository replays bypass browser facts, object storage, and curre
   });
   assert.deepEqual(h.calls, { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
     handoff: 0, publish: 0, rollback: 0 });
+});
+
+test("durable sample replay rejects accessors without executing user code", async () => {
+  let reads = 0;
+  const replay = {
+    draftId: "draft-a", accountId: "account-a", sampleSetHash: HASH, sampleCount: 5,
+    draftVersion: 2, status: "SAMPLES_READY", idempotencyKey: "samples-hostile", duplicate: true,
+  };
+  Object.defineProperty(replay, "sampleSetId", {
+    enumerable: true,
+    get() { reads += 1; return "sample-set-hostile"; },
+  });
+  const input = {
+    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+    sessionId: "session-a", sessionSecret: "secret-value-at-least-32-characters",
+    samples: selectedSamples(), idempotencyKey: "samples-hostile", correlationId: "correlation-a",
+  };
+  const accessor = harness({ committedReplay: replay });
+  await assert.rejects(accessor.service.confirmSampleSet(input), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", status: 500,
+  });
+  assert.equal(reads, 0);
+  assert.equal(accessor.calls.verify + accessor.calls.persist + accessor.calls.commit, 0);
 });
 
 test("sample retry after a pre-commit failure reuses the exact evidence identity", async () => {
@@ -602,6 +646,28 @@ test("publication and rollback expose only the closed immutable strategy summary
       correlationId: "correlation-a",
     }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", status: 500 });
   }
+
+  let traps = 0;
+  let reads = 0;
+  const hostileContent = new Proxy({ schemaVersion: "V2" }, {
+    get() { traps += 1; return undefined; },
+    getPrototypeOf() { traps += 1; return Object.prototype; },
+  });
+  const accessorRule = {};
+  Object.defineProperty(accessorRule, "ruleId", {
+    enumerable: true,
+    get() { reads += 1; return "must-not-run"; },
+  });
+  for (const publicationOverrides of [{ content: hostileContent }, { rules: [accessorRule] }]) {
+    const malformed = harness({ publicationOverrides });
+    await assert.rejects(malformed.service.publishDraft({
+      actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+      expectedPublishedStrategyVersionId: "strategy-v1",
+      idempotencyKey: `publish-hostile-${traps}-${reads}`,
+      correlationId: "correlation-a",
+    }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", status: 500 });
+  }
+  assert.deepEqual({ traps, reads }, { traps: 0, reads: 0 });
 });
 
 test("publication delegates rollout gating to the atomic publication transaction and preserves READ_ONLY", async () => {

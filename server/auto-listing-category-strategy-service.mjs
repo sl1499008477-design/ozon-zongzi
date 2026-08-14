@@ -218,14 +218,15 @@ function committedSampleSetRow(raw, expected) {
       "sampleSetId", "draftId", "accountId", "sampleSetHash", "sampleCount", "draftVersion",
       "status", "idempotencyKey", "duplicate",
     ]));
+    const sampleSetId = identifier(value.sampleSetId);
     if (identifier(value.accountId) !== expected.accountId
       || identifier(value.draftId) !== expected.draftId
-      || identifier(value.sampleSetId) !== expected.sampleSetId
+      || (expected.sampleSetId !== undefined && sampleSetId !== expected.sampleSetId)
       || identifier(value.idempotencyKey) !== expected.idempotencyKey
       || typeof value.sampleSetHash !== "string" || !SHA256.test(value.sampleSetHash)
       || value.sampleCount !== expected.sampleCount || value.draftVersion !== expected.draftVersion
       || value.status !== "SAMPLES_READY") throw invalid();
-    return Object.freeze({ sampleSetId: value.sampleSetId, sampleSetHash: value.sampleSetHash,
+    return Object.freeze({ sampleSetId, sampleSetHash: value.sampleSetHash,
       sampleCount: value.sampleCount, draftVersion: value.draftVersion, status: value.status,
       duplicate: duplicate(value.duplicate) });
   });
@@ -322,21 +323,65 @@ function freeze(value) {
   return Object.freeze(value);
 }
 
+function discardClosedJson(raw, state = { nodes: 0 }, depth = 0) {
+  if (raw === null || typeof raw === "boolean") return;
+  if (typeof raw === "string") {
+    if (raw.length > 1_048_576) throw new Error("boundary");
+    return;
+  }
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) throw new Error("boundary");
+    return;
+  }
+  if (!raw || typeof raw !== "object" || types.isProxy(raw) || depth > 32
+    || ++state.nodes > 100_000) throw new Error("boundary");
+  const isArray = Array.isArray(raw);
+  if (!isArray && ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) throw new Error("boundary");
+  if (isArray && Object.getPrototypeOf(raw) !== Array.prototype) throw new Error("boundary");
+  const descriptors = Object.getOwnPropertyDescriptors(raw);
+  const own = Reflect.ownKeys(descriptors);
+  if (isArray) {
+    const length = descriptors.length?.value;
+    if (!Number.isSafeInteger(length) || length < 0 || length > 10_000 || own.length !== length + 1) {
+      throw new Error("boundary");
+    }
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, "value")) {
+        throw new Error("boundary");
+      }
+      discardClosedJson(descriptor.value, state, depth + 1);
+    }
+    return;
+  }
+  if (own.length > 10_000) throw new Error("boundary");
+  for (const key of own) {
+    const descriptor = descriptors[key];
+    if (typeof key !== "string" || key.length > 1_024 || descriptor?.enumerable !== true
+      || !Object.hasOwn(descriptor, "value")) throw new Error("boundary");
+    discardClosedJson(descriptor.value, state, depth + 1);
+  }
+}
+
 function publicationDto(raw) {
   try {
     if (!raw || typeof raw !== "object" || Array.isArray(raw) || types.isProxy(raw)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) throw new Error("boundary");
     const descriptors = Object.getOwnPropertyDescriptors(raw);
     const own = Reflect.ownKeys(descriptors);
-    const required = new Set(["id", "strategyKey", "version", "status"]);
+    const required = new Set(["id", "strategyKey", "version", "status", "content", "rules"]);
     const allowed = new Set([...required, "duplicate"]);
-    if (![4, 5].includes(own.length) || own.some((key) => typeof key !== "string" || !allowed.has(key)
+    if (![6, 7].includes(own.length) || own.some((key) => typeof key !== "string" || !allowed.has(key)
       || descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))
       || [...required].some((key) => !Object.hasOwn(descriptors, key))) throw new Error("boundary");
     const id = typeof descriptors.id.value === "string" ? descriptors.id.value.trim() : "";
     const strategyKey = typeof descriptors.strategyKey.value === "string" ? descriptors.strategyKey.value.trim() : "";
     const status = typeof descriptors.status.value === "string" ? descriptors.status.value.trim() : "";
     const version = descriptors.version.value;
+    if (!descriptors.content.value || typeof descriptors.content.value !== "object"
+      || !Array.isArray(descriptors.rules.value)) throw new Error("boundary");
+    discardClosedJson(descriptors.content.value);
+    discardClosedJson(descriptors.rules.value);
     if (!SAFE_ID.test(id) || !SAFE_ID.test(strategyKey) || status !== "PUBLISHED"
       || !Number.isSafeInteger(version) || version < 1
       || (Object.hasOwn(descriptors, "duplicate") && typeof descriptors.duplicate.value !== "boolean")) {
@@ -358,6 +403,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
     "getAccountPolicy"].every((method) => typeof repository?.[method] === "function")
     || typeof readModel?.listStrategies !== "function" || typeof readModel?.getDraft !== "function"
     || typeof sampleStore?.persistSampleImages !== "function" || typeof exactProductFacts?.verify !== "function"
+    || typeof extensionSessionChannel?.assertReady !== "function"
     || typeof extensionSessionChannel?.putSession !== "function"
     || typeof publicationService?.publishCategoryStrategyDraft !== "function"
     || typeof publicationService?.rollbackCategoryStrategyVersion !== "function"
@@ -497,7 +543,9 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
           throw failure("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
         }
         if (replay.promise) return replay.promise;
+        try { await extensionSessionChannel.assertReady(); } catch (error) { dependencyError(error); }
       } else {
+        try { await extensionSessionChannel.assertReady(); } catch (error) { dependencyError(error); }
         const candidateExpiry = new Date(new Date(now()).getTime() + TWO_HOURS_MS);
         if (Number.isNaN(candidateExpiry.getTime())) throw invalid();
         let identity;
@@ -574,6 +622,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
       const expectedDraftVersion = positive(input.expectedDraftVersion);
       const idempotencyKey = identifier(input.idempotencyKey);
       const correlationId = identifier(input.correlationId);
+      const sampleSetId = operationId("sample-set", accountId, draftId, idempotencyKey);
       const selections = closedArray(input.samples, 5, 20).map(sampleSelection);
       if (new Set(selections.map((entry) => entry.sku)).size !== selections.length
         || new Set(selections.map((entry) => entry.sourceProductId)).size !== selections.length) {
@@ -600,7 +649,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
         } catch (error) { dependencyError(error); }
         if (durable) {
           const value = committedSampleSetRow(durable, { accountId, draftId,
-            sampleSetId: identifier(durable.sampleSetId), idempotencyKey,
+            idempotencyKey,
             sampleCount: selections.length, draftVersion: expectedDraftVersion + 1 });
           return Object.freeze({ draftId, ...value });
         }
@@ -624,7 +673,6 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
           } catch (error) { dependencyError(error); }
           verified.push(verifiedFact(fact, selected, draft.scope));
         }
-        const sampleSetId = operationId("sample-set", accountId, draftId, idempotencyKey);
         const samples = [];
         for (const [ordinal, fact] of verified.entries()) {
           const sampleId = operationId("sample", accountId, draftId, idempotencyKey,

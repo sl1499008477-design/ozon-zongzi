@@ -60,12 +60,13 @@ function createReadModel({ pool }) {
   });
 }
 
-function createMemoryExtensionSessionChannel() {
-  const records = new Map();
+function absentExtensionSessionChannel() {
+  const notReady = () => {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY", 409, false);
+  };
   return Object.freeze({
-    async putSession(value) {
-      records.set(`${value.accountId}\0${value.sessionId}`, Object.freeze({ ...value }));
-    },
+    async assertReady() { notReady(); },
+    async putSession() { notReady(); },
   });
 }
 
@@ -146,13 +147,14 @@ export function createAutoListingCategoryStrategyRuntime({
     || typeof createService !== "function" || typeof createPublicationRepository !== "function"
     || typeof createAdminService !== "function"
     || !(exactProductFacts === null || typeof exactProductFacts?.verify === "function")
-    || !(extensionSessionChannel === null || typeof extensionSessionChannel?.putSession === "function")
+    || !(extensionSessionChannel === null || (typeof extensionSessionChannel?.assertReady === "function"
+      && typeof extensionSessionChannel?.putSession === "function"))
     || !(deriveSessionIdentity === null || typeof deriveSessionIdentity === "function")
     || typeof downloadImage !== "function" || typeof now !== "function"
     || !Number.isInteger(maxDownloadBytes) || maxDownloadBytes < 1 || maxDownloadBytes > MAX_DOWNLOAD_BYTES) {
     throw new TypeError("Auto-listing category strategy runtime dependencies are required");
   }
-  const sessionChannel = extensionSessionChannel ?? createMemoryExtensionSessionChannel();
+  const sessionChannel = extensionSessionChannel ?? absentExtensionSessionChannel();
   let servicePromise = null;
   function getService() {
     if (!autoListingEnabled(env)) {
