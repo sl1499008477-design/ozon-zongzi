@@ -6,6 +6,8 @@ import { createAutoListingDirectSystemReadiness } from "./auto-listing-direct-sy
 import { createAutoListingItemHttpHandler } from "./auto-listing-item-routes.mjs";
 import { createAutoListingItemRuntime } from "./auto-listing-item-runtime.mjs";
 import { createAutoListingOperationsRuntime } from "./auto-listing-operations-runtime.mjs";
+import { createAutoListingPlanDiagnosticHttpHandler } from "./auto-listing-plan-diagnostic-routes.mjs";
+import { createAutoListingPlanDiagnosticRuntime } from "./auto-listing-plan-diagnostic-runtime.mjs";
 import { createAutoListingReviewAssetHttpHandler } from "./auto-listing-review-asset-routes.mjs";
 import { createAutoListingSubmissionReconciliationAdminHttpHandler } from "./auto-listing-submission-reconciliation-admin-routes.mjs";
 import { createAutoListingSubmissionReconciliationAdminRuntime } from "./auto-listing-submission-reconciliation-admin-runtime.mjs";
@@ -46,6 +48,8 @@ export function createAutoListingWebRuntime({
   createUserWorkflowRuntime = createAutoListingUserWorkflowRuntime,
   createAiSettingsRuntime = createAutoListingAiSettingsRuntime,
   createAiSettingsHandler = createAutoListingAiSettingsHttpHandler,
+  createPlanDiagnosticRuntime = createAutoListingPlanDiagnosticRuntime,
+  createPlanDiagnosticHandler = createAutoListingPlanDiagnosticHttpHandler,
   storage = publicationStorage,
   probePublicPolicy = createListingAssetPublicationProbe({ storage }),
   assertDirectSystemReady = createAutoListingDirectSystemReadiness({ env, resolvePool }),
@@ -56,12 +60,14 @@ export function createAutoListingWebRuntime({
     || typeof createUploadRuntime !== "function" || typeof createReconciliationRuntime !== "function"
     || typeof createOperationsRuntime !== "function" || typeof createUserWorkflowRuntime !== "function"
     || typeof createAiSettingsRuntime !== "function" || typeof createAiSettingsHandler !== "function"
+    || typeof createPlanDiagnosticRuntime !== "function" || typeof createPlanDiagnosticHandler !== "function"
     || typeof assertDirectSystemReady !== "function" || typeof probePublicPolicy !== "function") {
     throw new TypeError("AUTO_LISTING_WEB_RUNTIME_DEPENDENCY_REQUIRED");
   }
 
   const adminRuntime = createAutoListingAiAdminRuntime();
   const settingsRuntime = createAiSettingsRuntime({ env, getPostgresPool: resolvePool });
+  const planDiagnosticRuntime = createPlanDiagnosticRuntime({ env, getPostgresPool: resolvePool });
   const userWorkflowRuntime = createUserWorkflowRuntime({
     env,
     getAutoListingService,
@@ -149,6 +155,11 @@ export function createAutoListingWebRuntime({
     readJson: (req) => readJson(req, { maxBytes: 256 * 1024, requireBody: true }),
     sendJson,
   });
+  const handlePlanDiagnosticRoute = createPlanDiagnosticHandler({
+    authenticate,
+    getService: planDiagnosticRuntime.getService,
+    sendJson,
+  });
   const handleAiSettingsRoute = createAiSettingsHandler({
     authenticate,
     getService: settingsRuntime.getService,
@@ -156,6 +167,7 @@ export function createAutoListingWebRuntime({
     sendJson,
   });
   async function handleAiAdminRoute(req, res, url) {
+    if (await handlePlanDiagnosticRoute(req, res, url)) return true;
     if (await handleAiSettingsRoute(req, res, url)) return true;
     return handleLegacyAiAdminRoute(req, res, url);
   }
@@ -231,6 +243,7 @@ export function createAutoListingWebRuntime({
 
   return Object.freeze({
     handleAiAdminRoute,
+    handlePlanDiagnosticRoute,
     handleAiSettingsRoute,
     handleUserWorkflowRoute,
     handleReviewAssetRoute,

@@ -6,11 +6,13 @@ import { createAutoListingWebRuntime } from "../auto-listing-web-runtime.mjs";
 function build({ settingsStartError = null } = {}) {
   const events = [];
   const service = Object.freeze({ marker: "settings-service" });
+  const diagnosticService = Object.freeze({ marker: "diagnostic-service" });
   const settingsRuntime = Object.freeze({
     async getService() { return service; },
     async startWorker() { events.push("settings-start"); if (settingsStartError) throw settingsStartError; return true; },
     async stopWorker() { events.push("settings-stop"); },
   });
+  const diagnosticRuntime = Object.freeze({ async getService() { return diagnosticService; } });
   const userRuntime = Object.freeze({
     async getService() { return {}; },
     async startWorkers() { events.push("user-start"); return true; },
@@ -21,6 +23,7 @@ function build({ settingsStartError = null } = {}) {
     async stop() { events.push("operations-stop"); },
   });
   let settingsHandlerInput;
+  let diagnosticHandlerInput;
   const runtime = createAutoListingWebRuntime({
     authenticate: async () => ({ id: "account-a", role: "admin" }),
     getAutoListingService: async () => ({}),
@@ -35,6 +38,11 @@ function build({ settingsStartError = null } = {}) {
       settingsHandlerInput = input;
       return async (_req, _res, url) => url.pathname.startsWith("/admin/auto-listing/ai-settings");
     },
+    createPlanDiagnosticRuntime(input) { events.push(["diagnostic-runtime", input]); return diagnosticRuntime; },
+    createPlanDiagnosticHandler(input) {
+      diagnosticHandlerInput = input;
+      return async (_req, _res, url) => url.pathname.startsWith("/admin/auto-listing/plan-diagnostics/");
+    },
     createPublicationRuntime() { throw new Error("publication must stay lazy"); },
     createUploadRuntime() { throw new Error("upload must stay lazy"); },
     createReconciliationRuntime() { throw new Error("reconciliation must stay lazy"); },
@@ -43,8 +51,21 @@ function build({ settingsStartError = null } = {}) {
     probePublicPolicy: async () => true,
     assertDirectSystemReady: async () => true,
   });
-  return { runtime, events, service, settingsHandler: () => settingsHandlerInput };
+  return {
+    runtime, events, service, diagnosticService,
+    settingsHandler: () => settingsHandlerInput,
+    diagnosticHandler: () => diagnosticHandlerInput,
+  };
 }
+
+test("web runtime mounts diagnostics before legacy AI administration without touching PostgreSQL", async () => {
+  const h = build();
+  assert.equal(await h.runtime.handleAiAdminRoute({}, {}, new URL(
+    "https://example.test/admin/auto-listing/plan-diagnostics/items/item-a/latest?jobId=job-a",
+  )), true);
+  assert.equal(await h.diagnosticHandler().getService(), h.diagnosticService);
+  assert.equal(h.events.some((entry) => entry === "pool"), false);
+});
 
 test("web runtime mounts the stable AI settings handler without touching PostgreSQL", async () => {
   const h = build();

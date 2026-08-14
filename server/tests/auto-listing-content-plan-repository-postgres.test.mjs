@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { createPostgresContentPlanRepository } from "../auto-listing-content-plan-repository.mjs";
 import { createPostgresContentPlanEvidenceRepository } from "../auto-listing-content-plan-evidence-postgres.mjs";
+import { createPostgresAutoListingPlanDiagnosticRepository } from "../auto-listing-plan-diagnostic-postgres.mjs";
 
 const dedicatedDatabaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(dedicatedDatabaseUrl);
@@ -138,6 +139,27 @@ if (!enabled) {
         accountId: ids.account, responseId: recordedResponse.id, status: "ACCEPTED",
         validatorVersion: "AUTO_LISTING_CONTENT_PLAN_VALIDATOR_V1", issues: [],
       });
+      const diagnosticRepository = createPostgresAutoListingPlanDiagnosticRepository({ pool: scopedPool });
+      const diagnostic = await diagnosticRepository.loadLatest({
+        accountId: ids.account, jobId: ids.job, itemId: ids.item,
+      });
+      assert.deepEqual({
+        responseId: diagnostic.responseId,
+        attemptId: diagnostic.attemptId,
+        planningContract: diagnostic.planningContract,
+        validationStatus: diagnostic.validation.status,
+      }, {
+        responseId: recordedResponse.id,
+        attemptId: owner.attemptId,
+        planningContract: "LEGACY_FULL_PLAN_V3",
+        validationStatus: "ACCEPTED",
+      });
+      assert.equal(await diagnosticRepository.loadLatest({
+        accountId: `foreign-${suffix}`, jobId: ids.job, itemId: ids.item,
+      }), null);
+      assert.equal(await diagnosticRepository.loadLatest({
+        accountId: ids.account, jobId: ids.job, itemId: `foreign-item-${suffix}`,
+      }), null);
       const recordedOutcome = await evidenceRepository.loadOutcome({
         accountId: ids.account, jobId: ids.job, itemId: ids.item, sourceSnapshotId: ids.snapshot,
         owner: { kind: "ATTEMPT", id: owner.attemptId }, planningContract: "LEGACY_FULL_PLAN_V3",

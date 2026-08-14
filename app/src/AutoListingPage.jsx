@@ -43,6 +43,7 @@ import {
   autoListingTaskRows,
   autoListingCreatedAtLabel,
 } from "./auto-listing-view.js";
+import { autoListingPlanDiagnosticDetail } from "./auto-listing-plan-diagnostics.js";
 import { apiRequest } from "./client-transport.js";
 import "./auto-listing-page.css";
 
@@ -130,9 +131,13 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   const [importDetailOpen, setImportDetailOpen] = useState(false);
   const [importDetailLoading, setImportDetailLoading] = useState(false);
   const [importActionId, setImportActionId] = useState("");
+  const [planDiagnostic, setPlanDiagnostic] = useState(null);
+  const [planDiagnosticOpen, setPlanDiagnosticOpen] = useState(false);
+  const [planDiagnosticLoading, setPlanDiagnosticLoading] = useState(false);
   const loadRequestRef = useRef(0);
   const reviewRequestRef = useRef(0);
   const importDetailRequestRef = useRef(0);
+  const planDiagnosticRequestRef = useRef(0);
   const hydratedAccountRef = useRef("");
   const selectedCurrencyRef = useRef(null);
   const createIntentRef = useRef(null);
@@ -233,6 +238,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
 
   useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => () => { importDetailRequestRef.current += 1; }, []);
+  useEffect(() => () => { planDiagnosticRequestRef.current += 1; }, []);
 
   const normalizedConfig = useCallback((values) => deriveAutoListingConfig({
     targetStoreId: values.targetStoreId,
@@ -402,6 +408,32 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     setReview(null);
   };
 
+  const openPlanDiagnostic = async (row) => {
+    if (account?.role !== "admin") return;
+    const requestVersion = ++planDiagnosticRequestRef.current;
+    setPlanDiagnosticOpen(true);
+    setPlanDiagnostic(null);
+    setPlanDiagnosticLoading(true);
+    try {
+      const result = await apiRequest(`/admin/auto-listing/plan-diagnostics/items/${encodeURIComponent(row.itemId)}/latest?jobId=${encodeURIComponent(row.jobId)}`);
+      if (requestVersion !== planDiagnosticRequestRef.current) return;
+      const projected = autoListingPlanDiagnosticDetail(result?.data);
+      setPlanDiagnostic(projected || { error: "规划诊断结果无效，请刷新后重试" });
+    } catch (caught) {
+      if (requestVersion !== planDiagnosticRequestRef.current) return;
+      setPlanDiagnostic({ error: caught?.message || "图片规划诊断暂时无法读取" });
+    } finally {
+      if (requestVersion === planDiagnosticRequestRef.current) setPlanDiagnosticLoading(false);
+    }
+  };
+
+  const closePlanDiagnostic = () => {
+    planDiagnosticRequestRef.current += 1;
+    setPlanDiagnosticOpen(false);
+    setPlanDiagnosticLoading(false);
+    setPlanDiagnostic(null);
+  };
+
   const performAction = async (row, action) => {
     if (actionItemId && actionItemId !== row.itemId) return;
     setError("");
@@ -484,6 +516,9 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       const item = autoListingItemPresentation(row);
       return <Space wrap>
         {item.actions.review ? <Button size="small" disabled={Boolean(actionItemId) || reviewLoading} icon={<EyeOutlined />} onClick={() => openReview(row.itemId)}>查看</Button> : null}
+        {account?.role === "admin" && String(row.failureCode || "").startsWith("AUTO_LISTING_CONTENT_PLAN_")
+          ? <Button size="small" disabled={planDiagnosticLoading} icon={<EyeOutlined />}
+            onClick={() => openPlanDiagnostic(row)}>查看规划问题</Button> : null}
         {item.actions.approve ? <Button type="primary" size="small" loading={actionItemId === row.itemId} disabled={Boolean(actionItemId)} icon={<CloudUploadOutlined />} onClick={() => confirmApprove(row)}>审核通过并上架</Button> : null}
         {item.actions.regenerate ? <Button size="small" loading={actionItemId === row.itemId} disabled={Boolean(actionItemId)} icon={<ReloadOutlined />} onClick={() => performAction(row, "regenerate")}>重新生成</Button> : null}
         {item.actions.retry ? <Button size="small" loading={actionItemId === row.itemId} disabled={Boolean(actionItemId)} icon={<ReloadOutlined />} onClick={() => performAction(row, "retry")}>重试</Button> : null}
@@ -587,6 +622,28 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
           <Card title="富文本预览"><div className="auto-listing-rich-preview">{review.richContent?.previewText || review.richContent?.text || "暂无富文本内容"}</div></Card>
           <Card title="价格与事件记录"><pre>{JSON.stringify({ price: review.price, timeline: review.timeline }, null, 2)}</pre></Card>
         </> : <Empty description="暂无可审核内容" />}
+      </Spin>
+    </Drawer>
+
+    <Drawer title="图片规划问题" open={planDiagnosticOpen} onClose={closePlanDiagnostic} size="large">
+      <Spin spinning={planDiagnosticLoading}>
+        {planDiagnostic?.error ? <Alert type="error" title={planDiagnostic.error} /> : planDiagnostic ? <>
+          <Card size="small" title="诊断信息">
+            <p>规划合同：{planDiagnostic.planningContract}</p>
+            <p>使用模型：{planDiagnostic.model}</p>
+            <p>模板版本：{planDiagnostic.templateVersion}</p>
+            <p>收到时间：{autoListingCreatedAtLabel(planDiagnostic.receivedAt)}</p>
+          </Card>
+          <Table rowKey={(issue, index) => `${issue.code}-${issue.slotKey || "plan"}-${index}`}
+            pagination={false} dataSource={planDiagnostic.validation.issues} columns={[
+              { title: "规则", dataIndex: "code" },
+              { title: "图片位置", dataIndex: "slotKey", render: (value) => value || "整体规划" },
+              { title: "字段", dataIndex: "field", render: (value) => value || "—" },
+              { title: "应为", dataIndex: "expected", render: (value) => value || "—" },
+              { title: "实际", dataIndex: "actual", render: (value) => value || "—" },
+            ]} />
+          <details><summary>结构化响应（只读）</summary><pre>{JSON.stringify(planDiagnostic.response, null, 2)}</pre></details>
+        </> : <Empty description="暂无图片规划诊断" />}
       </Spin>
     </Drawer>
 

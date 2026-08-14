@@ -205,3 +205,15 @@ test("automatic listing shows the AI model settings entry only to administrators
   assert.match(page, /navigate\("\/ozon\/tools\/auto-listing\/ai-settings"\)/);
   assert.match(page, /AI 模型配置/);
 });
+
+test("administrators can inspect planning failures without exposing a retry action", () => {
+  assert.match(page, /from "\.\/auto-listing-plan-diagnostics\.js"/u);
+  assert.match(page, /AUTO_LISTING_CONTENT_PLAN_/u);
+  assert.match(page, /查看规划问题/u);
+  assert.match(page, /图片规划问题/u);
+  assert.match(page, /结构化响应/u);
+  assert.match(page, /account\?\.role === "admin"/u);
+  assert.match(page, /\/admin\/auto-listing\/plan-diagnostics\/items\//u);
+  const drawer = page.slice(page.indexOf('<Drawer title="图片规划问题"'));
+  assert.doesNotMatch(drawer.slice(0, drawer.indexOf("</Drawer>") + 9), /重试|重新生成/u);
+});
