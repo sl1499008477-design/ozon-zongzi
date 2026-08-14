@@ -12,10 +12,32 @@ const rootDir = fileURLToPath(new URL("..", import.meta.url));
 const localExtensionDir = path.join(rootDir, "extension");
 
 test("upstream parity accepts a newer local patch but rejects older or cross-line versions", () => {
-  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.2", "0.13.46.1"));
-  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.2", "0.13.46.2"));
-  assert.throws(() => assertCompatibleExtensionVersions("0.13.46.1", "0.13.46.2"), /older than upstream/);
+  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.3", "0.13.46.2"));
+  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.3", "0.13.46.3"));
+  assert.throws(() => assertCompatibleExtensionVersions("0.13.46.2", "0.13.46.3"), /older than upstream/);
   assert.throws(() => assertCompatibleExtensionVersions("0.14.0", "0.13.46.1"), /release line/);
+});
+
+test("source parity accepts the reviewed category strategy sampling module as local-only", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "extension-source-parity-"));
+  const upstreamDir = path.join(fixtureRoot, "upstream");
+  cpSync(localExtensionDir, upstreamDir, { recursive: true });
+  for (const relativePath of [
+    "lib/category-strategy-sampling.js",
+    "tests/category-strategy-sampling.test.js",
+  ]) rmSync(path.join(upstreamDir, relativePath));
+  try {
+    const result = spawnSync(process.execPath,
+      [path.join(rootDir, "scripts", "check-extension-source-parity.mjs")], {
+        cwd: rootDir, encoding: "utf8", env: { ...process.env,
+          QH_SOURCE_EXTENSION_DIR: upstreamDir,
+          QH_LOCAL_EXTENSION_DIR: localExtensionDir,
+          QH_DISTRIBUTED_EXTENSION_DIR: localExtensionDir },
+      });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 });
 
 test("source parity accepts exactly the reviewed Collector auth opener files absent upstream", () => {

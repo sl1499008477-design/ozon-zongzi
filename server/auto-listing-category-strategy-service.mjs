@@ -147,6 +147,12 @@ function browserUrl(value) {
   return parsed.href;
 }
 
+function samplingBrowserUrl(value, sessionId) {
+  const url = new URL(browserUrl(value));
+  url.searchParams.set("zongziCategoryStrategySession", identifier(sessionId));
+  return url.href;
+}
+
 function exactIsoDate(value) {
   if (typeof value !== "string") throw invalid();
   const parsed = new Date(value);
@@ -543,9 +549,9 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
           throw failure("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409);
         }
         if (replay.promise) return replay.promise;
-        try { await extensionSessionChannel.assertReady(); } catch (error) { dependencyError(error); }
+        try { await extensionSessionChannel.assertReady({ accountId }); } catch (error) { dependencyError(error); }
       } else {
-        try { await extensionSessionChannel.assertReady(); } catch (error) { dependencyError(error); }
+        try { await extensionSessionChannel.assertReady({ accountId }); } catch (error) { dependencyError(error); }
         const candidateExpiry = new Date(new Date(now()).getTime() + TWO_HOURS_MS);
         if (Number.isNaN(candidateExpiry.getTime())) throw invalid();
         let identity;
@@ -577,12 +583,13 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
           const row = samplingSessionRow(durable, accountId, draftId);
           try {
             await extensionSessionChannel.putSession({ accountId, actorId: accountId, draftId,
+              expectedDraftVersion,
               sessionId: row.sessionId, sessionSecret: replay.sessionSecret, expiresAt: row.expiresAt,
               extensionMode: "CATEGORY_STRATEGY_SAMPLING", scope: publicScope(draft.scope) });
           } catch (error) { dependencyError(error); }
           replay.sessionSecret = null;
           return Object.freeze({ sessionId: row.sessionId, expiresAt: row.expiresAt,
-            browserUrl: draft.browserUrl, extensionMode: "CATEGORY_STRATEGY_SAMPLING",
+            browserUrl: samplingBrowserUrl(draft.browserUrl, row.sessionId), extensionMode: "CATEGORY_STRATEGY_SAMPLING",
             scope: publicScope(draft.scope), duplicate: true });
         }
         await requireEnabled(accountId);
@@ -593,12 +600,13 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
             expiresAt: replay.expiresAt, idempotencyKey, correlationId });
           row = samplingSessionRow(stored, accountId, draftId);
           await extensionSessionChannel.putSession({ accountId, actorId: accountId, draftId,
+            expectedDraftVersion,
             sessionId: row.sessionId, sessionSecret: replay.sessionSecret, expiresAt: row.expiresAt,
             extensionMode: "CATEGORY_STRATEGY_SAMPLING", scope: publicScope(draft.scope) });
           replay.sessionSecret = null;
         } catch (error) { dependencyError(error); }
         return Object.freeze({ sessionId: row.sessionId, expiresAt: row.expiresAt,
-          browserUrl: draft.browserUrl, extensionMode: "CATEGORY_STRATEGY_SAMPLING",
+          browserUrl: samplingBrowserUrl(draft.browserUrl, row.sessionId), extensionMode: "CATEGORY_STRATEGY_SAMPLING",
           scope: publicScope(draft.scope), duplicate: row.duplicate });
       })();
       replay.promise = promise;

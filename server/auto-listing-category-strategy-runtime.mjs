@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { types } from "node:util";
 
 import { createAutoListingAiAdminPostgres } from "./auto-listing-ai-admin-postgres.mjs";
 import { createAutoListingAiAdminService } from "./auto-listing-ai-admin-service.mjs";
@@ -11,9 +12,325 @@ import { createExpectedHashObjectStorage } from "./object-storage.mjs";
 import { autoListingEnabled } from "./runtime-config.mjs";
 
 const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+const EXTENSION_READY_TTL_MS = 5 * 60 * 1000;
+const EXTENSION_MODE = "CATEGORY_STRATEGY_SAMPLING";
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
+const SHA256 = /^[a-f0-9]{64}$/u;
 
 function runtimeError(code, status = 503, retryable = true) {
   return Object.assign(new Error(code), { code, status, retryable });
+}
+
+function extensionClosed(raw, keys, code = "AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID") {
+  try {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || types.isProxy(raw)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) throw new Error(code);
+    const descriptors = Object.getOwnPropertyDescriptors(raw);
+    const own = Reflect.ownKeys(descriptors);
+    if (own.length !== keys.size || own.some((key) => typeof key !== "string" || !keys.has(key)
+      || descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) {
+      throw new Error(code);
+    }
+    return Object.fromEntries(own.map((key) => [key, descriptors[key].value]));
+  } catch (error) {
+    if (error?.code === code) throw error;
+    throw runtimeError(code, 400, false);
+  }
+}
+
+function extensionArray(raw, minimum, maximum) {
+  try {
+    if (!Array.isArray(raw) || types.isProxy(raw) || Object.getPrototypeOf(raw) !== Array.prototype
+      || raw.length < minimum || raw.length > maximum) throw new Error("invalid");
+    const descriptors = Object.getOwnPropertyDescriptors(raw);
+    if (Reflect.ownKeys(descriptors).length !== raw.length + 1
+      || descriptors.length?.value !== raw.length) throw new Error("invalid");
+    return Array.from({ length: raw.length }, (_, index) => {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, "value")) {
+        throw new Error("invalid");
+      }
+      return descriptor.value;
+    });
+  } catch {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+}
+
+function extensionId(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!SAFE_ID.test(text) || text !== value) {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+  return text;
+}
+
+function extensionScope(raw) {
+  const value = extensionClosed(raw,
+    new Set(["taxonomyScope", "descriptionCategoryId", "typeId"]));
+  if (value.taxonomyScope !== "OZON:DEFAULT"
+    || !Number.isSafeInteger(value.descriptionCategoryId) || value.descriptionCategoryId < 1
+    || !Number.isSafeInteger(value.typeId) || value.typeId < 1) {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+  return Object.freeze({ taxonomyScope: value.taxonomyScope,
+    descriptionCategoryId: value.descriptionCategoryId, typeId: value.typeId });
+}
+
+function sameExtensionScope(left, right) {
+  return left.taxonomyScope === right.taxonomyScope
+    && left.descriptionCategoryId === right.descriptionCategoryId && left.typeId === right.typeId;
+}
+
+function extensionVersionParts(value) {
+  if (typeof value !== "string" || !/^\d+\.\d+\.\d+(?:\.\d+)?$/u.test(value)) return null;
+  const parts = value.split(".").map(Number);
+  return parts.length === 3 ? [...parts, 0] : parts;
+}
+
+function extensionVersionAtLeast(value, minimum) {
+  const left = extensionVersionParts(value);
+  const right = extensionVersionParts(minimum);
+  if (!left || !right) return false;
+  for (let index = 0; index < 4; index += 1) {
+    if (left[index] !== right[index]) return left[index] > right[index];
+  }
+  return true;
+}
+
+function extensionSourceUrl(value) {
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 2048) {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+  let url;
+  try { url = new URL(value); } catch {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+  const host = url.hostname.toLowerCase().replace(/\.$/u, "");
+  const allowed = host === "ozone.ru" || host.endsWith(".ozone.ru")
+    || host === "ozonusercontent.com" || host.endsWith(".ozonusercontent.com")
+    || host === "ozonru.cn" || host.endsWith(".ozonru.cn");
+  if (url.protocol !== "https:" || url.username || url.password || !allowed) {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+  return url.href;
+}
+
+function projectExtensionReference(raw, index) {
+  const value = extensionClosed(raw,
+    new Set(["imageId", "role", "ordinal", "sourceUrl", "sourceResponseHash"]));
+  const role = index === 0 ? "MAIN" : "DETAIL";
+  if (value.role !== role || value.ordinal !== index || typeof value.sourceResponseHash !== "string"
+    || !SHA256.test(value.sourceResponseHash)) {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+  return Object.freeze({ imageId: extensionId(value.imageId), role, ordinal: index,
+    sourceUrl: extensionSourceUrl(value.sourceUrl), sourceResponseHash: value.sourceResponseHash });
+}
+
+function projectExtensionPageFact(raw) {
+  const value = extensionClosed(raw, new Set(["pageScope", "sourceResponseHash"]));
+  if (typeof value.sourceResponseHash !== "string" || !SHA256.test(value.sourceResponseHash)) {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+  return Object.freeze({ pageScope: extensionScope(value.pageScope),
+    sourceResponseHash: value.sourceResponseHash });
+}
+
+function projectExtensionProductFact(raw) {
+  const value = extensionClosed(raw, new Set([
+    "sku", "sourceProductId", "sourceProductRef", "sourceProductResponseHash",
+    "pageScope", "productScope", "sourceReferences",
+  ]));
+  const sku = extensionId(value.sku);
+  if (!/^\d{5,20}$/u.test(sku) || !Number.isSafeInteger(value.sourceProductId)
+    || value.sourceProductId < 1 || Number(sku) !== value.sourceProductId
+    || typeof value.sourceProductResponseHash !== "string" || !SHA256.test(value.sourceProductResponseHash)) {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+  const references = extensionArray(value.sourceReferences, 1, 6)
+    .map((reference, index) => projectExtensionReference(reference, index));
+  if (new Set(references.map((reference) => reference.imageId)).size !== references.length) {
+    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+  }
+  return Object.freeze({ sku, sourceProductId: value.sourceProductId,
+    sourceProductRef: extensionId(value.sourceProductRef),
+    sourceProductResponseHash: value.sourceProductResponseHash,
+    pageScope: extensionScope(value.pageScope), productScope: extensionScope(value.productScope),
+    sourceReferences: Object.freeze(references) });
+}
+
+export function createCategoryStrategyExtensionChannel({
+  now = () => Date.now(), minimumExtensionVersion = "0.13.46.3",
+  readyTtlMs = EXTENSION_READY_TTL_MS,
+} = {}) {
+  if (typeof now !== "function" || !extensionVersionParts(minimumExtensionVersion)
+    || !Number.isInteger(readyTtlMs) || readyTtlMs < 1 || readyTtlMs > 60 * 60 * 1000) {
+    throw new TypeError("Category strategy extension channel dependencies are required");
+  }
+  const readiness = new Map();
+  const sessions = new Map();
+  const sessionKey = (accountId, sessionId) => `${accountId}\0${sessionId}`;
+  const timestamp = () => {
+    const value = Number(now());
+    if (!Number.isFinite(value)) throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_CLOCK_INVALID");
+    return value;
+  };
+  const assertVersion = (version) => {
+    if (!extensionVersionAtLeast(version, minimumExtensionVersion)) {
+      throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_VERSION_UNSUPPORTED", 426, false);
+    }
+    return version;
+  };
+  const sessionRecord = (accountId, sessionId = null) => {
+    if (sessionId === null) return null;
+    const key = sessionKey(accountId, sessionId);
+    const record = sessions.get(key) || null;
+    if (!record) return null;
+    if (Date.parse(record.expiresAt) <= timestamp()) {
+      sessions.delete(key);
+      return null;
+    }
+    return record;
+  };
+  const activeRecord = (accountId, sessionId = null) => {
+    const record = sessionRecord(accountId, sessionId);
+    return record?.state === "ACTIVE" ? record : null;
+  };
+  const channel = {
+    async markReady(raw) {
+      const input = extensionClosed(raw, new Set(["accountId", "extensionVersion"]));
+      const accountId = extensionId(input.accountId);
+      assertVersion(input.extensionVersion);
+      readiness.set(accountId, { version: input.extensionVersion, observedAt: timestamp() });
+      return Object.freeze({ ready: true, minimumExtensionVersion });
+    },
+    async assertReady(raw) {
+      const input = extensionClosed(raw, new Set(["accountId"]));
+      const accountId = extensionId(input.accountId);
+      const record = readiness.get(accountId);
+      if (!record || record.observedAt + readyTtlMs <= timestamp()
+        || !extensionVersionAtLeast(record.version, minimumExtensionVersion)) {
+        readiness.delete(accountId);
+        throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY", 409, false);
+      }
+      return true;
+    },
+    async putSession(raw) {
+      const input = extensionClosed(raw, new Set([
+        "accountId", "actorId", "draftId", "expectedDraftVersion", "sessionId", "sessionSecret",
+        "expiresAt", "extensionMode", "scope",
+      ]));
+      const accountId = extensionId(input.accountId);
+      await channel.assertReady({ accountId });
+      const expiry = new Date(input.expiresAt);
+      if (extensionId(input.actorId) !== accountId || !Number.isSafeInteger(input.expectedDraftVersion)
+        || input.expectedDraftVersion < 1 || input.extensionMode !== EXTENSION_MODE
+        || typeof input.sessionSecret !== "string" || input.sessionSecret.length < 32
+        || input.sessionSecret.length > 512 || Number.isNaN(expiry.getTime())
+        || expiry.toISOString() !== input.expiresAt || expiry.getTime() <= timestamp()) {
+        throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_INPUT_INVALID", 400, false);
+      }
+      const record = { accountId, actorId: accountId, draftId: extensionId(input.draftId),
+        expectedDraftVersion: input.expectedDraftVersion, sessionId: extensionId(input.sessionId),
+        sessionSecret: input.sessionSecret, expiresAt: input.expiresAt, extensionMode: EXTENSION_MODE,
+        scope: extensionScope(input.scope), state: "ACTIVE", pageFact: null, samples: new Map() };
+      sessions.set(sessionKey(accountId, record.sessionId), record);
+      return true;
+    },
+    async getSession(raw) {
+      const input = extensionClosed(raw, new Set(["accountId", "sessionId", "extensionVersion"]));
+      const accountId = extensionId(input.accountId);
+      assertVersion(input.extensionVersion);
+      const record = activeRecord(accountId, extensionId(input.sessionId));
+      if (!record) return null;
+      return Object.freeze({ sessionId: record.sessionId, draftId: record.draftId,
+        extensionMode: record.extensionMode, scope: record.scope, expiresAt: record.expiresAt,
+        sessionSecret: record.sessionSecret });
+    },
+    async putFacts(raw) {
+      const input = extensionClosed(raw,
+        new Set(["accountId", "sessionId", "extensionVersion", "pageFact", "samples"]));
+      const accountId = extensionId(input.accountId);
+      assertVersion(input.extensionVersion);
+      const record = sessionRecord(accountId, extensionId(input.sessionId));
+      if (!record) throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_SESSION_NOT_FOUND", 404, false);
+      const pageFact = projectExtensionPageFact(input.pageFact);
+      const samples = extensionArray(input.samples, 5, 20).map(projectExtensionProductFact);
+      if (!sameExtensionScope(pageFact.pageScope, record.scope)
+        || samples.some((sample) => !sameExtensionScope(sample.pageScope, record.scope)
+          || !sameExtensionScope(sample.productScope, record.scope))
+        || new Set(samples.map((sample) => sample.sku)).size !== samples.length
+        || new Set(samples.map((sample) => sample.sourceProductId)).size !== samples.length) {
+        throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_SCOPE_CONFLICT", 409, false);
+      }
+      if (record.state === "COMPLETED") {
+        const previous = JSON.stringify({ pageFact: record.pageFact,
+          samples: [...record.samples.values()] });
+        if (previous !== JSON.stringify({ pageFact, samples })) {
+          throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT", 409, false);
+        }
+      } else if (record.state === "ACTIVE") {
+        record.pageFact = pageFact;
+        record.samples = new Map(samples.map((sample) => [sample.sku, sample]));
+      } else {
+        throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXTENSION_SESSION_NOT_FOUND", 404, false);
+      }
+      return Object.freeze({ accountId, actorId: record.actorId, draftId: record.draftId,
+        expectedDraftVersion: record.expectedDraftVersion, sessionId: record.sessionId,
+        sessionSecret: record.sessionSecret,
+        selections: Object.freeze(samples.map(({ sku, sourceProductId, sourceProductRef }) =>
+          Object.freeze({ sku, sourceProductId, sourceProductRef }))) });
+    },
+    async verify(raw) {
+      const input = extensionClosed(raw, new Set([
+        "accountId", "draftId", "sessionId", "sessionSecretHash", "scope", "sku",
+        "sourceProductId", "sourceProductRef", "correlationId",
+      ]));
+      const accountId = extensionId(input.accountId);
+      const record = sessionRecord(accountId, extensionId(input.sessionId));
+      const suppliedHash = typeof input.sessionSecretHash === "string" ? input.sessionSecretHash : "";
+      const expectedHash = record
+        ? crypto.createHash("sha256").update(record.sessionSecret, "utf8").digest("hex") : "0".repeat(64);
+      let secretMatches = false;
+      if (SHA256.test(suppliedHash)) {
+        secretMatches = crypto.timingSafeEqual(Buffer.from(suppliedHash, "hex"), Buffer.from(expectedHash, "hex"));
+      }
+      if (!record || record.draftId !== extensionId(input.draftId) || !secretMatches
+        || !sameExtensionScope(extensionScope(input.scope), record.scope)) {
+        throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXACT_FACTS_NOT_READY", 409, false);
+      }
+      extensionId(input.correlationId);
+      const fact = record.samples.get(extensionId(input.sku));
+      if (!fact || fact.sourceProductId !== input.sourceProductId
+        || fact.sourceProductRef !== input.sourceProductRef) {
+        throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_EXACT_FACTS_NOT_READY", 409, false);
+      }
+      return fact;
+    },
+    async cancelSession(raw) {
+      const input = extensionClosed(raw,
+        new Set(["accountId", "sessionId", "extensionVersion"]));
+      const accountId = extensionId(input.accountId);
+      assertVersion(input.extensionVersion);
+      const record = activeRecord(accountId, extensionId(input.sessionId));
+      if (!record) return false;
+      record.state = "CANCELLED";
+      record.pageFact = null;
+      record.samples.clear();
+      sessions.delete(sessionKey(accountId, record.sessionId));
+      return true;
+    },
+    async completeSession(raw) {
+      const input = extensionClosed(raw, new Set(["accountId", "sessionId"]));
+      const accountId = extensionId(input.accountId);
+      const record = sessionRecord(accountId, extensionId(input.sessionId));
+      if (!record) return false;
+      record.state = "COMPLETED";
+      return true;
+    },
+  };
+  return Object.freeze(channel);
 }
 
 function createReadModel({ pool }) {
@@ -57,16 +374,6 @@ function createReadModel({ pool }) {
         WHERE draft.account_id=$1 AND draft.id=$2`, [accountId, draftId]);
       return row(result.rows[0]);
     },
-  });
-}
-
-function absentExtensionSessionChannel() {
-  const notReady = () => {
-    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY", 409, false);
-  };
-  return Object.freeze({
-    async assertReady() { notReady(); },
-    async putSession() { notReady(); },
   });
 }
 
@@ -154,7 +461,14 @@ export function createAutoListingCategoryStrategyRuntime({
     || !Number.isInteger(maxDownloadBytes) || maxDownloadBytes < 1 || maxDownloadBytes > MAX_DOWNLOAD_BYTES) {
     throw new TypeError("Auto-listing category strategy runtime dependencies are required");
   }
-  const sessionChannel = extensionSessionChannel ?? absentExtensionSessionChannel();
+  const sessionChannel = extensionSessionChannel ?? createCategoryStrategyExtensionChannel({
+    now: () => new Date(now()).getTime(),
+    minimumExtensionVersion: String(
+      env.AUTO_LISTING_CATEGORY_STRATEGY_MIN_EXTENSION_VERSION || "0.13.46.3",
+    ),
+  });
+  const factsPort = exactProductFacts
+    ?? (extensionSessionChannel === null ? sessionChannel : absentExactProductFacts());
   let servicePromise = null;
   function getService() {
     if (!autoListingEnabled(env)) {
@@ -179,7 +493,7 @@ export function createAutoListingCategoryStrategyRuntime({
           const publicationService = createPublicationService({ pool,
             createRepository: createPublicationRepository, createService: createAdminService });
           return createService({ repository, readModel, sampleStore,
-            exactProductFacts: exactProductFacts ?? absentExactProductFacts(),
+            exactProductFacts: factsPort,
             extensionSessionChannel: sessionChannel, publicationService, now,
             deriveSessionIdentity: deriveSessionIdentity ?? createSessionIdentityDeriver(env) });
         } catch (error) {
@@ -192,5 +506,5 @@ export function createAutoListingCategoryStrategyRuntime({
     }
     return servicePromise;
   }
-  return Object.freeze({ getService });
+  return Object.freeze({ getService, extensionChannel: sessionChannel });
 }

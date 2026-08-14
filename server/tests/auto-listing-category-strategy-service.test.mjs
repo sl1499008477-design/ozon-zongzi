@@ -274,7 +274,10 @@ test("sampling session uses DB-authoritative repository expiry and never returns
   assert.deepEqual(Object.keys(result), [
     "sessionId", "expiresAt", "browserUrl", "extensionMode", "scope", "duplicate",
   ]);
-  assert.equal(result.browserUrl, "https://www.ozon.ru/category/17028922/");
+  assert.equal(new URL(result.browserUrl).origin, "https://www.ozon.ru");
+  assert.equal(new URL(result.browserUrl).pathname, "/category/17028922/");
+  assert.equal(new URL(result.browserUrl).searchParams.get("zongziCategoryStrategySession"),
+    result.sessionId);
   assert.equal(result.extensionMode, "CATEGORY_STRATEGY_SAMPLING");
   assert.equal(JSON.stringify(result).includes("secret"), false);
   assert.equal(new URL(result.browserUrl).searchParams.has("sessionSecret"), false);
