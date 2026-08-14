@@ -176,6 +176,10 @@ test("planner structured-output schema declares explicit types for every const a
   assertStrictLeafTypes(CONTENT_PLAN_JSON_SCHEMA);
 });
 
+test("planner structured-output schema only uses array keywords accepted by the gateway", () => {
+  assert.equal(JSON.stringify(CONTENT_PLAN_JSON_SCHEMA).includes('"uniqueItems"'), false);
+});
+
 test("missing trusted product dimensions removes specification, reallocates by frozen style, and never uses logistics", () => {
   const built = planner({ sourceCapture: sourceCapture({ reliableDimensions: false }) });
   assert.equal(built.plannerInput.requestedRoleCounts.SPECIFICATION, 0);

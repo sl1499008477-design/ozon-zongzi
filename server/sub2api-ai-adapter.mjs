@@ -86,6 +86,9 @@ const schemaCompiler = new Ajv({
   coerceTypes: false,
   useDefaults: false,
 });
+const UNSUPPORTED_STRUCTURED_SCHEMA_KEYWORDS = new Set([
+  "uniqueItems", "oneOf", "allOf", "not", "dependentRequired", "dependentSchemas", "if", "then", "else",
+]);
 
 function clean(value, max = 240) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
@@ -334,11 +337,32 @@ function validatePrompt(value) {
   return value;
 }
 
+function assertStructuredOutputSchemaSubset(schema, seen = new Set()) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema) || seen.has(schema)) return;
+  seen.add(schema);
+  if ([...UNSUPPORTED_STRUCTURED_SCHEMA_KEYWORDS].some((keyword) => Object.hasOwn(schema, keyword))) {
+    throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+  }
+  if (schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)) {
+    Object.values(schema.properties).forEach((child) => assertStructuredOutputSchemaSubset(child, seen));
+  }
+  if (schema.$defs && typeof schema.$defs === "object" && !Array.isArray(schema.$defs)) {
+    Object.values(schema.$defs).forEach((child) => assertStructuredOutputSchemaSubset(child, seen));
+  }
+  if (schema.items && typeof schema.items === "object" && !Array.isArray(schema.items)) {
+    assertStructuredOutputSchemaSubset(schema.items, seen);
+  }
+  if (Array.isArray(schema.anyOf)) {
+    schema.anyOf.forEach((child) => assertStructuredOutputSchemaSubset(child, seen));
+  }
+}
+
 function compileJsonSchema(schema) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
     throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
   }
   try {
+    assertStructuredOutputSchemaSubset(schema);
     return schemaCompiler.compile(schema);
   } catch {
     throw gatewayError("AI_GATEWAY_REQUEST_INVALID");

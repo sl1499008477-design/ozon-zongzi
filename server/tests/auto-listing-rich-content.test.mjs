@@ -255,6 +255,8 @@ test("exports the closed V1 schema and validates a traceable Russian document de
   assert.deepEqual(RICH_CONTENT_JSON_SCHEMA.properties.version.const, "AUTO_LISTING_RICH_CONTENT_V1");
   assert.deepEqual(RICH_CONTENT_JSON_SCHEMA.properties.language.const, "ru");
   assertStrictLeafTypes(RICH_CONTENT_JSON_SCHEMA);
+  assert.equal(JSON.stringify(RICH_CONTENT_JSON_SCHEMA).includes('"uniqueItems"'), false);
+  assert.equal(JSON.stringify(RICH_CONTENT_JSON_SCHEMA).includes('"oneOf"'), false);
   const first = await validation(validContent());
   const second = await validation(validContent());
   assert.equal(first.valid, true);

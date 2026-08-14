@@ -883,6 +883,18 @@ test("invalid or unsupported JSON Schemas are rejected before secret resolution 
     { type: "not-a-json-schema-type" },
     { type: "object", unknownKeyword: true },
     { $ref: "https://untrusted.example/schema.json" },
+    {
+      type: "object",
+      properties: { values: { type: "array", uniqueItems: true, items: { type: "string" } } },
+      required: ["values"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: { value: { oneOf: [{ type: "string" }, { type: "number" }] } },
+      required: ["value"],
+      additionalProperties: false,
+    },
   ]) {
     await assert.rejects(gateway.createTextResponse(textInput({ jsonSchema })), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID");
   }
