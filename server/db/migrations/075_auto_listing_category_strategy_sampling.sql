@@ -410,7 +410,7 @@ RETURNS JSONB LANGUAGE SQL STABLE AS $$
                 'contentHash',image.source_content_hash,
                 'capturedAt',TO_CHAR(
                   image.captured_at AT TIME ZONE 'UTC',
-                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z" BC'
                 )
               ),
               'analysis',JSONB_BUILD_OBJECT(

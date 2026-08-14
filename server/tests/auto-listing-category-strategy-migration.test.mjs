@@ -377,6 +377,12 @@ if (!postgresEnabled) {
         );
         const baselineHash = await databaseSampleSetHash(client, accountA, canonicalProbeSet);
         assert.equal(await databaseSampleSetHash(client, accountA, canonicalProbeSet), baselineHash);
+        await client.query("SET LOCAL TIME ZONE 'Pacific/Kiritimati'");
+        assert.equal(
+          await databaseSampleSetHash(client, accountA, canonicalProbeSet), baselineHash,
+          "the same instant must hash identically in another session timezone",
+        );
+        await client.query("SET LOCAL TIME ZONE 'UTC'");
         const legacyIncompleteHash = legacyIncompleteSampleSetHash(baselineSamples);
         await client.query("ROLLBACK TO SAVEPOINT canonical_probe_empty");
 
@@ -389,6 +395,19 @@ if (!postgresEnabled) {
           await client.query("ROLLBACK TO SAVEPOINT stale_canonical_hash");
           await client.query("ROLLBACK TO SAVEPOINT canonical_probe_empty");
         }
+
+        const eraHashes = [];
+        for (const capturedAt of ["0001-01-01 00:00:00 AD", "0001-01-01 00:00:00 BC"]) {
+          await buildCanonicalEvidenceProbe(client, canonicalProbeContext, sessionA, {
+            mutateFirstEvidence: ({ image }) => { image.capturedAt = capturedAt; },
+          });
+          eraHashes.push(await databaseSampleSetHash(client, accountA, canonicalProbeSet));
+          await client.query("ROLLBACK TO SAVEPOINT canonical_probe_empty");
+        }
+        assert.notEqual(
+          eraHashes[0], eraHashes[1],
+          "0001 AD and 0001 BC are different instants and must not share a canonical hash",
+        );
 
         await buildCanonicalEvidenceProbe(client, canonicalProbeContext, sessionA, {
           insertionOrder: [4, 3, 2, 1, 0],
