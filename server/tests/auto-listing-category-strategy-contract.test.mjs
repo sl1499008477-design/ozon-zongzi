@@ -18,9 +18,20 @@ const scope = Object.freeze({
 function makeSamples(count, overrides = {}) {
   return Array.from({ length: count }, (_, index) => ({
     sku: `sku-${index + 1}`,
-    images: [{ imageId: `image-${index + 1}-1` }],
+    images: [{ imageId: `image-${index + 1}-main`, role: "MAIN", ordinal: 0 }],
     ...overrides,
   }));
+}
+
+function sampleImages(detailCount = 0) {
+  return [
+    { imageId: "image-main", role: "MAIN", ordinal: 0 },
+    ...Array.from({ length: detailCount }, (_, index) => ({
+      imageId: `image-detail-${index + 1}`,
+      role: "DETAIL",
+      ordinal: index + 1,
+    })),
+  ];
 }
 
 function draft(status, previousStatus = null) {
@@ -71,8 +82,60 @@ test("sample set accepts 5 to 20 unique sku and at most six images each", () => 
     code: "AUTO_LISTING_CATEGORY_STRATEGY_CONTRACT_INVALID",
   });
   assert.throws(() => validateCategoryStrategySamples(makeSamples(5, {
-    images: Array.from({ length: 7 }, (_, index) => ({ imageId: `image-${index}` })),
+    images: sampleImages(6),
   })), { code: "AUTO_LISTING_CATEGORY_STRATEGY_CONTRACT_INVALID" });
+});
+
+test("sample images require one MAIN at ordinal zero followed by up to five ordered DETAIL images", () => {
+  const projected = validateCategoryStrategySamples(makeSamples(5, { images: sampleImages(5) }));
+  assert.deepEqual(projected[0].images, sampleImages(5));
+
+  for (const images of [
+    [{ imageId: "detail-only", role: "DETAIL", ordinal: 1 }],
+    [
+      { imageId: "main-1", role: "MAIN", ordinal: 0 },
+      { imageId: "main-2", role: "MAIN", ordinal: 1 },
+    ],
+    [
+      { imageId: "image-main", role: "MAIN", ordinal: 0 },
+      { imageId: "image-scene", role: "SCENE", ordinal: 1 },
+    ],
+    [
+      { imageId: "image-main", role: "MAIN", ordinal: 0 },
+      { imageId: "image-detail-2", role: "DETAIL", ordinal: 2 },
+    ],
+    [
+      { imageId: "image-main", role: "MAIN", ordinal: 0 },
+      { imageId: "image-detail-2", role: "DETAIL", ordinal: 2 },
+      { imageId: "image-detail-1", role: "DETAIL", ordinal: 1 },
+    ],
+    sampleImages(6),
+  ]) assert.throws(() => validateCategoryStrategySamples(makeSamples(5, { images })), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_CONTRACT_INVALID",
+  });
+});
+
+test("sample image shape rejects extra fields, accessors, and proxies without running user code", () => {
+  const extra = { ...sampleImages()[0], extra: true };
+  let getterReads = 0;
+  const accessor = { imageId: "image-main", role: "MAIN" };
+  Object.defineProperty(accessor, "ordinal", {
+    enumerable: true,
+    get() { getterReads += 1; return 0; },
+  });
+  let proxyTraps = 0;
+  const proxy = new Proxy(sampleImages()[0], {
+    getOwnPropertyDescriptor() { proxyTraps += 1; return undefined; },
+    ownKeys() { proxyTraps += 1; return []; },
+  });
+
+  for (const image of [extra, accessor, proxy]) {
+    assert.throws(() => validateCategoryStrategySamples(makeSamples(5, { images: [image] })), {
+      code: "AUTO_LISTING_CATEGORY_STRATEGY_CONTRACT_INVALID",
+    });
+  }
+  assert.equal(getterReads, 0);
+  assert.equal(proxyTraps, 0);
 });
 
 test("draft state machine permits only the closed happy path and safe review boundary", () => {

@@ -125,12 +125,13 @@ export function validateCategoryStrategySamples(input) {
     if (skuSet.has(sku)) throw failure();
     skuSet.add(sku);
     const imageIds = new Set();
-    const images = sample.images.map((image) => {
-      if (!exact(image, ["imageId"])) throw failure();
+    const images = sample.images.map((image, index) => {
+      if (!exact(image, ["imageId", "role", "ordinal"])) throw failure();
       const imageId = requiredText(image.imageId);
-      if (imageIds.has(imageId)) throw failure();
+      const expectedRole = index === 0 ? "MAIN" : "DETAIL";
+      if (imageIds.has(imageId) || image.role !== expectedRole || image.ordinal !== index) throw failure();
       imageIds.add(imageId);
-      return { imageId };
+      return { imageId, role: expectedRole, ordinal: index };
     });
     return { sku, images };
   });
