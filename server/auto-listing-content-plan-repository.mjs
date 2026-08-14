@@ -5,7 +5,7 @@ const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
 const REQUEST_KEY = /^auto-listing-plan-[a-f0-9]{64}$/u;
 const RESERVE_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "profileId", "profileVersion",
-  "inputHash", "expectedStatusVersion", "requestKey", "planningContract",
+  "inputHash", "expectedStatusVersion", "requestKey", "planningContract", "skeletonHash",
 ]);
 const SAVE_KEYS = new Set([
   ...RESERVE_KEYS,
@@ -33,6 +33,7 @@ const DERIVED_PLAN_KEYS = new Set([
   "strategyHash", "configHash", "sourceHash", "inputHash", "plannerModel", "profileVersion",
   "promptTemplateVersion", "plan", "planHash", "visualGroupsHash", "visualGroups", "factRegistry",
   "regeneration", "gatewayRequestId", "parentPlanId", "derivationKind", "materializationSetHash",
+  "planningContract", "skeletonHash",
 ]);
 const VISUAL_GROUPS_KEYS = new Set(["sourceHash", "groups", "reasonCodes", "visualGroupsHash"]);
 const VISUAL_GROUP_KEYS = new Set([
@@ -158,6 +159,8 @@ function validateReserve(input) {
   assertScope(input);
   if (!safeIdentifier(input.sourceSnapshotId) || !safeIdentifier(input.profileId)
     || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(input.planningContract)
+    || (input.planningContract === "LEGACY_FULL_PLAN_V3" && input.skeletonHash !== null)
+    || (input.planningContract === "FIXED_SKELETON_V1" && !HASH.test(input.skeletonHash || ""))
     || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
     || !HASH.test(input.inputHash || "") || !REQUEST_KEY.test(input.requestKey || "")) throw invalid();
   return input;
@@ -250,6 +253,9 @@ function validateDerivedCommand(input) {
     || derivedPlan.sourceAccountId !== scope.accountId || derivedPlan.jobId !== scope.jobId
     || derivedPlan.itemId !== scope.itemId || derivedPlan.parentPlanId !== scope.parentPlanId
     || derivedPlan.id === derivedPlan.parentPlanId || derivedPlan.derivationKind !== "SOURCE_MATERIALIZATION"
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(derivedPlan.planningContract)
+    || (derivedPlan.planningContract === "LEGACY_FULL_PLAN_V3" && derivedPlan.skeletonHash !== null)
+    || (derivedPlan.planningContract === "FIXED_SKELETON_V1" && !HASH.test(derivedPlan.skeletonHash || ""))
     || !Number.isInteger(derivedPlan.profileVersion) || derivedPlan.profileVersion < 1
     || !["strategyHash", "configHash", "sourceHash", "inputHash", "planHash", "visualGroupsHash", "materializationSetHash"]
       .every((key) => HASH.test(derivedPlan[key] || ""))
@@ -279,6 +285,8 @@ function assertParentMatchesDerived(row, scope, derived) {
     || parent.profileVersion !== derived.profileVersion || parent.strategyHash !== derived.strategyHash
     || parent.configHash !== derived.configHash || parent.sourceHash !== derived.sourceHash
     || parent.plannerModel !== derived.plannerModel || parent.promptTemplateVersion !== derived.promptTemplateVersion
+    || parent.planningContract !== derived.planningContract
+    || (parent.skeletonHash ?? null) !== derived.skeletonHash
     || parent.planHash !== derived.planHash
     || JSON.stringify(canonical(parent.plan)) !== JSON.stringify(canonical(derived.plan))
     || JSON.stringify(canonical(parent.factRegistry)) !== JSON.stringify(canonical(derived.factRegistry))
@@ -301,6 +309,8 @@ function assertDerivedStoredRow(row, scope, derived) {
     || stored.configHash !== derived.configHash || stored.sourceHash !== derived.sourceHash
     || stored.inputHash !== derived.inputHash || stored.plannerModel !== derived.plannerModel
     || stored.promptTemplateVersion !== derived.promptTemplateVersion || stored.planHash !== derived.planHash
+    || stored.planningContract !== derived.planningContract
+    || (stored.skeletonHash ?? null) !== derived.skeletonHash
     || stored.visualGroupsHash !== derived.visualGroupsHash
     || stored.factRegistryHash !== sha256(derived.factRegistry)
     || stored.gatewayRequestId !== derived.gatewayRequestId || stored.parentPlanId !== derived.parentPlanId
@@ -349,6 +359,7 @@ function assertStoredRow(row, input) {
   if (!mapped || mapped.accountId !== input.accountId || mapped.jobId !== input.jobId
     || mapped.itemId !== input.itemId || mapped.sourceSnapshotId !== input.sourceSnapshotId
     || mapped.planningContract !== input.planningContract
+    || (mapped.skeletonHash ?? null) !== input.skeletonHash
     || mapped.strategyVersionId !== input.strategyVersionId || mapped.profileId !== input.profileId
     || mapped.profileVersion !== input.profileVersion || mapped.inputHash !== input.inputHash
     || mapped.sourceHash !== input.sourceHash || mapped.strategyHash !== input.strategyHash
@@ -419,11 +430,12 @@ export function createPostgresContentPlanRepository({
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4
             AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
             AND expected_status_version=$8 AND request_key=$9 AND planning_contract=$10
+            AND skeleton_hash IS NOT DISTINCT FROM $11
             AND status='PLANNING' AND lease_expires_at <= NOW()
           FOR UPDATE`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.planningContract],
+          input.planningContract, input.skeletonHash],
       );
       if (resumable.rowCount > 1) throw evidenceConflict();
       if (resumable.rowCount === 1) {
@@ -439,6 +451,7 @@ export function createPostgresContentPlanRepository({
         if (resumed.rowCount !== 1 || row.id !== resumable.rows[0].id
           || row.input_hash !== input.inputHash || row.planning_contract !== input.planningContract
           || (row.skeleton_hash ?? null) !== (resumable.rows[0].skeleton_hash ?? null)
+          || (row.skeleton_hash ?? null) !== input.skeletonHash
           || !PLANNER_STAGES.has(row.planner_stage)) throw evidenceConflict();
         await client.query("COMMIT");
         return {
@@ -468,8 +481,9 @@ export function createPostgresContentPlanRepository({
              ON p.account_id=a.account_id AND p.job_id=a.job_id AND p.item_id=a.item_id
             AND p.id=a.accepted_plan_id
           WHERE a.account_id=$1 AND a.job_id=$2 AND a.item_id=$3 AND a.input_hash=$4
-            AND a.planning_contract=$5 AND a.status='ACCEPTED'`,
-        [input.accountId, input.jobId, input.itemId, input.inputHash, input.planningContract],
+            AND a.planning_contract=$5 AND a.skeleton_hash IS NOT DISTINCT FROM $6
+            AND a.status='ACCEPTED'`,
+        [input.accountId, input.jobId, input.itemId, input.inputHash, input.planningContract, input.skeletonHash],
       );
       if (accepted.rows[0]) {
         if (boundary.rows[0].active_content_plan_id !== accepted.rows[0].accepted_plan_id) throw evidenceConflict();
@@ -500,12 +514,12 @@ export function createPostgresContentPlanRepository({
         `INSERT INTO auto_listing_content_plan_attempts (
            id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,input_hash,
            expected_status_version,request_key,attempt_no,status,lease_owner,lease_token,lease_expires_at,
-           planning_contract,planner_stage
+           planning_contract,skeleton_hash,planner_stage
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PLANNING',$12,$13,
-           NOW() + ($14 * INTERVAL '1 millisecond'),$15,$16)`,
+           NOW() + ($14 * INTERVAL '1 millisecond'),$15,$16,$17)`,
         [attemptId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
           input.profileId, input.profileVersion, input.inputHash, input.expectedStatusVersion,
-          input.requestKey, attemptNo, leaseOwner, leaseToken, leaseMs, input.planningContract,
+          input.requestKey, attemptNo, leaseOwner, leaseToken, leaseMs, input.planningContract, input.skeletonHash,
           input.planningContract === "LEGACY_FULL_PLAN_V3" ? "FILLING_COPY" : "BUILDING_SKELETON"],
       );
       await client.query("COMMIT");
@@ -516,7 +530,7 @@ export function createPostgresContentPlanRepository({
         reservationToken: leaseToken,
         inputHash: input.inputHash,
         planningContract: input.planningContract,
-        skeletonHash: null,
+        skeletonHash: input.skeletonHash,
         plannerStage: input.planningContract === "LEGACY_FULL_PLAN_V3" ? "FILLING_COPY" : "BUILDING_SKELETON",
       };
     } catch (error) {
@@ -547,13 +561,14 @@ export function createPostgresContentPlanRepository({
       const attempt = await client.query(
         `SELECT attempt.id,attempt.attempt_no,attempt.status,attempt.lease_token,
                 attempt.lease_expires_at,attempt.expected_status_version,
-                attempt.request_key,attempt.planning_contract
+                attempt.request_key,attempt.planning_contract,attempt.skeleton_hash
            FROM auto_listing_content_plan_attempts AS attempt
           WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
             AND attempt.source_snapshot_id=$4 AND attempt.profile_id=$5
             AND attempt.profile_version=$6 AND attempt.input_hash=$7
             AND attempt.expected_status_version=$8 AND attempt.request_key=$9
             AND attempt.planning_contract=$11 AND attempt.status='PLANNING'
+            AND attempt.skeleton_hash IS NOT DISTINCT FROM $12
             AND attempt.planner_stage='VALIDATING_COPY'
             AND attempt.lease_token=$10 AND attempt.lease_expires_at > NOW()
             AND EXISTS (
@@ -572,7 +587,7 @@ export function createPostgresContentPlanRepository({
           FOR UPDATE`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.reservationToken, input.planningContract],
+          input.reservationToken, input.planningContract, input.skeletonHash],
       );
       if (attempt.rowCount !== 1) throw leaseConflict();
       const inserted = await client.query(
@@ -580,8 +595,8 @@ export function createPostgresContentPlanRepository({
            id,account_id,job_id,item_id,source_snapshot_id,strategy_version_id,profile_id,
            strategy_hash,config_hash,source_hash,input_hash,planner_model,profile_version,
            prompt_template_version,plan,plan_hash,visual_groups_hash,visual_groups,fact_registry_hash,fact_registry,regeneration,
-           gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash,planning_contract
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,NULL,NULL,NULL,$23)
+           gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash,planning_contract,skeleton_hash
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,NULL,NULL,NULL,$23,$24)
          RETURNING *`,
         [nextPlanId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
           input.strategyVersionId, input.profileId, input.strategyHash, input.configHash,
@@ -590,7 +605,7 @@ export function createPostgresContentPlanRepository({
           input.visualGroupsHash, JSON.stringify(input.visualGroups),
           input.factRegistryHash, JSON.stringify(input.factRegistry),
           input.regeneration === null ? null : JSON.stringify(input.regeneration), input.gatewayRequestId,
-          input.planningContract],
+          input.planningContract, input.skeletonHash],
       );
       if (inserted.rowCount !== 1) throw evidenceConflict();
       const accepted = await client.query(
@@ -600,12 +615,13 @@ export function createPostgresContentPlanRepository({
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4
             AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
             AND expected_status_version=$8 AND request_key=$9 AND planning_contract=$12
+            AND skeleton_hash IS NOT DISTINCT FROM $13
             AND status='PLANNING' AND planner_stage='VALIDATING_COPY'
             AND lease_token=$10 AND lease_expires_at > NOW()
           RETURNING id`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.reservationToken, nextPlanId, input.planningContract],
+          input.reservationToken, nextPlanId, input.planningContract, input.skeletonHash],
       );
       if (accepted.rowCount !== 1) throw leaseConflict();
       const switched = await client.query(
@@ -737,7 +753,7 @@ export function createPostgresContentPlanRepository({
       client = await pool.connect();
       await client.query("BEGIN");
       const boundary = await client.query(
-        `SELECT id,snapshot_id,status,status_version,active_content_plan_id
+        `SELECT id,snapshot_id,status,status_version,active_content_plan_id,planning_contract
            FROM auto_listing_job_items
           WHERE account_id=$1 AND job_id=$2 AND id=$3
           FOR UPDATE`,
@@ -746,6 +762,7 @@ export function createPostgresContentPlanRepository({
       const item = boundary.rows[0];
       if (!item || item.id !== scope.itemId) throw scopeConflict();
       if (item.status !== "PLANNING" || item.status_version !== scope.expectedStatusVersion) throw versionConflict();
+      if (item.planning_contract !== derivedPlan.planningContract) throw scopeConflict();
 
       const existing = await client.query(
         `SELECT d.derived_plan_id,p.*
@@ -778,8 +795,9 @@ export function createPostgresContentPlanRepository({
            id,account_id,job_id,item_id,source_snapshot_id,strategy_version_id,profile_id,
            strategy_hash,config_hash,source_hash,input_hash,planner_model,profile_version,
            prompt_template_version,plan,plan_hash,visual_groups_hash,visual_groups,fact_registry_hash,fact_registry,
-           regeneration,gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,$23,$24,$25)
+           regeneration,gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash,
+           planning_contract,skeleton_hash
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,$23,$24,$25,$26,$27)
          RETURNING id`,
         [derivedPlan.id, scope.accountId, scope.jobId, scope.itemId, derivedPlan.sourceSnapshotId,
           derivedPlan.strategyVersionId, derivedPlan.profileId, derivedPlan.strategyHash,
@@ -789,7 +807,7 @@ export function createPostgresContentPlanRepository({
           factRegistryHash, JSON.stringify(derivedPlan.factRegistry),
           derivedPlan.regeneration === null ? null : JSON.stringify(derivedPlan.regeneration),
           derivedPlan.gatewayRequestId, scope.parentPlanId, derivedPlan.derivationKind,
-          derivedPlan.materializationSetHash],
+          derivedPlan.materializationSetHash, derivedPlan.planningContract, derivedPlan.skeletonHash],
       );
       if (inserted.rowCount !== 1 || inserted.rows[0]?.id !== derivedPlan.id) throw evidenceConflict();
       const relation = await client.query(

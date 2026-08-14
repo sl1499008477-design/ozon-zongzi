@@ -29,7 +29,8 @@ const PLAN_COLUMNS = `
   p.id,p.account_id,p.job_id,p.item_id,p.source_snapshot_id,p.strategy_version_id,p.profile_id,
   p.strategy_hash,p.config_hash,p.source_hash,p.input_hash,p.planner_model,p.profile_version,
   p.prompt_template_version,p.plan,p.plan_hash,p.visual_groups_hash,p.visual_groups,p.fact_registry,
-  p.regeneration,p.gateway_request_id,p.parent_plan_id,p.derivation_kind,p.materialization_set_hash`;
+  p.regeneration,p.gateway_request_id,p.parent_plan_id,p.derivation_kind,p.materialization_set_hash,
+  p.planning_contract,p.skeleton_hash`;
 
 function contextError(code, retryable = false) {
   const error = new Error("自动上架 AI 阶段资料暂时无法读取");
@@ -237,6 +238,8 @@ function mapPlan(row, { rich = false } = {}) {
     factRegistry: jsonValue(row.fact_registry),
     regeneration: jsonValue(row.regeneration),
     gatewayRequestId: row.gateway_request_id,
+    planningContract: row.planning_contract,
+    skeletonHash: row.skeleton_hash,
   };
   if ([base.id, base.sourceAccountId, base.jobId, base.itemId, base.sourceSnapshotId,
     base.strategyVersionId, base.profileId].some((value) => !isSafeAutoListingAiIdentifier(value))
@@ -247,6 +250,9 @@ function mapPlan(row, { rich = false } = {}) {
     || !plainObject(base.plan) || !plainObject(base.visualGroups) || !Array.isArray(base.factRegistry)
     || !(base.regeneration === null || plainObject(base.regeneration))
     || !(base.gatewayRequestId === null || validText(base.gatewayRequestId))) throw evidenceInvalid();
+  if (!["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(base.planningContract)
+    || (base.planningContract === "LEGACY_FULL_PLAN_V3" && base.skeletonHash !== null)
+    || (base.planningContract === "FIXED_SKELETON_V1" && !validHash(base.skeletonHash))) throw evidenceInvalid();
   const derived = row.parent_plan_id === null ? base : {
     ...base,
     parentPlanId: row.parent_plan_id,
@@ -444,6 +450,7 @@ async function loadActiveBundle(options, boundary) {
        JOIN auto_listing_jobs j ON j.account_id=i.account_id AND j.id=i.job_id
        JOIN ai_content_plans p ON p.account_id=i.account_id AND p.job_id=i.job_id
                               AND p.item_id=i.id AND p.id=i.active_content_plan_id
+                              AND p.planning_contract=i.planning_contract
        JOIN auto_listing_source_snapshots s ON s.account_id=i.account_id AND s.id=i.snapshot_id
                                            AND s.id=p.source_snapshot_id
        JOIN ai_gateway_profiles gp ON gp.account_id=p.account_id AND gp.id=p.profile_id

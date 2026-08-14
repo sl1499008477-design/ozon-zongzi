@@ -90,6 +90,7 @@ if (!enabled) {
         accountId: ids.account, jobId: ids.job, itemId: ids.item, sourceSnapshotId: ids.snapshot,
         profileId: ids.profile, profileVersion: 3, inputHash: "a".repeat(64), expectedStatusVersion: 7,
         planningContract: "LEGACY_FULL_PLAN_V3",
+        skeletonHash: null,
         requestKey: `auto-listing-plan-${"b".repeat(64)}`,
       };
       const claimed = await Promise.all([repository.reserveContentPlan(request), repository.reserveContentPlan(request)]);
@@ -215,6 +216,7 @@ if (!enabled) {
         promptTemplateVersion: "planner-v1", plan, planHash: hash(plan),
         visualGroupsHash: "7".repeat(64), visualGroups: derivedVisualGroups,
         factRegistry: facts, regeneration: null, gatewayRequestId: "gateway-request-a",
+        planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null,
         parentPlanId: stored.id, derivationKind: "SOURCE_MATERIALIZATION", materializationSetHash: "8".repeat(64),
       };
       const command = {
@@ -235,6 +237,95 @@ if (!enabled) {
         [ids.account, ids.job, ids.item],
       );
       assert.deepEqual(counts.rows[0], { plans: 2, derivations: 1 });
+
+      const fixedIds = {
+        snapshot: `snapshot-fixed-${suffix}`,
+        job: `job-fixed-${suffix}`,
+        item: `item-fixed-${suffix}`,
+      };
+      const skeletonHash = "d".repeat(64);
+      await admin.query(
+        "INSERT INTO auto_listing_source_snapshots (id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash) VALUES ($1,$2,'COLLECT_BOX',$3,'1','{}'::JSONB,$4)",
+        [fixedIds.snapshot, ids.account, `record-fixed-${suffix}`, "source-hash-fixed"],
+      );
+      await admin.query(
+        "INSERT INTO auto_listing_jobs (id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,strategy_version_id,correlation_id) VALUES ($1,$2,'COLLECT_BOX','PLANNING',$3,'{}'::JSONB,$4,$5,$6)",
+        [fixedIds.job, ids.account, `idem-fixed-${suffix}`, "config-hash-fixed", ids.strategy, `corr-fixed-${suffix}`],
+      );
+      await admin.query(
+        `INSERT INTO auto_listing_job_items (
+           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,planning_contract
+         ) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',7,'FIXED_SKELETON_V1')`,
+        [fixedIds.item, fixedIds.job, ids.account, fixedIds.snapshot, ids.store, ids.warehouse],
+      );
+      const fixedRepository = createPostgresContentPlanRepository({
+        pool: scopedPool,
+        token: () => `lease-fixed-${suffix}`,
+        id: () => `attempt-fixed-${suffix}`,
+        planId: () => `plan-fixed-${suffix}`,
+      });
+      const fixedRequest = {
+        accountId: ids.account, jobId: fixedIds.job, itemId: fixedIds.item,
+        sourceSnapshotId: fixedIds.snapshot, profileId: ids.profile, profileVersion: 3,
+        inputHash: "c".repeat(64), expectedStatusVersion: 7,
+        planningContract: "FIXED_SKELETON_V1", skeletonHash,
+        requestKey: `auto-listing-plan-${"e".repeat(64)}`,
+      };
+      const fixedOwner = await fixedRepository.reserveContentPlan(fixedRequest);
+      assert.deepEqual({ stage: fixedOwner.plannerStage, skeletonHash: fixedOwner.skeletonHash }, {
+        stage: "BUILDING_SKELETON", skeletonHash,
+      });
+      await fixedRepository.advanceContentPlanStage({
+        accountId: ids.account, jobId: fixedIds.job, itemId: fixedIds.item,
+        sourceSnapshotId: fixedIds.snapshot, attemptId: fixedOwner.attemptId,
+        inputHash: fixedRequest.inputHash, expectedStatusVersion: 7,
+        reservationToken: fixedOwner.reservationToken, planningContract: "FIXED_SKELETON_V1",
+        skeletonHash, fromStage: "BUILDING_SKELETON", toStage: "FILLING_COPY",
+      });
+      const fixedEvidence = createPostgresContentPlanEvidenceRepository({
+        pool: scopedPool,
+        responseId: () => `response-fixed-${suffix}`,
+        validationId: () => `validation-fixed-${suffix}`,
+      });
+      const fixedResponse = await fixedEvidence.recordResponse({
+        accountId: ids.account, jobId: fixedIds.job, itemId: fixedIds.item,
+        sourceSnapshotId: fixedIds.snapshot, owner: { kind: "ATTEMPT", id: fixedOwner.attemptId },
+        planningContract: "FIXED_SKELETON_V1", inputHash: fixedRequest.inputHash, skeletonHash,
+        profileId: ids.profile, profileVersion: 3, modelName: "planner-model",
+        promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1", gatewayRequestId: "gateway-fixed",
+        response: { version: 1, language: "ru", fills: {} },
+      });
+      await fixedRepository.advanceContentPlanStage({
+        accountId: ids.account, jobId: fixedIds.job, itemId: fixedIds.item,
+        sourceSnapshotId: fixedIds.snapshot, attemptId: fixedOwner.attemptId,
+        inputHash: fixedRequest.inputHash, expectedStatusVersion: 7,
+        reservationToken: fixedOwner.reservationToken, planningContract: "FIXED_SKELETON_V1",
+        skeletonHash, fromStage: "FILLING_COPY", toStage: "VALIDATING_COPY",
+      });
+      await fixedEvidence.recordValidation({
+        accountId: ids.account, responseId: fixedResponse.id, status: "ACCEPTED",
+        validatorVersion: "AUTO_LISTING_CONTENT_PLAN_VALIDATOR_V1", issues: [],
+      });
+      const fixedPlan = { version: 1, language: "ru", slots: [] };
+      const storedFixed = await fixedRepository.saveContentPlan({
+        ...fixedRequest, reservationToken: fixedOwner.reservationToken,
+        strategyVersionId: ids.strategy, sourceHash: "1".repeat(64), strategyHash: "2".repeat(64),
+        configHash: "3".repeat(64), visualGroupsHash: "4".repeat(64), visualGroups,
+        factRegistryHash: hash(facts), factRegistry: facts, plannerModel: "planner-model",
+        promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1", regeneration: null,
+        gatewayRequestId: "gateway-fixed", plan: fixedPlan, planHash: hash(fixedPlan),
+      });
+      assert.equal(storedFixed.skeletonHash, skeletonHash);
+      const fixedRows = await admin.query(
+        `SELECT attempt.skeleton_hash,attempt.planner_stage,plan.skeleton_hash AS plan_skeleton_hash
+           FROM auto_listing_content_plan_attempts AS attempt
+           JOIN ai_content_plans AS plan ON plan.account_id=attempt.account_id AND plan.id=attempt.accepted_plan_id
+          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3`,
+        [ids.account, fixedIds.job, fixedIds.item],
+      );
+      assert.deepEqual(fixedRows.rows, [{
+        skeleton_hash: skeletonHash, planner_stage: "COMPLETED", plan_skeleton_hash: skeletonHash,
+      }]);
     } finally {
       try {
         await scopedPool?.end();

@@ -5,6 +5,7 @@ import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs"
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 import { buildVisualGroups } from "../auto-listing-visual-groups.mjs";
 import { buildPlannerInput, CONTENT_PLAN_JSON_SCHEMA, createContentPlan, validateContentPlan } from "../auto-listing-content-planner.mjs";
+import { buildFixedSkeleton } from "../auto-listing-fixed-skeleton.mjs";
 
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
@@ -444,6 +445,131 @@ test("response-loss replay resumes exact recorded evidence without a second gate
   assert.equal(saved, 1);
 });
 
+test("fixed contract builds the configured skeleton, lets AI fill only claims, and persists exact identity", async () => {
+  const planningArgs = plannerArgs();
+  const fixedContext = buildPlannerInput({
+    ...planningArgs,
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1",
+  });
+  const skeleton = buildFixedSkeleton({ plannerContext: fixedContext });
+  const fills = Object.fromEntries(skeleton.plan.slots.map((slot) => {
+    const fact = skeleton.allowedClaimsBySlot[slot.slotKey][0];
+    const text = fact.kind === "DIMENSION_HEIGHT" ? "Высота 22 см"
+      : fact.kind === "COLOR" ? `Цвет: ${fact.value}`
+        : fact.kind === "MATERIAL" ? `Материал: ${fact.value}` : fact.value;
+    return [slot.slotKey, { claims: slot.role === "MAIN" ? [] : [{
+      text, claimType: fact.kind, sourceFactIds: [fact.factId],
+    }] }];
+  }));
+  const events = [];
+  let storedInput;
+  const repository = {
+    async reserveContentPlan(input) {
+      events.push("reserve");
+      assert.equal(input.skeletonHash, skeleton.skeletonHash);
+      return reserved(input, {
+        planningContract: "FIXED_SKELETON_V1",
+        skeletonHash: skeleton.skeletonHash,
+        plannerStage: "BUILDING_SKELETON",
+      });
+    },
+    async advanceContentPlanStage(input) {
+      events.push(`stage:${input.fromStage}->${input.toStage}`);
+      return { attemptId: input.attemptId, planningContract: input.planningContract,
+        skeletonHash: input.skeletonHash, plannerStage: input.toStage };
+    },
+    async saveContentPlan(input) { events.push("save"); storedInput = input; return { id: "plan-fixed", ...input }; },
+    async releaseContentPlanReservation() {},
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) {
+      events.push("response");
+      assert.deepEqual(input.response, { version: 1, language: "ru", fills });
+      assert.equal(input.skeletonHash, skeleton.skeletonHash);
+      return { id: "response-fixed", response: structuredClone(input.response), gatewayRequestId: "gateway-fixed" };
+    },
+    async recordValidation(input) { events.push(`validation:${input.status}`); return { id: "validation-fixed", ...input }; },
+  };
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "FIXED_SKELETON_V1", evidenceRepository,
+    ...planningArgs,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse(input) {
+      events.push("gateway");
+      assert.equal(input.jsonSchema.properties.fills.required.length, 8);
+      assert.equal(input.prompt.includes("只填写俄语文案"), true);
+      return { value: { version: 1, language: "ru", fills }, requestId: "gateway-fixed" };
+    } },
+    repository,
+  });
+  assert.equal(result.id, "plan-fixed");
+  assert.equal(result.plan.slots.length, 8);
+  assert.equal(storedInput.skeletonHash, skeleton.skeletonHash);
+  assert.equal(storedInput.promptTemplateVersion, "AUTO_LISTING_CONTENT_PLAN_FILL_V1");
+  assert.deepEqual(events, [
+    "reserve", "stage:BUILDING_SKELETON->FILLING_COPY", "gateway", "response",
+    "stage:FILLING_COPY->VALIDATING_COPY", "validation:ACCEPTED", "save",
+  ]);
+});
+
+test("fixed contract records rejected fill tampering and never saves a plan", async () => {
+  const planningArgs = plannerArgs();
+  const fixedContext = buildPlannerInput({ ...planningArgs, promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1" });
+  const skeleton = buildFixedSkeleton({ plannerContext: fixedContext });
+  const fills = Object.fromEntries(skeleton.plan.slots.map((slot) => [slot.slotKey, { claims: [] }]));
+  fills["forged:ninth:slot"] = { claims: [] };
+  const events = [];
+  let saves = 0;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { planningContract: "FIXED_SKELETON_V1", skeletonHash: skeleton.skeletonHash, plannerStage: "BUILDING_SKELETON" });
+    },
+    async advanceContentPlanStage(input) { events.push(`stage:${input.toStage}`); return advanceStage(input); },
+    async saveContentPlan() { saves += 1; },
+    async releaseContentPlanReservation() { events.push("release"); },
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) { events.push("response"); return { id: "response-fixed-invalid", response: structuredClone(input.response) }; },
+    async recordValidation(input) {
+      events.push(`validation:${input.status}`);
+      assert.ok(input.issues.some((issue) => issue.code === "FIXED_FILL_SLOT_IDENTITY_MISMATCH"));
+      return { id: "validation-fixed-invalid", ...input };
+    },
+  };
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "FIXED_SKELETON_V1", evidenceRepository,
+    ...planningArgs,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { events.push("gateway"); return { value: { version: 1, language: "ru", fills } }; } },
+    repository,
+  }), { code: "AUTO_LISTING_CONTENT_PLAN_INVALID" });
+  assert.deepEqual(events, [
+    "stage:FILLING_COPY", "gateway", "response", "stage:VALIDATING_COPY", "validation:REJECTED", "release",
+  ]);
+  assert.equal(saves, 0);
+});
+
+test("fixed contract keeps the submitted specification count and stops before repository or AI when dimensions are absent", async () => {
+  let repositoryCalls = 0;
+  let gatewayCalls = 0;
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "FIXED_SKELETON_V1", evidenceRepository: passthroughEvidenceRepository,
+    ...plannerArgs({ sourceCapture: sourceCapture({ reliableDimensions: false }) }),
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { gatewayCalls += 1; } },
+    repository: { async reserveContentPlan() { repositoryCalls += 1; } },
+  }), { code: "AUTO_LISTING_FIXED_SKELETON_DIMENSION_REQUIRED" });
+  assert.deepEqual({ repositoryCalls, gatewayCalls }, { repositoryCalls: 0, gatewayCalls: 0 });
+});
+
 test("reused corrupted or cross-scope rows fail closed, and gateway failures persist no half-plan", async () => {
   const built = planner();
   const planningArgs = plannerArgs();
@@ -637,7 +763,7 @@ test("production repository port receives frozen snapshot, profile, request, and
   });
   assert.deepEqual(Object.keys(calls[0][1]).sort(), [
     "accountId", "expectedStatusVersion", "inputHash", "itemId", "jobId", "planningContract",
-    "profileId", "profileVersion", "requestKey", "sourceSnapshotId",
+    "profileId", "profileVersion", "requestKey", "skeletonHash", "sourceSnapshotId",
   ]);
   assert.equal(calls[0][1].sourceSnapshotId, "snapshot-db-1");
   assert.equal(calls[0][1].expectedStatusVersion, 7);

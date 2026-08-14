@@ -93,6 +93,7 @@ function basePlanRow(overrides = {}) {
     fact_registry: [{ factId: "fact-a", field: "identity.primaryName", kind: "TEXT", value: "商品 A", numericValue: null, unit: null, sourcePath: "identity.primaryName", dictionaryValueId: null, visualGroupKeys: ["group-a"] }],
     regeneration: null, gateway_request_id: "gateway-plan-a", parent_plan_id: null,
     derivation_kind: null, materialization_set_hash: null,
+    planning_contract: "LEGACY_FULL_PLAN_V3", skeleton_hash: null,
     ...overrides,
   };
 }
@@ -128,7 +129,6 @@ const profileColumns = {
 function planBundle(plan = basePlanRow(), overrides = {}) {
   return {
     ...plan,
-    planning_contract: "LEGACY_FULL_PLAN_V3",
     snapshot: structuredClone(snapshot), snapshot_hash: SOURCE_HASH, raw_response_ref: "raw-ref-a",
     config_snapshot: structuredClone(configSnapshot), config_hash_from_job: CONFIG_HASH,
     strategy_key: "strategy-a", ...profileColumns, ...overrides,
@@ -320,6 +320,8 @@ test("MATERIALIZE and FINALIZE load only the explicit active plan, never a lates
     const options = dependencies(pool);
     const context = await createPostgresAutoListingAiPhaseContextLoader(options)(message(phase));
     assert.equal(context.phaseInput.parentPlan.id, "plan-parent");
+    assert.equal(context.phaseInput.parentPlan.planningContract, "LEGACY_FULL_PLAN_V3");
+    assert.equal(context.phaseInput.parentPlan.skeletonHash, null);
     assert.equal(context.phaseInput.repository, phase === "MATERIALIZE_SOURCE_ASSET"
       ? options.sourceMaterializationRepository : options.contentPlanRepository);
     if (phase === "MATERIALIZE_SOURCE_ASSET") {

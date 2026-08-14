@@ -47,6 +47,7 @@ function reservation(overrides = {}) {
     itemId: "item-a",
     sourceSnapshotId: "snapshot-a",
     planningContract: "LEGACY_FULL_PLAN_V3",
+    skeletonHash: null,
     profileId: "profile-a",
     profileVersion: 3,
     inputHash: HASH,
@@ -95,6 +96,8 @@ function derivedPlan(overrides = {}) {
     plannerModel: base.plannerModel,
     profileVersion: base.profileVersion,
     promptTemplateVersion: base.promptTemplateVersion,
+    planningContract: base.planningContract,
+    skeletonHash: base.skeletonHash,
     plan: base.plan,
     planHash: base.planHash,
     visualGroupsHash: "7".repeat(64),
@@ -213,6 +216,36 @@ test("reserve locks the exact account job item, serializes all planner inputs, u
   assert.match(attemptInsert.text, /planning_contract/i);
   assert.equal(attemptInsert.values.includes("LEGACY_FULL_PLAN_V3"), true);
   assert.equal(db.releases(), 1);
+});
+
+test("fixed reservation persists and returns the exact deterministic skeleton hash", async () => {
+  const skeletonHash = "d".repeat(64);
+  const db = scriptedPool((sql) => {
+    if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };
+    if (/FROM auto_listing_job_items/i.test(sql)) return { rows: [{
+      id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7,
+      active_content_plan_id: null, planning_contract: "FIXED_SKELETON_V1",
+    }], rowCount: 1 };
+    if (/UPDATE auto_listing_content_plan_attempts/i.test(sql)) return { rows: [], rowCount: 0 };
+    if (/status='ACCEPTED'/i.test(sql)) return { rows: [], rowCount: 0 };
+    if (/status='PLANNING'/i.test(sql) && /SELECT/i.test(sql)) return { rows: [], rowCount: 0 };
+    if (/MAX\(attempt_no\)/i.test(sql)) return { rows: [{ max_attempt_no: 0 }], rowCount: 1 };
+    if (/INSERT INTO auto_listing_content_plan_attempts/i.test(sql)) return { rows: [{ id: "attempt-fixed" }], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresContentPlanRepository({
+    pool: db.pool, token: () => "lease-fixed", id: () => "attempt-fixed",
+  });
+  assert.deepEqual(await repository.reserveContentPlan(reservation({
+    planningContract: "FIXED_SKELETON_V1", skeletonHash,
+  })), {
+    status: "RESERVED", attemptId: "attempt-fixed", attemptNo: 1,
+    reservationToken: "lease-fixed", inputHash: HASH,
+    planningContract: "FIXED_SKELETON_V1", skeletonHash, plannerStage: "BUILDING_SKELETON",
+  });
+  const inserted = db.queries.find(({ text }) => /INSERT INTO auto_listing_content_plan_attempts/i.test(text));
+  assert.match(inserted.text, /planning_contract,skeleton_hash,planner_stage/i);
+  assert.equal(inserted.values.includes(skeletonHash), true);
 });
 
 test("an expired exact attempt renews the same evidence owner instead of charging a new gateway attempt", async () => {
@@ -421,7 +454,7 @@ test("createDerivedMaterializedPlan atomically validates the active parent/versi
   const db = scriptedPool((sql, values) => {
     if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };
     if (/FROM auto_listing_job_items/i.test(sql) && /FOR UPDATE/i.test(sql)) {
-      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: "plan-parent" }], rowCount: 1 };
+      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: "plan-parent", planning_contract: "LEGACY_FULL_PLAN_V3" }], rowCount: 1 };
     }
     if (/FROM auto_listing_content_plan_derivations/i.test(sql)) return { rows: [], rowCount: 0 };
     if (/FROM ai_content_plans/i.test(sql) && /id=\$4/i.test(sql)) {
@@ -459,9 +492,9 @@ test("createDerivedMaterializedPlan atomically validates the active parent/versi
 
 test("createDerivedMaterializedPlan rejects stale/cancelled/cross-parent commands before inserting anything", async () => {
   for (const row of [
-    { id: "item-a", snapshot_id: "snapshot-a", status: "CANCELLED", status_version: 7, active_content_plan_id: "plan-parent" },
-    { id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 8, active_content_plan_id: "plan-parent" },
-    { id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: "other-parent" },
+    { id: "item-a", snapshot_id: "snapshot-a", status: "CANCELLED", status_version: 7, active_content_plan_id: "plan-parent", planning_contract: "LEGACY_FULL_PLAN_V3" },
+    { id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 8, active_content_plan_id: "plan-parent", planning_contract: "LEGACY_FULL_PLAN_V3" },
+    { id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: "other-parent", planning_contract: "LEGACY_FULL_PLAN_V3" },
   ]) {
     const db = scriptedPool((sql) => {
       if (sql === "BEGIN" || sql === "ROLLBACK") return { rows: [], rowCount: 0 };
@@ -483,7 +516,7 @@ test("createDerivedMaterializedPlan replays the same active derivation without a
   const db = scriptedPool((sql) => {
     if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };
     if (/FROM auto_listing_job_items/i.test(sql)) {
-      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: expected.id }], rowCount: 1 };
+      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: expected.id, planning_contract: expected.planningContract }], rowCount: 1 };
     }
     if (/FROM auto_listing_content_plan_derivations/i.test(sql)) {
       return { rows: [{
@@ -497,6 +530,7 @@ test("createDerivedMaterializedPlan replays the same active derivation without a
         fact_registry: expected.factRegistry, regeneration: expected.regeneration,
         gateway_request_id: expected.gatewayRequestId, parent_plan_id: expected.parentPlanId,
         derivation_kind: expected.derivationKind, materialization_set_hash: expected.materializationSetHash,
+        planning_contract: expected.planningContract, skeleton_hash: expected.skeletonHash,
       }], rowCount: 1 };
     }
     throw new Error(`unexpected SQL: ${sql}`);
@@ -516,7 +550,7 @@ test("derived replay revalidates the complete immutable row instead of trusting 
   const db = scriptedPool((sql) => {
     if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [], rowCount: 0 };
     if (/FROM auto_listing_job_items/i.test(sql)) {
-      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: expected.id }], rowCount: 1 };
+      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: expected.id, planning_contract: expected.planningContract }], rowCount: 1 };
     }
     if (/FROM auto_listing_content_plan_derivations/i.test(sql)) {
       return { rows: [{
@@ -546,6 +580,8 @@ test("derived replay revalidates the complete immutable row instead of trusting 
         parent_plan_id: expected.parentPlanId,
         derivation_kind: expected.derivationKind,
         materialization_set_hash: expected.materializationSetHash,
+        planning_contract: expected.planningContract,
+        skeleton_hash: expected.skeletonHash,
       }], rowCount: 1 };
     }
     throw new Error(`unexpected SQL: ${sql}`);

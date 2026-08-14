@@ -54,6 +54,7 @@ function parentPlan() {
     sourceSnapshotId: "snapshot-a", strategyVersionId: "strategy-v1", profileId: "profile-a",
     strategyHash: H("b"), configHash: H("c"), sourceHash: H("a"), inputHash: H("d"),
     plannerModel: "planner-model", profileVersion: 3, promptTemplateVersion: "planner-v1",
+    planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null,
     plan, planHash: hash(plan), visualGroupsHash: visualGroups.visualGroupsHash, visualGroups,
     factRegistry: [
       { factId: "fact.color", field: "variant.color", kind: "COLOR", value: "красный", numericValue: null, unit: null, sourcePath: "variants[0].color", visualGroupKeys: ["group-a"] },
@@ -85,6 +86,24 @@ function records(parent = parentPlan()) {
   return [accepted(parent, "source-url-b", "2"), accepted(parent, "source-url-a", "1")];
 }
 
+function fixedParentPlan() {
+  const parent = parentPlan();
+  parent.planningContract = "FIXED_SKELETON_V1";
+  parent.skeletonHash = H("e");
+  parent.plan.slots = parent.plan.slots.slice(0, 1);
+  parent.planHash = hash(parent.plan);
+  parent.factRegistry = parent.factRegistry.slice(0, 1);
+  parent.visualGroups.groups = parent.visualGroups.groups.slice(0, 1);
+  parent.visualGroups.reasonCodes = ["COMPLETE_APPEARANCE_EVIDENCE"];
+  parent.visualGroups.visualGroupsHash = hash({
+    sourceHash: parent.visualGroups.sourceHash,
+    groups: parent.visualGroups.groups,
+    reasonCodes: parent.visualGroups.reasonCodes,
+  });
+  parent.visualGroupsHash = parent.visualGroups.visualGroupsHash;
+  return parent;
+}
+
 test("builds one deterministic immutable derived plan and changes only materialized source evidence and derivation identities", async () => {
   const { buildMaterializedPlan } = await moduleUnderTest();
   const parent = parentPlan();
@@ -96,7 +115,7 @@ test("builds one deterministic immutable derived plan and changes only materiali
   assert.equal(first.parentPlanId, parent.id);
   assert.equal(first.derivationKind, "SOURCE_MATERIALIZATION");
   assert.match(first.id, /^auto-listing-materialized-[a-f0-9]{40}$/u);
-  for (const field of ["sourceSnapshotId", "strategyVersionId", "profileId", "strategyHash", "configHash", "sourceHash", "plannerModel", "profileVersion", "promptTemplateVersion", "plan", "planHash", "factRegistry", "regeneration", "gatewayRequestId"]) {
+  for (const field of ["sourceSnapshotId", "strategyVersionId", "profileId", "strategyHash", "configHash", "sourceHash", "plannerModel", "profileVersion", "promptTemplateVersion", "planningContract", "skeletonHash", "plan", "planHash", "factRegistry", "regeneration", "gatewayRequestId"]) {
     assert.deepEqual(first[field], parent[field], field);
   }
   assert.equal(first.visualGroups.groups[0].referenceImages[1].contentHash, H("8"), "existing CONTENT_HASH evidence must not change");
@@ -115,6 +134,20 @@ test("builds one deterministic immutable derived plan and changes only materiali
   for (const field of ["visualGroupsHash", "materializationSetHash", "inputHash"]) assert.match(first[field], /^[a-f0-9]{64}$/u);
   assert.notEqual(first.visualGroupsHash, parent.visualGroupsHash);
   assert.notEqual(first.inputHash, parent.inputHash);
+});
+
+test("preserves the fixed skeleton identity while materializing its source image", async () => {
+  const { buildMaterializedPlan } = await moduleUnderTest();
+  const parent = fixedParentPlan();
+  const derived = buildMaterializedPlan({
+    scope,
+    parentPlan: parent,
+    acceptedMaterializations: [accepted(parent, "source-url-a", "1")],
+  });
+  assert.equal(derived.planningContract, "FIXED_SKELETON_V1");
+  assert.equal(derived.skeletonHash, H("e"));
+  assert.equal(derived.planHash, parent.planHash);
+  assert.equal(derived.plan.slots.length, 1);
 });
 
 test("requires exactly one complete ACCEPTED SOURCE_V1 record per unique SOURCE_REF_HASH and rejects missing, extra and duplicate evidence", async () => {
