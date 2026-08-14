@@ -84,6 +84,17 @@ function defaultRawItems(source, { currencyCode } = {}) {
   return records.map((record, index) => {
     if (!plainObject(record)) throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
     const sku = text(record.sku || record.sourceSku || record.source_sku || (index === 0 ? draft.sku : ""));
+    const rawSourceCategoryAttributes = Array.isArray(record?.sourceCategory?.attributes)
+      ? record.sourceCategory.attributes
+      : Array.isArray(draft?.sourceCategory?.attributes) ? draft.sourceCategory.attributes : [];
+    const sourceCategoryAttributes = structuredClone(rawSourceCategoryAttributes).filter((attribute) => {
+        if (!plainObject(attribute)) return true;
+        if (attribute.value !== undefined && attribute.value !== null
+          && (typeof attribute.value !== "string" || attribute.value.trim())) return true;
+        if (Array.isArray(attribute.values) && attribute.values.length) return true;
+        return Array.isArray(attribute.collection) && attribute.collection.length;
+      });
+    const existingSourceVariant = plainObject(record._sourceVariant) ? structuredClone(record._sourceVariant) : {};
     const merged = {
       ...structuredClone(draft),
       ...structuredClone(record),
@@ -92,6 +103,9 @@ function defaultRawItems(source, { currencyCode } = {}) {
       offer_id: record.offer_id || record.offerId || sku,
       currency_code: currencyCode,
       currencyCode,
+      ...(sourceCategoryAttributes.length && !Array.isArray(existingSourceVariant.attributes)
+        ? { _sourceVariant: { ...existingSourceVariant, attributes: sourceCategoryAttributes } }
+        : Object.keys(existingSourceVariant).length ? { _sourceVariant: existingSourceVariant } : {}),
     };
     delete merged.variants;
     return merged;
@@ -132,6 +146,61 @@ function inputAttributeKeys(items) {
     }
   }
   return keys;
+}
+
+function dictionaryMatchCandidates(sourceAttributes, attributeId) {
+  const candidates = [];
+  const seen = new Set();
+  for (const attributes of sourceAttributes) {
+    for (const attribute of attributes) {
+      if (positiveId(attribute?.id) !== attributeId) continue;
+      for (const value of Array.isArray(attribute?.values) ? attribute.values : []) {
+        const id = positiveId(value?.dictionary_value_id);
+        const candidateValue = text(value?.value);
+        const key = `${id || 0}:${candidateValue.toLocaleLowerCase("ru-RU")}`;
+        if ((!id && !candidateValue) || seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({ ...(id ? { id } : {}), ...(candidateValue ? { value: candidateValue } : {}) });
+      }
+    }
+  }
+  return candidates;
+}
+
+function hydrateSourceDictionaryAttributes(sourceAttributes, metadata) {
+  const metadataByKey = new Map(metadata.attributes.map((attribute) => [
+    `${attribute.complexId}:${attribute.id}`, attribute,
+  ]));
+  return sourceAttributes.map((attributes) => attributes.flatMap((attribute) => {
+    const meta = metadataByKey.get(`${positiveId(attribute.complex_id) || 0}:${positiveId(attribute.id)}`);
+    if (!meta?.dictionaryId) return [attribute];
+    const optionsById = new Map(meta.dictionaryValues.map((option) => [option.id, option]));
+    const optionsByText = new Map();
+    for (const option of meta.dictionaryValues) {
+      const key = option.value.replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
+      const matches = optionsByText.get(key) || [];
+      matches.push(option);
+      optionsByText.set(key, matches);
+    }
+    const hydratedValues = [];
+    for (const value of attribute.values) {
+      const suppliedId = positiveId(value.dictionary_value_id);
+      const exactById = suppliedId ? optionsById.get(suppliedId) : null;
+      const exactText = text(value.value).replace(/\s+/gu, " ").toLocaleLowerCase("ru-RU");
+      const textMatches = exactText ? optionsByText.get(exactText) || [] : [];
+      const matched = exactById || (textMatches.length === 1 ? textMatches[0] : null);
+      if (!matched) {
+        if (meta.required) throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+        continue;
+      }
+      hydratedValues.push({ value: matched.value, dictionary_value_id: matched.id });
+    }
+    if (!hydratedValues.length) {
+      if (meta.required) throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+      return [];
+    }
+    return [{ ...attribute, values: hydratedValues }];
+  }));
 }
 
 function sourceVariant(raw, normalized, index) {
@@ -204,14 +273,14 @@ export function createAutoListingListingBasePreparer({
     const category = exactTargetCategory(targetCategory);
     const builtItems = buildRawItems(safeSource, { currencyCode: frozenPriceEvidence.currency });
     const projectedSource = projectOzonCategorySourceItems(builtItems);
-    const rawItems = projectedSource.items.map((item) => ({
+    let rawItems = projectedSource.items.map((item) => ({
       ...item,
       description_category_id: Number(category.descriptionCategoryId),
       descriptionCategoryId: Number(category.descriptionCategoryId),
       type_id: Number(category.typeId),
       typeId: Number(category.typeId),
     }));
-    const sourceEvidenceAttributes = projectedSource.sourceEvidenceAttributes;
+    let sourceEvidenceAttributes = projectedSource.sourceEvidenceAttributes;
     const sourceVariantIds = rawItems.map((item, index) => sourceVariant(item, null, index).sourceVariantId);
     if (new Set(sourceVariantIds).size !== sourceVariantIds.length) {
       throw failure("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
@@ -269,6 +338,7 @@ export function createAutoListingListingBasePreparer({
     for (const attributeIdValue of dictionaryAttributeIds) {
       let dictionaryItems;
       try {
+        const matchCandidates = dictionaryMatchCandidates(sourceEvidenceAttributes, attributeIdValue);
         const dictionaryResult = await categoryService.getCategoryAttributeValues({
           accountId: scope,
           store: storeAccess,
@@ -277,6 +347,7 @@ export function createAutoListingListingBasePreparer({
           attributeId: attributeIdValue,
           language: "DEFAULT",
           limit: 5_000,
+          ...(matchCandidates.length ? { matchCandidates } : {}),
           ...(signal ? { signal } : {}),
         });
         if (!Array.isArray(dictionaryResult?.items) || dictionaryResult.items.length > 5_000) {
@@ -292,6 +363,14 @@ export function createAutoListingListingBasePreparer({
       );
     }
     const currentCategoryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
+    sourceEvidenceAttributes = hydrateSourceDictionaryAttributes(sourceEvidenceAttributes, currentCategoryMetadata);
+    rawItems = rawItems.map((item, index) => ({
+      ...item,
+      _sourceVariant: {
+        ...(plainObject(item._sourceVariant) ? item._sourceVariant : {}),
+        attributes: sourceEvidenceAttributes[index],
+      },
+    }));
     const assertLocalCategory = (descriptionCategoryId, typeId) => {
       if (positiveId(descriptionCategoryId) !== sourceCategory.descriptionCategoryId
         || positiveId(typeId) !== sourceCategory.typeId) {

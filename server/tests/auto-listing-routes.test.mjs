@@ -392,6 +392,7 @@ for (const [code, status, message] of [
   ["AUTO_LISTING_CATEGORY_REFRESH_REQUIRED", 409, "Ozon 类目已更新，请刷新后重试"],
   ["AUTO_LISTING_CATEGORY_NEEDS_REVIEW", 409, "Ozon 当前类目无法唯一确定，请联系管理员处理"],
   ["AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", 422, "Ozon 类目属性暂时不可用，请稍后重试"],
+  ["AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED", 422, "商品品牌或类目选项未在 Ozon 当前字典中登记，请先补全资料"],
 ]) {
   test(`category preparation failure ${code} has a fixed safe response`, async () => {
     const { handler, replies } = harness({ runtime: { getService: async () => ({

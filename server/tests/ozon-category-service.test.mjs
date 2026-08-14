@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createOzonCategoryService } from "../ozon-category-service.mjs";
+import { buildOzonCategoryRebuildMetadata, createOzonCategoryService } from "../ozon-category-service.mjs";
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 let nowMs = Date.parse("2026-07-28T00:00:00.000Z");
@@ -34,6 +34,20 @@ const service = createOzonCategoryService({
   callOzonSellerApi,
   now: () => nowMs,
   cacheTtlMs: CACHE_TTL_MS,
+});
+
+test("treats the Ozon attribute sentinel dictionary_id=0 as no dictionary", () => {
+  assert.deepEqual(buildOzonCategoryRebuildMetadata({
+    descriptionCategoryId: 17029005,
+    typeId: 94453,
+    attributes: [{ id: 9048, attribute_complex_id: 0, is_required: true, dictionary_id: 0 }],
+  }), {
+    descriptionCategoryId: 17029005,
+    typeId: 94453,
+    attributes: [{
+      id: 9048, complexId: 0, required: true, dictionaryId: null, dictionaryValues: [],
+    }],
+  });
 });
 
 test("category reads forward an external abort signal to the Ozon transport", async () => {
@@ -239,6 +253,49 @@ assert.equal(valueCalls[0].apiPath, "/v1/description-category/attribute/values")
 assert.equal(valueCalls[0].body.limit, 1000);
 assert.equal(valueCalls[1].body.last_value_id, 2);
 assert.equal(paginatedValues.meta.source, "OZON_API");
+
+const exactValuePages = [
+  { result: [{ id: 10, value: "Earlier" }], has_next: true },
+  { result: [{ id: 20, value: "MQOUO" }], has_next: true },
+  { result: [{ id: 30, value: "Later" }], has_next: false },
+];
+const exactValueCalls = [];
+const exactValueService = createOzonCategoryService({
+  callOzonSellerApi: async (_store, apiPath, body) => {
+    exactValueCalls.push({ apiPath, body });
+    return exactValuePages.shift();
+  },
+});
+const exactValues = await exactValueService.getCategoryAttributeValues({
+  ...valuesInput,
+  matchCandidates: [{ value: "  mqouo  " }],
+});
+assert.deepEqual(exactValues.items, [{ id: 20, value: "MQOUO", info: "", picture: "" }]);
+assert.equal(exactValueCalls.length, 3, "text matches scan to the terminal page to reject ambiguity");
+assert.equal(exactValueCalls[1].body.last_value_id, 10);
+assert.equal(exactValueCalls[2].body.last_value_id, 20);
+
+const ambiguousTextPages = [
+  { result: [{ id: 40, value: "Same" }], has_next: true },
+  { result: [{ id: 41, value: " same " }], has_next: false },
+];
+const ambiguousTextService = createOzonCategoryService({
+  callOzonSellerApi: async () => ambiguousTextPages.shift(),
+});
+assert.deepEqual((await ambiguousTextService.getCategoryAttributeValues({
+  ...valuesInput,
+  store: { id: "ambiguous-store", ownerAccountId: "acct-a" },
+  matchCandidates: [{ value: "same" }],
+})).items.map(({ id }) => id), [40, 41]);
+
+const exactIdService = createOzonCategoryService({
+  callOzonSellerApi: async () => ({ result: [{ id: 50, value: "same" }], has_next: false }),
+});
+assert.deepEqual((await exactIdService.getCategoryAttributeValues({
+  ...valuesInput,
+  store: { id: "exact-id-store", ownerAccountId: "acct-a" },
+  matchCandidates: [{ id: 999, value: "same" }],
+})).items, [], "an exact source ID must never fall back to matching display text");
 
 const duplicateValuesService = createOzonCategoryService({
   callOzonSellerApi: async () => ({

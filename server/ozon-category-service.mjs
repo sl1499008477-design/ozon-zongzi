@@ -38,6 +38,28 @@ function normalizedLanguageOf(language) {
   return String(language || "DEFAULT").trim() || "DEFAULT";
 }
 
+function normalizedDictionaryMatchCandidates(value) {
+  if (value === undefined) return null;
+  const descriptors = dataArray(value, 100, dictionaryMetadataError);
+  const candidates = [];
+  const seen = new Set();
+  for (let index = 0; index < value.length; index += 1) {
+    const record = dataRecord(descriptors[String(index)].value, dictionaryMetadataError);
+    const keys = Reflect.ownKeys(record);
+    if (keys.some((key) => !["id", "value"].includes(key))) throw dictionaryMetadataError();
+    const id = positiveIntegerIdOf(descriptorValue(record, "id"));
+    const rawValue = descriptorValue(record, "value");
+    const text = typeof rawValue === "string" ? rawValue.replace(/\s+/gu, " ").trim() : "";
+    if ((!id && !text) || text.length > 500) throw dictionaryMetadataError();
+    const key = `${id || 0}:${text.toLocaleLowerCase("ru-RU")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ ...(id ? { id } : {}), ...(text ? { value: text } : {}) });
+  }
+  if (!candidates.length) throw dictionaryMetadataError();
+  return candidates;
+}
+
 function positiveIdOf(value) {
   const id = Number(value);
   return Number.isFinite(id) && id > 0 ? id : 0;
@@ -191,8 +213,12 @@ export function buildOzonCategoryRebuildMetadata(input = {}) {
       throw attributeMetadataError();
     }
     const rawDictionaryId = descriptorValue(descriptors, "dictionary_id", "dictionaryId");
-    const dictionaryId = positiveIntegerIdOf(rawDictionaryId);
-    if (rawDictionaryId != null && !dictionaryId) throw attributeMetadataError();
+    const dictionaryId = rawDictionaryId == null || rawDictionaryId === 0 || rawDictionaryId === "0"
+      ? 0
+      : positiveIntegerIdOf(rawDictionaryId);
+    if (rawDictionaryId != null && rawDictionaryId !== 0 && rawDictionaryId !== "0" && !dictionaryId) {
+      throw attributeMetadataError();
+    }
     const dictionary = descriptorValue(descriptors, "dictionary");
     const nestedDictionaryRawId = dictionary == null ? null : descriptorValue(
       dataRecord(dictionary, attributeMetadataError), "id", "dictionary_id", "dictionaryId",
@@ -512,6 +538,7 @@ export function createOzonCategoryService({
     attributeId,
     language,
     limit,
+    matchCandidates,
     signal,
   } = {}) {
     if (signal !== undefined && !(signal instanceof AbortSignal)) {
@@ -526,6 +553,10 @@ export function createOzonCategoryService({
     const safeLimit = Number.isFinite(requestedLimit)
       ? Math.min(Math.max(Math.floor(requestedLimit), 1), 5000)
       : 1000;
+    const candidates = normalizedDictionaryMatchCandidates(matchCandidates);
+    const candidateIds = new Set(candidates?.flatMap((candidate) => candidate.id ? [candidate.id] : []) || []);
+    const candidateTexts = new Set(candidates?.flatMap((candidate) => !candidate.id && candidate.value
+      ? [candidate.value.toLocaleLowerCase("ru-RU")] : []) || []);
     const scope = scopeOf({ accountId, store });
     const epoch = scopeEpoch(scope);
     const key = cacheKey(
@@ -536,6 +567,7 @@ export function createOzonCategoryService({
       normalizedTypeId,
       normalizedAttributeId,
       safeLimit,
+      candidates ? JSON.stringify(candidates) : "all",
     );
     const cached = readCache(key);
     if (cached) return cached;
@@ -544,8 +576,10 @@ export function createOzonCategoryService({
     const seenValues = new Set();
     const seenCursors = new Set();
     let lastValueId = 0;
-    while (values.length < safeLimit) {
-      const pageLimit = Math.min(1000, safeLimit - values.length);
+    let scannedValues = 0;
+    const scanLimit = candidates ? 250_000 : safeLimit;
+    while (candidates ? scannedValues < scanLimit : values.length < safeLimit) {
+      const pageLimit = Math.min(1000, candidates ? scanLimit - scannedValues : safeLimit - values.length);
       let data;
       try {
         data = await callOzonSellerApi(
@@ -572,10 +606,15 @@ export function createOzonCategoryService({
           : null;
       if (!page) throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
       if (page.length === 0) break;
+      scannedValues += page.length;
 
       for (const item of page) {
         const id = item?.id ?? item?.dictionary_value_id ?? item?.dictionaryValueId ?? item?.value_id ?? item?.valueId ?? "";
         const value = item?.value ?? item?.name ?? item?.title ?? item?.label ?? "";
+        const normalizedId = positiveIntegerIdOf(id);
+        const normalizedValue = typeof value === "string"
+          ? value.replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU") : "";
+        if (candidates && !candidateIds.has(normalizedId) && !candidateTexts.has(normalizedValue)) continue;
         const valueKey = `${id || ""}:${value || ""}`;
         if ((!id && !value) || seenValues.has(valueKey)) continue;
         seenValues.add(valueKey);
@@ -604,7 +643,10 @@ export function createOzonCategoryService({
         seenCursors.add(nextCursor);
         lastValueId = nextCursor;
       }
-      if (!hasNext || values.length === safeLimit) break;
+      if (!hasNext || (!candidates && values.length === safeLimit)) break;
+      if (candidates && scannedValues >= scanLimit) {
+        throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
+      }
     }
     return writeCache(key, values, { scope, epoch });
   }

@@ -282,6 +282,53 @@ test("sorts real strict-normalizer dictionary reads instead of letting input att
   assert.deepEqual(dictionaryReads, [85, 400, 500]);
 });
 
+test("resolves legacy source category dictionary text by an exact current Ozon option", async () => {
+  const itemSource = source();
+  itemSource.collectItem.listingDraft.sourceCategory = {
+    attributes: [
+      { key: "8229", value: "Source type", dictionary_value_id: 94453 },
+      { key: "85", value: "MQOUO" },
+      { key: "4195", value: null },
+    ],
+  };
+  const reads = [];
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 8229, dictionary_id: 1960, is_required: true },
+          { id: 85, dictionary_id: 28732849, is_required: true },
+          { id: 9048, dictionary_id: 0, is_required: true },
+          { id: 11254, dictionary_id: 0 },
+        ] };
+      },
+      async getCategoryAttributeValues(input) {
+        reads.push({ attributeId: input.attributeId, matchCandidates: input.matchCandidates });
+        if (input.attributeId === 8229) return { items: [{ id: 94453, value: "Target type" }] };
+        if (input.attributeId === 85) return { items: [{ id: 972053798, value: "MQOUO" }] };
+        return { items: [] };
+      },
+    },
+  });
+  delete deps.normalizeItems;
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    source: itemSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.deepEqual(reads, [
+    { attributeId: 85, matchCandidates: [{ value: "MQOUO" }] },
+    { attributeId: 8229, matchCandidates: [{ id: 94453, value: "Source type" }] },
+  ]);
+  assert.deepEqual(result.variants.map((variant) =>
+    variant.item.attributes.find((attribute) => attribute.id === 85)?.values), [
+    [{ value: "MQOUO", dictionary_value_id: 972053798 }],
+    [{ value: "MQOUO", dictionary_value_id: 972053798 }],
+  ]);
+});
+
 test("normalizes category dictionary read failures without leaking the upstream error", async () => {
   const deps = dependencies();
   let dictionaryReadCount = 0;
