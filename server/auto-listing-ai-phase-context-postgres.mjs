@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { types } from "node:util";
 
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
 import {
@@ -23,8 +24,40 @@ const FACTORY_KEYS = new Set([
   "pool", "gateway", "contentPlanRepository", "contentPlanEvidenceRepository", "sourceMaterializationRepository",
   "generationRepository", "richContentRepository", "downloader", "storage",
   "sourceAssetLoader", "logger", "planPromptTemplateVersion", "prohibitedClaims",
-  "maxAttempts", "richContentLeaseOwner",
+  "maxAttempts", "richContentLeaseOwner", "referenceProjector",
 ]);
+const REFERENCE_PROJECTOR_KEYS = new Set([
+  "accountId", "jobId", "itemId", "planId", "plan", "slot",
+]);
+const REFERENCE_KEYS = new Set([
+  "assetId", "sourceRefHash", "contentHash", "sourceRef", "evidenceKind",
+]);
+const GENERATION_PLAN_KEYS = new Set([
+  "id", "sourceAccountId", "jobId", "itemId", "sourceSnapshotId", "strategyVersionId", "profileId",
+  "strategyHash", "configHash", "sourceHash", "inputHash", "plannerModel", "profileVersion",
+  "promptTemplateVersion", "plan", "planHash", "visualGroupsHash", "visualGroups", "factRegistry",
+  "regeneration", "gatewayRequestId", "planningContract", "skeletonHash", "parentPlanId",
+  "derivationKind", "materializationSetHash",
+]);
+const PLAN_BODY_KEYS = new Set(["version", "language", "slots"]);
+const SLOT_KEYS = new Set([
+  "slotKey", "visualGroupKey", "role", "order", "textDensity", "claims", "sourceFactIds",
+  "referenceAssetIds", "preserve", "prohibitedClaims",
+]);
+const CLAIM_KEYS = new Set(["text", "claimType", "sourceFactIds"]);
+const VISUAL_GROUPS_KEYS = new Set(["sourceHash", "visualGroupsHash", "reasonCodes", "groups"]);
+const VISUAL_GROUP_KEYS = new Set([
+  "visualGroupKey", "sourceSkus", "variantIds", "referenceImages", "factEvidence", "reasonCodes",
+]);
+const VISUAL_FACT_KEYS = new Set(["factId", "kind", "value"]);
+const FACT_REGISTRY_KEYS = new Set(["factId", "kind", "value", "sourcePath", "visualGroupKeys"]);
+const FACT_REGISTRY_DICTIONARY_KEYS = new Set([...FACT_REGISTRY_KEYS, "dictionaryValueId"]);
+const LEGACY_FACT_REGISTRY_KEYS = new Set([
+  ...FACT_REGISTRY_DICTIONARY_KEYS, "field", "numericValue", "unit",
+]);
+const REGENERATION_KEYS = new Set(["requestId", "reason"]);
+const ROLES = new Set(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
+const TEXT_DENSITIES = new Set(["NONE", "LIGHT", "MEDIUM", "HEAVY"]);
 const PLAN_COLUMNS = `
   p.id,p.account_id,p.job_id,p.item_id,p.source_snapshot_id,p.strategy_version_id,p.profile_id,
   p.strategy_hash,p.config_hash,p.source_hash,p.input_hash,p.planner_model,p.profile_version,
@@ -42,10 +75,238 @@ function contextError(code, retryable = false) {
 const invalid = () => contextError("AUTO_LISTING_AI_PHASE_CONTEXT_INVALID", false);
 const evidenceInvalid = () => contextError("AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID", false);
 const databaseFailed = () => contextError("AUTO_LISTING_AI_PHASE_CONTEXT_DB_FAILED", true);
+const forbiddenCategoryReference = () => contextError("AUTO_LISTING_CATEGORY_STRATEGY_REFERENCE_FORBIDDEN", false);
 
 function plainObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
+  return value !== null && typeof value === "object" && !Array.isArray(value) && !types.isProxy(value)
     && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+function exactObject(value, keys) {
+  return plainObject(value) && Object.keys(value).length === keys.size
+    && Object.keys(value).every((key) => keys.has(key));
+}
+
+function cloneReferenceData(value, active = new Set(), depth = 0, state = { nodes: 0 }) {
+  if (depth > 32 || state.nodes++ > 20_000) throw evidenceInvalid();
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw evidenceInvalid();
+    return value;
+  }
+  if (typeof value === "string") {
+    if (value.length > 4_096) throw evidenceInvalid();
+    return value;
+  }
+  if (!value || typeof value !== "object" || types.isProxy(value) || active.has(value)) throw evidenceInvalid();
+  active.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype || value.length > 1_000) throw evidenceInvalid();
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      const allowed = new Set(["length", ...Array.from({ length: value.length }, (_, index) => String(index))]);
+      if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string" || !allowed.has(key))) throw evidenceInvalid();
+      return Array.from({ length: value.length }, (_, index) => {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, "value")) throw evidenceInvalid();
+        return cloneReferenceData(descriptor.value, active, depth + 1, state);
+      });
+    }
+    if (!plainObject(value)) throw evidenceInvalid();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const output = Object.create(null);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key];
+      if (typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key)
+        || descriptor.enumerable !== true || !Object.hasOwn(descriptor, "value")) throw evidenceInvalid();
+      output[key] = cloneReferenceData(descriptor.value, active, depth + 1, state);
+    }
+    return output;
+  } finally {
+    active.delete(value);
+  }
+}
+
+function containsCategorySampleObjectKey(value) {
+  if (typeof value === "string") return /category-strategy\//u.test(value);
+  if (Array.isArray(value)) return value.some(containsCategorySampleObjectKey);
+  return plainObject(value) && Object.values(value).some(containsCategorySampleObjectKey);
+}
+
+function closedStringArray(value, { minimum = 0, maximum = 100, maxBytes = 2_048 } = {}) {
+  if (!Array.isArray(value) || value.length < minimum || value.length > maximum
+    || value.some((entry) => !validText(entry, maxBytes))) throw evidenceInvalid();
+  return [...value];
+}
+
+function rejectCategoryPromptCarrier(value) {
+  if (containsCategorySampleObjectKey(value)) throw forbiddenCategoryReference();
+}
+
+function projectGenerationClaim(value) {
+  if (!exactObject(value, CLAIM_KEYS) || !validText(value.text, 2_048)
+    || !validText(value.claimType, 240)) throw evidenceInvalid();
+  const claim = {
+    text: value.text,
+    claimType: value.claimType,
+    sourceFactIds: closedStringArray(value.sourceFactIds, { minimum: 1, maximum: 50, maxBytes: 240 }),
+  };
+  rejectCategoryPromptCarrier(claim);
+  return claim;
+}
+
+function projectGenerationSlot(value) {
+  if (!exactObject(value, SLOT_KEYS) || !isSafeAutoListingAiIdentifier(value.slotKey)
+    || !isSafeAutoListingAiIdentifier(value.visualGroupKey) || !ROLES.has(value.role)
+    || !Number.isInteger(value.order) || value.order < 1 || value.order > 13
+    || !TEXT_DENSITIES.has(value.textDensity) || !Array.isArray(value.claims)
+    || value.claims.length > 50) throw evidenceInvalid();
+  const slot = {
+    slotKey: value.slotKey,
+    visualGroupKey: value.visualGroupKey,
+    role: value.role,
+    order: value.order,
+    textDensity: value.textDensity,
+    claims: value.claims.map(projectGenerationClaim),
+    sourceFactIds: closedStringArray(value.sourceFactIds, { maximum: 100, maxBytes: 240 }),
+    referenceAssetIds: closedStringArray(value.referenceAssetIds, { minimum: 1, maximum: 7, maxBytes: 240 }),
+    preserve: closedStringArray(value.preserve, { minimum: 1, maximum: 100 }),
+    prohibitedClaims: closedStringArray(value.prohibitedClaims, { maximum: 20, maxBytes: 240 }),
+  };
+  if (slot.referenceAssetIds.length !== new Set(slot.referenceAssetIds).size) throw evidenceInvalid();
+  rejectCategoryPromptCarrier(slot);
+  return slot;
+}
+
+function projectGenerationFact(value) {
+  const validShape = [FACT_REGISTRY_KEYS, FACT_REGISTRY_DICTIONARY_KEYS, LEGACY_FACT_REGISTRY_KEYS]
+    .some((allowed) => exactObject(value, allowed));
+  if (!validShape || !validText(value.factId, 240) || !validText(value.kind, 240)
+    || !validText(value.value, 2_048) || !validText(value.sourcePath, 2_048)) throw evidenceInvalid();
+  const fact = {
+    factId: value.factId,
+    kind: value.kind,
+    value: value.value,
+    sourcePath: value.sourcePath,
+    visualGroupKeys: closedStringArray(value.visualGroupKeys, { maximum: 100, maxBytes: 240 }),
+  };
+  rejectCategoryPromptCarrier(fact);
+  return fact;
+}
+
+function projectGenerationVisualGroups(value) {
+  if (!exactObject(value, VISUAL_GROUPS_KEYS) || !validHash(value.sourceHash)
+    || !validHash(value.visualGroupsHash) || !Array.isArray(value.groups)
+    || !value.groups.length || value.groups.length > 100) throw evidenceInvalid();
+  const groups = value.groups.map((group) => {
+    if (!exactObject(group, VISUAL_GROUP_KEYS) || !isSafeAutoListingAiIdentifier(group.visualGroupKey)
+      || !Array.isArray(group.referenceImages) || !group.referenceImages.length
+      || !Array.isArray(group.factEvidence) || group.factEvidence.length > 1_000) throw evidenceInvalid();
+    const factEvidence = group.factEvidence.map((fact) => {
+      if (!exactObject(fact, VISUAL_FACT_KEYS) || !validText(fact.factId, 240)
+        || !validText(fact.kind, 240) || !validText(fact.value, 2_048)) throw evidenceInvalid();
+      return { factId: fact.factId, kind: fact.kind, value: fact.value };
+    });
+    const referenceImages = group.referenceImages.map((reference) => {
+      if (containsCategorySampleObjectKey(reference)) throw forbiddenCategoryReference();
+      if (!exactObject(reference, REFERENCE_KEYS) || !isSafeAutoListingAiIdentifier(reference.assetId)
+        || !(reference.sourceRefHash === null || validHash(reference.sourceRefHash))
+        || !validHash(reference.contentHash)
+        || reference.sourceRef !== null || reference.evidenceKind !== "CONTENT_HASH") throw evidenceInvalid();
+      return { ...reference };
+    });
+    if (referenceImages.length !== new Set(referenceImages.map(({ assetId }) => assetId)).size) throw evidenceInvalid();
+    return {
+      visualGroupKey: group.visualGroupKey,
+      sourceSkus: closedStringArray(group.sourceSkus, { minimum: 1, maximum: 1_000, maxBytes: 240 }),
+      variantIds: closedStringArray(group.variantIds, { minimum: 1, maximum: 1_000, maxBytes: 240 }),
+      referenceImages,
+      factEvidence,
+      reasonCodes: closedStringArray(group.reasonCodes, { maximum: 100, maxBytes: 240 }),
+    };
+  });
+  return {
+    sourceHash: value.sourceHash,
+    visualGroupsHash: value.visualGroupsHash,
+    reasonCodes: closedStringArray(value.reasonCodes, { maximum: 100, maxBytes: 240 }),
+    groups,
+  };
+}
+
+function projectGenerationPlan(value) {
+  if (!exactObject(value, GENERATION_PLAN_KEYS)
+    || ![value.id, value.sourceAccountId, value.jobId, value.itemId, value.sourceSnapshotId,
+      value.strategyVersionId, value.profileId, value.parentPlanId].every(isSafeAutoListingAiIdentifier)
+    || ![value.strategyHash, value.configHash, value.sourceHash, value.inputHash, value.planHash,
+      value.visualGroupsHash, value.materializationSetHash].every(validHash)
+    || !validText(value.plannerModel) || !validVersion(value.profileVersion)
+    || !validText(value.promptTemplateVersion) || value.derivationKind !== "SOURCE_MATERIALIZATION"
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(value.planningContract)
+    || (value.planningContract === "LEGACY_FULL_PLAN_V3" && value.skeletonHash !== null)
+    || (value.planningContract === "FIXED_SKELETON_V1" && !validHash(value.skeletonHash))
+    || !(value.gatewayRequestId === null || validText(value.gatewayRequestId))
+    || !(value.regeneration === null || exactObject(value.regeneration, REGENERATION_KEYS))
+    || !exactObject(value.plan, PLAN_BODY_KEYS) || value.plan.version !== 1 || value.plan.language !== "ru"
+    || !Array.isArray(value.plan.slots) || value.plan.slots.length < 6 || value.plan.slots.length > 1_000
+    || !Array.isArray(value.factRegistry) || !value.factRegistry.length) throw evidenceInvalid();
+  if (value.regeneration !== null && (!validText(value.regeneration.requestId)
+    || !["USER_REQUESTED", "QUALITY_RETRY", "ADMIN_RETRY"].includes(value.regeneration.reason))) {
+    throw evidenceInvalid();
+  }
+  const slots = value.plan.slots.map(projectGenerationSlot);
+  if (slots.length !== new Set(slots.map(({ slotKey }) => slotKey)).size) throw evidenceInvalid();
+  const factRegistry = value.factRegistry.map(projectGenerationFact);
+  const visualGroups = projectGenerationVisualGroups(value.visualGroups);
+  const visualGroupKeys = new Set(visualGroups.groups.map(({ visualGroupKey }) => visualGroupKey));
+  if (visualGroupKeys.size !== visualGroups.groups.length
+    || slots.some(({ visualGroupKey }) => !visualGroupKeys.has(visualGroupKey))) throw evidenceInvalid();
+  for (const visualGroupKey of visualGroupKeys) {
+    const groupSlotCount = slots.filter((slot) => slot.visualGroupKey === visualGroupKey).length;
+    if (groupSlotCount < 6 || groupSlotCount > 13) throw evidenceInvalid();
+  }
+  return {
+    ...value,
+    plan: { version: 1, language: "ru", slots },
+    visualGroups,
+    factRegistry,
+    regeneration: value.regeneration === null ? null : { ...value.regeneration },
+  };
+}
+
+function freeze(value, seen = new Set()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  Object.values(value).forEach((entry) => freeze(entry, seen));
+  return Object.freeze(value);
+}
+
+export function projectAutoListingGenerationReferences(rawInput = {}) {
+  let input;
+  try { input = cloneReferenceData(rawInput); } catch (error) {
+    if (error?.code === "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID") throw error;
+    throw evidenceInvalid();
+  }
+  if (!exactObject(input, REFERENCE_PROJECTOR_KEYS)
+    || ![input.accountId, input.jobId, input.itemId, input.planId].every(isSafeAutoListingAiIdentifier)
+    || !plainObject(input.plan) || !plainObject(input.slot)) throw evidenceInvalid();
+  const plan = projectGenerationPlan(input.plan);
+  if (plan.id !== input.planId || plan.sourceAccountId !== input.accountId
+    || plan.jobId !== input.jobId || plan.itemId !== input.itemId) throw evidenceInvalid();
+  const projectedInputSlot = projectGenerationSlot(input.slot);
+  const slots = plan.plan.slots.filter(({ slotKey }) => slotKey === projectedInputSlot.slotKey);
+  if (slots.length !== 1
+    || JSON.stringify(canonical(slots[0])) !== JSON.stringify(canonical(projectedInputSlot))) throw evidenceInvalid();
+  const slot = slots[0];
+  const groups = plan.visualGroups.groups.filter((group) => group.visualGroupKey === slot.visualGroupKey);
+  if (groups.length !== 1 || !Array.isArray(groups[0].referenceImages)) throw evidenceInvalid();
+  const byId = new Map();
+  for (const reference of groups[0].referenceImages) {
+    if (byId.has(reference.assetId)) throw evidenceInvalid();
+    byId.set(reference.assetId, reference);
+  }
+  const selected = slot.referenceAssetIds.map((assetId) => byId.get(assetId));
+  if (selected.some((reference) => !reference)) throw evidenceInvalid();
+  return freeze({ plan, slot, references: selected.map((reference) => ({ ...reference })) });
 }
 
 function validVersion(value) {
@@ -182,6 +443,9 @@ function mapRule(row) {
     || !Number.isInteger(Number(row.rule_order)) || Number(row.rule_order) < 1
     || !validText(row.rule_kind, 64) || !plainObject(jsonValue(row.rule))) throw evidenceInvalid();
   const rule = jsonValue(row.rule);
+  if (rule.matchType === "EXACT_CATEGORY_TYPE_V2") {
+    return { ...rule, ruleId: row.id, ruleOrder: Number(row.rule_order) };
+  }
   return {
     ruleId: row.id,
     ruleOrder: Number(row.rule_order),
@@ -203,7 +467,9 @@ function strategyCapture(row, ruleRows, capture) {
       strategyVersion: { strategyId: row.strategy_key, strategyVersionId: row.strategy_version_id },
       rules: ruleRows.map(mapRule),
       product: {
+        taxonomyScope: source.targetCategory?.taxonomyScope,
         descriptionCategoryId: source.targetCategory?.descriptionCategoryId,
+        typeId: source.targetCategory?.typeId,
         categoryAncestors: (source.targetCategory?.ancestorCategoryIds || [])
           .map((categoryId, index) => ({ categoryId, distance: index + 1 })),
         productStyle: source.source?.productStyle,
@@ -348,6 +614,7 @@ function validateOptions(options) {
     "generationRepository", "richContentRepository", "downloader", "storage", "sourceAssetLoader"]) {
     if (!options[key] || typeof options[key] !== "object") throw invalid();
   }
+  if (typeof options.referenceProjector !== "function") throw invalid();
   if (!(options.logger === null || typeof options.logger === "object")) throw invalid();
 }
 
@@ -513,16 +780,27 @@ function assertDerivedPlan(plan) {
 
 async function loadImageInput(options, message, boundary) {
   const row = await loadActiveBundle(options, boundary);
-  const plan = mapPlan(row);
-  assertPlanScope(plan, boundary);
-  assertDerivedPlan(plan);
+  const persistedPlan = mapPlan(row);
+  assertPlanScope(persistedPlan, boundary);
+  assertDerivedPlan(persistedPlan);
   const config = configCapture(row).configSnapshot;
   const profile = gatewayProfile(row);
+  const projected = options.referenceProjector({
+    accountId: boundary.accountId,
+    jobId: boundary.jobId,
+    itemId: boundary.itemId,
+    planId: persistedPlan.id,
+    plan: persistedPlan,
+    slot: findSlot(persistedPlan, message.slotKey),
+  });
+  if (!plainObject(projected) || !plainObject(projected.plan) || !plainObject(projected.slot)
+    || !Array.isArray(projected.references)) throw evidenceInvalid();
+  const { plan, slot } = projected;
   const ratio = config.image?.ratio;
   const resolution = config.image?.resolution;
   return {
     plan,
-    slot: findSlot(plan, message.slotKey),
+    slot,
     sourceAssetLoader: options.sourceAssetLoader,
     repository: options.generationRepository,
     gateway: options.gateway,
@@ -640,7 +918,8 @@ export function createPostgresAutoListingAiPhaseContextLoader(options = {}) {
       if (transactionOpen) {
         try { await client?.query("ROLLBACK"); } catch {}
       }
-      if (typeof error?.code === "string" && error.code.startsWith("AUTO_LISTING_AI_PHASE_CONTEXT_")) throw error;
+      if (typeof error?.code === "string" && (error.code.startsWith("AUTO_LISTING_AI_PHASE_CONTEXT_")
+        || error.code === "AUTO_LISTING_CATEGORY_STRATEGY_REFERENCE_FORBIDDEN")) throw error;
       throw databaseFailed();
     } finally {
       try { client?.release(); } catch {}

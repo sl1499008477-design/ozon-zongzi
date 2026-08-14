@@ -1,4 +1,7 @@
-import { createPostgresAutoListingAiPhaseContextLoader } from "./auto-listing-ai-phase-context-postgres.mjs";
+import {
+  createPostgresAutoListingAiPhaseContextLoader,
+  projectAutoListingGenerationReferences,
+} from "./auto-listing-ai-phase-context-postgres.mjs";
 import { loadAutoListingCredentialKey } from "./auto-listing-ai-credential-config.mjs";
 import { createAutoListingCredentialCipher } from "./auto-listing-ai-credential-crypto.mjs";
 import { createAutoListingAiCredentialResolver } from "./auto-listing-ai-credential-resolver.mjs";
@@ -355,6 +358,7 @@ export async function createAutoListingAiProductionDependencies(input = {}) {
       prohibitedClaims: REQUIRED_PROHIBITED_CLAIMS,
       maxAttempts: 3,
       richContentLeaseOwner: RICH_CONTENT_LEASE_OWNER,
+      referenceProjector: projectAutoListingGenerationReferences,
     });
     if (typeof loadContext !== "function") {
       throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);

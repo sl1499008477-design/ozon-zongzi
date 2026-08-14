@@ -80,6 +80,40 @@ function strategyCapture(style = "BALANCED_DEFAULT") {
   return { strategySnapshot, strategyHash: hash(strategySnapshot) };
 }
 
+function v2StrategyCapture({ diagnostics = [], roleGuidance } = {}) {
+  const roles = roleGuidance || Object.fromEntries([
+    "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+  ].map((role) => [role, {
+    composition: `${role} composition`,
+    background: `${role} background`,
+    textDensity: role === "MAIN" ? "NONE" : "LIGHT",
+    layout: `${role} layout`,
+  }]));
+  const strategySnapshot = {
+    strategyId: "strategy-1",
+    strategyVersionId: "strategy-v2",
+    ruleId: "category-rule-v2",
+    matchedBy: "EXACT_CATEGORY_TYPE_V2",
+    style: "BALANCED_DEFAULT",
+    textDensityByRole: Object.fromEntries(Object.entries(roles).map(([role, guidance]) => [role, guidance.textDensity])),
+    evidence: {
+      targetTaxonomyScope: "OZON:DEFAULT",
+      targetDescriptionCategoryId: "170",
+      targetTypeId: "99",
+      ruleOrder: 1,
+    },
+    scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 },
+    overallStyle: "clean commercial catalogue",
+    prohibitedPatterns: ["avoid competitor branding"],
+    roleGuidance: roles,
+    sampleSetHash: "a".repeat(64),
+    analysisAttemptId: "analysis-attempt-v2",
+    analysisResultId: "analysis-result-v2",
+    diagnostics,
+  };
+  return { strategySnapshot, strategyHash: hash(strategySnapshot) };
+}
+
 const profileRef = { id: "profile-1", configVersion: 7, textModel: "planner-model" };
 const passthroughEvidenceRepository = Object.freeze({
   async loadOutcome() { return null; },
@@ -114,7 +148,7 @@ function plannerArgs(overrides = {}) {
   const groups = buildVisualGroups({ sourceCapture: source });
   return {
     sourceCapture: source,
-    strategyCapture: strategyCapture(overrides.style),
+    strategyCapture: overrides.strategyCapture || strategyCapture(overrides.style),
     configCapture: overrides.configCapture || configCapture(),
     visualGroupsCapture: groups,
     profileRef,
@@ -196,6 +230,77 @@ test("buildPlannerInput supports all five styles, every role, stable order, and 
     assert.equal(built.plannerInput.imagesPerVisualGroup, expected);
     assert.doesNotThrow(() => validateContentPlan({ plan: validPlan(built), plannerContext: built }));
   }
+});
+
+test("published V2 role guidance enters planning while current task counts remain authoritative for 6, 8 and 13 images", () => {
+  for (const roles of Object.values(roleSets)) {
+    const built = planner({ strategyCapture: v2StrategyCapture(), configCapture: configCapture(roles) });
+    const requested = Object.fromEntries(Object.entries(roles).map(([role, count]) => [{
+      main: "MAIN", sellingPoint: "SELLING_POINT", detail: "DETAIL", scene: "SCENE",
+      specification: "SPECIFICATION", infographic: "INFOGRAPHIC",
+    }[role], count]));
+    assert.deepEqual(built.plannerInput.requestedRoleCounts, requested);
+    assert.equal(built.plannerInput.imagesPerVisualGroup, Object.values(roles).reduce((sum, count) => sum + count, 0));
+    assert.equal(built.plannerInput.strategy.matchedBy, "EXACT_CATEGORY_TYPE_V2");
+    assert.deepEqual(built.plannerInput.strategy.roleGuidance.MAIN, {
+      composition: "MAIN composition", background: "MAIN background", textDensity: "NONE", layout: "MAIN layout",
+    });
+    assert.doesNotThrow(() => validateContentPlan({ plan: validPlan(built), plannerContext: built }));
+  }
+});
+
+test("V2 fallback diagnostics are retained without exposing publication or competitor evidence to the planner prompt", () => {
+  const built = planner({
+    strategyCapture: v2StrategyCapture({ diagnostics: ["CATEGORY_STRATEGY_ROLE_GUIDANCE_FALLBACK"] }),
+  });
+  assert.ok(built.reasonCodes.includes("CATEGORY_STRATEGY_ROLE_GUIDANCE_FALLBACK"));
+  const serialized = JSON.stringify(built.plannerInput);
+  assert.match(serialized, /clean commercial catalogue|MAIN composition/);
+  for (const forbidden of [
+    "sampleSetHash", "analysisAttemptId", "analysisResultId", "analysis-attempt-v2",
+    "analysis-result-v2", "category-strategy/", "evidenceIds",
+  ]) assert.doesNotMatch(serialized, new RegExp(forbidden, "i"));
+});
+
+test("strategy capture outer envelope is exact for V1 and V2", () => {
+  for (const capture of [strategyCapture(), v2StrategyCapture()]) {
+    assert.throws(
+      () => buildPlannerInput(plannerArgs({ strategyCapture: { ...capture, currentPolicy: "mutable" } })),
+      (error) => error?.code === "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID",
+    );
+  }
+});
+
+test("fixed skeleton prompt receives only closed V2 role guidance and keeps all configured slot identities", async () => {
+  const args = plannerArgs({ strategyCapture: v2StrategyCapture() });
+  let prompt = "";
+  let gatewayCalls = 0;
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "FIXED_SKELETON_V1", evidenceRepository: passthroughEvidenceRepository,
+    ...args,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse(input) {
+      gatewayCalls += 1;
+      prompt = input.prompt;
+      assert.equal(input.jsonSchema.properties.fills.required.length, 8);
+      throw Object.assign(new Error("stop after prompt"), { code: "RETRYABLE_GATEWAY" });
+    } },
+    repository: {
+      async reserveContentPlan(input) {
+        const context = buildPlannerInput({ ...args, promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1" });
+        const skeleton = buildFixedSkeleton({ plannerContext: context });
+        return reserved(input, { planningContract: "FIXED_SKELETON_V1", skeletonHash: skeleton.skeletonHash,
+          plannerStage: "BUILDING_SKELETON" });
+      },
+      advanceContentPlanStage: advanceStage,
+      async releaseContentPlanReservation() {},
+    },
+  }), { code: "RETRYABLE_GATEWAY" });
+  assert.equal(gatewayCalls, 1);
+  assert.match(prompt, /MAIN composition/);
+  assert.doesNotMatch(prompt, /analysis-attempt-v2|analysis-result-v2|category-strategy\//i);
 });
 
 test("planner input is read-only facts only and excludes secrets, writable listing fields, price, and package logistics", () => {

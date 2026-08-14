@@ -160,10 +160,11 @@ test("production composition keeps account/job-frozen profiles per message and h
   const options = events.find(([name]) => name === "context-loader")[1];
   assert.deepEqual(Object.keys(options).sort(), [
     "contentPlanEvidenceRepository", "contentPlanRepository", "downloader", "gateway", "generationRepository", "logger", "maxAttempts",
-    "planPromptTemplateVersion", "pool", "prohibitedClaims", "richContentLeaseOwner",
+    "planPromptTemplateVersion", "pool", "prohibitedClaims", "referenceProjector", "richContentLeaseOwner",
     "richContentRepository", "sourceAssetLoader", "sourceMaterializationRepository", "storage",
   ]);
   assert.equal(options.planPromptTemplateVersion, "AUTO_LISTING_CONTENT_PLAN_V3");
+  assert.equal(typeof options.referenceProjector, "function");
 
   const message = (accountId, itemId) => ({
     contractVersion: "V1", accountId, itemId, phase: "PLAN_CONTENT",

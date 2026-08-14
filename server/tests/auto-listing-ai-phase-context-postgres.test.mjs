@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createPostgresAutoListingAiContextLoader,
   createPostgresAutoListingAiPhaseContextLoader,
+  projectAutoListingGenerationReferences,
 } from "../auto-listing-ai-phase-context-postgres.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
@@ -118,6 +119,68 @@ function derivedPlanRow() {
   };
 }
 
+function generationProjectionPlan() {
+  const row = derivedPlanRow();
+  return {
+    id: row.id,
+    sourceAccountId: row.account_id,
+    jobId: row.job_id,
+    itemId: row.item_id,
+    sourceSnapshotId: row.source_snapshot_id,
+    strategyVersionId: row.strategy_version_id,
+    profileId: row.profile_id,
+    strategyHash: row.strategy_hash,
+    configHash: row.config_hash,
+    sourceHash: row.source_hash,
+    inputHash: row.input_hash,
+    plannerModel: row.planner_model,
+    profileVersion: row.profile_version,
+    promptTemplateVersion: row.prompt_template_version,
+    plan: structuredClone(row.plan),
+    planHash: row.plan_hash,
+    visualGroupsHash: row.visual_groups_hash,
+    visualGroups: structuredClone(row.visual_groups),
+    factRegistry: structuredClone(row.fact_registry),
+    regeneration: row.regeneration,
+    gatewayRequestId: row.gateway_request_id,
+    planningContract: row.planning_contract,
+    skeletonHash: row.skeleton_hash,
+    parentPlanId: row.parent_plan_id,
+    derivationKind: row.derivation_kind,
+    materializationSetHash: row.materialization_set_hash,
+  };
+}
+
+function multiGroupProjectionPlan() {
+  const plan = generationProjectionPlan();
+  const roles = ["MAIN", "SELLING_POINT", "SELLING_POINT", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
+  const slotsFor = (visualGroupKey, assetId) => roles.map((role, index) => ({
+    slotKey: `${visualGroupKey}:${role.toLowerCase().replaceAll("_", "-")}:${String(roles.slice(0, index + 1).filter((entry) => entry === role).length).padStart(2, "0")}`,
+    visualGroupKey,
+    role,
+    order: index + 1,
+    textDensity: role === "MAIN" ? "NONE" : "LIGHT",
+    claims: [],
+    sourceFactIds: ["fact-a"],
+    referenceAssetIds: [assetId],
+    preserve: ["商品 A"],
+    prohibitedClaims: PROHIBITED,
+  }));
+  plan.plan.slots = [...slotsFor("group-a", "source-a"), ...slotsFor("group-b", "source-b")];
+  plan.visualGroups.groups.push({
+    ...structuredClone(plan.visualGroups.groups[0]),
+    visualGroupKey: "group-b",
+    sourceSkus: ["sku-b"],
+    variantIds: ["variant-b"],
+    referenceImages: [{
+      assetId: "source-b", sourceRefHash: H("8"), contentHash: H("9"),
+      sourceRef: null, evidenceKind: "CONTENT_HASH",
+    }],
+  });
+  plan.factRegistry[0].visualGroupKeys = ["group-a", "group-b"];
+  return plan;
+}
+
 const profileColumns = {
   profile_id: "profile-a", profile_account_id: "account-a", profile_config_version: 3,
   profile_base_url: "https://gateway.invalid", profile_api_key_env_name: "SUB2API_ENCRYPTED_KEY",
@@ -196,9 +259,28 @@ function dependencies(pool, overrides = {}) {
     richContentRepository: { name: "rich-repository" },
     downloader: { name: "downloader" }, storage: { name: "storage" },
     sourceAssetLoader: { name: "source-loader" }, logger: null,
+    referenceProjector: projectAutoListingGenerationReferences,
     planPromptTemplateVersion: "planner-v1", prohibitedClaims: PROHIBITED,
     maxAttempts: 3, richContentLeaseOwner: "rich-worker",
     ...overrides,
+  };
+}
+
+function publishedV2Rule() {
+  return {
+    matchType: "EXACT_CATEGORY_TYPE_V2",
+    scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 },
+    overallStyle: "clean commercial catalogue",
+    prohibitedPatterns: ["avoid competitor branding"],
+    roleGuidance: Object.fromEntries([
+      "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+    ].map((role) => [role, {
+      composition: `${role} composition`, background: `${role} background`,
+      textDensity: role === "MAIN" ? "NONE" : "LIGHT", layout: `${role} layout`,
+    }])),
+    sampleSetHash: H("a"),
+    analysisAttemptId: "category-analysis-attempt-a",
+    analysisResultId: "category-analysis-result-a",
   };
 }
 
@@ -281,6 +363,35 @@ test("PLAN_CONTENT loads the exact snapshot, frozen config/strategy and configur
   assert.deepEqual(pool.calls[2].values, ["account-a", "strategy-v1"]);
 });
 
+test("PLAN_CONTENT hydrates the exact published V2 rule from the job-frozen version without current-policy drift", async () => {
+  const pool = scriptedPool([
+    [boundary()],
+    [planBundle(undefined, {
+      id: undefined, account_id: undefined, job_id: undefined, item_id: undefined,
+      strategy_version_id: "strategy-frozen-v2",
+    })],
+    [{
+      id: "category-rule-row-a", rule_order: 7, rule_kind: "EXACT_CATEGORY",
+      category_id: "170", ancestor_category_id: null, product_style: null,
+      rule: publishedV2Rule(),
+    }],
+  ]);
+  const context = await createPostgresAutoListingAiPhaseContextLoader(dependencies(pool))(message("PLAN_CONTENT"));
+  const frozen = context.phaseInput.strategyCapture.strategySnapshot;
+  assert.equal(frozen.matchedBy, "EXACT_CATEGORY_TYPE_V2");
+  assert.equal(frozen.strategyVersionId, "strategy-frozen-v2");
+  assert.equal(frozen.ruleId, "category-rule-row-a");
+  assert.deepEqual(frozen.scope, {
+    taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99,
+  });
+  assert.equal(frozen.sampleSetHash, H("a"));
+  assert.equal(frozen.analysisAttemptId, "category-analysis-attempt-a");
+  assert.equal(frozen.analysisResultId, "category-analysis-result-a");
+  assert.equal(Object.isFrozen(frozen), true);
+  assert.deepEqual(pool.calls[2].values, ["account-a", "strategy-frozen-v2"]);
+  assert.doesNotMatch(pool.calls[2].sql, /status='PUBLISHED'|ORDER\s+BY.*published|LIMIT\s+1/iu);
+});
+
 test("PLAN_CONTENT rejects an unknown persisted planning contract before strategy reads", async () => {
   const pool = scriptedPool([
     [boundary()],
@@ -360,8 +471,143 @@ test("GENERATE_IMAGE_SLOT uses the active derived plan, exact slot and frozen im
   assert.equal(context.phaseInput.size, "768x1024");
   assert.equal(context.phaseInput.quality, "medium");
   assert.equal(context.phaseInput.repository, options.generationRepository);
+  assert.equal(context.phaseInput.slot, context.phaseInput.plan.plan.slots[0]);
+  assert.deepEqual(Object.keys(context.phaseInput.plan.factRegistry[0]).sort(), [
+    "factId", "kind", "sourcePath", "value", "visualGroupKeys",
+  ]);
   assert.deepEqual(pool.calls[1].values, ["account-a", "job-a", "item-a", "plan-derived", "snapshot-a"]);
   assert.doesNotMatch(pool.calls[1].sql, /latest|ORDER\s+BY|LIMIT\s+1/iu);
+});
+
+test("GENERATE_IMAGE_SLOT rejects category-sample object keys before any image-model call", async () => {
+  const plan = derivedPlanRow();
+  plan.visual_groups.groups[0].referenceImages[0].objectKey =
+    "category-strategy/account-a/draft-a/sample-set-a/sample-a/analysis.webp";
+  let imageModelCalls = 0;
+  const pool = scriptedPool([
+    [boundary({ status: "GENERATING", active_content_plan_id: "plan-derived" })],
+    [planBundle(plan)],
+  ]);
+  await assert.rejects(
+    createPostgresAutoListingAiPhaseContextLoader(dependencies(pool, {
+      gateway: { async generateImage() { imageModelCalls += 1; } },
+    }))(message("GENERATE_IMAGE_SLOT")),
+    { code: "AUTO_LISTING_CATEGORY_STRATEGY_REFERENCE_FORBIDDEN", retryable: false },
+  );
+  assert.equal(imageModelCalls, 0);
+  assert.deepEqual(pool.control, ["BEGIN", "ROLLBACK"]);
+});
+
+test("GENERATE_IMAGE_SLOT rejects category-sample keys in final prompt claims before any image-model call", async () => {
+  const plan = derivedPlanRow();
+  plan.plan.slots[0].claims = [{
+    text: "Сталь category-strategy/account-a/draft-a/sample.webp",
+    claimType: "ATTRIBUTE:steel", sourceFactIds: ["fact-a"],
+  }];
+  let imageModelCalls = 0;
+  const pool = scriptedPool([
+    [boundary({ status: "GENERATING", active_content_plan_id: "plan-derived" })],
+    [planBundle(plan)],
+  ]);
+  await assert.rejects(
+    createPostgresAutoListingAiPhaseContextLoader(dependencies(pool, {
+      gateway: { async generateImage() { imageModelCalls += 1; } },
+    }))(message("GENERATE_IMAGE_SLOT")),
+    { code: "AUTO_LISTING_CATEGORY_STRATEGY_REFERENCE_FORBIDDEN", retryable: false },
+  );
+  assert.equal(imageModelCalls, 0);
+  assert.deepEqual(pool.control, ["BEGIN", "ROLLBACK"]);
+});
+
+test("generation reference projector accepts only closed current-source materializations", () => {
+  const plan = generationProjectionPlan();
+  const slot = plan.plan.slots[0];
+  const projected = projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived", plan, slot,
+  });
+  assert.deepEqual(projected.references, [{
+    assetId: "source-a", sourceRefHash: H("1"), contentHash: H("3"),
+    sourceRef: null, evidenceKind: "CONTENT_HASH",
+  }]);
+  assert.deepEqual(projected.slot, slot);
+  assert.deepEqual(projected.plan.plan.slots[0], slot);
+  assert.notEqual(projected.plan, plan);
+  assert.equal(Object.isFrozen(projected.plan), true);
+
+  const multiGroup = multiGroupProjectionPlan();
+  const multiProjected = projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
+    plan: multiGroup, slot: multiGroup.plan.slots[8],
+  });
+  assert.equal(multiProjected.plan.plan.slots.length, 16);
+  assert.equal(multiProjected.slot.visualGroupKey, "group-b");
+  assert.equal(multiProjected.references[0].assetId, "source-b");
+
+  const overAggregateCap = generationProjectionPlan();
+  overAggregateCap.plan.slots = Array.from({ length: 1_001 }, (_, index) => ({
+    ...structuredClone(overAggregateCap.plan.slots[0]),
+    slotKey: `slot-${index + 1}`,
+  }));
+  assert.throws(() => projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
+    plan: overAggregateCap, slot: overAggregateCap.plan.slots[0],
+  }), { code: "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID" });
+
+  const directContent = structuredClone(plan);
+  directContent.visualGroups.groups[0].referenceImages[0].sourceRefHash = null;
+  assert.doesNotThrow(() => projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
+    plan: directContent, slot: directContent.plan.slots[0],
+  }));
+
+  const approved = structuredClone(plan);
+  approved.visualGroups.groups[0].referenceImages[0].objectKey = "approved/account-a/source-a.webp";
+  assert.throws(() => projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived", plan: approved, slot,
+  }), { code: "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID" });
+
+  const ordinaryText = structuredClone(plan);
+  ordinaryText.gatewayRequestId = "ordinary-category-strategy-text";
+  assert.doesNotThrow(() => projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived", plan: ordinaryText, slot,
+  }));
+
+  const extraPlan = structuredClone(plan);
+  extraPlan.productLabel = "extra";
+  assert.throws(() => projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived", plan: extraPlan, slot,
+  }), { code: "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID" });
+
+  const leakedClaim = structuredClone(plan);
+  leakedClaim.plan.slots[0].claims = [{
+    text: "Сталь category-strategy/account-a/draft-a/sample.webp",
+    claimType: "ATTRIBUTE:steel", sourceFactIds: ["fact-a"],
+  }];
+  assert.throws(() => projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
+    plan: leakedClaim, slot: leakedClaim.plan.slots[0],
+  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_REFERENCE_FORBIDDEN" });
+
+  let getterReads = 0;
+  const accessorPlan = structuredClone(plan);
+  Object.defineProperty(accessorPlan.plan.slots[0], "claims", {
+    enumerable: true,
+    get() { getterReads += 1; return []; },
+  });
+  assert.throws(() => projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
+    plan: accessorPlan, slot: accessorPlan.plan.slots[0],
+  }), { code: "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID" });
+  assert.equal(getterReads, 0);
+
+  let proxyTraps = 0;
+  const proxyPlan = structuredClone(plan);
+  proxyPlan.plan.slots[0].claims = new Proxy([], { get() { proxyTraps += 1; throw new Error("trap"); } });
+  assert.throws(() => projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
+    plan: proxyPlan, slot: proxyPlan.plan.slots[0],
+  }), { code: "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID" });
+  assert.equal(proxyTraps, 0);
 });
 
 test("GENERATE_RICH_CONTENT loads accepted assets only inside the exact active-plan scope", async () => {
