@@ -2,7 +2,7 @@
 
 ## 验证对象
 
-- 生产实现 SHA：`25f4f4cc528fa36a3083ee58a1ce5aad9661f46e`
+- 生产实现 SHA：`033a3b3e6ec3bb73ecc2754fd4d2df16ab097207`
 - 分支：`codex/auto-listing-configurable-skeleton`
 - 数据库迁移范围：`001`～`074`
 - 验证日期：2026-08-14（Asia/Shanghai）
@@ -23,11 +23,12 @@ SONLI_MIGRATION_TEST_DATABASE_URL='<disposable-postgres-url>' \
 node --test --test-concurrency=1 server/tests/auto-listing-configurable-skeleton-e2e.test.mjs
 ```
 
-结果：4/4 通过，0 失败，0 跳过。
+结果：5/5 通过，0 失败，0 跳过。
 
 覆盖：
 
 - fresh schema 顺序应用 `001`～`074`，确认规划合同和三张诊断证据表存在；
+- `001`～`073` 已含终态 FAILED 规划尝试的真实升级可安全应用 `074`；确定性回填后终态不可变保护仍以 `23514` 拒绝修改；
 - 6、当前 8、13 张三组配置分别只发起 1 次文字填充，图片调用数精确等于 6/8/13；
 - 图片位置顺序固定，不按视觉组倍增；
 - `DIRECT` 账号策略下固定方案仍进入 `READY_FOR_REVIEW`，上传任务与 Ozon 写入均为 0；
@@ -54,7 +55,7 @@ node --test --test-concurrency=1 server/tests/auto-listing-configurable-skeleton
 
 ## 没有执行的范围
 
-- 未调用真实 AI 文字模型；旧失败任务的一次文字诊断复现仍需单独确认费用后执行一次。
+- 已按用户费用确认调用真实 AI 文字模型一次，结果记录见下节；幂等重放没有第二次模型调用。
 - 未调用真实图片模型；当前商品的实际 6～13 张试验仍需单独确认费用后执行。
 - 未调用真实 Ozon、对象存储、生产数据库或生产库存。
 - 未自动审核、上传或上架；固定方案必须停在人工审核。
@@ -79,13 +80,31 @@ npm run test:auto-listing-configurable-skeleton-e2e
 建议的应用回滚顺序：
 
 ```bash
-git revert 25f4f4c f3514c9 efc2f25 9eb2a22 deefa93 0f6f639 cccbe30
+git revert 033a3b3 25f4f4c f3514c9 efc2f25 9eb2a22 deefa93 0f6f639 cccbe30
 ```
 
 数据库恢复不删除 `074` 表或历史证据；它们保持向前兼容和可追溯。
 
-## 受控真实试验状态
+## 受控真实文字诊断
 
-- 文字诊断：尚未执行，等待费用确认。
+- 用户确认：2026-08-14。
+- 目标：`auto_listing_job_115f0d2560b6419ca4cfce2f19517043` / `auto_listing_job_115f0d2560b6419ca4cfce2f19517043_item_000`。
+- 模型：`gpt-5.4`；真实文字调用：1 次。
+- 诊断运行：`content-plan-diagnostic-600697e9-40a7-495a-a70e-ac5ee4e60834`。
+- 响应证据：`content-plan-response-0c3e8618-a867-4ff5-a16d-f274ea769e5e`。
+- 校验结果：`REJECTED`，验证器 `AUTO_LISTING_CONTENT_PLAN_VALIDATOR_V1`。
+- 幂等核对：第二次提交同一幂等键返回 `created=false` 和同一 response/run；模型没有再次调用；run/response/validation 仍为 1/1/1。
+- 任务不变量：执行前后均为 `BLOCKED`、`status_version=7`、`AUTO_LISTING_CONTENT_PLAN_INVALID`、无 active plan；plan/asset 仍为 0；既有 AI outbox 数量保持 3，不新增队列任务。
+
+安全问题摘要：
+
+1. AI 使用 `main-1`、`selling-point-1` 等自定义短位置 ID，而业务合同要求位置 ID 精确绑定视觉组和固定顺序，全部位置身份不匹配。
+2. 主图输出了 1 条文案，但主图合同要求 0 条文案。
+3. `DETAIL` 与 `SCENE` 的顺序/角色互换，违反冻结角色顺序。
+
+因此旧方案在图片生成前被正确阻止，没有产生图片、上传或 Ozon 写入。
+
+## 其余受控试验状态
+
 - 图片试验：尚未执行，等待第二次费用确认。
 - Ozon/上传：按设计不执行，人工审核前必须保持 0。
