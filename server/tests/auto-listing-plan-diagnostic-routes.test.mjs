@@ -5,14 +5,16 @@ import { createAutoListingPlanDiagnosticHttpHandler } from "../auto-listing-plan
 
 const admin = Object.freeze({ id: "account-a", role: "admin" });
 
-function harness({ actor = admin, service = null } = {}) {
+function harness({ actor = admin, service = null, body = null } = {}) {
   const calls = [];
   const responses = [];
   const handler = createAutoListingPlanDiagnosticHttpHandler({
     async authenticate() { calls.push(["authenticate"]); return actor; },
     async getService() { calls.push(["service"]); return service ?? {
       async getLatest(input) { calls.push(["latest", input]); return { responseId: "response-a" }; },
+      async replay(input) { calls.push(["replay", input]); return { created: true, detail: { responseId: "response-a" } }; },
     }; },
+    async readJson(_req, options) { calls.push(["readJson", options]); return body; },
     sendJson(_res, status, payload) { responses.push({ status, payload }); },
   });
   return {
@@ -34,6 +36,30 @@ test("GET route delegates one exact job and item identity after backend permissi
   assert.deepEqual(h.calls.find(([name]) => name === "latest")?.[1], {
     actor: admin, jobId: "job-a", itemId: "item-a",
   });
+});
+
+test("POST replay requires one exact confirmed text-only command", async () => {
+  const command = {
+    jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a", expectedStatusVersion: 9,
+    costConfirmed: true, idempotencyKey: "diagnostic-once-a", correlationId: "corr-a",
+  };
+  const h = harness({ body: command });
+  const result = await h.request("POST", "/admin/auto-listing/plan-diagnostics/replays");
+  assert.equal(result.response.status, 201);
+  assert.deepEqual(h.calls.find(([name]) => name === "replay")?.[1], { actor: admin, ...command });
+  assert.deepEqual(h.calls.find(([name]) => name === "readJson")?.[1], {
+    maxBytes: 256 * 1024, requireBody: true,
+  });
+
+  for (const invalidBody of [
+    { ...command, costConfirmed: false },
+    { ...command, extra: true },
+  ]) {
+    const invalid = await harness({ body: invalidBody }).request(
+      "POST", "/admin/auto-listing/plan-diagnostics/replays",
+    );
+    assert.equal(invalid.response.status, 400);
+  }
 });
 
 test("route closes method, query, encoded path, authentication and permission boundaries", async () => {

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createAutoListingAiProductionDependencies,
   createAutoListingAiProductionOutboxRelay,
+  createAutoListingPlanDiagnosticProductionPorts,
   createDefaultAutoListingAiProductionDependencies,
   createDefaultAutoListingAiProductionOutboxRelay,
 } from "../auto-listing-ai-runtime-composition.mjs";
@@ -326,6 +327,33 @@ test("the real production dependency graph composes without starting PgBoss, Min
   assert.deepEqual(Object.keys(dependencies).sort(), ["bossFactory", "loadContext", "orchestrate", "workflow"]);
   assert.equal(queries, 0);
   assert.equal(connections, 0);
+});
+
+test("text-only diagnostic production ports reuse the closed credential boundary without image or storage work", async () => {
+  const events = [];
+  const pool = Object.freeze({ async query() {}, async connect() {} });
+  const gateway = Object.freeze({
+    async createTextResponse() {},
+    async generateImage() { throw new Error("diagnostic must not generate images"); },
+    async inspectImage() { throw new Error("diagnostic must not inspect images"); },
+  });
+  const evidenceRepository = Object.freeze({
+    async recordResponse() {}, async recordValidation() {}, async loadOutcome() {},
+  });
+  const ports = Object.freeze({
+    async loadCredentialKey() { events.push("key"); return Buffer.alloc(32, 7); },
+    createCipher() { events.push("cipher"); return {}; },
+    createCredentialRepository(input) { events.push(["credentials", input]); return {}; },
+    createCredentialResolver() { events.push("resolver"); return { async resolveSecret() {} }; },
+    createGateway(input) { events.push(["gateway", input]); return gateway; },
+    createEvidenceRepository(input) { events.push(["evidence", input]); return evidenceRepository; },
+  });
+  const result = await createAutoListingPlanDiagnosticProductionPorts({
+    env: enabledEnv(), resolvePool: async () => pool, ports,
+  });
+  assert.deepEqual(result, { pool, gateway, evidenceRepository });
+  assert.equal(events.some((entry) => Array.isArray(entry) && entry[0] === "storage"), false);
+  assert.equal(events.filter((entry) => Array.isArray(entry) && entry[0] === "gateway").length, 1);
 });
 
 test("production relay discovers runnable accounts from the shared outbox in fair pages and starts with replay", async () => {

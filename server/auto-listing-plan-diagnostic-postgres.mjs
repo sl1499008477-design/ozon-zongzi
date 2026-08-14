@@ -1,6 +1,7 @@
 import { types } from "node:util";
 
 const INPUT_KEYS = new Set(["accountId", "jobId", "itemId"]);
+const RUN_INPUT_KEYS = new Set(["accountId", "jobId", "itemId", "runId"]);
 const SAFE_ID = /^[\p{L}\p{N}][\p{L}\p{N}._:-]{0,239}$/u;
 const MAX_DEPTH = 64;
 const MAX_NODES = 200_000;
@@ -22,13 +23,13 @@ function safeId(value) {
   return typeof value === "string" && value === value.trim() && SAFE_ID.test(value);
 }
 
-function exactInput(value) {
+function exactInput(value, expectedKeys = INPUT_KEYS) {
   try {
     if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value)
       || Object.getPrototypeOf(value) !== Object.prototype) return false;
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const keys = Reflect.ownKeys(descriptors);
-    return keys.length === INPUT_KEYS.size && keys.every((key) => typeof key === "string" && INPUT_KEYS.has(key)
+    return keys.length === expectedKeys.size && keys.every((key) => typeof key === "string" && expectedKeys.has(key)
       && descriptors[key]?.enumerable === true && Object.hasOwn(descriptors[key], "value"));
   } catch {
     return false;
@@ -149,6 +150,36 @@ export function createPostgresAutoListingPlanDiagnosticRepository({ pool } = {})
         if (result.rowCount === 0) return null;
         if (result.rowCount !== 1) throw failed();
         return mapRow(result.rows?.[0], scope);
+      } catch (error) {
+        if (error?.code === "AUTO_LISTING_PLAN_DIAGNOSTIC_REPOSITORY_FAILED") throw error;
+        throw failed();
+      }
+    },
+    async loadRun(raw) {
+      if (!exactInput(raw, RUN_INPUT_KEYS) || !safeId(raw.accountId) || !safeId(raw.jobId)
+        || !safeId(raw.itemId) || !safeId(raw.runId)) throw invalid();
+      const scope = { accountId: raw.accountId, jobId: raw.jobId, itemId: raw.itemId };
+      try {
+        const result = await pool.query(
+          `SELECT response.id,response.account_id,response.job_id,response.item_id,
+                  response.attempt_id,response.diagnostic_run_id,response.planning_contract,
+                  response.model_name,response.prompt_template_version,response.gateway_request_id,
+                  response.received_at,response.response,
+                  validation.status AS validation_status,validation.validator_version,
+                  validation.issues,validation.validated_at
+             FROM auto_listing_content_plan_responses AS response
+             JOIN auto_listing_job_items AS item
+               ON item.account_id=response.account_id AND item.job_id=response.job_id
+              AND item.id=response.item_id
+             JOIN auto_listing_content_plan_validation_results AS validation
+               ON validation.account_id=response.account_id AND validation.response_id=response.id
+            WHERE response.account_id=$1 AND response.job_id=$2 AND response.item_id=$3
+              AND response.diagnostic_run_id=$4`,
+          [scope.accountId, scope.jobId, scope.itemId, raw.runId],
+        );
+        if (result.rowCount === 0) return null;
+        if (result.rowCount !== 1 || result.rows?.[0]?.diagnostic_run_id !== raw.runId) throw failed();
+        return mapRow(result.rows[0], scope);
       } catch (error) {
         if (error?.code === "AUTO_LISTING_PLAN_DIAGNOSTIC_REPOSITORY_FAILED") throw error;
         throw failed();

@@ -74,3 +74,123 @@ test("service rejects unauthorized, open, hostile and secret-bearing data with f
         && !/secret|prompt/iu.test(error.message));
   }
 });
+
+test("text-only replay persists one rejected diagnosis without creating a content plan or image work", async () => {
+  const calls = [];
+  const rejected = detail({
+    diagnosticRunId: "diagnostic-a", attemptId: null,
+  });
+  const service = createAutoListingPlanDiagnosticService({
+    repository: {
+      async loadLatest(input) { calls.push(["latest", input]); return rejected; },
+      async loadRun(input) { calls.push(["run", input]); return rejected; },
+    },
+    contextRepository: {
+      async reserve(input) {
+        calls.push(["reserve", input]);
+        return {
+          status: "RESERVED", runId: "diagnostic-a", accountId: "account-a",
+          jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a",
+          planningContract: "LEGACY_FULL_PLAN_V3", inputHash: "a".repeat(64), skeletonHash: null,
+          profileId: "profile-a", profileVersion: 3,
+          gatewayProfile: { id: "profile-a" }, model: "vendor/text-model-a",
+          templateVersion: "AUTO_LISTING_CONTENT_PLAN_V3", requestKey: "diagnostic-request-a",
+          correlationId: "corr-a", request: { schema: {}, text: "safe frozen facts" },
+          validationContext: { marker: "frozen" },
+        };
+      },
+      async complete(input) { calls.push(["complete", input]); return { status: input.status }; },
+    },
+    gateway: {
+      async createTextResponse(input) {
+        calls.push(["gateway", input]);
+        return { requestId: "gateway-a", value: rejected.response };
+      },
+    },
+    evidenceRepository: {
+      async loadOutcome(input) { calls.push(["outcome", input]); return null; },
+      async recordResponse(input) { calls.push(["response", input]); return {
+        id: "response-a", gatewayRequestId: "gateway-a", response: input.response,
+      }; },
+      async recordValidation(input) { calls.push(["validation", input]); return input; },
+    },
+    diagnoseResponse() { return rejected.validation; },
+  });
+  const result = await service.replay({
+    actor: adminA, jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a",
+    expectedStatusVersion: 9, costConfirmed: true, idempotencyKey: "diagnostic-once-a",
+    correlationId: "corr-a",
+  });
+  assert.equal(result.created, true);
+  assert.equal(result.detail.validation.status, "REJECTED");
+  assert.deepEqual(calls.map(([name]) => name), [
+    "reserve", "outcome", "gateway", "response", "validation", "complete", "run",
+  ]);
+  assert.equal(calls.filter(([name]) => name === "gateway").length, 1);
+  assert.equal(calls.some(([name]) => /image|plan|asset|ozon/iu.test(name)), false);
+});
+
+test("diagnostic replay closes cost, request shape, idempotency and existing-result boundaries", async () => {
+  let reserves = 0;
+  let gateways = 0;
+  const existing = detail({ diagnosticRunId: "diagnostic-a", attemptId: null });
+  const service = createAutoListingPlanDiagnosticService({
+    repository: { async loadLatest() { return existing; }, async loadRun() { return existing; } },
+    contextRepository: {
+      async reserve() { reserves += 1; return { status: "EXISTING", runId: "diagnostic-a" }; },
+      async complete() { throw new Error("must not complete"); },
+    },
+    gateway: { async createTextResponse() { gateways += 1; } },
+    evidenceRepository: { async loadOutcome() {}, async recordResponse() {}, async recordValidation() {} },
+    diagnoseResponse() {},
+  });
+  const command = {
+    actor: adminA, jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a",
+    expectedStatusVersion: 9, costConfirmed: true, idempotencyKey: "diagnostic-once-a",
+    correlationId: "corr-a",
+  };
+  const replay = await service.replay(command);
+  assert.equal(replay.created, false);
+  assert.equal(replay.detail.diagnosticRunId, "diagnostic-a");
+  assert.equal(replay.detail.validation.status, "REJECTED");
+  for (const invalidCommand of [
+    { ...command, costConfirmed: false },
+    { ...command, expectedStatusVersion: 0 },
+    { ...command, extra: true },
+    { ...command, actor: { id: "account-a", role: "user" } },
+  ]) await assert.rejects(service.replay(invalidCommand));
+  assert.equal(reserves, 1);
+  assert.equal(gateways, 0);
+});
+
+test("an ambiguous paid transport is terminalized safely and is never automatically called twice", async () => {
+  let gateways = 0;
+  const completions = [];
+  const service = createAutoListingPlanDiagnosticService({
+    repository: { async loadLatest() { return null; }, async loadRun() { return null; } },
+    contextRepository: {
+      async reserve() { return {
+        status: "RESERVED", runId: "diagnostic-a", accountId: "account-a",
+        jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a",
+        planningContract: "LEGACY_FULL_PLAN_V3", inputHash: "a".repeat(64), skeletonHash: null,
+        profileId: "profile-a", profileVersion: 3, gatewayProfile: { id: "profile-a" },
+        model: "vendor/text-model-a", templateVersion: "AUTO_LISTING_CONTENT_PLAN_V3",
+        requestKey: "diagnostic-request-a", correlationId: "corr-a",
+        request: { schema: {}, text: "safe frozen facts" }, validationContext: { marker: "frozen" },
+      }; },
+      async complete(input) { completions.push(input); return { status: input.status }; },
+    },
+    gateway: { async createTextResponse() { gateways += 1; throw new Error("provider response unknown"); } },
+    evidenceRepository: { async loadOutcome() { return null; }, async recordResponse() {}, async recordValidation() {} },
+    diagnoseResponse() {},
+  });
+  await assert.rejects(service.replay({
+    actor: adminA, jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a",
+    expectedStatusVersion: 9, costConfirmed: true, idempotencyKey: "diagnostic-once-a", correlationId: "corr-a",
+  }), { code: "AUTO_LISTING_PLAN_DIAGNOSTIC_FAILED" });
+  assert.equal(gateways, 1);
+  assert.deepEqual(completions, [{
+    accountId: "account-a", runId: "diagnostic-a", status: "FAILED",
+    failureCode: "AUTO_LISTING_PLAN_DIAGNOSTIC_EXECUTION_FAILED",
+  }]);
+});

@@ -21,7 +21,11 @@ function row(overrides = {}) {
 test("loads the deterministically latest validated response inside exact tenant job and item scope", async () => {
   const calls = [];
   const repository = createPostgresAutoListingPlanDiagnosticRepository({ pool: {
-    async query(sql, values) { calls.push({ sql, values }); return { rowCount: 1, rows: [row()] }; },
+    async query(sql, values) {
+      calls.push({ sql, values });
+      return { rowCount: 1, rows: [values.length === 4
+        ? row({ attempt_id: null, diagnostic_run_id: "diagnostic-a" }) : row()] };
+    },
   } });
   const result = await repository.loadLatest({ accountId: "account-a", jobId: "job-a", itemId: "item-a" });
   assert.deepEqual(calls[0].values, ["account-a", "job-a", "item-a"]);
@@ -31,6 +35,14 @@ test("loads the deterministically latest validated response inside exact tenant 
   assert.equal(result.responseId, "response-a");
   assert.equal(result.validation.status, "REJECTED");
   assert.equal(result.receivedAt, "2026-08-14T01:02:03.000Z");
+
+  const exactRun = await repository.loadRun({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", runId: "diagnostic-a",
+  });
+  assert.deepEqual(calls[1].values, ["account-a", "job-a", "item-a", "diagnostic-a"]);
+  assert.match(calls[1].sql, /response\.diagnostic_run_id=\$4/iu);
+  assert.doesNotMatch(calls[1].sql, /ORDER BY/iu);
+  assert.equal(exactRun.responseId, "response-a");
 });
 
 test("invalid scope and malformed or cross-tenant rows fail closed", async () => {

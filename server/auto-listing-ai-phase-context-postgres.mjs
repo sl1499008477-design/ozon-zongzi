@@ -431,6 +431,10 @@ async function loadPlanInput(options, message, boundary) {
   };
 }
 
+export async function loadFrozenAutoListingPlanningInput(options, boundary) {
+  return loadPlanInput(options, null, boundary);
+}
+
 function boundarySnapshot(boundary) {
   return boundary.snapshotId;
 }

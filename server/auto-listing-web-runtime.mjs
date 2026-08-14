@@ -158,6 +158,7 @@ export function createAutoListingWebRuntime({
   const handlePlanDiagnosticRoute = createPlanDiagnosticHandler({
     authenticate,
     getService: planDiagnosticRuntime.getService,
+    readJson: (req) => readJson(req, { maxBytes: 256 * 1024, requireBody: true }),
     sendJson,
   });
   const handleAiSettingsRoute = createAiSettingsHandler({
