@@ -229,6 +229,7 @@ function safeItemActions(source) {
 
 function safeItem(item = {}) {
   const source = item.source || item;
+  const workflowProgress = safeWorkflowProgress(source.workflowProgress);
   return {
     itemId: safeString(source.id) || safeString(source.itemId),
     status: safeString(source.status),
@@ -244,8 +245,37 @@ function safeItem(item = {}) {
     sourceHash: safeString(source.sourceHash) || safeString(source.source_hash) || safeString(source.snapshotHash) || safeString(source.snapshot_hash),
     ...(safePrice(source.price) ? { price: safePrice(source.price) } : {}),
     ...(safeString(source.failureCode) || safeString(source.failure_code) ? { failureCode: safeString(source.failureCode) || safeString(source.failure_code) } : {}),
+    ...(workflowProgress ? { workflowProgress } : {}),
     actions: safeItemActions(source),
   };
+}
+
+function safeWorkflowProgress(value) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+    const keys = ["phase", "state", "attemptCount", "updatedAt", "nextRetryAt"];
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (Reflect.ownKeys(value).length !== keys.length || keys.some((key) =>
+      descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) return null;
+    const phase = safeString(descriptors.phase.value);
+    const state = descriptors.state.value;
+    const attemptCount = descriptors.attemptCount.value;
+    const updatedAt = safeTimestamp(descriptors.updatedAt.value);
+    const nextRetryAt = descriptors.nextRetryAt.value === null ? null : safeTimestamp(descriptors.nextRetryAt.value);
+    const canonicalTimestamp = (candidate) => {
+      if (!candidate) return false;
+      const parsed = new Date(candidate);
+      return Number.isFinite(parsed.getTime()) && parsed.toISOString() === candidate;
+    };
+    if (!["PLAN_CONTENT", "MATERIALIZE_SOURCE_ASSET", "FINALIZE_MATERIALIZED_PLAN", "GENERATE_IMAGE_SLOT", "GENERATE_RICH_CONTENT"].includes(phase)
+      || !["QUEUED", "RUNNING", "RETRY_WAIT", "COMPLETED", "FAILED"].includes(state)
+      || !Number.isSafeInteger(attemptCount) || attemptCount < 0 || !canonicalTimestamp(updatedAt)
+      || (state === "RETRY_WAIT" ? !canonicalTimestamp(nextRetryAt) : nextRetryAt !== null)) return null;
+    return { phase, state, attemptCount, updatedAt, nextRetryAt };
+  } catch {
+    return null;
+  }
 }
 
 function safeJob(row = {}) {

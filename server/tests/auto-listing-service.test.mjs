@@ -1016,6 +1016,24 @@ test("ordinary job DTOs omit internal strategy selection metadata", async () => 
   assert.deepEqual(Object.keys(result.items[0]).filter((key) => /strategy|style|matched/i.test(key)), []);
 });
 
+test("job DTO exposes only the closed durable workflow progress projection", async () => {
+  const repository = fakeRepository({ existing: {
+    id: "job-progress", items: [{
+      id: "item-progress", status: "PLANNING",
+      workflowProgress: {
+        phase: "PLAN_CONTENT", state: "RUNNING", attemptCount: 1,
+        updatedAt: new Date("2026-08-14T01:02:03.000Z"), nextRetryAt: null,
+      },
+    }],
+  } });
+  const result = await createAutoListingService({ repository }).getAutoListingJob({ actor, jobId: "job-progress" });
+  assert.deepEqual(result.items[0].workflowProgress, {
+    phase: "PLAN_CONTENT", state: "RUNNING", attemptCount: 1,
+    updatedAt: "2026-08-14T01:02:03.000Z", nextRetryAt: null,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /lease|prompt|raw|lastError/iu);
+});
+
 test("bounds list requests and keeps cross-account same-key replays independent", async () => {
   const repository = fakeRepository();
   const service = createAutoListingService({ repository });

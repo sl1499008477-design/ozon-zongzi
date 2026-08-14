@@ -26,6 +26,7 @@ const FAILURE = Object.freeze({
   AUTO_LISTING_CATEGORY_RETRY_SUBMIT_FAILED: "无法确认商品类目，请人工选择",
   AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN: "Ozon 返回结果不明确，正在核对原任务",
   AUTO_LISTING_CATEGORY_RECOVERY_PRODUCT_UNKNOWN: "Ozon 返回结果不明确，正在核对原任务",
+  AUTO_LISTING_CONTENT_PLAN_FAILED: "图片内容规划失败，可以重试",
 });
 
 const IMPORT_STATUS = Object.freeze({
@@ -61,6 +62,15 @@ const PRICE_KEYS = Object.freeze([
 ]);
 const HIGH_PRICE_KEYS = Object.freeze(PRICE_KEYS);
 const LOW_PRICE_KEYS = Object.freeze(PRICE_KEYS.filter((key) => key !== "greenKopecks"));
+const WORKFLOW_PROGRESS_KEYS = Object.freeze(["phase", "state", "attemptCount", "updatedAt", "nextRetryAt"]);
+const WORKFLOW_PHASES = Object.freeze({
+  PLAN_CONTENT: "图片内容规划",
+  MATERIALIZE_SOURCE_ASSET: "准备原始图片",
+  FINALIZE_MATERIALIZED_PLAN: "确认图片方案",
+  GENERATE_IMAGE_SLOT: "生成商品图片",
+  GENERATE_RICH_CONTENT: "生成富文本",
+});
+const WORKFLOW_STATES = new Set(["QUEUED", "RUNNING", "RETRY_WAIT", "COMPLETED", "FAILED"]);
 
 const runtimeIsProxy = (() => {
   try {
@@ -146,6 +156,22 @@ function projectPrice(value) {
   return Object.freeze(result);
 }
 
+function projectWorkflowProgress(value) {
+  const descriptors = safeDataRoot(value);
+  if (!descriptors || Reflect.ownKeys(descriptors).length !== WORKFLOW_PROGRESS_KEYS.length
+    || WORKFLOW_PROGRESS_KEYS.some((key) => descriptors[key]?.enumerable !== true
+      || !Object.hasOwn(descriptors[key], "value"))) return null;
+  const phase = descriptors.phase.value;
+  const state = descriptors.state.value;
+  const attemptCount = descriptors.attemptCount.value;
+  const updatedAt = canonicalTimestamp(descriptors.updatedAt.value);
+  const nextRetryAt = descriptors.nextRetryAt.value === null ? null : canonicalTimestamp(descriptors.nextRetryAt.value);
+  if (!Object.hasOwn(WORKFLOW_PHASES, phase) || !WORKFLOW_STATES.has(state)
+    || !Number.isSafeInteger(attemptCount) || attemptCount < 0 || !updatedAt
+    || (state === "RETRY_WAIT" ? !nextRetryAt : nextRetryAt !== null)) return null;
+  return Object.freeze({ phase, state, attemptCount, updatedAt, nextRetryAt });
+}
+
 function projectItem(value, { allowJobFields = true } = {}) {
   const descriptors = safeDataRoot(value);
   if (!descriptors) return null;
@@ -177,6 +203,11 @@ function projectItem(value, { allowJobFields = true } = {}) {
     const actions = projectActions(field("actions"));
     if (!actions) return null;
     output.actions = actions;
+  }
+  if (descriptors.workflowProgress) {
+    const workflowProgress = projectWorkflowProgress(field("workflowProgress"));
+    if (!workflowProgress) return null;
+    output.workflowProgress = workflowProgress;
   }
   if (allowJobFields) {
     if (descriptors.jobId) {
@@ -215,6 +246,14 @@ export function autoListingItemPresentation(item = {}) {
   const status = typeof safe.status === "string" ? safe.status : "";
   const [statusLabel, tone] = STATUS[status] || ["未知状态", "default"];
   const failureCode = typeof safe.failureCode === "string" ? safe.failureCode : "";
+  const progress = safe.workflowProgress;
+  const progressLabels = {
+    QUEUED: "等待后台领取", RUNNING: "AI 正在执行", RETRY_WAIT: "等待自动重试",
+    COMPLETED: "当前阶段已完成", FAILED: "当前阶段执行失败",
+  };
+  const attemptLabel = progress?.state === "RUNNING"
+    ? `第 ${Math.max(1, progress.attemptCount)} 次`
+    : progress?.attemptCount > 0 ? `已尝试 ${progress.attemptCount} 次` : "尚未尝试";
   return Object.freeze({
     itemId,
     status,
@@ -223,6 +262,12 @@ export function autoListingItemPresentation(item = {}) {
     failureLabel: failureCode
       ? (FAILURE[failureCode] || "商品暂时无法继续处理，请检查资料或联系管理员")
       : "",
+    ...(progress ? { workflowProgress: Object.freeze({
+      label: progressLabels[progress.state],
+      detail: `${WORKFLOW_PHASES[progress.phase]} · ${attemptLabel}`,
+      updatedLabel: `最后更新 ${autoListingCreatedAtLabel(progress.updatedAt)}`,
+      retryLabel: progress.nextRetryAt ? `下次重试 ${autoListingCreatedAtLabel(progress.nextRetryAt)}` : "",
+    }) } : {}),
     actions: serverActions(safe.actions),
   });
 }

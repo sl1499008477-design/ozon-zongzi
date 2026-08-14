@@ -154,6 +154,7 @@ test("production composition keeps account/job-frozen profiles per message and h
     "planPromptTemplateVersion", "pool", "prohibitedClaims", "richContentLeaseOwner",
     "richContentRepository", "sourceAssetLoader", "sourceMaterializationRepository", "storage",
   ]);
+  assert.equal(options.planPromptTemplateVersion, "AUTO_LISTING_CONTENT_PLAN_V2");
 
   const message = (accountId, itemId) => ({
     contractVersion: "V1", accountId, itemId, phase: "PLAN_CONTENT",

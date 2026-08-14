@@ -139,6 +139,10 @@ test("flattens list DTOs with only the owning job identity and canonical real cr
       finalPriceKopecks: "14500",
     },
     rawVendorPayload: "<script>secret</script>",
+    workflowProgress: {
+      phase: "PLAN_CONTENT", state: "RUNNING", attemptCount: 1,
+      updatedAt: "2026-08-14T01:02:03.000Z", nextRetryAt: null,
+    },
   };
   const rows = autoListingTaskRows([{
     jobId: "job-new",
@@ -153,6 +157,10 @@ test("flattens list DTOs with only the owning job identity and canonical real cr
   assert.deepEqual(rows, [{
     itemId: "item-a", sourceRecordId: "collect-a", targetStoreId: "store-a",
     status: "SOURCE_READY",
+    workflowProgress: {
+      phase: "PLAN_CONTENT", state: "RUNNING", attemptCount: 1,
+      updatedAt: "2026-08-14T01:02:03.000Z", nextRetryAt: null,
+    },
     actions: { review: false, approve: false, retry: false, regenerate: false, cancel: true },
     price: {
       currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000",
@@ -164,6 +172,20 @@ test("flattens list DTOs with only the owning job identity and canonical real cr
     itemId: "item-b", status: "BLOCKED", jobId: "job-invalid-time", jobCreatedAt: null,
   }]);
   assert.equal(rows.some((row) => "secret" in row), false);
+});
+
+test("presents durable queue progress with attempts and safe canonical timestamps", () => {
+  const item = autoListingItemPresentation({
+    itemId: "item-progress", status: "PLANNING",
+    workflowProgress: {
+      phase: "PLAN_CONTENT", state: "RETRY_WAIT", attemptCount: 2,
+      updatedAt: "2026-08-14T01:02:03.000Z", nextRetryAt: "2026-08-14T01:03:03.000Z",
+    },
+  });
+  assert.deepEqual(item.workflowProgress, {
+    label: "等待自动重试", detail: "图片内容规划 · 已尝试 2 次",
+    updatedLabel: "最后更新 2026-08-14 01:02:03", retryLabel: "下次重试 2026-08-14 01:03:03",
+  });
 });
 
 test("task rows reject hostile carriers and nested authority without executing accessors", () => {
@@ -198,6 +220,14 @@ test("task rows reject hostile carriers and nested authority without executing a
     enumerable: true,
     get() { getterCalls += 1; return "14500"; },
   });
+  const progressAccessor = { ...baseItem, workflowProgress: {
+    phase: "PLAN_CONTENT", state: "RUNNING", attemptCount: 1,
+    updatedAt: "2026-08-14T01:02:03.000Z", nextRetryAt: null,
+  } };
+  Object.defineProperty(progressAccessor.workflowProgress, "state", {
+    enumerable: true,
+    get() { getterCalls += 1; return "RUNNING"; },
+  });
   const customPrototype = Object.assign(Object.create({ inherited: "raw" }), baseItem);
   const transparent = new Proxy({ ...baseItem }, {});
   const { proxy: revokedItem, revoke: revokeItem } = Proxy.revocable({ ...baseItem }, {});
@@ -215,6 +245,7 @@ test("task rows reject hostile carriers and nested authority without executing a
     extraAccessor,
     nestedAccessor,
     priceAccessor,
+    progressAccessor,
     customPrototype,
     transparent,
     revokedItem,
@@ -223,6 +254,8 @@ test("task rows reject hostile carriers and nested authority without executing a
     { ...baseItem, price: trapProxy({ currency: "RUB", branch: "BLACK_LT_80", blackKopecks: "7999", realPriceKopecks: "7465", adjustmentKopecks: "0", finalPriceKopecks: "7465" }) },
     { ...baseItem, actions: { ...baseItem.actions, raw: true } },
     { ...baseItem, price: { currency: "RUB", branch: "UNKNOWN", finalPriceKopecks: "14500" } },
+    { ...baseItem, workflowProgress: { phase: "PLAN_CONTENT", state: "RUNNING", attemptCount: 1, updatedAt: "bad", nextRetryAt: null } },
+    { ...baseItem, workflowProgress: { phase: "PLAN_CONTENT", state: "RUNNING", attemptCount: 1, updatedAt: "2026-08-14T01:02:03.000Z", nextRetryAt: null, raw: true } },
   ]) assert.deepEqual(autoListingTaskRows([job(candidate)]), []);
 
   const jobAccessor = job(baseItem);

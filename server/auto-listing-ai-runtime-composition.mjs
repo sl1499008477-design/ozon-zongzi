@@ -47,7 +47,7 @@ const SERVICE_KEYS = new Set([
 const REQUIRED_PROHIBITED_CLAIMS = Object.freeze([
   "CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY",
 ]);
-const PLAN_PROMPT_TEMPLATE_VERSION = "AUTO_LISTING_CONTENT_PLAN_V1";
+const PLAN_PROMPT_TEMPLATE_VERSION = "AUTO_LISTING_CONTENT_PLAN_V2";
 const RICH_CONTENT_LEASE_OWNER = "auto-listing-rich-content-worker-v1";
 
 function compositionError(code, retryable = false) {

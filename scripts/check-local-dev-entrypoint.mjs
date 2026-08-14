@@ -14,6 +14,11 @@ assert.match(
   /\["frontend-compat-proxy",\s*"node",\s*\["scripts\/frontend-compat-proxy\.mjs"\]\]/,
   "pnpm dev must start the 3000 compatibility proxy",
 );
+assert.equal(
+  (devScript.match(/server\/auto-listing-ai-worker\.mjs/g) || []).length,
+  1,
+  "pnpm dev must start exactly one dedicated auto-listing AI worker",
+);
 
 const host = "127.0.0.1";
 let upgradeReceived = false;

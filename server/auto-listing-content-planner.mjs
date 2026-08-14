@@ -145,7 +145,8 @@ function verifyStrategyCapture(value, sourceSnapshot) {
   } else if (snapshot.matchedBy === "ANCESTOR_CATEGORY") {
     if (!hasRule || !exactEvidence(["targetDescriptionCategoryId", "matchedValue", "ancestorDistance", "ruleOrder"])
       || evidence.targetDescriptionCategoryId !== targetCategoryId || !Number.isInteger(evidence.ancestorDistance)
-      || evidence.ancestorDistance < 1 || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder <= 0) throw plannerError();
+      || evidence.ancestorDistance < 1 || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder <= 0
+      || !Array.isArray(sourceSnapshot.targetCategory.ancestorCategoryIds)) throw plannerError();
     const matchingAncestor = sourceSnapshot.targetCategory.ancestorCategoryIds[evidence.ancestorDistance - 1];
     if (matchingAncestor !== evidence.matchedValue) throw plannerError();
   } else if (snapshot.matchedBy === "PRODUCT_STYLE") {
@@ -494,8 +495,8 @@ function validatePlannerPreflight(plannerContext) {
 export const CONTENT_PLAN_JSON_SCHEMA = deepFreeze({
   type: "object",
   properties: {
-    version: { const: 1 },
-    language: { const: "ru" },
+    version: { type: "integer", const: 1 },
+    language: { type: "string", const: "ru" },
     slots: {
       type: "array", minItems: 6, maxItems: 1000,
       items: {
@@ -503,8 +504,8 @@ export const CONTENT_PLAN_JSON_SCHEMA = deepFreeze({
         properties: {
           slotKey: { type: "string", minLength: 1, maxLength: 500 },
           visualGroupKey: { type: "string", minLength: 1, maxLength: 240 },
-          role: { enum: ROLE_ORDER }, order: { type: "integer", minimum: 1 },
-          textDensity: { enum: [...DENSITIES] },
+          role: { type: "string", enum: ROLE_ORDER }, order: { type: "integer", minimum: 1 },
+          textDensity: { type: "string", enum: [...DENSITIES] },
           claims: { type: "array", items: { type: "object", additionalProperties: false, properties: {
             text: { type: "string", minLength: 1, maxLength: 300 }, claimType: { type: "string", minLength: 1, maxLength: 80 },
             sourceFactIds: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
@@ -512,7 +513,7 @@ export const CONTENT_PLAN_JSON_SCHEMA = deepFreeze({
           sourceFactIds: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
           referenceAssetIds: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
           preserve: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
-          prohibitedClaims: { type: "array", uniqueItems: true, items: { enum: [...PROHIBITED_CLAIMS] } },
+          prohibitedClaims: { type: "array", uniqueItems: true, items: { type: "string", enum: [...PROHIBITED_CLAIMS] } },
         },
         required: ["slotKey", "visualGroupKey", "role", "order", "textDensity", "claims", "sourceFactIds", "referenceAssetIds", "preserve", "prohibitedClaims"],
       },

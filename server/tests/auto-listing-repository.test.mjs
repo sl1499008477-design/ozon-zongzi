@@ -268,7 +268,10 @@ test("ordinary list ranks item rows before limit and filters unselected siblings
     "job-new": [
       { id: "item-new-a", status: "SOURCE_READY", status_version: 1, target_store_id: "store-a",
         target_warehouse_id: "warehouse-a", source_record_id: "collect-a", source_version: "1",
-        snapshot_hash: "hash-a", created_at: new Date(), updated_at: new Date() },
+        snapshot_hash: "hash-a", created_at: new Date(), updated_at: new Date(),
+        progress_phase: "PLAN_CONTENT", progress_state: "PENDING", progress_attempts: 2,
+        progress_updated_at: new Date("2026-08-14T01:02:03.000Z"),
+        progress_next_retry_at: new Date("2026-08-14T01:03:03.000Z") },
       { id: "item-new-sibling", status: "SOURCE_READY", status_version: 1, target_store_id: "store-a",
         target_warehouse_id: "warehouse-a", source_record_id: "collect-b", source_version: "1",
         snapshot_hash: "hash-b", created_at: new Date(), updated_at: new Date() },
@@ -313,6 +316,11 @@ test("ordinary list ranks item rows before limit and filters unselected siblings
     ["job-new", ["item-new-a"]], ["job-other-store", ["item-other-store"]],
   ]);
   assert.deepEqual(listed[0].events.map((event) => event.id), ["event-job", "event-a"]);
+  assert.deepEqual(listed[0].items[0].workflowProgress, {
+    phase: "PLAN_CONTENT", state: "RETRY_WAIT", attemptCount: 2,
+    updatedAt: new Date("2026-08-14T01:02:03.000Z"),
+    nextRetryAt: new Date("2026-08-14T01:03:03.000Z"),
+  });
   const ranked = calls.find(({ sql }) => /WITH ranked_items AS/.test(sql));
   assert.match(ranked.sql, /PARTITION BY snapshot\.source_record_id,item\.target_store_id/u);
   assert.match(ranked.sql, /ORDER BY job\.created_at DESC,job\.id DESC,item\.id ASC/u);
@@ -321,6 +329,10 @@ test("ordinary list ranks item rows before limit and filters unselected siblings
   assert.match(ranked.sql, /job\.account_id=\$1/u);
   assert.match(ranked.sql, /item\.account_id=job\.account_id/u);
   assert.match(ranked.sql, /snapshot\.account_id=job\.account_id/u);
+  const itemRead = calls.find(({ sql }) => /FROM auto_listing_job_items i/.test(sql));
+  assert.match(itemRead.sql, /LEFT JOIN LATERAL[\s\S]*?auto_listing_ai_outbox/u);
+  assert.match(itemRead.sql, /progress\.account_id=\$2[\s\S]*?progress\.job_id=\$1[\s\S]*?progress\.item_id=i\.id/u);
+  assert.match(itemRead.sql, /ORDER BY progress\.created_at DESC,progress\.id DESC[\s\S]*?LIMIT 1/u);
 
   const full = await repository.getJob({ accountId: "account-a", jobId: "job-new" });
   assert.deepEqual(full.items.map((item) => item.id), ["item-new-a", "item-new-sibling"]);
@@ -1222,7 +1234,7 @@ test("successful creation without the AI workflow keeps ready statuses and stage
 
   assert.deepEqual(created.items.map(({ status }) => status), ["SOURCE_READY", "SOURCE_READY", "BLOCKED"]);
   assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);
-  assert.equal(calls.some(({ sql }) => /auto_listing_ai_outbox/i.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/i.test(sql)), false);
   assert.equal(calls.filter(({ sql }) => /INSERT INTO auto_listing_listing_bases/.test(sql)).length, 2);
   assert.equal(stageCalls.length, 0);
   const jobInsert = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));

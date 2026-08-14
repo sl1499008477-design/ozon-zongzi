@@ -470,7 +470,13 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     { title: "商品", dataIndex: "sourceRecordId", render: (value, row) => row.title || row.sku || value || row.itemId },
     { title: "任务进度", dataIndex: "status", render: (_value, row) => {
       const item = autoListingItemPresentation(row);
-      return <Space direction="vertical" size={2}><Tag>{item.statusLabel}</Tag>{item.failureLabel ? <span>{item.failureLabel}</span> : null}</Space>;
+      return <Space direction="vertical" size={2}>
+        <Tag>{item.workflowProgress?.label || item.statusLabel}</Tag>
+        {item.workflowProgress ? <span>{item.workflowProgress.detail}</span> : null}
+        {item.workflowProgress ? <span>{item.workflowProgress.updatedLabel}</span> : null}
+        {item.workflowProgress?.retryLabel ? <span>{item.workflowProgress.retryLabel}</span> : null}
+        {item.failureLabel ? <span>{item.failureLabel}</span> : null}
+      </Space>;
     } },
     { title: "上架店铺", dataIndex: "targetStoreId", render: (value) => storeLabels.get(String(value || "")) || "—" },
     { title: "创建时间", dataIndex: "jobCreatedAt", render: (value) => autoListingCreatedAtLabel(value) },

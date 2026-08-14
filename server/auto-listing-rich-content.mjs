@@ -62,15 +62,15 @@ export const RICH_CONTENT_JSON_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
   properties: {
-    version: { const: VERSION },
-    language: { const: "ru" },
+    version: { type: "string", const: VERSION },
+    language: { type: "string", const: "ru" },
     blocks: {
       type: "array", minItems: 3, maxItems: 20,
       items: {
         oneOf: [
-          { type: "object", additionalProperties: false, properties: { type: { const: "HERO_IMAGE" }, assetId: { type: "string", minLength: 1 } }, required: ["type", "assetId"] },
-          { type: "object", additionalProperties: false, properties: { type: { enum: ["HEADING", "TEXT"] }, text: { type: "string", minLength: 1, maxLength: 8192 }, sourceFactIds: { type: "array", minItems: 1, maxItems: 32, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } }, factBindings: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false, properties: { sourceFactId: { type: "string" }, field: { type: "string" }, value: { type: "string" }, numericValue: { type: ["number", "null"] }, unit: { type: ["string", "null"] } }, required: ["sourceFactId", "field", "value", "numericValue", "unit"] } } }, required: ["type", "text", "sourceFactIds", "factBindings"] },
-          { type: "object", additionalProperties: false, properties: { type: { const: "IMAGE_TEXT" }, assetId: { type: "string", minLength: 1, maxLength: 240 }, text: { type: "string", minLength: 1, maxLength: 8192 }, sourceFactIds: { type: "array", minItems: 1, maxItems: 32, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } }, factBindings: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false, properties: { sourceFactId: { type: "string" }, field: { type: "string" }, value: { type: "string" }, numericValue: { type: ["number", "null"] }, unit: { type: ["string", "null"] } }, required: ["sourceFactId", "field", "value", "numericValue", "unit"] } } }, required: ["type", "assetId", "text", "sourceFactIds", "factBindings"] },
+          { type: "object", additionalProperties: false, properties: { type: { type: "string", const: "HERO_IMAGE" }, assetId: { type: "string", minLength: 1 } }, required: ["type", "assetId"] },
+          { type: "object", additionalProperties: false, properties: { type: { type: "string", enum: ["HEADING", "TEXT"] }, text: { type: "string", minLength: 1, maxLength: 8192 }, sourceFactIds: { type: "array", minItems: 1, maxItems: 32, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } }, factBindings: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false, properties: { sourceFactId: { type: "string" }, field: { type: "string" }, value: { type: "string" }, numericValue: { type: ["number", "null"] }, unit: { type: ["string", "null"] } }, required: ["sourceFactId", "field", "value", "numericValue", "unit"] } } }, required: ["type", "text", "sourceFactIds", "factBindings"] },
+          { type: "object", additionalProperties: false, properties: { type: { type: "string", const: "IMAGE_TEXT" }, assetId: { type: "string", minLength: 1, maxLength: 240 }, text: { type: "string", minLength: 1, maxLength: 8192 }, sourceFactIds: { type: "array", minItems: 1, maxItems: 32, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } }, factBindings: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false, properties: { sourceFactId: { type: "string" }, field: { type: "string" }, value: { type: "string" }, numericValue: { type: ["number", "null"] }, unit: { type: ["string", "null"] } }, required: ["sourceFactId", "field", "value", "numericValue", "unit"] } } }, required: ["type", "assetId", "text", "sourceFactIds", "factBindings"] },
         ],
       },
     },

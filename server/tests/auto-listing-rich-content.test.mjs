@@ -13,6 +13,16 @@ const reverseKeysDeep = (value) => Array.isArray(value) ? value.map(reverseKeysD
 const scope = Object.freeze({ accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-a" });
 const profile = Object.freeze({ id: "profile-a", accountId: "account-a", configVersion: 3, textModel: "rich-model", imageModel: "image-model" });
 
+function assertStrictLeafTypes(schema, path = "$") {
+  if (!schema || typeof schema !== "object") return;
+  if (Object.hasOwn(schema, "const") || Object.hasOwn(schema, "enum")) {
+    assert.ok(Object.hasOwn(schema, "type"), `${path} must declare an explicit type`);
+  }
+  for (const [key, value] of Object.entries(schema)) {
+    if (value && typeof value === "object") assertStrictLeafTypes(value, `${path}.${key}`);
+  }
+}
+
 const facts = Object.freeze([
   { factId: "fact.brand", field: "identity.brand", kind: "BRAND", value: "SONLI", numericValue: null, unit: null, sourcePath: "identity.brand" },
   { factId: "fact.material", field: "attributes.material", kind: "MATERIAL", value: "нержавеющая сталь", numericValue: null, unit: null, sourcePath: "attributes.material" },
@@ -244,6 +254,7 @@ test("exports the closed V1 schema and validates a traceable Russian document de
   assert.equal(RICH_CONTENT_JSON_SCHEMA.additionalProperties, false);
   assert.deepEqual(RICH_CONTENT_JSON_SCHEMA.properties.version.const, "AUTO_LISTING_RICH_CONTENT_V1");
   assert.deepEqual(RICH_CONTENT_JSON_SCHEMA.properties.language.const, "ru");
+  assertStrictLeafTypes(RICH_CONTENT_JSON_SCHEMA);
   const first = await validation(validContent());
   const second = await validation(validContent());
   assert.equal(first.valid, true);

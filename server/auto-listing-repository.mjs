@@ -312,6 +312,25 @@ function eventDetails(item) {
   };
 }
 
+function itemWorkflowProgress(item) {
+  const phase = typeof item.progress_phase === "string" ? item.progress_phase : "";
+  if (!phase) return null;
+  const attempts = Number(item.progress_attempts);
+  let state = null;
+  if (["RETRYABLE_ERROR", "BLOCKED"].includes(item.status) || item.progress_state === "DEAD") state = "FAILED";
+  else if (item.progress_state === "PENDING") state = attempts > 0 ? "RETRY_WAIT" : "QUEUED";
+  else if (["LEASED", "PROCESSING"].includes(item.progress_state)) state = "RUNNING";
+  else if (["SUCCEEDED", "COMPLETED"].includes(item.progress_state)) state = "COMPLETED";
+  if (!state) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  return {
+    phase,
+    state,
+    attemptCount: Number.isSafeInteger(attempts) && attempts >= 0 ? attempts : 0,
+    updatedAt: item.progress_updated_at || null,
+    nextRetryAt: state === "RETRY_WAIT" ? (item.progress_next_retry_at || null) : null,
+  };
+}
+
 function mapJob(row, items, events) {
   const eventsByItem = new Map();
   for (const event of events) {
@@ -332,6 +351,7 @@ function mapJob(row, items, events) {
     items: items.map((item) => {
       const audit = (eventsByItem.get(item.id) || [])
         .find((event) => ["SOURCE_CAPTURED", "BLOCK"].includes(event.event_type))?.details || {};
+      const workflowProgress = itemWorkflowProgress(item);
       return {
         id: item.id,
         status: item.status,
@@ -352,6 +372,7 @@ function mapJob(row, items, events) {
         matchedBy: audit.matchedBy || null,
         ...(audit.price ? { price: audit.price } : {}),
         ...(item.failure_code ? { failureCode: item.failure_code } : {}),
+        ...(workflowProgress ? { workflowProgress } : {}),
       };
     }),
     events: events.map((event) => ({
@@ -385,9 +406,27 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
   const itemResult = await client.query(
     `SELECT i.id,i.status,i.status_version,i.recovery_point,i.active_content_plan_id,
             i.target_store_id,i.target_warehouse_id,i.failure_code,i.created_at,i.updated_at,
-            s.source_record_id,s.source_version,s.snapshot_hash
+            s.source_record_id,s.source_version,s.snapshot_hash,
+            progress.phase AS progress_phase,progress.state AS progress_state,
+            progress.attempts AS progress_attempts,progress.updated_at AS progress_updated_at,
+            progress.next_retry_at AS progress_next_retry_at
        FROM auto_listing_job_items i
        JOIN auto_listing_source_snapshots s ON s.id=i.snapshot_id AND s.account_id=$2
+       LEFT JOIN LATERAL (
+         SELECT progress.phase,progress.state,
+                CASE WHEN progress.phase='PLAN_CONTENT' THEN GREATEST(
+                  progress.attempts,
+                  (SELECT COUNT(*)::INTEGER FROM auto_listing_content_plan_attempts planner_attempt
+                    WHERE planner_attempt.account_id=$2 AND planner_attempt.job_id=$1
+                      AND planner_attempt.item_id=i.id)
+                ) ELSE progress.attempts END AS attempts,
+                progress.updated_at,progress.next_retry_at
+           FROM auto_listing_ai_outbox progress
+          WHERE progress.account_id=$2 AND progress.job_id=$1 AND progress.item_id=i.id
+            AND progress.contract_version='V1'
+          ORDER BY progress.created_at DESC,progress.id DESC
+          LIMIT 1
+       ) progress ON TRUE
       WHERE i.job_id=$1 AND i.account_id=$2
         ${selection ? "AND i.id=ANY($3::text[])" : ""}
       ORDER BY i.id ASC`,

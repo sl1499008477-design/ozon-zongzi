@@ -38,6 +38,17 @@ function sourceCapture({ reliableDimensions = true, accountId = "account-a" } = 
       images: [image("source-image-1")],
       variants: [{ sku: "sku-1", offerId: "offer-1", name: "Термокружка", images: [image("source-image-1")], evidence: visualEvidence("variant-1") }],
     } },
+    categoryEvidence: {
+      id: "category-evidence-1", accountId, sourceDescriptionCategoryId: 170,
+      sourceTypeId: 99, taxonomyScope: "OZON:DEFAULT",
+    },
+    sharedCategory: {
+      id: "shared-category-1", accountId, version: 1, evidenceId: "category-evidence-1",
+      status: "ACTIVE", source: "SOURCE_DIRECT", sourceDescriptionCategoryId: 170,
+      sourceTypeId: 99, currentDescriptionCategoryId: 170, currentTypeId: 99,
+      taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null,
+    },
+    targetStoreId: "store-a", targetStoreCurrency: "RUB",
     productDraft: { id: "draft-1", version: 1 }, rawResponseRef: "raw-1", rawResponseHash: "raw-hash",
   });
 }
@@ -71,6 +82,16 @@ function strategyCapture(style = "BALANCED_DEFAULT") {
 const profileRef = { id: "profile-1", configVersion: 7, textModel: "planner-model" };
 const runtimeScope = { sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7 };
 const prohibitedClaims = ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"];
+
+function assertStrictLeafTypes(schema, path = "$") {
+  if (!schema || typeof schema !== "object") return;
+  if (Object.hasOwn(schema, "const") || Object.hasOwn(schema, "enum")) {
+    assert.ok(Object.hasOwn(schema, "type"), `${path} must declare an explicit type`);
+  }
+  for (const [key, value] of Object.entries(schema)) {
+    if (value && typeof value === "object") assertStrictLeafTypes(value, `${path}.${key}`);
+  }
+}
 
 function plannerArgs(overrides = {}) {
   const source = overrides.sourceCapture || sourceCapture();
@@ -149,6 +170,10 @@ test("planner input is read-only facts only and excludes secrets, writable listi
   assert.equal(built.plannerInput.factRegistry.some((fact) => fact.factId === "fact.attribute.material.0" && fact.value === "сталь"), true);
   assert.equal(Object.isFrozen(built.plannerInput), true);
   assert.deepEqual(CONTENT_PLAN_JSON_SCHEMA.required, ["version", "language", "slots"]);
+});
+
+test("planner structured-output schema declares explicit types for every const and enum leaf", () => {
+  assertStrictLeafTypes(CONTENT_PLAN_JSON_SCHEMA);
 });
 
 test("missing trusted product dimensions removes specification, reallocates by frozen style, and never uses logistics", () => {
@@ -568,19 +593,14 @@ test("planner strategy evidence is closed against the verified source and only s
   }
 });
 
-test("strategy ancestor distance and product style evidence bind to the frozen source", () => {
-  const ancestorSource = sourceCapture();
-  ancestorSource.snapshot.targetCategory.ancestorCategoryIds = ["parent-1", "root-1"];
-  ancestorSource.snapshotHash = hash(ancestorSource.snapshot);
-  const ancestorArgs = plannerArgs({ sourceCapture: ancestorSource });
+test("account-shared category evidence rejects mutable ancestor matching while product style remains frozen", () => {
+  const ancestorArgs = plannerArgs({ sourceCapture: sourceCapture() });
+  assert.equal(Object.hasOwn(ancestorArgs.sourceCapture.snapshot.targetCategory, "ancestorCategoryIds"), false);
   const ancestor = structuredClone(ancestorArgs.strategyCapture);
   ancestor.strategySnapshot = {
     ...ancestor.strategySnapshot, ruleId: "ancestor-rule", matchedBy: "ANCESTOR_CATEGORY", style: "PARAMETER_FIRST",
     evidence: { targetDescriptionCategoryId: "170", matchedValue: "root-1", ancestorDistance: 2, ruleOrder: 4 },
   };
-  ancestor.strategyHash = hash(ancestor.strategySnapshot);
-  assert.doesNotThrow(() => buildPlannerInput({ ...ancestorArgs, strategyCapture: ancestor }));
-  ancestor.strategySnapshot.evidence.ancestorDistance = 1;
   ancestor.strategyHash = hash(ancestor.strategySnapshot);
   assert.throws(() => buildPlannerInput({ ...ancestorArgs, strategyCapture: ancestor }), (error) => error?.code === "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID");
 

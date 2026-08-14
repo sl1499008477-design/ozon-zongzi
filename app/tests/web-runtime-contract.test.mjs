@@ -12,12 +12,14 @@ async function source(relativePath) {
 }
 
 test("the app dev server and compatibility proxy keep fixed defaults with isolated test overrides", async () => {
+  const rootPackageJson = JSON.parse(await readFile(path.join(repositoryDirectory, "package.json"), "utf8"));
   const packageJson = JSON.parse(await readFile(path.join(appDirectory, "package.json"), "utf8"));
   const viteConfig = await source("app/vite.config.mjs");
   const compatibilityProxy = await source("scripts/frontend-compat-proxy.mjs");
   const devScript = await source("scripts/dev.mjs");
 
   assert.equal(packageJson.scripts.dev, "vite --host 127.0.0.1 --port 5173 --strictPort");
+  assert.equal(rootPackageJson.scripts.dev, "node --env-file-if-exists=.env scripts/dev.mjs");
   assert.match(viteConfig, /host:\s*["']127\.0\.0\.1["']/);
   assert.match(viteConfig, /port:\s*5173/);
   assert.match(viteConfig, /strictPort:\s*true/);
@@ -25,6 +27,8 @@ test("the app dev server and compatibility proxy keep fixed defaults with isolat
   assert.match(compatibilityProxy, /SONLI_FRONTEND_PROXY_PORT \?\? 3000/);
   assert.match(compatibilityProxy, /SONLI_FRONTEND_TARGET \|\| "http:\/\/127\.0\.0\.1:5173"/);
   assert.match(devScript, /\["frontend-compat-proxy", "node", \["scripts\/frontend-compat-proxy\.mjs"\]\]/);
+  assert.equal((devScript.match(/server\/auto-listing-ai-worker\.mjs/g) || []).length, 1);
+  assert.match(devScript, /\["auto-listing-ai-worker", "node", \["server\/auto-listing-ai-worker\.mjs"\]\]/);
   assert.match(devScript, /\["app", "pnpm", \["--dir", "app", "dev"\]\]/);
 });
 
