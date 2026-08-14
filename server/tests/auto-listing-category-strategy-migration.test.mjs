@@ -13,11 +13,19 @@ const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const H = (digit) => digit.repeat(64);
 const sha = (value) => crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
 
-function canonicalSampleSetHash(samples) {
+function legacyIncompleteSampleSetHash(samples) {
   return sha(samples.map((sample) => [
     String(sample.ordinal).padStart(4, "0"), sha(sample.sku),
     sample.images.map((image) => `${String(image.ordinal).padStart(2, "0")}:${image.role}:${image.imageId}`).join(","),
   ].join(":")).join("\n"));
+}
+
+async function databaseSampleSetHash(client, accountId, sampleSetId) {
+  const result = await client.query(
+    "SELECT auto_listing_category_strategy_canonical_sample_set_hash($1,$2) AS hash",
+    [accountId, sampleSetId],
+  );
+  return result.rows[0].hash;
 }
 
 async function expectCode(promise, code = "23514") {
@@ -82,6 +90,8 @@ async function insertSampleSet(client, { id, accountId, draftId, sessionId, type
 async function addSample(client, context, ordinal, {
   sku = `sku-${ordinal}`, withMain = true, details = 0,
   objectAccountId = context.accountId, contentType = "image/webp", sourceUrlHost = "cdn.example.test",
+  sourceProductId = 10_000 + ordinal, sourceProductRef = `ozon-product-${10_000 + ordinal}`,
+  sourceProductResponseHash = sha(`product-response-${ordinal}`), imageEvidence = {},
 } = {}) {
   const sampleId = `${context.sampleSetId}-sample-${ordinal}`;
   const sampleKey = `${context.sampleSetId}-sample-key-${ordinal}`;
@@ -92,7 +102,7 @@ async function addSample(client, context, ordinal, {
         idempotency_key,correlation_id,request_hash,actor_account_id)
      VALUES ($1,$2,$3,'OZON:DEFAULT',170,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$2)`,
     [sampleId, context.accountId, context.draftId, context.typeId, context.sampleSetId, ordinal, sku,
-      10_000 + ordinal, `ozon-product-${10_000 + ordinal}`, sha(`product-response-${ordinal}`),
+      sourceProductId, sourceProductRef, sourceProductResponseHash,
       sampleKey, `${sampleKey}-correlation`, sha(sampleKey)],
   );
   const images = [];
@@ -100,9 +110,26 @@ async function addSample(client, context, ordinal, {
     role: "DETAIL", ordinal: index + 1,
   }))] : [];
   for (const image of roles) {
-    const imageId = `${sampleId}-image-${image.ordinal}`;
-    const imageKey = `${imageId}-key`;
+    const defaultImageId = `${sampleId}-image-${image.ordinal}`;
     const objectPrefix = `category-strategy/${objectAccountId}/${context.draftId}/${context.sampleSetId}/${sampleId}`;
+    const evidence = {
+      imageId: defaultImageId,
+      sourceUrlHost,
+      sourceRefHash: sha(`source-ref-${defaultImageId}`),
+      sourceResponseHash: sha(`response-${defaultImageId}`),
+      sourceContentHash: sha(`source-${defaultImageId}`),
+      analysisObjectKey: `${objectPrefix}/analysis-${image.ordinal}.webp`,
+      analysisContentHash: sha(`analysis-${defaultImageId}`),
+      thumbnailObjectKey: `${objectPrefix}/thumbnail-${image.ordinal}.webp`,
+      thumbnailContentHash: sha(`thumbnail-${defaultImageId}`),
+      contentType,
+      width: 1200,
+      height: 1600,
+      capturedAt: "2026-08-14T00:00:00.000Z",
+      ...imageEvidence,
+    };
+    const imageId = evidence.imageId;
+    const imageKey = `${imageId}-key`;
     await client.query(
       `INSERT INTO auto_listing_category_strategy_sample_images
          (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,sample_set_id,sample_id,
@@ -110,16 +137,56 @@ async function addSample(client, context, ordinal, {
           analysis_object_key,analysis_content_hash,thumbnail_object_key,thumbnail_content_hash,
           content_type,width,height,captured_at,idempotency_key,correlation_id,request_hash,actor_account_id)
        VALUES ($1,$2,$3,'OZON:DEFAULT',170,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-         $14,$15,$16,$17,$18,1200,1600,STATEMENT_TIMESTAMP(),$19,$20,$21,$2)`,
+         $14,$15,$16,$17,$18,$19,$20,$21::TIMESTAMPTZ,$22,$23,$24,$2)`,
       [imageId, context.accountId, context.draftId, context.typeId, context.sampleSetId, sampleId,
-        imageId, image.role, image.ordinal, sourceUrlHost, sha(`source-ref-${imageId}`), sha(`response-${imageId}`),
-        sha(`source-${imageId}`), `${objectPrefix}/analysis-${image.ordinal}.webp`, sha(`analysis-${imageId}`),
-        `${objectPrefix}/thumbnail-${image.ordinal}.webp`, sha(`thumbnail-${imageId}`),
-        contentType, imageKey, `${imageKey}-correlation`, sha(imageKey)],
+        imageId, image.role, image.ordinal, evidence.sourceUrlHost, evidence.sourceRefHash,
+        evidence.sourceResponseHash, evidence.sourceContentHash, evidence.analysisObjectKey,
+        evidence.analysisContentHash, evidence.thumbnailObjectKey, evidence.thumbnailContentHash,
+        evidence.contentType, evidence.width, evidence.height, evidence.capturedAt,
+        imageKey, `${imageKey}-correlation`, sha(imageKey)],
     );
     images.push({ imageId, role: image.role, ordinal: image.ordinal });
   }
   return { ordinal, sku, images, sampleId };
+}
+
+async function buildCanonicalEvidenceProbe(client, context, sessionId, {
+  insertionOrder = [0, 1, 2, 3, 4], mutateFirstEvidence = () => {},
+} = {}) {
+  await insertSampleSet(client, {
+    id: context.sampleSetId, accountId: context.accountId, draftId: context.draftId,
+    sessionId, key: `${context.sampleSetId}-key`,
+  });
+  const samples = [];
+  for (const ordinal of insertionOrder) {
+    const sampleId = `${context.sampleSetId}-sample-${ordinal}`;
+    const objectPrefix = `category-strategy/${context.accountId}/${context.draftId}/${context.sampleSetId}/${sampleId}`;
+    const sampleEvidence = {
+      sourceProductId: 20_000 + ordinal,
+      sourceProductRef: `probe-product-${ordinal}`,
+      sourceProductResponseHash: sha(`probe-product-response-${ordinal}`),
+    };
+    const imageEvidence = {
+      imageId: `${sampleId}-image-0`,
+      sourceUrlHost: "probe.cdn.example.test",
+      sourceRefHash: sha(`probe-source-ref-${ordinal}`),
+      sourceResponseHash: sha(`probe-source-response-${ordinal}`),
+      sourceContentHash: sha(`probe-source-content-${ordinal}`),
+      analysisObjectKey: `${objectPrefix}/analysis-0.webp`,
+      analysisContentHash: sha(`probe-analysis-content-${ordinal}`),
+      thumbnailObjectKey: `${objectPrefix}/thumbnail-0.webp`,
+      thumbnailContentHash: sha(`probe-thumbnail-content-${ordinal}`),
+      contentType: "image/webp",
+      width: 1200,
+      height: 1600,
+      capturedAt: "2026-08-14T00:00:00.000Z",
+    };
+    if (ordinal === 0) mutateFirstEvidence({ sample: sampleEvidence, image: imageEvidence, objectPrefix });
+    samples.push(await addSample(client, context, ordinal, {
+      sku: `probe-sku-${ordinal}`, ...sampleEvidence, imageEvidence,
+    }));
+  }
+  return samples;
 }
 
 async function sealSampleSet(client, sampleSetId, hash) {
@@ -276,6 +343,66 @@ if (!postgresEnabled) {
         key: `cancelled-set-key-${suffix}`,
       }));
 
+      const canonicalProbeSet = `set-canonical-probe-${suffix}`;
+      const canonicalProbeContext = {
+        accountId: accountA, draftId: draftA, typeId: 99, sampleSetId: canonicalProbeSet,
+      };
+      const provenanceMutations = [
+        ["source product id", ({ sample }) => { sample.sourceProductId = 90_001; }],
+        ["source product ref", ({ sample }) => { sample.sourceProductRef = "probe-product-mutated"; }],
+        ["source product response hash", ({ sample }) => { sample.sourceProductResponseHash = H("1"); }],
+        ["image id", ({ image }) => { image.imageId = `probe-image-mutated-${suffix}`; }],
+        ["source host", ({ image }) => { image.sourceUrlHost = "mutated.cdn.example.test"; }],
+        ["source ref hash", ({ image }) => { image.sourceRefHash = H("2"); }],
+        ["image response hash", ({ image }) => { image.sourceResponseHash = H("3"); }],
+        ["source content hash", ({ image }) => { image.sourceContentHash = H("4"); }],
+        ["captured at", ({ image }) => { image.capturedAt = "2026-08-14T00:00:01.000Z"; }],
+        ["analysis object key", ({ image, objectPrefix }) => {
+          image.analysisObjectKey = `${objectPrefix}/analysis-mutated.webp`;
+        }],
+        ["analysis content hash", ({ image }) => { image.analysisContentHash = H("5"); }],
+        ["thumbnail object key", ({ image, objectPrefix }) => {
+          image.thumbnailObjectKey = `${objectPrefix}/thumbnail-mutated.webp`;
+        }],
+        ["thumbnail content hash", ({ image }) => { image.thumbnailContentHash = H("6"); }],
+        ["mime", ({ image }) => { image.contentType = "image/png"; }],
+        ["width", ({ image }) => { image.width = 1199; }],
+        ["height", ({ image }) => { image.height = 1599; }],
+      ];
+      await client.query("BEGIN");
+      try {
+        await client.query("SAVEPOINT canonical_probe_empty");
+        const baselineSamples = await buildCanonicalEvidenceProbe(
+          client, canonicalProbeContext, sessionA,
+        );
+        const baselineHash = await databaseSampleSetHash(client, accountA, canonicalProbeSet);
+        assert.equal(await databaseSampleSetHash(client, accountA, canonicalProbeSet), baselineHash);
+        const legacyIncompleteHash = legacyIncompleteSampleSetHash(baselineSamples);
+        await client.query("ROLLBACK TO SAVEPOINT canonical_probe_empty");
+
+        for (const [label, mutateFirstEvidence] of provenanceMutations) {
+          await buildCanonicalEvidenceProbe(client, canonicalProbeContext, sessionA, { mutateFirstEvidence });
+          const changedHash = await databaseSampleSetHash(client, accountA, canonicalProbeSet);
+          assert.notEqual(changedHash, baselineHash, `${label} must change the database canonical hash`);
+          await client.query("SAVEPOINT stale_canonical_hash");
+          await expectCode(sealSampleSet(client, canonicalProbeSet, baselineHash));
+          await client.query("ROLLBACK TO SAVEPOINT stale_canonical_hash");
+          await client.query("ROLLBACK TO SAVEPOINT canonical_probe_empty");
+        }
+
+        await buildCanonicalEvidenceProbe(client, canonicalProbeContext, sessionA, {
+          insertionOrder: [4, 3, 2, 1, 0],
+        });
+        assert.equal(await databaseSampleSetHash(client, accountA, canonicalProbeSet), baselineHash);
+        assert.notEqual(legacyIncompleteHash, baselineHash);
+        await client.query("SAVEPOINT incomplete_canonical_hash");
+        await expectCode(sealSampleSet(client, canonicalProbeSet, legacyIncompleteHash));
+        await client.query("ROLLBACK TO SAVEPOINT incomplete_canonical_hash");
+        await sealSampleSet(client, canonicalProbeSet, baselineHash);
+      } finally {
+        await client.query("ROLLBACK").catch(() => {});
+      }
+
       const sampleSetA = `set-a-${suffix}`;
       const contextA = { accountId: accountA, draftId: draftA, typeId: 99, sampleSetId: sampleSetA };
       await insertSampleSet(client, {
@@ -287,10 +414,10 @@ if (!postgresEnabled) {
       const validSamples = [];
       for (let ordinal = 0; ordinal < 4; ordinal += 1) validSamples.push(await addSample(client, contextA, ordinal));
       await expectCode(addSample(client, contextA, 4, { sku: "sku-0" }));
-      await expectCode(sealSampleSet(client, sampleSetA, canonicalSampleSetHash(validSamples)));
+      await expectCode(sealSampleSet(client, sampleSetA, await databaseSampleSetHash(client, accountA, sampleSetA)));
       validSamples.push(await addSample(client, contextA, 4));
       await expectCode(sealSampleSet(client, sampleSetA, H("4")));
-      const sampleSetHash = canonicalSampleSetHash(validSamples);
+      const sampleSetHash = await databaseSampleSetHash(client, accountA, sampleSetA);
       await sealSampleSet(client, sampleSetA, sampleSetHash);
       assert.deepEqual((await client.query(
         "SELECT status,sample_set_hash,sample_count,sealed_at IS NOT NULL AS sealed FROM auto_listing_category_strategy_sample_sets WHERE id=$1",
@@ -318,7 +445,7 @@ if (!postgresEnabled) {
       await insertSampleSet(client, { id: overSet, accountId: accountA, draftId: draftA, sessionId: sessionA, key: `set-over-key-${suffix}` });
       const overSamples = [];
       for (let ordinal = 0; ordinal < 21; ordinal += 1) overSamples.push(await addSample(client, overContext, ordinal, { sku: `over-sku-${ordinal}` }));
-      await expectCode(sealSampleSet(client, overSet, canonicalSampleSetHash(overSamples)));
+      await expectCode(sealSampleSet(client, overSet, await databaseSampleSetHash(client, accountA, overSet)));
 
       const missingMainSet = `set-missing-main-${suffix}`;
       const missingMainContext = { ...contextA, sampleSetId: missingMainSet };
@@ -327,7 +454,9 @@ if (!postgresEnabled) {
       for (let ordinal = 0; ordinal < 5; ordinal += 1) missingMainSamples.push(await addSample(
         client, missingMainContext, ordinal, { sku: `missing-main-sku-${ordinal}`, withMain: ordinal !== 4 },
       ));
-      await expectCode(sealSampleSet(client, missingMainSet, canonicalSampleSetHash(missingMainSamples)));
+      await expectCode(sealSampleSet(
+        client, missingMainSet, await databaseSampleSetHash(client, accountA, missingMainSet),
+      ));
 
       const detailSet = `set-detail-${suffix}`;
       const detailContext = { ...contextA, sampleSetId: detailSet };

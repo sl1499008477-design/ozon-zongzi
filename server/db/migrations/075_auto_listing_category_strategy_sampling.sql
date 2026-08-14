@@ -381,26 +381,71 @@ CREATE TRIGGER auto_listing_category_strategy_session_integrity
 BEFORE INSERT OR UPDATE OR DELETE ON auto_listing_category_strategy_sampling_sessions
 FOR EACH ROW EXECUTE FUNCTION auto_listing_category_strategy_session_guard();
 
+CREATE OR REPLACE FUNCTION auto_listing_category_strategy_canonical_sample_set_evidence(
+  owner_account_id TEXT,
+  owner_sample_set_id TEXT
+)
+RETURNS JSONB LANGUAGE SQL STABLE AS $$
+  SELECT JSONB_BUILD_OBJECT(
+    'schema','auto-listing-category-strategy-sample-set/v1',
+    'samples',COALESCE(JSONB_AGG(
+      JSONB_BUILD_OBJECT(
+        'ordinal',sample.ordinal,
+        'sku',sample.sku,
+        'sourceProduct',JSONB_BUILD_OBJECT(
+          'id',sample.source_product_id::TEXT,
+          'ref',sample.source_product_ref,
+          'responseHash',sample.source_product_response_hash
+        ),
+        'images',COALESCE((
+          SELECT JSONB_AGG(
+            JSONB_BUILD_OBJECT(
+              'role',image.role,
+              'ordinal',image.ordinal,
+              'imageId',image.image_id,
+              'source',JSONB_BUILD_OBJECT(
+                'host',image.source_url_host,
+                'refHash',image.source_ref_hash,
+                'responseHash',image.source_response_hash,
+                'contentHash',image.source_content_hash,
+                'capturedAt',TO_CHAR(
+                  image.captured_at AT TIME ZONE 'UTC',
+                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                )
+              ),
+              'analysis',JSONB_BUILD_OBJECT(
+                'objectKey',image.analysis_object_key,
+                'contentHash',image.analysis_content_hash
+              ),
+              'thumbnail',JSONB_BUILD_OBJECT(
+                'objectKey',image.thumbnail_object_key,
+                'contentHash',image.thumbnail_content_hash
+              ),
+              'mime',image.content_type,
+              'dimensions',JSONB_BUILD_OBJECT('width',image.width,'height',image.height)
+            ) ORDER BY image.ordinal,image.role,image.image_id
+          )
+          FROM auto_listing_category_strategy_sample_images image
+          WHERE image.account_id=sample.account_id AND image.sample_id=sample.id
+        ),'[]'::JSONB)
+      ) ORDER BY sample.ordinal,sample.sku
+    ),'[]'::JSONB)
+  )
+  FROM auto_listing_category_strategy_samples sample
+  WHERE sample.account_id=owner_account_id AND sample.sample_set_id=owner_sample_set_id
+$$;
+
 CREATE OR REPLACE FUNCTION auto_listing_category_strategy_canonical_sample_set_hash(
   owner_account_id TEXT,
   owner_sample_set_id TEXT
 )
 RETURNS TEXT LANGUAGE SQL STABLE AS $$
-  SELECT ENCODE(SHA256(CONVERT_TO(COALESCE(STRING_AGG(
-    LPAD(sample.ordinal::TEXT,4,'0') || ':'
-      || ENCODE(SHA256(CONVERT_TO(sample.sku,'UTF8')),'hex') || ':'
-      || COALESCE((
-        SELECT STRING_AGG(
-          LPAD(image.ordinal::TEXT,2,'0') || ':' || image.role || ':' || image.image_id,
-          ',' ORDER BY image.ordinal
-        )
-        FROM auto_listing_category_strategy_sample_images image
-        WHERE image.account_id=sample.account_id AND image.sample_id=sample.id
-      ),''),
-    E'\n' ORDER BY sample.ordinal
-  ),''),'UTF8')),'hex')
-  FROM auto_listing_category_strategy_samples sample
-  WHERE sample.account_id=owner_account_id AND sample.sample_set_id=owner_sample_set_id
+  SELECT ENCODE(SHA256(CONVERT_TO(
+    auto_listing_category_strategy_canonical_sample_set_evidence(
+      owner_account_id,owner_sample_set_id
+    )::TEXT,
+    'UTF8'
+  )),'hex')
 $$;
 
 CREATE OR REPLACE FUNCTION auto_listing_category_strategy_sample_set_guard()
