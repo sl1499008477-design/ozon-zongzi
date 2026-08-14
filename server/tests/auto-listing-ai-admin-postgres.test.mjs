@@ -84,8 +84,11 @@ test("admin PostgreSQL repository factory is closed and requires a real pool", (
     "listProfiles", "listStrategyVersions", "loadCapabilityExecutionForSecretResolution",
     "loadConnectionForCapabilitySecretResolution",
     "markCapabilitySubcallSending",
-    "prepareProfileRollback", "publishProfile", "publishStrategyVersion", "rollbackProfile",
+    "prepareProfileRollback", "publishCategoryStrategyDraft", "publishProfile", "publishStrategyVersion",
+    "rollbackCategoryStrategyVersion", "rollbackProfile",
   ]);
+  assert.equal(typeof createAutoListingAiAdminPostgres({ pool }).publishCategoryStrategyDraft, "function");
+  assert.equal(typeof createAutoListingAiAdminPostgres({ pool }).rollbackCategoryStrategyVersion, "function");
   assert.throws(() => createAutoListingAiAdminPostgres({ pool, apiKey: "raw" }), {
     code: "AUTO_LISTING_AI_ADMIN_REPOSITORY_INVALID",
   });
