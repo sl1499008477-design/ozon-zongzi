@@ -3,6 +3,7 @@ import { verifyAutoListingFrozenConfig } from "./auto-listing-contract.mjs";
 import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
 import { buildVisualGroups, verifyVisualGroupsCapture } from "./auto-listing-visual-groups.mjs";
 import { normalizeAutoListingTextDensityByRole } from "./auto-listing-text-density-contract.mjs";
+import { createContentPlanDiagnoser } from "./auto-listing-content-plan-validator.mjs";
 
 const INPUT_KEYS = new Set([
   "sourceCapture", "strategyCapture", "configCapture", "visualGroupsCapture", "profileRef",
@@ -603,7 +604,7 @@ function containsForbiddenSemanticClaim(text) {
   return /сертиф|certif|гаранти|warrant|медицин|лечеб|medical\s+benefit|вылеч|cure\b/i.test(text);
 }
 
-export function validateContentPlan({ plan, plannerContext } = {}) {
+function validateContentPlanLegacy({ plan, plannerContext } = {}) {
   if (!plannerContext || typeof plannerContext !== "object" || !exactObject(plan, PLAN_KEYS)
     || plan.version !== 1 || plan.language !== "ru" || !Array.isArray(plan.slots)) throw contentPlanError();
   const input = plannerContext.plannerInput;
@@ -679,6 +680,18 @@ export function validateContentPlan({ plan, plannerContext } = {}) {
       || slot.order !== expected.order || slot.slotKey !== expected.slotKey) throw contentPlanError();
   }
   return deepFreeze(structuredClone(plan));
+}
+
+const diagnoseContentPlanClosed = createContentPlanDiagnoser(validateContentPlanLegacy);
+
+export function diagnoseContentPlan(input) {
+  return diagnoseContentPlanClosed(input);
+}
+
+export function validateContentPlan(input) {
+  const result = diagnoseContentPlanClosed(input);
+  if (result.status !== "ACCEPTED") throw contentPlanError();
+  return result.plan;
 }
 
 function verifyStoredPlan(record, scope, plannerContext, planningContract) {
