@@ -4,6 +4,7 @@ import {
   verifyAutoListingFrozenConfig,
 } from "./auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
+import { AUTO_LISTING_PLANNING_CONTRACTS } from "./auto-listing-planning-contract.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
 import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
@@ -120,10 +121,16 @@ function strategyFor(snapshot, source, published) {
   });
 }
 
-function buildJobItems({ accountId, sourceType, sources, targetStore, config, configHash, published }) {
+function buildJobItems({
+  accountId, sourceType, sources, targetStore, config, configHash, published, selectPlanningContract,
+}) {
   return sources.map((source, sourceOrder) => {
     const sourceRecordId = text(source.id);
     const collectItemId = text(source.collectItemId || source.id);
+    const planningContract = selectPlanningContract({ accountId, sourceType, collectItemId });
+    if (!Object.values(AUTO_LISTING_PLANNING_CONTRACTS).includes(planningContract)) {
+      throw error("AUTO_LISTING_PLANNING_CONTRACT_INVALID", 500);
+    }
     let captured;
     try {
       captured = buildAutoListingSourceSnapshot({
@@ -157,14 +164,14 @@ function buildJobItems({ accountId, sourceType, sources, targetStore, config, co
         failureCode,
       });
       return {
-        sourceType, sourceRecordId, collectItemId, sourceVersion: source.sourceVersion,
+        sourceType, sourceRecordId, collectItemId, sourceVersion: source.sourceVersion, planningContract,
         blockedEvidence: blocked.blockedEvidence, snapshotHash: blocked.snapshotHash,
         rawResponseRef: blocked.rawResponseRef, targetStoreId: targetStore.id,
         targetWarehouseId: config.targetWarehouseId, sourceOrder, status: "BLOCKED", failureCode,
       };
     }
     const base = {
-      sourceType, sourceRecordId, collectItemId, sourceVersion: source.sourceVersion,
+      sourceType, sourceRecordId, collectItemId, sourceVersion: source.sourceVersion, planningContract,
       snapshot: captured.snapshot, snapshotHash: captured.snapshotHash,
       rawResponseRef: captured.rawResponseRef, targetStoreId: targetStore.id,
       targetWarehouseId: config.targetWarehouseId, sourceOrder,
@@ -336,6 +343,7 @@ export function createAutoListingService({
   rfbsWarehouseVerifier,
   ensureCategoryFresh = async () => Object.freeze({ status: "CURRENT" }),
   uploadPolicyGates = {},
+  selectPlanningContract = () => AUTO_LISTING_PLANNING_CONTRACTS.LEGACY,
 } = {}) {
   const storage = requireRepository(repository);
   if (typeof prepareListingBase !== "function") {
@@ -343,6 +351,9 @@ export function createAutoListingService({
   }
   if (typeof ensureCategoryFresh !== "function") {
     throw new TypeError("Auto listing category freshness dependency is required");
+  }
+  if (typeof selectPlanningContract !== "function" || utilTypes.isProxy(selectPlanningContract)) {
+    throw new TypeError("Auto listing planning contract selector dependency is required");
   }
   const verifier = requireRfbsWarehouseVerifier(rfbsWarehouseVerifier);
   async function createFromSources({
@@ -409,7 +420,7 @@ export function createAutoListingService({
         listingPipelineEnabled: uploadPolicyGates.listingPipelineEnabled === true,
       });
       const items = buildJobItems({
-        accountId, sourceType, sources, targetStore, config, configHash, published,
+        accountId, sourceType, sources, targetStore, config, configHash, published, selectPlanningContract,
       });
       assertCategoryLeaseActive(signal);
       const preparedResults = await Promise.allSettled(items.map(async (item) => {

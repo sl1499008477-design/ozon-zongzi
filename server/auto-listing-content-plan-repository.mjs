@@ -5,7 +5,7 @@ const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
 const REQUEST_KEY = /^auto-listing-plan-[a-f0-9]{64}$/u;
 const RESERVE_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "profileId", "profileVersion",
-  "inputHash", "expectedStatusVersion", "requestKey",
+  "inputHash", "expectedStatusVersion", "requestKey", "planningContract",
 ]);
 const SAVE_KEYS = new Set([
   ...RESERVE_KEYS,
@@ -149,6 +149,7 @@ function validateReserve(input) {
   if (!exactObject(input, RESERVE_KEYS)) throw invalid();
   assertScope(input);
   if (!safeIdentifier(input.sourceSnapshotId) || !safeIdentifier(input.profileId)
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(input.planningContract)
     || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
     || !HASH.test(input.inputHash || "") || !REQUEST_KEY.test(input.requestKey || "")) throw invalid();
   return input;
@@ -319,6 +320,7 @@ function release(client) {
 
 function assertItemBoundary(row, input) {
   if (!row || row.id !== input.itemId || row.snapshot_id !== input.sourceSnapshotId) throw scopeConflict();
+  if (row.planning_contract !== input.planningContract) throw scopeConflict();
   if (row.status !== "PLANNING" || row.status_version !== input.expectedStatusVersion) throw versionConflict();
 }
 
@@ -326,6 +328,7 @@ function assertStoredRow(row, input) {
   const mapped = mapRow(row);
   if (!mapped || mapped.accountId !== input.accountId || mapped.jobId !== input.jobId
     || mapped.itemId !== input.itemId || mapped.sourceSnapshotId !== input.sourceSnapshotId
+    || mapped.planningContract !== input.planningContract
     || mapped.strategyVersionId !== input.strategyVersionId || mapped.profileId !== input.profileId
     || mapped.profileVersion !== input.profileVersion || mapped.inputHash !== input.inputHash
     || mapped.sourceHash !== input.sourceHash || mapped.strategyHash !== input.strategyHash
@@ -369,7 +372,7 @@ export function createPostgresContentPlanRepository({
       client = await pool.connect();
       await client.query("BEGIN");
       const boundary = await client.query(
-        `SELECT id,snapshot_id,status,status_version,active_content_plan_id
+        `SELECT id,snapshot_id,status,status_version,active_content_plan_id,planning_contract
            FROM auto_listing_job_items
           WHERE account_id=$1 AND job_id=$2 AND id=$3
           FOR UPDATE`,
@@ -405,8 +408,8 @@ export function createPostgresContentPlanRepository({
              ON p.account_id=a.account_id AND p.job_id=a.job_id AND p.item_id=a.item_id
             AND p.id=a.accepted_plan_id
           WHERE a.account_id=$1 AND a.job_id=$2 AND a.item_id=$3 AND a.input_hash=$4
-            AND a.status='ACCEPTED'`,
-        [input.accountId, input.jobId, input.itemId, input.inputHash],
+            AND a.planning_contract=$5 AND a.status='ACCEPTED'`,
+        [input.accountId, input.jobId, input.itemId, input.inputHash, input.planningContract],
       );
       if (accepted.rows[0]) {
         if (boundary.rows[0].active_content_plan_id !== accepted.rows[0].accepted_plan_id) throw evidenceConflict();
@@ -416,8 +419,8 @@ export function createPostgresContentPlanRepository({
       const active = await client.query(
         `SELECT id,input_hash FROM auto_listing_content_plan_attempts
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3
-            AND status='PLANNING' AND lease_expires_at > NOW()`,
-        [input.accountId, input.jobId, input.itemId],
+            AND planning_contract=$4 AND status='PLANNING' AND lease_expires_at > NOW()`,
+        [input.accountId, input.jobId, input.itemId, input.planningContract],
       );
       if (active.rowCount > 0) {
         await client.query("COMMIT");
@@ -436,12 +439,14 @@ export function createPostgresContentPlanRepository({
       await client.query(
         `INSERT INTO auto_listing_content_plan_attempts (
            id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,input_hash,
-           expected_status_version,request_key,attempt_no,status,lease_owner,lease_token,lease_expires_at
+           expected_status_version,request_key,attempt_no,status,lease_owner,lease_token,lease_expires_at,
+           planning_contract,planner_stage
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PLANNING',$12,$13,
-           NOW() + ($14 * INTERVAL '1 millisecond'))`,
+           NOW() + ($14 * INTERVAL '1 millisecond'),$15,$16)`,
         [attemptId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
           input.profileId, input.profileVersion, input.inputHash, input.expectedStatusVersion,
-          input.requestKey, attemptNo, leaseOwner, leaseToken, leaseMs],
+          input.requestKey, attemptNo, leaseOwner, leaseToken, leaseMs, input.planningContract,
+          input.planningContract === "LEGACY_FULL_PLAN_V3" ? "FILLING_COPY" : "BUILDING_SKELETON"],
       );
       await client.query("COMMIT");
       return { status: "RESERVED", attemptNo, reservationToken: leaseToken, inputHash: input.inputHash };
@@ -463,7 +468,7 @@ export function createPostgresContentPlanRepository({
       client = await pool.connect();
       await client.query("BEGIN");
       const boundary = await client.query(
-        `SELECT id,snapshot_id,status,status_version,active_content_plan_id
+        `SELECT id,snapshot_id,status,status_version,active_content_plan_id,planning_contract
            FROM auto_listing_job_items
           WHERE account_id=$1 AND job_id=$2 AND id=$3
           FOR UPDATE`,
@@ -471,16 +476,16 @@ export function createPostgresContentPlanRepository({
       );
       assertItemBoundary(boundary.rows[0], input);
       const attempt = await client.query(
-        `SELECT id,attempt_no,status,lease_token,lease_expires_at,expected_status_version,request_key
+        `SELECT id,attempt_no,status,lease_token,lease_expires_at,expected_status_version,request_key,planning_contract
            FROM auto_listing_content_plan_attempts
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4
             AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
-            AND expected_status_version=$8 AND request_key=$9
+            AND expected_status_version=$8 AND request_key=$9 AND planning_contract=$11
             AND status='PLANNING' AND lease_token=$10 AND lease_expires_at > NOW()
           FOR UPDATE`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.reservationToken],
+          input.reservationToken, input.planningContract],
       );
       if (attempt.rowCount !== 1) throw leaseConflict();
       const inserted = await client.query(
@@ -488,8 +493,8 @@ export function createPostgresContentPlanRepository({
            id,account_id,job_id,item_id,source_snapshot_id,strategy_version_id,profile_id,
            strategy_hash,config_hash,source_hash,input_hash,planner_model,profile_version,
            prompt_template_version,plan,plan_hash,visual_groups_hash,visual_groups,fact_registry_hash,fact_registry,regeneration,
-           gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,NULL,NULL,NULL)
+           gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash,planning_contract
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,NULL,NULL,NULL,$23)
          RETURNING *`,
         [nextPlanId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
           input.strategyVersionId, input.profileId, input.strategyHash, input.configHash,
@@ -497,21 +502,22 @@ export function createPostgresContentPlanRepository({
           input.promptTemplateVersion, JSON.stringify(input.plan), input.planHash,
           input.visualGroupsHash, JSON.stringify(input.visualGroups),
           input.factRegistryHash, JSON.stringify(input.factRegistry),
-          input.regeneration === null ? null : JSON.stringify(input.regeneration), input.gatewayRequestId],
+          input.regeneration === null ? null : JSON.stringify(input.regeneration), input.gatewayRequestId,
+          input.planningContract],
       );
       if (inserted.rowCount !== 1) throw evidenceConflict();
       const accepted = await client.query(
         `UPDATE auto_listing_content_plan_attempts
-            SET status='ACCEPTED',accepted_plan_id=$11,accepted_at=NOW(),
+            SET status='ACCEPTED',accepted_plan_id=$11,accepted_at=NOW(),planner_stage='COMPLETED',
                 lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4
             AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
-            AND expected_status_version=$8 AND request_key=$9
+            AND expected_status_version=$8 AND request_key=$9 AND planning_contract=$12
             AND status='PLANNING' AND lease_token=$10 AND lease_expires_at > NOW()
           RETURNING id`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.reservationToken, nextPlanId],
+          input.reservationToken, nextPlanId, input.planningContract],
       );
       if (accepted.rowCount !== 1) throw leaseConflict();
       const switched = await client.query(
@@ -543,7 +549,7 @@ export function createPostgresContentPlanRepository({
       try {
         const released = await result.query(
           `UPDATE auto_listing_content_plan_attempts a
-              SET status='FAILED',error_code=$7,error_retryable=TRUE,
+              SET status='FAILED',planner_stage='FAILED',error_code=$7,error_retryable=TRUE,
                   lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
             WHERE a.account_id=$1 AND a.job_id=$2 AND a.item_id=$3 AND a.input_hash=$4
               AND a.expected_status_version=$5 AND a.status='PLANNING' AND a.lease_token=$6

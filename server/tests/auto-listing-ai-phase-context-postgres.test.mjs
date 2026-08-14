@@ -38,6 +38,17 @@ function boundary(overrides = {}) {
 
 const builtSource = buildAutoListingSourceSnapshot({
   accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-a", sourceVersion: "version-a",
+  targetStoreCurrency: "RUB",
+  categoryEvidence: {
+    id: "evidence-a", accountId: "account-a", sourceDescriptionCategoryId: 170,
+    sourceTypeId: 99, taxonomyScope: "OZON:DEFAULT",
+  },
+  sharedCategory: {
+    id: "shared-a", accountId: "account-a", version: 1, evidenceId: "evidence-a",
+    status: "ACTIVE", source: "SOURCE_DIRECT", sourceDescriptionCategoryId: 170,
+    sourceTypeId: 99, currentDescriptionCategoryId: 170, currentTypeId: 99,
+    taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null,
+  },
   collectItem: { id: "collect-a", accountId: "account-a", listingDraft: {
     sku: "sku-a", title: "商品 A", brand: "Brand A",
     blackKopecks: "8000", greenKopecks: "7000",
@@ -117,6 +128,7 @@ const profileColumns = {
 function planBundle(plan = basePlanRow(), overrides = {}) {
   return {
     ...plan,
+    planning_contract: "LEGACY_FULL_PLAN_V3",
     snapshot: structuredClone(snapshot), snapshot_hash: SOURCE_HASH, raw_response_ref: "raw-ref-a",
     config_snapshot: structuredClone(configSnapshot), config_hash_from_job: CONFIG_HASH,
     strategy_key: "strategy-a", ...profileColumns, ...overrides,
@@ -239,8 +251,10 @@ test("PLAN_CONTENT loads the exact snapshot, frozen config/strategy and configur
   assert.deepEqual(Object.keys(context.phaseInput).sort(), [
     "sourceSnapshotId", "gatewayProfile", "gateway", "repository", "sourceCapture", "strategyCapture",
     "configCapture", "visualGroupsCapture", "promptTemplateVersion", "prohibitedClaims", "regeneration",
+    "planningContract",
   ].sort());
   assert.equal(context.phaseInput.sourceSnapshotId, "snapshot-a");
+  assert.equal(context.phaseInput.planningContract, "LEGACY_FULL_PLAN_V3");
   assert.equal(context.phaseInput.gateway, options.gateway);
   assert.equal(context.phaseInput.repository, options.contentPlanRepository);
   assert.equal(context.phaseInput.gatewayProfile.apiKeyEnvName, "SUB2API_ENCRYPTED_KEY");
@@ -263,6 +277,21 @@ test("PLAN_CONTENT loads the exact snapshot, frozen config/strategy and configur
   assert.doesNotMatch(pool.calls[1].sql, /p\.enabled IS TRUE/iu);
   assert.doesNotMatch(pool.calls[1].sql, /ORDER\s+BY|LIMIT\s+1/iu);
   assert.deepEqual(pool.calls[2].values, ["account-a", "strategy-v1"]);
+});
+
+test("PLAN_CONTENT rejects an unknown persisted planning contract before strategy reads", async () => {
+  const pool = scriptedPool([
+    [boundary()],
+    [planBundle(undefined, {
+      id: undefined, account_id: undefined, job_id: undefined, item_id: undefined,
+      planning_contract: "FUTURE_OPEN_CONTRACT",
+    })],
+  ]);
+  await assert.rejects(
+    createPostgresAutoListingAiPhaseContextLoader(dependencies(pool))(message("PLAN_CONTENT")),
+    { code: "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID", retryable: false },
+  );
+  assert.equal(pool.calls.length, 2);
 });
 
 test("a regenerate command becomes immutable USER_REQUESTED planner evidence", async () => {

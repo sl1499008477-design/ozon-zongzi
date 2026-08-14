@@ -307,6 +307,7 @@ function eventDetails(item) {
     ruleId: item.ruleId,
     style: item.style,
     matchedBy: item.matchedBy,
+    planningContract: item.planningContract,
     ...(item.price ? { price: item.price } : {}),
     ...(item.failureCode ? { failureCode: item.failureCode } : {}),
   };
@@ -358,6 +359,7 @@ function mapJob(row, items, events) {
         statusVersion: Number(item.status_version),
         recoveryPoint: item.recovery_point || null,
         activeContentPlanId: item.active_content_plan_id || null,
+        planningContract: item.planning_contract,
         createdAt: item.created_at,
         updatedAt: item.updated_at,
         targetStoreId: item.target_store_id,
@@ -404,7 +406,7 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
   const job = jobResult.rows[0];
   if (!job) return null;
   const itemResult = await client.query(
-    `SELECT i.id,i.status,i.status_version,i.recovery_point,i.active_content_plan_id,
+    `SELECT i.id,i.status,i.status_version,i.recovery_point,i.active_content_plan_id,i.planning_contract,
             i.target_store_id,i.target_warehouse_id,i.failure_code,i.created_at,i.updated_at,
             s.source_record_id,s.source_version,s.snapshot_hash,
             progress.phase AS progress_phase,progress.state AS progress_state,
@@ -569,6 +571,9 @@ function assertGraph(graph) {
       || !requiredText(item.targetStoreId) || !requiredText(item.targetWarehouseId)
       || !Number.isInteger(item.sourceOrder) || item.sourceOrder < 0
       || !["SOURCE_READY", "BLOCKED"].includes(item.status)) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    if (!["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(item.planningContract)) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
     if (item.targetStoreId !== configSnapshot.targetStoreId || item.targetWarehouseId !== configSnapshot.targetWarehouseId) {
@@ -1731,10 +1736,11 @@ export function createAutoListingRepository({
           await client.query(
             `INSERT INTO auto_listing_job_items (
                id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,
-               visual_group_count,failure_code,failure_detail_safe
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,0,$8,$9)`,
+               visual_group_count,failure_code,failure_detail_safe,planning_contract
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,0,$8,$9,$10)`,
             [itemId, jobId, graph.accountId, snapshotId, item.targetStoreId, item.targetWarehouseId,
-              item.status, item.failureCode || null, item.failureCode ? item.failureCode : null],
+              item.status, item.failureCode || null, item.failureCode ? item.failureCode : null,
+              item.planningContract],
           );
           await client.query(
             `INSERT INTO auto_listing_events (

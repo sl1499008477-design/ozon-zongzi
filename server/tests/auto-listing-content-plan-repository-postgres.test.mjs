@@ -87,6 +87,7 @@ if (!enabled) {
       const request = {
         accountId: ids.account, jobId: ids.job, itemId: ids.item, sourceSnapshotId: ids.snapshot,
         profileId: ids.profile, profileVersion: 3, inputHash: "a".repeat(64), expectedStatusVersion: 7,
+        planningContract: "LEGACY_FULL_PLAN_V3",
         requestKey: `auto-listing-plan-${"b".repeat(64)}`,
       };
       const claimed = await Promise.all([repository.reserveContentPlan(request), repository.reserveContentPlan(request)]);
@@ -125,6 +126,25 @@ if (!enabled) {
         planHash: hash(plan),
       });
       assert.equal(stored.id, `plan-parent-${suffix}`);
+      const frozenContract = await admin.query(
+        `SELECT planning_contract,planner_stage,skeleton_hash
+           FROM auto_listing_content_plan_attempts
+          WHERE account_id=$1 AND job_id=$2 AND item_id=$3`,
+        [ids.account, ids.job, ids.item],
+      );
+      assert.deepEqual(frozenContract.rows, [{
+        planning_contract: "LEGACY_FULL_PLAN_V3", planner_stage: "COMPLETED", skeleton_hash: null,
+      }]);
+      await assert.rejects(admin.query(
+        `INSERT INTO auto_listing_content_plan_attempts (
+           id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,input_hash,
+           attempt_no,status,lease_owner,lease_token,lease_expires_at,expected_status_version,
+           request_key,planning_contract,skeleton_hash,planner_stage
+         ) VALUES ($1,$2,$3,$4,$5,$6,3,$7,2,'PLANNING','planner-forged','lease-forged',
+           NOW()+INTERVAL '1 minute',7,$8,'FIXED_SKELETON_V1',$9,'BUILDING_SKELETON')`,
+        [`attempt-forged-${suffix}`, ids.account, ids.job, ids.item, ids.snapshot, ids.profile,
+          "f".repeat(64), `auto-listing-plan-${"e".repeat(64)}`, "d".repeat(64)],
+      ), (error) => error?.code === "23514");
       const activeParent = await repository.loadActiveContentPlan({
         accountId: ids.account, jobId: ids.job, itemId: ids.item, expectedStatusVersion: 7,
       });

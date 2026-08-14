@@ -248,8 +248,9 @@ test("runtime injects the AI workflow into job creation only when both feature f
         assert.equal(Object.isFrozen(input.rfbsWarehouseVerifier), true);
         assert.deepEqual(Object.keys(input.rfbsWarehouseVerifier), ["verifyRfbsWarehouse"]);
         assert.equal(input.rfbsWarehouseVerifier.verifyRfbsWarehouse, rfbsWarehouseVerifier.verifyRfbsWarehouse);
-        assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined }, {
-          repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
+        assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined, selectPlanningContract: undefined }, {
+          repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined,
+          selectPlanningContract: undefined, uploadPolicyGates: {
           directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
           },
         });
@@ -318,8 +319,9 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
       assert.notEqual(input.rfbsWarehouseVerifier, rfbsWarehouseVerifier);
       assert.equal(Object.isFrozen(input.rfbsWarehouseVerifier), true);
       assert.equal(input.rfbsWarehouseVerifier.verifyRfbsWarehouse, rfbsWarehouseVerifier.verifyRfbsWarehouse);
-      assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined }, {
-        repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
+      assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined, selectPlanningContract: undefined }, {
+        repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined,
+        selectPlanningContract: undefined, uploadPolicyGates: {
         directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
         },
       });
@@ -332,6 +334,33 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
   assert.equal(await runtime.getService(), service);
   assert.equal(await runtime.getService(), service);
   assert.deepEqual({ pools, repositories, services }, { pools: 1, repositories: 1, services: 1 });
+});
+
+test("runtime injects an exact server-owned fixed skeleton selector", async () => {
+  let serviceInput;
+  const runtime = createAutoListingRuntime({
+    env: enabledEnv({
+      AUTO_LISTING_AI_ENABLED: "0",
+      AUTO_LISTING_FIXED_SKELETON_PILOT_ENABLED: "true",
+      AUTO_LISTING_FIXED_SKELETON_PILOT_ACCOUNT_ID: "account-a",
+      AUTO_LISTING_FIXED_SKELETON_PILOT_COLLECT_ITEM_ID: "collect-a",
+    }),
+    getPostgresPool: async () => ({ name: "pool-a" }),
+    createRepository: () => ({ name: "repository-a" }),
+    createListingBasePreparer: async () => async () => {},
+    createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
+    createRfbsWarehouseVerifier: () => ({ async verifyRfbsWarehouse() {} }),
+    createService(input) { serviceInput = input; return { name: "service-a" }; },
+  });
+
+  await runtime.getService();
+  assert.equal(typeof serviceInput.selectPlanningContract, "function");
+  assert.equal(serviceInput.selectPlanningContract({
+    accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a",
+  }), "FIXED_SKELETON_V1");
+  assert.equal(serviceInput.selectPlanningContract({
+    accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-b",
+  }), "LEGACY_FULL_PLAN_V3");
 });
 
 test("runtime composes the RFBS verifier from tenant-scoped warehouse and credential ports", async () => {

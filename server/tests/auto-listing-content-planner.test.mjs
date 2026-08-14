@@ -80,7 +80,11 @@ function strategyCapture(style = "BALANCED_DEFAULT") {
 }
 
 const profileRef = { id: "profile-1", configVersion: 7, textModel: "planner-model" };
-const runtimeScope = { sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7 };
+const runtimeScope = {
+  sourceSnapshotId: "snapshot-db-1",
+  expectedStatusVersion: 7,
+  planningContract: "LEGACY_FULL_PLAN_V3",
+};
 const prohibitedClaims = ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"];
 
 function assertStrictLeafTypes(schema, path = "$") {
@@ -454,14 +458,15 @@ test("production repository port receives frozen snapshot, profile, request, and
   await createContentPlan({
     accountId: "account-a", jobId: "job-1", itemId: "item-1",
     sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "LEGACY_FULL_PLAN_V3",
     ...planningArgs,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse() { return { value: validPlan(built), requestId: "gateway-one" }; } },
     repository,
   });
   assert.deepEqual(Object.keys(calls[0][1]).sort(), [
-    "accountId", "expectedStatusVersion", "inputHash", "itemId", "jobId", "profileId",
-    "profileVersion", "requestKey", "sourceSnapshotId",
+    "accountId", "expectedStatusVersion", "inputHash", "itemId", "jobId", "planningContract",
+    "profileId", "profileVersion", "requestKey", "sourceSnapshotId",
   ]);
   assert.equal(calls[0][1].sourceSnapshotId, "snapshot-db-1");
   assert.equal(calls[0][1].expectedStatusVersion, 7);

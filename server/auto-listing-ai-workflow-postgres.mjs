@@ -215,7 +215,7 @@ function planSlots(plan) {
 
 async function lockBoundary(input) {
   const result = await query(input.client,
-    `SELECT i.status,i.status_version,i.active_content_plan_id
+    `SELECT i.status,i.status_version,i.active_content_plan_id,i.planning_contract
        FROM auto_listing_job_items AS i
       WHERE i.account_id=$1 AND i.job_id=$2 AND i.id=$3
       FOR UPDATE`,
@@ -564,6 +564,13 @@ export async function applyAutoListingAiPhaseOutcome(rawInput = {}, runtime = {}
       FOR SHARE OF policy`,
     [input.accountId, input.jobId]);
   const mode = policy?.rowCount === 1 ? policy.rows?.[0]?.mode : null;
+  if (row.planning_contract === "FIXED_SKELETON_V1") {
+    const nextVersion = await transition(input, row, "CONTENT_READY_FOR_REVIEW", "READY_FOR_REVIEW");
+    return applied("READY_FOR_REVIEW", nextVersion, 0);
+  }
+  if (row.planning_contract !== "LEGACY_FULL_PLAN_V3" && row.planning_contract !== undefined) {
+    throw conflict();
+  }
   if (mode === "DIRECT" && !directUploadAllowed) {
     const nextVersion = await transition(input, row, "BLOCK", "BLOCKED", "AUTO_LISTING_DIRECT_UPLOAD_DISABLED");
     return applied("BLOCKED", nextVersion, 0);

@@ -111,11 +111,13 @@ const createAutoListingService = ({
   rfbsWarehouseVerifier = forbiddenRfbsWarehouseVerifier,
   listingBasePreparer = prepareListingBase,
   ensureCategoryFresh = async () => ({ status: "CURRENT" }),
+  selectPlanningContract,
 }) => createProductionAutoListingService({
   repository,
   prepareListingBase: listingBasePreparer,
   rfbsWarehouseVerifier,
   ensureCategoryFresh,
+  selectPlanningContract,
 });
 
 const frozenGraphConfig = () => {
@@ -567,6 +569,30 @@ test("uses only actor scope, freezes server strategy and persists valid plus blo
   assert.doesNotMatch(JSON.stringify(result), /raw-collect|credentialsSaved|textDensityByRole/);
 });
 
+test("assigns planning contracts per item on the server without adding authority to config", async () => {
+  const repository = fakeRepository({ sources: [source("collect-1"), source("collect-2")] });
+  await createAutoListingService({
+    repository,
+    selectPlanningContract: ({ accountId, sourceType, collectItemId }) => (
+      accountId === "account-a" && sourceType === "COLLECT_BOX" && collectItemId === "collect-1"
+        ? "FIXED_SKELETON_V1"
+        : "LEGACY_FULL_PLAN_V3"
+    ),
+  }).createAutoListingJob({
+    actor,
+    collectItemIds: ["collect-1", "collect-2"],
+    idempotencyKey: "planning-contract-key",
+    correlationId: "corr-planning-contract",
+    config,
+  });
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.deepEqual(graph.items.map((item) => item.planningContract), [
+    "FIXED_SKELETON_V1",
+    "LEGACY_FULL_PLAN_V3",
+  ]);
+  assert.equal(Object.hasOwn(graph.configSnapshot, "planningContract"), false);
+});
+
 test("orders replay, store/currency, shared category, warehouse, then paid graph", async () => {
   const repository = fakeRepository();
   await createAutoListingService({ repository }).createAutoListingJob({
@@ -734,17 +760,15 @@ test("keeps low-branch and missing-price source evidence isolated per sibling", 
   assert.equal(graph.items[2].snapshot.priceEvidence.blackKopecks, "");
 });
 
-test("derives specification images per verified source snapshot without package dimensions", async () => {
+test("requested specification images stop before persistence when trusted product dimensions are missing", async () => {
   const unavailable = source("collect-no-product-size");
   unavailable.collectItem.listingDraft.productMeasurements = {};
   unavailable.collectItem.listingDraft.logistics = { length: 999, width: 999, height: 999, unit: "cm", source: "package" };
   const repository = fakeRepository({ sources: [source("collect-product-size"), unavailable] });
-  await createAutoListingService({ repository }).createAutoListingJob({
+  await assert.rejects(createAutoListingService({ repository }).createAutoListingJob({
     actor, collectItemIds: ["collect-product-size", "collect-no-product-size"], idempotencyKey: "mixed-sizes", correlationId: "corr", config,
-  });
-  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
-  assert.deepEqual(graph.items.map((item) => item.effectiveImageConfig.roles.specification), [1, 0]);
-  assert.deepEqual(graph.items[1].effectiveImageConfig.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
+  }), { code: "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED", status: 422 });
+  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
 });
 
 test("keeps numeric source price facts immutable while blocking only that sibling", async () => {
@@ -1144,6 +1168,7 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
   const repository = createAutoListingRepository({ pool: { connect: async () => client, query: async () => ({ rows: [] }) } });
   const item = {
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-warehouse", sourceVersion: "1",
+    planningContract: "LEGACY_FULL_PLAN_V3",
     snapshot: captured.snapshot, snapshotHash: captured.snapshotHash, rawResponseRef: captured.rawResponseRef,
     targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0, status: "SOURCE_READY",
     strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: null, style: "BALANCED_DEFAULT", matchedBy: "DEFAULT",
@@ -1224,6 +1249,7 @@ test("repository persists only a canonical recomputed price with a non-default s
   });
   const item = {
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-rule", sourceVersion: "1", snapshot: captured.snapshot,
+    planningContract: "LEGACY_FULL_PLAN_V3",
     snapshotHash: captured.snapshotHash, rawResponseRef: "raw-rule", targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
     sourceOrder: 0, status: "SOURCE_READY", strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: "rule-modern",
     style: "VISUAL_FIRST", matchedBy: "PRODUCT_STYLE",

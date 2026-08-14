@@ -46,6 +46,7 @@ function reservation(overrides = {}) {
     jobId: "job-a",
     itemId: "item-a",
     sourceSnapshotId: "snapshot-a",
+    planningContract: "LEGACY_FULL_PLAN_V3",
     profileId: "profile-a",
     profileVersion: 3,
     inputHash: HASH,
@@ -173,7 +174,7 @@ test("save accepts only closed persisted image evidence and rejects SOURCE_URL o
 test("reserve locks the exact account job item, serializes all planner inputs, uses database time, and returns one fenced lease", async () => {
   const db = scriptedPool((sql) => {
     if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };
-    if (/FROM auto_listing_job_items/i.test(sql)) return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: null }], rowCount: 1 };
+    if (/FROM auto_listing_job_items/i.test(sql)) return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: null, planning_contract: "LEGACY_FULL_PLAN_V3" }], rowCount: 1 };
     if (/UPDATE auto_listing_content_plan_attempts/i.test(sql)) return { rows: [], rowCount: 0 };
     if (/status='ACCEPTED'/i.test(sql)) return { rows: [], rowCount: 0 };
     if (/status='PLANNING'/i.test(sql) && /SELECT/i.test(sql)) return { rows: [], rowCount: 0 };
@@ -204,14 +205,33 @@ test("reserve locks the exact account job item, serializes all planner inputs, u
   const activeQuery = db.queries.find((entry) => /SELECT id(?:,input_hash)? FROM auto_listing_content_plan_attempts/i.test(entry.text));
   assert.doesNotMatch(expireQuery.text, /input_hash=/i, "expired leases from a different planner input must not block this item");
   assert.doesNotMatch(activeQuery.text, /input_hash=/i, "only one live planner lease may exist per item across all inputs");
+  const attemptInsert = db.queries.find((entry) => /INSERT INTO auto_listing_content_plan_attempts/i.test(entry.text));
+  assert.match(attemptInsert.text, /planning_contract/i);
+  assert.equal(attemptInsert.values.includes("LEGACY_FULL_PLAN_V3"), true);
   assert.equal(db.releases(), 1);
+});
+
+test("reserve rejects a planning contract that differs from the frozen job item", async () => {
+  const db = scriptedPool((sql) => {
+    if (sql === "BEGIN" || sql === "ROLLBACK") return { rows: [], rowCount: 0 };
+    if (/FROM auto_listing_job_items/i.test(sql)) return { rows: [{
+      id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7,
+      active_content_plan_id: null, planning_contract: "FIXED_SKELETON_V1",
+    }], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  await assert.rejects(
+    createPostgresContentPlanRepository({ pool: db.pool }).reserveContentPlan(reservation()),
+    { code: "AUTO_LISTING_CONTENT_PLAN_SCOPE_CONFLICT", retryable: false },
+  );
+  assert.equal(db.queries.some((entry) => /INSERT INTO auto_listing_content_plan_attempts/i.test(entry.text)), false);
 });
 
 test("a live lease for a different planner input blocks a second gateway charge for the same item", async () => {
   const db = scriptedPool((sql) => {
     if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };
     if (/FROM auto_listing_job_items/i.test(sql)) {
-      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: null }], rowCount: 1 };
+      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: null, planning_contract: "LEGACY_FULL_PLAN_V3" }], rowCount: 1 };
     }
     if (/UPDATE auto_listing_content_plan_attempts/i.test(sql)) return { rows: [], rowCount: 0 };
     if (/status='ACCEPTED'/i.test(sql)) return { rows: [], rowCount: 0 };
@@ -231,13 +251,13 @@ test("save is one transaction that fences scope/version/token, accepts the attem
   const db = scriptedPool((sql, values) => {
     if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };
     if (/FROM auto_listing_job_items/i.test(sql) && /FOR UPDATE/i.test(sql)) {
-      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: null }], rowCount: 1 };
+      return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: null, planning_contract: "LEGACY_FULL_PLAN_V3" }], rowCount: 1 };
     }
     if (/FROM auto_listing_content_plan_attempts/i.test(sql) && /FOR UPDATE/i.test(sql)) {
       return { rows: [{ id: "attempt-a", attempt_no: 1, status: "PLANNING", lease_token: "lease-a", lease_expires_at: new Date(Date.now() + 60_000), expected_status_version: 7, request_key: reservation().requestKey }], rowCount: 1 };
     }
     if (/INSERT INTO ai_content_plans/i.test(sql)) {
-      return { rows: [{ id: values[0], account_id: "account-a", job_id: "job-a", item_id: "item-a", source_snapshot_id: "snapshot-a", strategy_version_id: "strategy-a", profile_id: "profile-a", input_hash: HASH, source_hash: "1".repeat(64), strategy_hash: "2".repeat(64), config_hash: "3".repeat(64), visual_groups_hash: "4".repeat(64), visual_groups: storedPlan().visualGroups, fact_registry_hash: storedPlan().factRegistryHash, fact_registry: storedPlan().factRegistry, planner_model: "vendor/planner-model", profile_version: 3, prompt_template_version: "planner-v1", regeneration: null, gateway_request_id: "gateway-request-a", plan: storedPlan().plan, plan_hash: "c86329aebeef4e5e13ae4e152f93a2200093c7ab709aadeb32711c88fd4e99a6", parent_plan_id: null, derivation_kind: null, materialization_set_hash: null }], rowCount: 1 };
+      return { rows: [{ id: values[0], account_id: "account-a", job_id: "job-a", item_id: "item-a", source_snapshot_id: "snapshot-a", strategy_version_id: "strategy-a", profile_id: "profile-a", input_hash: HASH, source_hash: "1".repeat(64), strategy_hash: "2".repeat(64), config_hash: "3".repeat(64), visual_groups_hash: "4".repeat(64), visual_groups: storedPlan().visualGroups, fact_registry_hash: storedPlan().factRegistryHash, fact_registry: storedPlan().factRegistry, planner_model: "vendor/planner-model", profile_version: 3, prompt_template_version: "planner-v1", regeneration: null, gateway_request_id: "gateway-request-a", plan: storedPlan().plan, plan_hash: "c86329aebeef4e5e13ae4e152f93a2200093c7ab709aadeb32711c88fd4e99a6", parent_plan_id: null, derivation_kind: null, materialization_set_hash: null, planning_contract: "LEGACY_FULL_PLAN_V3" }], rowCount: 1 };
     }
     if (/UPDATE auto_listing_content_plan_attempts/i.test(sql)) return { rows: [{ id: "attempt-a" }], rowCount: 1 };
     if (/UPDATE auto_listing_job_items/i.test(sql)) return { rows: [{ id: "item-a" }], rowCount: 1 };
@@ -261,7 +281,7 @@ test("save is one transaction that fences scope/version/token, accepts the attem
 test("a stale lease token cannot save after reclaim and causes rollback with a stable conflict", async () => {
   const db = scriptedPool((sql) => {
     if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [], rowCount: 0 };
-    if (/FROM auto_listing_job_items/i.test(sql)) return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: null }], rowCount: 1 };
+    if (/FROM auto_listing_job_items/i.test(sql)) return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: null, planning_contract: "LEGACY_FULL_PLAN_V3" }], rowCount: 1 };
     if (/FROM auto_listing_content_plan_attempts/i.test(sql)) return { rows: [], rowCount: 0 };
     throw new Error(`unexpected SQL: ${sql}`);
   });

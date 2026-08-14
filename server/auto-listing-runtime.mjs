@@ -5,7 +5,13 @@ import { createAutoListingAiWorker } from "./auto-listing-ai-worker.mjs";
 import { createAutoListingRfbsWarehouseVerifier } from "./auto-listing-rfbs-warehouse-verifier.mjs";
 import { getPostgresPool } from "./db/connection.mjs";
 import { callOzonSellerApi as defaultCallOzonSellerApi } from "./ozon-client.mjs";
-import { autoListingAiEnabled, autoListingEnabled, autoListingUploadEnabled } from "./runtime-config.mjs";
+import { selectAutoListingPlanningContract } from "./auto-listing-planning-contract.mjs";
+import {
+  autoListingAiEnabled,
+  autoListingEnabled,
+  autoListingFixedSkeletonPilotScope,
+  autoListingUploadEnabled,
+} from "./runtime-config.mjs";
 
 function runtimeError(code, message) {
   const error = new Error(message);
@@ -141,6 +147,11 @@ export function createAutoListingRuntime({
   let aiWorkerPromise = null;
   const serviceDisabled = !autoListingEnabled(env);
   const aiEnabled = autoListingEnabled(env) && autoListingAiEnabled(env);
+  const planningPilotScope = autoListingFixedSkeletonPilotScope(env);
+  const selectPlanningContract = (input) => selectAutoListingPlanningContract({
+    pilotScope: planningPilotScope,
+    ...input,
+  });
   const resolveAiWorkerDependencies = createAiWorkerDependencies || (async ({ env: runtimeEnv, resolvePool: runtimePool }) => {
     const { createDefaultAutoListingAiProductionDependencies } = await import("./auto-listing-ai-runtime-composition.mjs");
     return createDefaultAutoListingAiProductionDependencies({ env: runtimeEnv, resolvePool: runtimePool });
@@ -248,6 +259,7 @@ export function createAutoListingRuntime({
           repository,
           prepareListingBase,
           ensureCategoryFresh,
+          selectPlanningContract,
           rfbsWarehouseVerifier: closedRfbsWarehouseVerifier,
           uploadPolicyGates: {
             directUploadAllowed,

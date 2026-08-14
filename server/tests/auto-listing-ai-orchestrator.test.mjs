@@ -81,6 +81,7 @@ function phaseInput(phase) {
     sourceSnapshotId: "snapshot-a", gatewayProfile: inert, gateway: inert, repository: inert,
     sourceCapture: inert, strategyCapture: inert, configCapture: inert, visualGroupsCapture: inert,
     promptTemplateVersion: "planner-v1", prohibitedClaims: [], regeneration: null,
+    planningContract: "LEGACY_FULL_PLAN_V3",
   };
   if (phase === "MATERIALIZE_SOURCE_ASSET") return {
     parentPlan: parent, sourceSnapshot: inert, policy: undefined, repository: inert,

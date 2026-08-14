@@ -681,9 +681,10 @@ export function validateContentPlan({ plan, plannerContext } = {}) {
   return deepFreeze(structuredClone(plan));
 }
 
-function verifyStoredPlan(record, scope, plannerContext) {
+function verifyStoredPlan(record, scope, plannerContext, planningContract) {
   if (!isPlainObject(record) || record.accountId !== scope.accountId || record.jobId !== scope.jobId
     || record.itemId !== scope.itemId || record.inputHash !== plannerContext.inputHash
+    || record.planningContract !== planningContract
     || record.sourceHash !== plannerContext.sourceHash || record.strategyHash !== plannerContext.strategyHash
     || record.configHash !== plannerContext.configHash || record.visualGroupsHash !== plannerContext.visualGroupsHash
     || !sameJson(record.visualGroups, plannerContext.visualGroups)
@@ -714,6 +715,7 @@ export async function createContentPlan(input = {}) {
   const { accountId, jobId, itemId, gatewayProfile, gateway, repository } = input;
   const scope = { accountId: requiredText(accountId, 240), jobId: requiredText(jobId, 240), itemId: requiredText(itemId, 240) };
   const sourceSnapshotId = requiredText(input.sourceSnapshotId, 240);
+  const planningContract = input.planningContract;
   const expectedStatusVersion = input.expectedStatusVersion;
   if (!isPlainObject(gatewayProfile) || gatewayProfile.accountId !== scope.accountId
     || !Number.isInteger(gatewayProfile.configVersion) || gatewayProfile.configVersion < 1
@@ -721,6 +723,7 @@ export async function createContentPlan(input = {}) {
     || typeof gatewayProfile.textModel !== "string" || !gatewayProfile.textModel.trim()
     || typeof gateway?.createTextResponse !== "function"
     || typeof repository?.reserveContentPlan !== "function"
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(planningContract)
     || !Number.isInteger(expectedStatusVersion) || expectedStatusVersion < 1
     || expectedStatusVersion > 2_147_483_647) throw plannerError();
   const plannerContext = buildPlannerInput({
@@ -741,6 +744,7 @@ export async function createContentPlan(input = {}) {
     reservation = await repository.reserveContentPlan({
       ...scope,
       sourceSnapshotId,
+      planningContract,
       profileId: plannerContext.plannerInput.profile.id,
       profileVersion: plannerContext.plannerInput.profile.configVersion,
       inputHash: plannerContext.inputHash,
@@ -750,7 +754,9 @@ export async function createContentPlan(input = {}) {
   } catch {
     throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划记录暂时无法读取");
   }
-  if (reservation?.status === "EXISTING") return verifyStoredPlan(reservation.record, scope, plannerContext);
+  if (reservation?.status === "EXISTING") return verifyStoredPlan(
+    reservation.record, scope, plannerContext, planningContract,
+  );
   if (reservation?.status !== "RESERVED" || typeof reservation.reservationToken !== "string" || !reservation.reservationToken) throw plannerError("AUTO_LISTING_CONTENT_PLAN_RESERVATION_FAILED", "图片规划任务暂时无法锁定");
   try {
     let response;
@@ -784,6 +790,7 @@ export async function createContentPlan(input = {}) {
       stored = await repository.saveContentPlan({
         ...scope,
         sourceSnapshotId,
+        planningContract,
         expectedStatusVersion,
         requestKey,
         reservationToken: reservation.reservationToken,
@@ -808,7 +815,7 @@ export async function createContentPlan(input = {}) {
     } catch {
       throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划记录暂时无法保存");
     }
-    return verifyStoredPlan(stored, scope, plannerContext);
+    return verifyStoredPlan(stored, scope, plannerContext, planningContract);
   } catch (error) {
     if (typeof repository.releaseContentPlanReservation === "function") {
       await repository.releaseContentPlanReservation({

@@ -367,7 +367,7 @@ async function loadBoundary(pool, message) {
 
 async function loadPlanInput(options, message, boundary) {
   const bundle = exactSingleRow(await safeQuery(options.pool,
-    `SELECT s.snapshot,s.snapshot_hash,s.raw_response_ref,
+    `SELECT i.planning_contract,s.snapshot,s.snapshot_hash,s.raw_response_ref,
             j.config_snapshot,j.config_hash AS config_hash_from_job,j.strategy_version_id,
             v.strategy_key,
             command.id AS regeneration_request_id,
@@ -388,6 +388,9 @@ async function loadPlanInput(options, message, boundary) {
         AND command.result_status_version=i.status_version
       WHERE i.account_id=$1 AND i.job_id=$2 AND i.id=$3 AND i.snapshot_id=$4`,
     [boundary.accountId, boundary.jobId, boundary.itemId, boundarySnapshot(boundary)]));
+  if (!["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(bundle.planning_contract)) {
+    throw evidenceInvalid();
+  }
   const capture = sourceCapture(bundle);
   const rulesResult = await safeQuery(options.pool,
     `SELECT id,rule_order,rule_kind,category_id,ancestor_category_id,product_style,rule
@@ -404,6 +407,7 @@ async function loadPlanInput(options, message, boundary) {
   }
   return {
     sourceSnapshotId: boundarySnapshot(boundary),
+    planningContract: bundle.planning_contract,
     gatewayProfile: gatewayProfile(bundle),
     gateway: options.gateway,
     repository: options.contentPlanRepository,
