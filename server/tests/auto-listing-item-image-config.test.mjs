@@ -72,13 +72,23 @@ function sourceCapture(productMeasurements = {}) {
   });
 }
 
-test("requested specification image without trusted dimensions fails instead of reducing the count", () => {
+test("requested specification image without trusted dimensions reduces only that role", () => {
   const frozen = frozenConfig();
-  assert.throws(() => deriveEffectiveAutoListingImageConfig({
+  const result = deriveEffectiveAutoListingImageConfig({
     configSnapshot: frozen.config,
     configHash: frozen.configHash,
     sourceCapture: sourceCapture(),
-  }), (error) => error?.code === "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED");
+  });
+  assert.deepEqual(result.roles, {
+    main: 1,
+    sellingPoint: 3,
+    detail: 1,
+    scene: 1,
+    specification: 0,
+    infographic: 1,
+  });
+  assert.equal(result.total, 7);
+  assert.deepEqual(result.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
 });
 
 test("valid effective image configuration preserves exact counts in a recursively frozen value", () => {

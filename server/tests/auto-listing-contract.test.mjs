@@ -130,7 +130,7 @@ test("allows the declared image option values and derives total from role counts
   assert.equal(normalized.image.total, 13);
 });
 
-test("preserves the requested count or rejects missing reliable product dimensions", () => {
+test("preserves trusted counts and reduces missing reliable product dimensions", () => {
   const frozen = normalizeAndHashAutoListingConfig(baseConfig());
   const effective = (productMeasurements, logistics = {}) => deriveEffectiveAutoListingImageConfig({
     configSnapshot: frozen.config,
@@ -161,15 +161,28 @@ test("preserves the requested count or rejects missing reliable product dimensio
     { reliable: true, length: 28, unit: "", source: "manufacturer" },
     { reliable: true, length: 28, unit: "cm", source: "" },
   ]) {
-    assert.throws(() => effective(measurements),
-      (error) => error?.code === "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED");
+    const reduced = effective(measurements);
+    assert.equal(reduced.roles.specification, 0);
+    assert.equal(reduced.total, 7);
+    assert.deepEqual(reduced.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
   }
-  assert.throws(() => effective({}, { length: 999, unit: "cm", source: "warehouse" }),
-    (error) => error?.code === "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED");
+  const logisticsOnly = effective({}, { length: 999, unit: "cm", source: "warehouse" });
+  assert.equal(logisticsOnly.roles.specification, 0);
+  assert.equal(logisticsOnly.total, 7);
+  assert.deepEqual(logisticsOnly.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
   assert.equal(effective({ reliable: true, lengthMm: 280, unit: "mm", source: "manufacturer" }).roles.specification, 1);
   assert.equal(effective({ reliable: true, productDiameter: 28, unit: "cm", source: "manufacturer" }).roles.specification, 1);
-  assert.throws(() => effective({ reliable: true, foo: 28, confidence: 0.99, sampleCount: 1, unit: "cm", source: "manufacturer" }),
-    (error) => error?.code === "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED");
+  const unknownMeasurementShape = effective({
+    reliable: true,
+    foo: 28,
+    confidence: 0.99,
+    sampleCount: 1,
+    unit: "cm",
+    source: "manufacturer",
+  });
+  assert.equal(unknownMeasurementShape.roles.specification, 0);
+  assert.equal(unknownMeasurementShape.total, 7);
+  assert.deepEqual(unknownMeasurementShape.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
   expectConfigError(baseConfig({ image: { total: 7 } }), "AUTO_LISTING_CONFIG_INVALID");
   assert.throws(
     () => deriveEffectiveAutoListingImageConfig({
