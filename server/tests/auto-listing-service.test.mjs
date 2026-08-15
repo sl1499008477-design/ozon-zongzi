@@ -807,15 +807,30 @@ test("keeps low-branch and missing-price source evidence isolated per sibling", 
   assert.equal(graph.items[2].snapshot.priceEvidence.blackKopecks, "");
 });
 
-test("requested specification images stop before persistence when trusted product dimensions are missing", async () => {
+test("mixed product dimensions derive independent effective image counts and persist the graph", async () => {
   const unavailable = source("collect-no-product-size");
   unavailable.collectItem.listingDraft.productMeasurements = {};
-  unavailable.collectItem.listingDraft.logistics = { length: 999, width: 999, height: 999, unit: "cm", source: "package" };
+  unavailable.collectItem.listingDraft.logistics = {
+    length: 999, width: 999, height: 999, unit: "cm", source: "package",
+  };
   const repository = fakeRepository({ sources: [source("collect-product-size"), unavailable] });
-  await assert.rejects(createAutoListingService({ repository }).createAutoListingJob({
-    actor, collectItemIds: ["collect-product-size", "collect-no-product-size"], idempotencyKey: "mixed-sizes", correlationId: "corr", config,
-  }), { code: "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED", status: 422 });
-  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+  const result = await createAutoListingService({ repository }).createAutoListingJob({
+    actor,
+    collectItemIds: ["collect-product-size", "collect-no-product-size"],
+    idempotencyKey: "mixed-sizes",
+    correlationId: "corr",
+    config,
+  });
+  assert.deepEqual(result.items.map((item) => item.status), ["SOURCE_READY", "SOURCE_READY"]);
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.deepEqual(graph.items.map((item) => ({
+    total: item.effectiveImageConfig.total,
+    specification: item.effectiveImageConfig.roles.specification,
+    reasonCodes: item.effectiveImageConfig.reasonCodes,
+  })), [
+    { total: 8, specification: 1, reasonCodes: [] },
+    { total: 7, specification: 0, reasonCodes: ["PRODUCT_DIMENSIONS_UNAVAILABLE"] },
+  ]);
 });
 
 test("keeps numeric source price facts immutable while blocking only that sibling", async () => {
