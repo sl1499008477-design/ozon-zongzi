@@ -1,5 +1,6 @@
 import { autoListingEnabled } from "./runtime-config.mjs";
 import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
+import { types as utilTypes } from "node:util";
 
 const CREATE_PATH = "/auto-listing/jobs/from-collect-box";
 const LIST_PATH = "/auto-listing/jobs";
@@ -11,6 +12,8 @@ const PUBLIC_ERRORS = Object.freeze({
   AUTO_LISTING_SOURCE_NOT_FOUND: 404,
   AUTO_LISTING_WAREHOUSE_NOT_FOUND: 404,
   AUTO_LISTING_STRATEGY_NOT_PUBLISHED: 409,
+  AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED: 409,
+  AUTO_LISTING_CATEGORY_STRATEGY_CHANGED: 409,
   AUTO_LISTING_CATEGORY_TARGET_STORE_MISMATCH: 422,
   AUTO_LISTING_VERSION_CONFLICT: 409,
   AUTO_LISTING_SOURCE_VERSION_CONFLICT: 409,
@@ -41,6 +44,9 @@ const AUTO_LISTING_ITEM_STATUSES = new Set([
   "UPLOAD_QUEUED", "UPLOADING", "SUCCEEDED", "RETRYABLE_ERROR", "BLOCKED", "CANCELLED",
 ]);
 const SENSITIVE_KEY = /(?:account|actor|owner|raw(?:response|body|evidence)?|credential|secret|api.?key|authorization|token|password|hasReliableProductDimensions)/i;
+const CATEGORY_STRATEGY_STATUSES = new Set([
+  "NOT_CONFIGURED", "COLLECTING", "SAMPLES_READY", "ANALYZING", "DRAFT_READY", "PUBLISHED", "NEEDS_REVIEW",
+]);
 
 function text(value, maximum = 240) {
   const result = typeof value === "string" ? value.trim() : "";
@@ -208,6 +214,8 @@ function messageFor(code) {
   if (code === "AUTO_LISTING_JOB_NOT_FOUND") return "自动上架任务不存在";
   if (code === "PERMISSION_FORBIDDEN") return "没有该操作权限";
   if (code === "AUTO_LISTING_REQUEST_INVALID") return "自动上架请求无效";
+  if (code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED") return "当前商品类目需要先配置并发布图片策略";
+  if (code === "AUTO_LISTING_CATEGORY_STRATEGY_CHANGED") return "类目策略已变化，请重新提交创建任务";
   if (code === "AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED") return "目标店铺币种暂不支持自动上架";
   if (code === "AUTO_LISTING_TARGET_STORE_CURRENCY_UNVERIFIED") return "店铺币种尚未同步，请先同步店铺资料";
   if (code === "AUTO_LISTING_CATEGORY_REFRESH_REQUIRED") return "Ozon 类目已更新，请刷新后重试";
@@ -224,6 +232,43 @@ function messageFor(code) {
   return "自动上架请求处理失败";
 }
 
+function safeCategoryStrategyDetails(value) {
+  try {
+    if (!value || typeof value !== "object" || utilTypes.isProxy(value)
+      || Object.getPrototypeOf(value) !== Object.prototype) return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (!keys.every((key) => typeof key === "string"
+      && ["scope", "status", "canManage", "draftId"].includes(key)
+      && descriptors[key]?.enumerable === true && Object.hasOwn(descriptors[key], "value"))) return undefined;
+    if (![3, 4].includes(keys.length)) return undefined;
+    for (const key of ["scope", "status", "canManage"]) {
+      if (!Object.hasOwn(descriptors, key)) return undefined;
+    }
+    const rawScope = descriptors.scope.value;
+    if (!rawScope || typeof rawScope !== "object" || utilTypes.isProxy(rawScope)
+      || Object.getPrototypeOf(rawScope) !== Object.prototype) return undefined;
+    const scopeDescriptors = Object.getOwnPropertyDescriptors(rawScope);
+    const scopeKeys = Reflect.ownKeys(scopeDescriptors);
+    if (scopeKeys.length !== 3 || !scopeKeys.every((key) => typeof key === "string"
+      && ["taxonomyScope", "descriptionCategoryId", "typeId"].includes(key)
+      && scopeDescriptors[key]?.enumerable === true && Object.hasOwn(scopeDescriptors[key], "value"))) return undefined;
+    const scope = Object.fromEntries(scopeKeys.map((key) => [key, scopeDescriptors[key].value]));
+    if (scope.taxonomyScope !== "OZON:DEFAULT"
+      || !Number.isSafeInteger(scope.descriptionCategoryId) || scope.descriptionCategoryId < 1
+      || !Number.isSafeInteger(scope.typeId) || scope.typeId < 1
+      || !CATEGORY_STRATEGY_STATUSES.has(descriptors.status.value)
+      || typeof descriptors.canManage.value !== "boolean") return undefined;
+    const canManage = descriptors.canManage.value;
+    const draftId = Object.hasOwn(descriptors, "draftId") ? text(descriptors.draftId.value) : "";
+    if ((!canManage && Object.hasOwn(descriptors, "draftId"))
+      || (Object.hasOwn(descriptors, "draftId") && !draftId)) return undefined;
+    return { scope, status: descriptors.status.value, canManage, ...(draftId ? { draftId } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
 function errorEnvelope(error, correlationId) {
   const code = typeof error?.code === "string" && Object.hasOwn(PUBLIC_ERRORS, error.code)
     ? error.code
@@ -231,6 +276,13 @@ function errorEnvelope(error, correlationId) {
   const payload = { ok: false, code, message: messageFor(code), correlationId };
   const items = code === "AUTO_LISTING_INTERNAL_ERROR" ? undefined : safeErrorItems(error?.items);
   if (items) payload.items = items;
+  if (code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED") {
+    const descriptor = error && typeof error === "object" && !utilTypes.isProxy(error)
+      ? Object.getOwnPropertyDescriptor(error, "details") : null;
+    const details = descriptor?.enumerable === true && Object.hasOwn(descriptor, "value")
+      ? safeCategoryStrategyDetails(descriptor.value) : undefined;
+    if (details) payload.details = details;
+  }
   return { status: code === "AUTO_LISTING_INTERNAL_ERROR" ? 500 : PUBLIC_ERRORS[code], payload };
 }
 

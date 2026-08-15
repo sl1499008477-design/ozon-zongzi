@@ -18,6 +18,36 @@ const config = {
   priceAdjustmentKopecks: "0",
 };
 
+const exactScope = Object.freeze({
+  taxonomyScope: "OZON:DEFAULT",
+  descriptionCategoryId: 123,
+  typeId: 456,
+});
+
+function exactV2Rule(overrides = {}) {
+  const roleGuidance = Object.fromEntries([
+    "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+  ].map((role) => [role, {
+    composition: `composition-${role}`,
+    background: `background-${role}`,
+    textDensity: role === "MAIN" ? "NONE" : "LIGHT",
+    layout: `layout-${role}`,
+  }]));
+  return {
+    ruleId: "category-rule-v2",
+    ruleOrder: 1,
+    matchType: "EXACT_CATEGORY_TYPE_V2",
+    scope: exactScope,
+    overallStyle: "clean category presentation",
+    prohibitedPatterns: ["copied competitor branding"],
+    roleGuidance,
+    sampleSetHash: "a".repeat(64),
+    analysisAttemptId: "analysis-attempt-a",
+    analysisResultId: "analysis-result-a",
+    ...overrides,
+  };
+}
+
 function repositoryListingBaseTemplate(id) {
   const image = `https://source.example.test/${id}.jpg`;
   return {
@@ -45,6 +75,8 @@ const source = (id, price = { blackKopecks: "10000", greenKopecks: "8000" }) => 
   accountId: "account-a",
   sourceVersion: "3",
   rawResponseRef: `raw-${id}`,
+  rawResponseHash: null,
+  rawCollectedAt: null,
   categoryEvidence: {
     id: `evidence-${id}`, accountId: "account-a", sourceDescriptionCategoryId: 123,
     sourceTypeId: 456, taxonomyScope: "OZON:DEFAULT",
@@ -130,7 +162,11 @@ const effectiveImageConfig = (frozen, captured) => deriveEffectiveAutoListingIma
   sourceCapture: captured,
 });
 
-function fakeRepository({ sources = [source("collect-1")], existing = null } = {}) {
+function fakeRepository({
+  sources = [source("collect-1")],
+  existing = null,
+  categoryStrategyControl = { mode: "LEGACY_FALLBACK", version: 1, drafts: [] },
+} = {}) {
   const calls = [];
   const categoryLeaseController = new AbortController();
   let graph = existing;
@@ -175,6 +211,12 @@ function fakeRepository({ sources = [source("collect-1")], existing = null } = {
     },
     async loadTargetStore(input) { calls.push(["loadTargetStore", input]); return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "RUB", currencySource: "OZON_SELLER_INFO", currencySyncedAt: "2026-08-13T00:00:00.000Z", credentialsSaved: true }; },
     async loadTargetWarehouse(input) { calls.push(["loadTargetWarehouse", input]); return { warehouse: { id: "warehouse-a", storeId: "store-a", accountId: input.accountId, warehouse_id: "1001", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }, products: [{ accountId: input.accountId, storeId: "store-a", warehouse_stocks: [{ warehouse_id: "1001", source: "fbs" }] }] }; },
+    async loadCategoryStrategyControl(input) {
+      calls.push(["loadCategoryStrategyControl", input]);
+      return typeof categoryStrategyControl === "function"
+        ? categoryStrategyControl(input)
+        : categoryStrategyControl;
+    },
     async loadPublishedStrategy(input) { calls.push(["loadPublishedStrategy", input]); return { strategyVersion: { strategyId: "strategy-a", strategyVersionId: "version-a" }, rules: [] }; },
     async loadPublishedUploadPolicies(input) {
       calls.push(["loadPublishedUploadPolicies", input]);
@@ -593,15 +635,17 @@ test("assigns planning contracts per item on the server without adding authority
   assert.equal(Object.hasOwn(graph.configSnapshot, "planningContract"), false);
 });
 
-test("orders replay, store/currency, shared category, warehouse, then paid graph", async () => {
+test("orders replay, exact category strategy gate, store/currency, warehouse, then paid graph", async () => {
   const repository = fakeRepository();
   await createAutoListingService({ repository }).createAutoListingJob({
     actor, collectItemIds: ["collect-1"], idempotencyKey: "category-order", correlationId: "corr", config,
   });
   const calls = repository.calls.map(([name]) => name);
-  assert.ok(calls.indexOf("getJobByIdempotencyKey") < calls.indexOf("loadTargetStore"));
-  assert.ok(calls.indexOf("loadTargetStore") < calls.indexOf("loadCollectSources"));
-  assert.ok(calls.indexOf("loadCollectSources") < calls.indexOf("acquireCategoryPreparationLease"));
+  assert.ok(calls.indexOf("getJobByIdempotencyKey") < calls.indexOf("loadCollectSources"));
+  assert.ok(calls.indexOf("loadCollectSources") < calls.indexOf("loadCategoryStrategyControl"));
+  assert.ok(calls.indexOf("loadCategoryStrategyControl") < calls.indexOf("loadPublishedStrategy"));
+  assert.ok(calls.indexOf("loadPublishedStrategy") < calls.indexOf("loadTargetStore"));
+  assert.ok(calls.indexOf("loadTargetStore") < calls.indexOf("acquireCategoryPreparationLease"));
   assert.ok(calls.indexOf("acquireCategoryPreparationLease") < calls.indexOf("loadTargetWarehouse"));
   assert.ok(calls.indexOf("loadTargetWarehouse") < calls.indexOf("createJobGraph"));
   assert.ok(calls.indexOf("createJobGraph") < calls.indexOf("releaseCategoryPreparationLease"));
@@ -706,7 +750,8 @@ test("a category transition after source read but before lease acquisition has z
     }), { code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT" });
   assert.deepEqual(counters, { ozonCategory: 0, rfbs: 0, paidAi: 0, objectStorage: 0, graph: 0 });
   assert.deepEqual(repository.calls.map(([name]) => name), [
-    "getJobByIdempotencyKey", "loadTargetStore", "loadCollectSources", "acquireCategoryPreparationLease",
+    "getJobByIdempotencyKey", "loadCollectSources", "loadCategoryStrategyControl", "loadPublishedStrategy",
+    "loadTargetStore", "acquireCategoryPreparationLease",
   ]);
 });
 
@@ -1029,6 +1074,340 @@ test("uses the frozen shared category ID and never display labels for strategy m
   assert.equal(Object.hasOwn(result.items[0], "strategyVersionId"), false);
 });
 
+test("strict account mode rejects a missing exact category strategy before every task side effect", async () => {
+  const repository = fakeRepository({
+    categoryStrategyControl: {
+      mode: "REQUIRE_EXACT_STRATEGY",
+      version: 2,
+      drafts: [{ scope: exactScope, draftId: "same-account-draft", status: "SAMPLES_READY" }],
+    },
+  });
+  let preparerCalls = 0;
+  let freshnessCalls = 0;
+  const service = createAutoListingService({
+    repository,
+    listingBasePreparer: async () => { preparerCalls += 1; throw new Error("must not prepare"); },
+    ensureCategoryFresh: async () => { freshnessCalls += 1; throw new Error("must not refresh"); },
+  });
+
+  await assert.rejects(
+    service.createAutoListingJob({
+      actor: { id: "account-a", role: "admin" },
+      collectItemIds: ["collect-1"], idempotencyKey: "missing-exact", correlationId: "corr", config,
+    }),
+    (caught) => {
+      assert.equal(caught?.code, "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED");
+      assert.equal(caught?.status, 409);
+      assert.deepEqual(caught?.details, {
+        scope: exactScope,
+        status: "SAMPLES_READY",
+        canManage: true,
+        draftId: "same-account-draft",
+      });
+      return true;
+    },
+  );
+
+  assert.deepEqual({ preparerCalls, freshnessCalls }, { preparerCalls: 0, freshnessCalls: 0 });
+  for (const forbidden of [
+    "loadTargetStore", "acquireCategoryPreparationLease", "loadTargetWarehouse",
+    "loadPublishedUploadPolicies", "createJobGraph",
+  ]) {
+    assert.equal(repository.calls.some(([name]) => name === forbidden), false, `${forbidden} must stay zero`);
+  }
+  assert.deepEqual(repository.calls.map(([name]) => name), [
+    "getJobByIdempotencyKey", "loadCollectSources", "loadCategoryStrategyControl", "loadPublishedStrategy",
+  ]);
+});
+
+test("strict missing-strategy details hide same-account draft identity from ordinary users", async () => {
+  const repository = fakeRepository({
+    categoryStrategyControl: {
+      mode: "REQUIRE_EXACT_STRATEGY",
+      version: 2,
+      drafts: [{ scope: exactScope, draftId: "admin-only-draft", status: "COLLECTING" }],
+    },
+  });
+  await assert.rejects(
+    createAutoListingService({ repository }).createAutoListingJob({
+      actor, collectItemIds: ["collect-1"], idempotencyKey: "ordinary-missing", correlationId: "corr", config,
+    }),
+    (caught) => {
+      assert.deepEqual(caught?.details, {
+        scope: exactScope,
+        status: "COLLECTING",
+        canManage: false,
+      });
+      assert.doesNotMatch(JSON.stringify(caught), /admin-only-draft|account-a|sourceUrl|objectKey/iu);
+      return caught?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED";
+    },
+  );
+  assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
+});
+
+test("strict mode accepts only exact V2 or V1 rules with a complete exact type identity", async () => {
+  const cases = [
+    ["v2", [exactV2Rule()], true, "EXACT_CATEGORY_TYPE_V2"],
+    ["typed-v1", [{
+      ruleId: "typed-v1", ruleOrder: 1, matchType: "EXACT_CATEGORY", categoryId: "123",
+      exactScope, style: "PARAMETER_FIRST", textDensityByRole: {},
+    }], true, "EXACT_CATEGORY"],
+    ["category-only-v1", [{
+      ruleId: "weak-v1", ruleOrder: 1, matchType: "EXACT_CATEGORY", categoryId: "123",
+      style: "PARAMETER_FIRST", textDensityByRole: {},
+    }], false, null],
+    ["ancestor", [{
+      ruleId: "ancestor", ruleOrder: 1, matchType: "ANCESTOR_CATEGORY", categoryId: "123",
+      style: "PARAMETER_FIRST", textDensityByRole: {},
+    }], false, null],
+  ];
+  for (const [label, rules, accepted, matchedBy] of cases) {
+    const repository = fakeRepository({
+      categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 3, drafts: [] },
+    });
+    repository.loadPublishedStrategy = async (input) => {
+      repository.calls.push(["loadPublishedStrategy", input]);
+      return { strategyVersion: { strategyId: "strategy-a", strategyVersionId: `version-${label}` }, rules };
+    };
+    const creation = createAutoListingService({ repository }).createAutoListingJob({
+      actor, collectItemIds: ["collect-1"], idempotencyKey: `strict-${label}`, correlationId: "corr", config,
+    });
+    if (!accepted) {
+      await assert.rejects(creation, { code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", status: 409 });
+      assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
+      continue;
+    }
+    await creation;
+    const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+    assert.equal(graph.strategyVersionId, `version-${label}`);
+    assert.equal(graph.items[0].matchedBy, matchedBy);
+    assert.deepEqual(graph.categoryStrategyGate, {
+      mode: "REQUIRE_EXACT_STRATEGY",
+      policyVersion: 3,
+      scopes: [{ ...exactScope, ruleId: rules[0].ruleId }],
+    });
+  }
+});
+
+test("legacy fallback keeps BALANCED_DEFAULT and still freezes the account policy version", async () => {
+  const repository = fakeRepository();
+  await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "legacy-fallback", correlationId: "corr", config,
+  });
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.items[0].matchedBy, "DEFAULT");
+  assert.equal(graph.items[0].style, "BALANCED_DEFAULT");
+  assert.deepEqual(graph.categoryStrategyGate, {
+    mode: "LEGACY_FALLBACK", policyVersion: 1, scopes: [],
+  });
+});
+
+test("continue-create re-reads a refreshed source and current publication before acquiring a lease", async () => {
+  let currentSources = [source("collect-1")];
+  const repository = fakeRepository({
+    sources: currentSources,
+    categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 4, drafts: [] },
+  });
+  repository.loadCollectSources = async (input) => {
+    repository.calls.push(["loadCollectSources", input]);
+    return currentSources;
+  };
+  repository.loadPublishedStrategy = async (input) => {
+    repository.calls.push(["loadPublishedStrategy", input]);
+    return { strategyVersion: { strategyId: "strategy-a", strategyVersionId: "published-v2" }, rules: [exactV2Rule()] };
+  };
+  const changed = source("collect-1");
+  changed.sharedCategory = {
+    ...changed.sharedCategory,
+    id: "shared-124-456",
+    currentDescriptionCategoryId: 124,
+  };
+  const service = createAutoListingService({
+    repository,
+    ensureCategoryFresh: async () => {
+      currentSources = [changed];
+      return { status: "REFRESHED" };
+    },
+  });
+
+  await assert.rejects(service.createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "continue-new-key", correlationId: "corr", config,
+  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", status: 409 });
+  assert.equal(repository.calls.filter(([name]) => name === "loadCategoryStrategyControl").length, 2);
+  assert.equal(repository.calls.filter(([name]) => name === "loadPublishedStrategy").length, 2);
+  assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
+  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+});
+
+test("continue-create after publication uses a new key and freezes the current exact rule with original requested counts", async () => {
+  let published = { strategyVersion: { strategyId: "default", strategyVersionId: "before-publish" }, rules: [] };
+  const repository = fakeRepository({
+    categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 5, drafts: [{
+      scope: exactScope, draftId: "draft-a", status: "DRAFT_READY",
+    }] },
+  });
+  repository.loadPublishedStrategy = async (input) => {
+    repository.calls.push(["loadPublishedStrategy", input]);
+    return published;
+  };
+  const service = createAutoListingService({ repository });
+  await assert.rejects(service.createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "failed-before-publish", correlationId: "corr-1", config,
+  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", status: 409 });
+  published = { strategyVersion: { strategyId: "default", strategyVersionId: "published-current" },
+    rules: [exactV2Rule({ ruleId: "published-exact" })] };
+  const created = await service.createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "continue-new-key", correlationId: "corr-2", config,
+  });
+  assert.equal(created.jobId, "job-1");
+  const graph = repository.calls.find(([name, input]) => name === "createJobGraph"
+    && input.idempotencyKey === "continue-new-key")[1];
+  assert.equal(graph.strategyVersionId, "published-current");
+  assert.equal(graph.items[0].ruleId, "published-exact");
+  assert.deepEqual(graph.configSnapshot.image, normalizeAndHashAutoListingConfig(config).config.image);
+  assert.equal(repository.calls.filter(([name]) => name === "createJobGraph").length, 1);
+});
+
+test("hostile category-strategy control results fail closed before source preparation", async () => {
+  for (const [label, malicious, reads] of [
+    ["proxy", new Proxy({ mode: "REQUIRE_EXACT_STRATEGY", version: 1, drafts: [] }, {
+      get() { throw new Error("trap"); },
+    }), null],
+    ["accessor", (() => {
+      const counter = { value: 0 };
+      const value = { version: 1, drafts: [] };
+      Object.defineProperty(value, "mode", { enumerable: true, get() { counter.value += 1; return "REQUIRE_EXACT_STRATEGY"; } });
+      return value;
+    })(), "accessor"],
+    ["extra", { mode: "REQUIRE_EXACT_STRATEGY", version: 1, drafts: [], accountId: "account-b" }, null],
+  ]) {
+    const repository = fakeRepository({ categoryStrategyControl: malicious });
+    await assert.rejects(
+      createAutoListingService({ repository }).createAutoListingJob({
+        actor, collectItemIds: ["collect-1"], idempotencyKey: `hostile-${label}`, correlationId: "corr", config,
+      }),
+      (caught) => caught?.code === "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY",
+    );
+    if (reads === "accessor") {
+      const descriptor = Object.getOwnPropertyDescriptor(malicious, "mode");
+      assert.equal(typeof descriptor.get, "function");
+    }
+    assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
+    assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+  }
+});
+
+test("hostile source carriers are descriptor-projected without executing traps before strategy reads", async () => {
+  const base = source("collect-1");
+  const cases = [];
+  let arrayReads = 0;
+  cases.push(["array-proxy", new Proxy([base], {
+    get(target, key, receiver) {
+      if (key === "then") return undefined;
+      arrayReads += 1;
+      throw new Error("array trap");
+    },
+  }), () => arrayReads]);
+  let sourceReads = 0;
+  cases.push(["source-proxy", [new Proxy(base, {
+    get() { sourceReads += 1; throw new Error("source trap"); },
+  })], () => sourceReads]);
+  let descriptorReads = 0;
+  cases.push(["source-descriptor-proxy", [new Proxy(base, {
+    ownKeys() { descriptorReads += 1; throw new Error("ownKeys trap"); },
+    getOwnPropertyDescriptor() { descriptorReads += 1; throw new Error("descriptor trap"); },
+  })], () => descriptorReads]);
+  let categoryReads = 0;
+  const accessorSource = { ...base };
+  Object.defineProperty(accessorSource, "categoryEvidence", {
+    enumerable: true,
+    get() { categoryReads += 1; return base.categoryEvidence; },
+  });
+  cases.push(["category-accessor", [accessorSource], () => categoryReads]);
+  cases.push(["source-extra", [{ ...base, unexpectedTenantHint: "account-b" }], () => 0]);
+  cases.push(["collect-path-confusion", [{ ...base, collectItemId: "collect-other" }], () => 0]);
+  cases.push(["source-symbol", [Object.assign({ ...base }, { [Symbol("tenant")]: "account-b" })], () => 0]);
+  const nonEnumerable = { ...base };
+  Object.defineProperty(nonEnumerable, "accountId", { enumerable: false, value: "account-a" });
+  cases.push(["source-non-enumerable", [nonEnumerable], () => 0]);
+  cases.push(["cross-account", [{ ...base, accountId: "account-b" }], () => 0]);
+
+  for (const [label, maliciousSources, reads] of cases) {
+    const repository = fakeRepository({ sources: maliciousSources });
+    await assert.rejects(
+      createAutoListingService({ repository }).createAutoListingJob({
+        actor, collectItemIds: ["collect-1"], idempotencyKey: `hostile-source-${label}`,
+        correlationId: "corr", config,
+      }),
+      (caught) => caught?.code === "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED" && caught?.status === 409,
+    );
+    assert.equal(reads(), 0);
+    for (const forbidden of ["loadCategoryStrategyControl", "loadPublishedStrategy",
+      "loadTargetStore", "acquireCategoryPreparationLease", "createJobGraph"]) {
+      assert.equal(repository.calls.some(([name]) => name === forbidden), false, `${label}: ${forbidden}`);
+    }
+  }
+});
+
+test("Excel category gate requires its fixed source schema before strategy reads", async () => {
+  const repository = fakeRepository();
+  repository.loadExcelImportSources = async (input) => {
+    repository.calls.push(["loadExcelImportSources", input]);
+    return {
+      importFile: await repository.loadExcelImportContext(input),
+      sources: [{ ...source("collect-1") }],
+    };
+  };
+  await assert.rejects(
+    createAutoListingService({ repository }).createExcelAutoListingJob({ actor, importFileId: "import-a" }),
+    (caught) => ["AUTO_LISTING_IMPORT_NOT_FINALIZABLE", "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED"].includes(caught?.code),
+  );
+  assert.equal(repository.calls.some(([name]) => name === "loadCategoryStrategyControl"), false);
+  assert.equal(repository.calls.some(([name]) => name === "loadPublishedStrategy"), false);
+  assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
+  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+});
+
+test("legacy all-blocked creation never executes hostile published strategy-version carriers", async () => {
+  for (const [label, makeCarrier] of [
+    ["proxy", (counter) => new Proxy({ strategyId: "default", strategyVersionId: "version-a" }, {
+      ownKeys() { counter.value += 1; throw new Error("ownKeys trap"); },
+      getOwnPropertyDescriptor() { counter.value += 1; throw new Error("descriptor trap"); },
+    })],
+    ["accessor", (counter) => {
+      const value = { strategyId: "default" };
+      Object.defineProperty(value, "strategyVersionId", {
+        enumerable: true, get() { counter.value += 1; return "version-a"; },
+      });
+      return value;
+    }],
+  ]) {
+    const counter = { value: 0 };
+    const blockedSource = source("collect-1");
+    blockedSource.collectItem.listingDraft.variants = [{ sku: "" }];
+    const repository = fakeRepository({ sources: [blockedSource] });
+    repository.loadPublishedStrategy = async (input) => {
+      repository.calls.push(["loadPublishedStrategy", input]);
+      return { strategyVersion: makeCarrier(counter), rules: [] };
+    };
+    let preparations = 0;
+    await assert.rejects(
+      createAutoListingService({ repository, listingBasePreparer: async () => {
+        preparations += 1;
+        throw new Error("must stay before preparation");
+      } }).createAutoListingJob({
+        actor, collectItemIds: ["collect-1"], idempotencyKey: `hostile-version-${label}`,
+        correlationId: "corr", config,
+      }),
+      (caught) => caught?.code === "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY",
+    );
+    assert.equal(counter.value, 0);
+    assert.equal(preparations, 0);
+    assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
+    assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+  }
+});
+
 test("ordinary job DTOs omit internal strategy selection metadata", async () => {
   const repository = fakeRepository({ existing: {
     id: "job-internal-strategy", items: [{
@@ -1151,6 +1530,7 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
     async query(sql, params = []) {
       if (/^(BEGIN|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
+      if (/SELECT id FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
       if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
       if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
       if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
@@ -1270,6 +1650,7 @@ test("repository persists only a canonical recomputed price with a non-default s
       calls.push([sql, params]);
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql) || /INSERT INTO auto_listing_(jobs|job_items|events|listing_bases)/.test(sql)) return { rows: [] };
       if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
+      if (/SELECT id FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
       if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
       if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
       if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
@@ -1297,6 +1678,8 @@ test("repository persists only a canonical recomputed price with a non-default s
   };
   const repository = createAutoListingRepository({ pool: { connect: async () => client, query: async () => ({ rows: [] }) }, idFactory: (prefix) => `${prefix}-id` });
   await assert.doesNotReject(repository.createJobGraph(graphInput));
+  assert.ok(calls.findIndex(([sql]) => /SELECT id FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql))
+    < calls.findIndex(([sql]) => /SELECT strategy_key/.test(sql)));
   for (const invalidPrice of [
     { ...item.price, rawPayload: "secret" },
     { ...item.price, branch: "UNKNOWN" },
@@ -1308,6 +1691,65 @@ test("repository persists only a canonical recomputed price with a non-default s
     );
   }
   assert.equal(calls.some(([sql, params]) => /INSERT INTO auto_listing_events/.test(sql) && JSON.stringify(params).includes("rawPayload")), false);
+});
+
+test("repository transaction fails closed before writes when exact policy, lease scope, or published rule changes", async () => {
+  const captured = buildAutoListingSourceSnapshot({
+    accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-exact", sourceVersion: "1",
+    targetStoreId: "store-a", targetStoreCurrency: "RUB", rawResponseRef: "raw-exact", rawResponseHash: "raw-hash",
+    collectItem: source("collect-exact").collectItem, productDraft: { id: "draft-collect-exact", version: 1 },
+    ...categoryAuthority("collect-exact"),
+  });
+  const frozen = frozenGraphConfig();
+  const base = {
+    accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX",
+    idempotencyKey: "exact-race", correlationId: "corr", categoryPreparationLeaseId: "category-lease-a",
+    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-v2",
+    uploadPolicyVersionId: "upload-policy-review-v1",
+    categoryStrategyGate: { mode: "REQUIRE_EXACT_STRATEGY", policyVersion: 7,
+      scopes: [{ ...exactScope, ruleId: "exact-v2" }] },
+    items: [{
+      sourceType: "COLLECT_BOX", sourceRecordId: "collect-exact", sourceVersion: "1", snapshot: captured.snapshot,
+      planningContract: "FIXED_SKELETON_V1", snapshotHash: captured.snapshotHash,
+      rawResponseRef: captured.rawResponseRef, targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
+      sourceOrder: 0, status: "SOURCE_READY", strategyId: "default", strategyVersionId: "version-v2",
+      ruleId: "exact-v2", style: "BALANCED_DEFAULT", matchedBy: "EXACT_CATEGORY_TYPE_V2",
+      effectiveImageConfig: effectiveImageConfig(frozen, captured), listingBaseTemplate: repositoryListingBaseTemplate("collect-exact"),
+      price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000",
+        realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
+    }],
+  };
+  for (const scenario of ["policy", "scope", "rule"]) {
+    const calls = [];
+    const client = {
+      async query(sql, params) {
+        calls.push(sql);
+        if (/^(BEGIN|ROLLBACK)$/.test(sql)) return { rows: [] };
+        if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
+        if (/SELECT id FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
+        if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: [{ shared_category_id: "shared-123-456", lock_key: "1" }] };
+        if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
+        if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
+        if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", currency_source: "OZON_SELLER_INFO", currency_synced_at: "2026-08-13T00:00:00.000Z", status: "active" }] };
+        if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
+        if (/FROM warehouses w/.test(sql)) return { rows: [{ id: "warehouse-a", store_id: "store-a", warehouse_id: "1001", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }] };
+        if (/FROM product_stocks ps/.test(sql)) return { rows: [{ product_id: "product-a", product_store_id: "store-a", product_status: "active", product_is_archived: false, product_raw_is_archived: false, warehouse_id: "warehouse-a", source: "fbs" }] };
+        if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "default" }] };
+        if (/category_strategy_account_settings/iu.test(sql)) return { rows: [{ mode: "REQUIRE_EXACT_STRATEGY", version: scenario === "policy" ? 8 : 7 }] };
+        if (/category_preparation_lease_items/iu.test(sql)) return { rows: [{ taxonomy_scope: "OZON:DEFAULT", description_category_id: scenario === "scope" ? 124 : 123, type_id: 456 }] };
+        if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-v1" }] };
+        if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [{ id: "physical-v2", rule_order: 1,
+          rule_kind: "EXACT_CATEGORY", category_id: "123", ancestor_category_id: null, product_style: null,
+          rule: exactV2Rule({ ruleId: scenario === "rule" ? "replacement" : "exact-v2" }) }] };
+        throw new Error(`unexpected query: ${sql}`);
+      },
+      release() {},
+    };
+    const repository = createAutoListingRepository({ pool: { connect: async () => client, query: async () => ({ rows: [] }) } });
+    await assert.rejects(repository.createJobGraph({ ...base, idempotencyKey: `race-${scenario}` }),
+      { code: "AUTO_LISTING_CATEGORY_STRATEGY_CHANGED", status: 409 }, scenario);
+    assert.equal(calls.some((sql) => /INSERT INTO auto_listing_jobs|INSERT INTO auto_listing_source_snapshots|INSERT INTO auto_listing_ai_outbox/iu.test(sql)), false, scenario);
+  }
 });
 
 test("repository loads only published upload-policy evidence within the actor account", async () => {
@@ -1330,4 +1772,54 @@ test("repository loads only published upload-policy evidence within the actor ac
   assert.match(calls[0].sql, /WHERE account_id=\$1 AND enabled IS TRUE/iu);
   assert.match(calls[0].sql, /published_by IS NOT NULL AND published_at IS NOT NULL/iu);
   assert.doesNotMatch(calls[0].sql, /api.?key|credential|secret/iu);
+});
+
+test("repository reads account policy and only same-account exact open drafts", async () => {
+  const calls = [];
+  const repository = createAutoListingRepository({ pool: {
+    async connect() { assert.fail("category-strategy preflight read must not open a transaction"); },
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (/category_strategy_account_settings/iu.test(sql)) {
+        return { rows: [{ mode: "REQUIRE_EXACT_STRATEGY", version: "7" }] };
+      }
+      if (/category_strategy_drafts/iu.test(sql)) return { rows: [{
+        id: "draft-a", taxonomy_scope: "OZON:DEFAULT", description_category_id: "123",
+        type_id: "456", status: "DRAFT_READY",
+      }] };
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  } });
+  const result = await repository.loadCategoryStrategyControl({ accountId: "account-a", scopes: [exactScope] });
+  assert.deepEqual(result, { mode: "REQUIRE_EXACT_STRATEGY", version: 7, drafts: [{
+    scope: exactScope, draftId: "draft-a", status: "DRAFT_READY",
+  }] });
+  assert.deepEqual(calls.map((call) => call.params[0]), ["account-a", "account-a"]);
+  assert.match(calls[1].sql, /draft\.account_id=\$1[\s\S]*draft\.ended_at IS NULL/iu);
+  assert.deepEqual(calls[1].params.slice(1), [["OZON:DEFAULT"], [123], [456]]);
+});
+
+test("repository preserves exact V2 rule evidence and typed V1 identity from the published bundle", async () => {
+  const v2 = exactV2Rule();
+  const calls = [];
+  const repository = createAutoListingRepository({ pool: {
+    async connect() { assert.fail("published strategy read must not open a transaction"); },
+    async query(sql, params) {
+      calls.push(sql);
+      assert.deepEqual(params[0], "account-a");
+      if (/strategy_versions/iu.test(sql)) return { rows: [{ id: "version-v2", strategy_key: "default", version: 8, content: {} }] };
+      return { rows: [
+        { id: "physical-v2", rule_order: 1, rule_kind: "EXACT_CATEGORY", category_id: "123",
+          ancestor_category_id: null, product_style: null, rule: v2 },
+        { id: "physical-v1", rule_order: 2, rule_kind: "EXACT_CATEGORY", category_id: "123",
+          ancestor_category_id: null, product_style: null, rule: { ruleId: "typed-v1", style: "VISUAL_FIRST",
+            textDensityByRole: {}, exactScope } },
+      ] };
+    },
+  } });
+  const result = await repository.loadPublishedStrategy({ accountId: "account-a" });
+  assert.match(calls[0], /WHERE account_id=\$1 AND strategy_key='default' AND status='PUBLISHED'/u);
+  assert.deepEqual(result.rules[0], { ...v2, ruleOrder: 1 });
+  assert.deepEqual(result.rules[1].exactScope, exactScope);
+  assert.equal(result.rules[1].ruleId, "typed-v1");
 });

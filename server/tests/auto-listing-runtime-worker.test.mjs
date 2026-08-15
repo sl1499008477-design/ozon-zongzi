@@ -64,6 +64,30 @@ test("auto listing fails closed before PostgreSQL when shared category authority
   assert.equal(pools, 0);
 });
 
+test("production service composition fails closed when the exact category-strategy read port is absent or hostile", async () => {
+  for (const [label, repository] of [
+    ["absent", { async loadTargetWarehouse() { return null; } }],
+    ["proxy", new Proxy({ async loadCategoryStrategyControl() {} }, {})],
+    ["accessor", (() => {
+      const value = {};
+      Object.defineProperty(value, "loadCategoryStrategyControl", { enumerable: true, get() { throw new Error("must not read"); } });
+      return value;
+    })()],
+  ]) {
+    const runtime = createAutoListingRuntime({
+      env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0" }),
+      getPostgresPool: async () => ({ name: "pool-a" }),
+      createRepository: () => repository,
+      createListingBasePreparer: async () => async () => ({}),
+      createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
+    });
+    await assert.rejects(runtime.getService(), {
+      code: "AUTO_LISTING_CATEGORY_STRATEGY_RUNTIME_INITIALIZATION_FAILED",
+      message: "自动上架类目策略运行时初始化失败",
+    }, label);
+  }
+});
+
 test("enabled runtime starts the queue consumer before startup replay and stops relay before draining the worker", async () => {
   const events = [];
   const runtime = createAutoListingRuntime({

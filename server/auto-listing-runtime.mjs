@@ -69,6 +69,17 @@ function closeRfbsWarehouseVerifier(value) {
   }
 }
 
+function hasCategoryStrategyReadPort(value) {
+  try {
+    if (!value || typeof value !== "object" || utilTypes.isProxy(value)) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, "loadCategoryStrategyControl");
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value")
+      && typeof descriptor.value === "function" && !utilTypes.isProxy(descriptor.value);
+  } catch {
+    return false;
+  }
+}
+
 function composeAiWorkerLifecycle(worker, relay) {
   if (!validLifecycle(worker) || !validLifecycle(relay)) {
     throw runtimeError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", "自动上架 AI 运行时初始化失败");
@@ -235,6 +246,10 @@ export function createAutoListingRuntime({
           }
           repository = createRepository({ pool, stageInitialPlanWork: workflow.stageInitialPlanWork });
         } else repository = createRepository({ pool });
+        if (createService === createAutoListingService && !hasCategoryStrategyReadPort(repository)) {
+          throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_RUNTIME_INITIALIZATION_FAILED",
+            "自动上架类目策略运行时初始化失败");
+        }
         let rfbsWarehouseVerifier;
         try {
           rfbsWarehouseVerifier = createRfbsWarehouseVerifier({
