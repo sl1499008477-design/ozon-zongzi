@@ -70,6 +70,12 @@ export function categoryStrategyErrorMessage(error) {
   const status = Number(errorField(error, "status")) || 0;
   const code = typeof errorField(error, "code") === "string" ? errorField(error, "code") : "";
   if (status === 403 || code === "PERMISSION_FORBIDDEN") return "没有类目策略管理权限，请联系账号管理员。";
+  if (code === "AUTO_LISTING_CATEGORY_STRATEGY_SOURCE_NOT_FOUND") {
+    return "商品类目信息已变化，请返回自动上架页刷新后重试。";
+  }
+  if (code === "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY") {
+    return "浏览器扩展尚未连接，请先安装或刷新扩展后重试。";
+  }
   if (status === 404) return "类目策略记录不存在或你无权查看。";
   if (status === 429) return "操作过于频繁，请稍后再试。";
   if (status === 409 && new Set([

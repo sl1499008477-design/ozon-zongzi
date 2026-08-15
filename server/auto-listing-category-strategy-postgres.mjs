@@ -453,14 +453,12 @@ async function requireCurrentSource(client, { accountId, sourceCollectItemId, ex
         AND shared.source_description_category_id=evidence.source_description_category_id
         AND shared.source_type_id=evidence.source_type_id
         AND shared.taxonomy_scope=evidence.taxonomy_scope
-        AND shared.current_description_category_id=evidence.source_description_category_id
-        AND shared.current_type_id=evidence.source_type_id
+        AND shared.current_description_category_id=$5
+        AND shared.current_type_id=$6
         AND shared.status='ACTIVE'
       WHERE item.account_id=$1 AND item.id=$2
         AND $3='draft:' || draft.version::TEXT
         AND evidence.taxonomy_scope=$4
-        AND evidence.source_description_category_id=$5
-        AND evidence.source_type_id=$6
       FOR UPDATE OF item,draft,pointer,shared`,
     [accountId, sourceCollectItemId, expectedSourceVersion, scope.taxonomyScope,
       scope.descriptionCategoryId, scope.typeId]);

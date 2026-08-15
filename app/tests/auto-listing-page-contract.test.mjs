@@ -224,6 +224,7 @@ test("missing exact strategy preserves the closed form draft and returns with an
   assert.match(page, /projectStrategyResumeDraft/u);
   assert.match(page, /sessionStorage/u);
   assert.match(page, /开始配置/u);
+  assert.match(page, /\?draftId=\$\{encodeURIComponent\(strategyRequired\.draftId\)\}&from=auto-listing/u);
   assert.match(page, /请求管理员处理/u);
   assert.match(page, /类目策略已准备完成/u);
   assert.match(page, /继续创建任务/u);

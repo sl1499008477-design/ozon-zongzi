@@ -5,6 +5,7 @@ import test from "node:test";
 const page = await readFile(new URL("../src/CategoryStrategyPage.jsx", import.meta.url), "utf8").catch(() => "");
 const css = await readFile(new URL("../src/category-strategy.css", import.meta.url), "utf8").catch(() => "");
 const client = await readFile(new URL("../src/category-strategy-client.js", import.meta.url), "utf8").catch(() => "");
+const bootstrap = await readFile(new URL("../src/category-strategy-bootstrap.js", import.meta.url), "utf8").catch(() => "");
 const app = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8").catch(() => "");
 
 test("strategy page exposes the complete safe administrator workflow", () => {
@@ -71,6 +72,15 @@ test("same-route strategy navigation reloads the selected draft from the query",
   assert.match(page, /new URLSearchParams\(locationSearch\)/u);
 });
 
+test("automatic-listing handoff starts sampling, opens Ozon and keeps a manual reopen control", () => {
+  assert.match(page, /loadCategoryStrategyBootstrap/u);
+  assert.match(page, /from-auto-listing|from=auto-listing|autoStartSampling/u);
+  assert.match(page, /window\.open\(bootstrap\.browserUrl, "_blank", "noopener,noreferrer"\)/u);
+  assert.match(page, /打开 Ozon 选样页/u);
+  assert.match(page, /window\.history\.replaceState/u);
+  assert.match(page, /findResumableCategoryStrategyDraftId/u);
+});
+
 test("removing the draft query clears the prior detail and returns to the strategy list", () => {
   assert.match(page, /const clearBundle = useCallback/u);
   assert.match(page, /setDetail\(null\)/u);
@@ -84,9 +94,10 @@ test("removing the draft query clears the prior detail and returns to the strate
 
 test("all write commands reuse a durable logical intent until the response is confirmed", () => {
   assert.match(page, /createCategoryStrategyIntentStore/u);
+  const writeFlow = `${page}\n${bootstrap}`;
   for (const command of ["category-draft", "category-sampling", "category-sample-revision",
     "category-analysis", "category-edit", "category-publish", "category-rollback"]) {
-    assert.match(page, new RegExp(`(?:intentIdentity|intents\\.identity)\\(\"${command}\"`, "u"));
+    assert.match(writeFlow, new RegExp(`(?:intentIdentity|intents\\.identity)\\(\"${command}\"`, "u"));
   }
   assert.match(page, /replaceSample[\s\S]*intentIdentity\("category-sample-revision"[\s\S]*client\.removeSample[\s\S]*client\.startSession[\s\S]*settleIntent\("category-sample-revision"/u);
   assert.match(page, /settleIntent/u);

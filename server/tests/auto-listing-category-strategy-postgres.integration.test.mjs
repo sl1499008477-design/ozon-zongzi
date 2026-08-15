@@ -26,7 +26,8 @@ async function applyMigrations(client) {
   for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
 }
 
-async function seedSource(client, { accountId, suffix, descriptionCategoryId = 170, typeId = 99 }) {
+async function seedSource(client, { accountId, suffix, descriptionCategoryId = 170, typeId = 99,
+  currentDescriptionCategoryId = descriptionCategoryId, currentTypeId = typeId }) {
   const collectItemId = `collect-${accountId}-${suffix}`;
   const productDraftId = `draft-${accountId}-${suffix}`;
   const rawId = `raw-${accountId}-${suffix}`;
@@ -67,8 +68,9 @@ async function seedSource(client, { accountId, suffix, descriptionCategoryId = 1
     `INSERT INTO account_ozon_shared_categories
        (id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
         current_description_category_id,current_type_id,status,source,version,source_evidence_id,validated_at)
-     VALUES ($1,$2,$3,$4,'OZON:DEFAULT',$3,$4,'ACTIVE','SOURCE_DIRECT',1,$5,NOW())`,
-    [`shared-${accountId}-${suffix}`, accountId, descriptionCategoryId, typeId, evidenceId],
+     VALUES ($1,$2,$3,$4,'OZON:DEFAULT',$5,$6,'ACTIVE','SOURCE_DIRECT',1,$7,NOW())`,
+    [`shared-${accountId}-${suffix}`, accountId, descriptionCategoryId, typeId,
+      currentDescriptionCategoryId, currentTypeId, evidenceId],
   );
   return { collectItemId, expectedSourceVersion: "draft:7" };
 }
@@ -287,6 +289,9 @@ if (!enabled) {
         suffix: `session-race-${suffix}`, descriptionCategoryId: 181, typeId: 111 });
       const commitRaceSource = await seedSource(admin, { accountId: accountA,
         suffix: `commit-race-${suffix}`, descriptionCategoryId: 182, typeId: 112 });
+      const remappedSource = await seedSource(admin, { accountId: accountA,
+        suffix: `remapped-${suffix}`, descriptionCategoryId: 190, typeId: 120,
+        currentDescriptionCategoryId: 191, currentTypeId: 121 });
       pool = new Pool({ connectionString: databaseUrl, max: 8, options: `-c search_path=${schema},public` });
       const repository = createAutoListingCategoryStrategyPostgres({ pool });
       const scope = { accountId: accountA, taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 };
@@ -297,6 +302,25 @@ if (!enabled) {
           correlationId: `enable-category-strategy-corr-${accountId}-${suffix}`,
         });
       }
+
+      const remappedScope = { accountId: accountA, taxonomyScope: "OZON:DEFAULT",
+        descriptionCategoryId: 191, typeId: 121 };
+      const remappedDraft = await repository.createDraft({
+        accountId: accountA, actorId: accountA, scope: remappedScope,
+        sourceCollectItemId: remappedSource.collectItemId,
+        expectedSourceVersion: remappedSource.expectedSourceVersion,
+        idempotencyKey: `remapped-draft-${suffix}`,
+        correlationId: `remapped-draft-correlation-${suffix}`,
+      });
+      assert.deepEqual(remappedDraft.scope, remappedScope);
+      await assert.rejects(repository.createDraft({
+        accountId: accountA, actorId: accountA,
+        scope: { ...remappedScope, descriptionCategoryId: 190, typeId: 120 },
+        sourceCollectItemId: remappedSource.collectItemId,
+        expectedSourceVersion: remappedSource.expectedSourceVersion,
+        idempotencyKey: `remapped-source-scope-draft-${suffix}`,
+        correlationId: `remapped-source-scope-draft-correlation-${suffix}`,
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_SOURCE_NOT_FOUND", status: 404 });
 
       const concurrentDraftInput = {
         accountId: accountB, actorId: accountB, scope: { ...scope, accountId: accountB },

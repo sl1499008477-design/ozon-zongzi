@@ -305,6 +305,8 @@ test("client messages and write bodies are fixed, closed and versioned", () => {
   for (const [error, expected] of [
     [{ status: 403, code: "PERMISSION_FORBIDDEN", message: "raw" }, "没有类目策略管理权限，请联系账号管理员。"],
     [{ status: 404, code: "AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND", message: "raw" }, "类目策略记录不存在或你无权查看。"],
+    [{ status: 404, code: "AUTO_LISTING_CATEGORY_STRATEGY_SOURCE_NOT_FOUND", message: "raw" }, "商品类目信息已变化，请返回自动上架页刷新后重试。"],
+    [{ status: 409, code: "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY", message: "raw" }, "浏览器扩展尚未连接，请先安装或刷新扩展后重试。"],
     [{ status: 409, code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT", message: "raw" }, "来源资料已变化，请返回自动上架页刷新后重试。"],
     [{ status: 409, code: "AUTO_LISTING_CATEGORY_STRATEGY_VERSION_CONFLICT", message: "raw" }, "类目策略已被其他管理员更新，请刷新后再操作。"],
     [{ status: 409, code: "AUTO_LISTING_CATEGORY_STRATEGY_PUBLISHED_VERSION_CONFLICT", message: "raw" }, "类目策略已被其他管理员更新，请刷新后再操作。"],

@@ -32,6 +32,11 @@ import {
   loadCategoryStrategyThumbnail,
 } from "./category-strategy-client.js";
 import {
+  findResumableCategoryStrategyDraftId,
+  loadCategoryStrategyBootstrap,
+  startCategoryStrategySampling,
+} from "./category-strategy-bootstrap.js";
+import {
   CATEGORY_STRATEGY_ROLES,
   categoryStrategyCountdown,
   categoryStrategyPageModel,
@@ -52,6 +57,10 @@ const STATUS_LABELS = Object.freeze({
 function queryDraftId(locationSearch = "") {
   const value = new URLSearchParams(locationSearch).get("draftId") || "";
   return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u.test(value) ? value : "";
+}
+
+function queryAutoStartSampling(locationSearch = "") {
+  return new URLSearchParams(locationSearch).get("from") === "auto-listing";
 }
 
 function currentCollectSourceVersion(localData, collectItemId) {
@@ -121,6 +130,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     storage: globalThis.sessionStorage, accountId,
   }), [accountId]);
   const routeDraftId = useMemo(() => queryDraftId(locationSearch), [locationSearch]);
+  const autoStartSampling = useMemo(() => queryAutoStartSampling(locationSearch), [locationSearch]);
   const [strategies, setStrategies] = useState([]);
   const [detail, setDetail] = useState(null);
   const [samples, setSamples] = useState([]);
@@ -172,32 +182,38 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
       const list = await client.list();
       if (requestId !== loadRequestRef.current) return;
       setStrategies(list);
-      if (draftId) {
-        const bundle = await client.getDraft(draftId);
-        if (requestId !== loadRequestRef.current) return;
-        applyBundle(bundle);
-      }
-      else if (resume?.required?.canManage) {
-        const source = resume.sourceVersions[0];
-        const fingerprint = { scope: resume.required.scope, sourceCollectItemId: source.collectItemId,
-          expectedSourceVersion: source.expectedSourceVersion };
-        const identity = await intents.identity("category-draft", fingerprint);
-        const created = await client.createDraft({
-          ...fingerprint,
-          ...identity,
-        });
-        await intents.settle("category-draft", fingerprint);
-        if (requestId !== loadRequestRef.current) return;
-        const bundle = await client.getDraft(created.draftId);
-        if (requestId !== loadRequestRef.current) return;
-        applyBundle(bundle);
+      const resumableDraftId = draftId || findResumableCategoryStrategyDraftId({
+        strategies: list,
+        resume,
+      });
+      const bootstrap = await loadCategoryStrategyBootstrap({
+        client,
+        intents,
+        resume,
+        routeDraftId: resumableDraftId,
+        autoStartSampling,
+        onDraftReady: ({ draftId: readyDraftId, bundle }) => {
+          if (requestId !== loadRequestRef.current) return;
+          applyBundle(bundle);
+          if (autoStartSampling) {
+            window.history.replaceState({}, "",
+              `/ozon/tools/category-strategies/?draftId=${encodeURIComponent(readyDraftId)}`);
+          }
+        },
+      });
+      if (requestId !== loadRequestRef.current) return;
+      if (bootstrap) {
+        applyBundle({ ...bootstrap.bundle, session: bootstrap.session });
+        if (bootstrap.browserUrl) {
+          window.open(bootstrap.browserUrl, "_blank", "noopener,noreferrer");
+        }
       }
     } catch (caught) {
       if (requestId === loadRequestRef.current) setError(categoryStrategyErrorMessage(caught));
     } finally {
       if (requestId === loadRequestRef.current) setLoading(false);
     }
-  }, [applyBundle, clearBundle, client, intents, resume, routeDraftId]);
+  }, [applyBundle, autoStartSampling, clearBundle, client, intents, resume, routeDraftId]);
 
   useEffect(() => {
     loadRequestRef.current += 1;
@@ -240,13 +256,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
   const settleIntent = (kind, fingerprint) => intents.settle(kind, fingerprint);
 
   const beginSampling = () => runAction("sampling", async (context) => {
-    const fingerprint = { draftId: detail.draftId, expectedDraftVersion: detail.draftVersion };
-    const identity = await intentIdentity("category-sampling", fingerprint);
-    const next = await client.startSession(detail.draftId, {
-      expectedDraftVersion: detail.draftVersion,
-      ...identity,
-    });
-    await settleIntent("category-sampling", fingerprint);
+    const next = await startCategoryStrategySampling({ client, intents, draft: detail });
     if (!isCurrentAction(context)) return;
     setSession(next);
     window.open(next.browserUrl, "_blank", "noopener,noreferrer");
@@ -407,7 +417,10 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
             disabled={!view?.canStartSampling} onClick={beginSampling}>继续选样</Button>}>
           {session ? <Alert type={view.countdown.expired ? "warning" : "info"} showIcon
             title={view.countdown.expired ? "选样会话已过期" : "扩展选样会话已开启"}
-            description={<span role="status">会话剩余时间：{view.countdown.label}</span>} /> : null}
+            description={<span role="status">会话剩余时间：{view.countdown.label}。如果页面没有自动打开，请使用右侧按钮。</span>}
+            action={!view.countdown.expired ? <Button onClick={() => {
+              window.open(session.browserUrl, "_blank", "noopener,noreferrer");
+            }}>打开 Ozon 选样页</Button> : null} /> : null}
           <p>已确认 {detail.sampleCount} 个商品；达到 5～20 个有效样本后才可分析。</p>
           {samples.length ? <div className="category-strategy-samples">{samples.map((sample) => <article key={sample.sampleId}>
             <ProtectedThumbnail sample={sample} />

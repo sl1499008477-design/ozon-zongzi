@@ -696,7 +696,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         <Button onClick={() => setStrategyRequired(null)}>暂不处理</Button>
         {strategyRequired.canManage ? <Button type="primary" onClick={() => {
           const draftQuery = strategyRequired.draftId
-            ? `?draftId=${encodeURIComponent(strategyRequired.draftId)}` : "?from=auto-listing";
+            ? `?draftId=${encodeURIComponent(strategyRequired.draftId)}&from=auto-listing` : "?from=auto-listing";
           navigate(`/ozon/tools/category-strategies${draftQuery}`);
         }}>开始配置</Button> : <Button type="primary" onClick={() => setStrategyRequired(null)}>请求管理员处理</Button>}
       </Space> : null}>
