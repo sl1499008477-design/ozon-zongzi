@@ -282,6 +282,211 @@ test("sorts real strict-normalizer dictionary reads instead of letting input att
   assert.deepEqual(dictionaryReads, [85, 400, 500]);
 });
 
+test("dynamically freezes the current Ozon no-brand option for variants with no brand", async () => {
+  const itemSource = source();
+  const reads = [];
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, dictionary_id: 28732849, is_required: true },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues(input) {
+        reads.push({ attributeId: input.attributeId, matchCandidates: input.matchCandidates });
+        return { items: [{ id: 987654321, value: "Нет бренда" }] };
+      },
+    },
+  });
+  delete deps.normalizeItems;
+
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    source: itemSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+
+  assert.deepEqual(reads, [{ attributeId: 85, matchCandidates: [{ value: "Нет бренда" }] }]);
+  assert.deepEqual(result.variants.map(({ item }) =>
+    item.attributes.find(({ id }) => id === 85)?.values), [
+    [{ value: "Нет бренда", dictionary_value_id: 987654321 }],
+    [{ value: "Нет бренда", dictionary_value_id: 987654321 }],
+  ]);
+});
+
+test("preserves an existing brand and injects no-brand only into a missing sibling", async () => {
+  const itemSource = source();
+  itemSource.collectItem.listingDraft.variants[0].sourceCategory = {
+    attributes: [{
+      key: "85",
+      value: "Brand X",
+      dictionary_value_id: 111111111,
+    }],
+  };
+  itemSource.collectItem.listingDraft.variants[1].sourceCategory = { attributes: [] };
+  const reads = [];
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, dictionary_id: 28732849, is_required: true },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues(input) {
+        reads.push(input.matchCandidates);
+        return { items: [
+          { id: 111111111, value: "Brand X" },
+          { id: 987654321, value: "Нет бренда" },
+        ] };
+      },
+    },
+  });
+  delete deps.normalizeItems;
+
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    source: itemSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+
+  assert.deepEqual(reads, [[
+    { id: 111111111, value: "Brand X" },
+    { value: "Нет бренда" },
+  ]]);
+  assert.deepEqual(result.variants.map(({ item }) =>
+    item.attributes.find(({ id }) => id === 85)?.values), [
+    [{ value: "Brand X", dictionary_value_id: 111111111 }],
+    [{ value: "Нет бренда", dictionary_value_id: 987654321 }],
+  ]);
+});
+
+for (const [name, items] of [
+  ["empty", []],
+  ["different value", [{ id: 1, value: "Brand X" }]],
+  ["ambiguous", [{ id: 11, value: "Нет бренда" }, { id: 12, value: "Нет бренда" }]],
+  ["invalid id", [{ id: 0, value: "Нет бренда" }]],
+]) {
+  test(`missing brand fails closed for ${name} current dictionary evidence`, async () => {
+    const deps = dependencies({
+      categoryService: {
+        async getCategoryAttributes() {
+          return { items: [
+            { id: 85, dictionary_id: 28732849, is_required: true },
+            { id: 11254 },
+          ] };
+        },
+        async getCategoryAttributeValues() { return { items }; },
+      },
+    });
+    delete deps.normalizeItems;
+    await assert.rejects(createAutoListingListingBasePreparer(deps)({
+      accountId: "account-a",
+      source: source(),
+      targetStore: { id: "store-a", ownerAccountId: "account-a" },
+      targetCategory: frozenTargetCategory(),
+      pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+    }), {
+      code: "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED",
+      status: 422,
+      retryable: false,
+      cause: null,
+    });
+  });
+}
+
+test("missing-brand dictionary dependency failures expose only the fixed safe error", async () => {
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, dictionary_id: 28732849, is_required: true },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues() {
+        throw new Error("credential-secret missing-brand failure");
+      },
+    },
+  });
+  delete deps.normalizeItems;
+  await assert.rejects(createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    source: source(),
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), (error) => error?.code === "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED"
+    && error.status === 422 && error.retryable === false && error.cause === null
+    && !error.message.includes("secret") && !JSON.stringify(error).includes("secret"));
+});
+
+test("does not replace a non-empty top-level brand with no-brand", async () => {
+  const itemSource = source();
+  itemSource.collectItem.listingDraft.variants = itemSource.collectItem.listingDraft.variants.map((variant) => ({
+    ...variant,
+    brand: "Brand X",
+  }));
+  const reads = [];
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, dictionary_id: 28732849, is_required: true },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues(input) {
+        reads.push(input.matchCandidates);
+        return { items: [{ id: 111111111, value: "Brand X" }] };
+      },
+    },
+  });
+  delete deps.normalizeItems;
+  await assert.rejects(createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    source: itemSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), { code: "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE" });
+  assert.deepEqual(reads, [undefined]);
+});
+
+test("does not activate no-brand fallback for an optional brand attribute", async () => {
+  let dictionaryReads = 0;
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, dictionary_id: 28732849, is_required: false },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues() {
+        dictionaryReads += 1;
+        return { items: [{ id: 987654321, value: "Нет бренда" }] };
+      },
+    },
+  });
+  delete deps.normalizeItems;
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    source: source(),
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.equal(dictionaryReads, 0);
+  assert.equal(result.variants.every(({ item }) =>
+    item.attributes.every(({ id }) => id !== 85)), true);
+});
+
 test("resolves legacy source category dictionary text by an exact current Ozon option", async () => {
   const itemSource = source();
   itemSource.collectItem.listingDraft.sourceCategory = {
@@ -330,6 +535,13 @@ test("resolves legacy source category dictionary text by an exact current Ozon o
 });
 
 test("normalizes category dictionary read failures without leaking the upstream error", async () => {
+  const brandedSource = source();
+  brandedSource.collectItem.listingDraft.variants = brandedSource.collectItem.listingDraft.variants.map((variant) => ({
+    ...variant,
+    sourceCategory: {
+      attributes: [{ key: "85", value: "Brand X", dictionary_value_id: 111111111 }],
+    },
+  }));
   const deps = dependencies();
   let dictionaryReadCount = 0;
   deps.categoryService.getCategoryAttributeValues = async () => {
@@ -337,7 +549,8 @@ test("normalizes category dictionary read failures without leaking the upstream 
     throw new Error("credential-secret from upstream");
   };
   await assert.rejects(createAutoListingListingBasePreparer(deps)({
-    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    accountId: "account-a", source: brandedSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
     targetCategory: frozenTargetCategory(),
     pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
   }), (error) => error?.code === "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED"
@@ -354,7 +567,8 @@ test("normalizes category dictionary read failures without leaking the upstream 
   const hostileDeps = dependencies();
   hostileDeps.categoryService.getCategoryAttributeValues = async () => hostileResult;
   await assert.rejects(createAutoListingListingBasePreparer(hostileDeps)({
-    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    accountId: "account-a", source: brandedSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
     targetCategory: frozenTargetCategory(),
     pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
   }), (error) => error?.code === "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED"

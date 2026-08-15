@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { types as utilTypes } from "node:util";
 
 import { normalizeOzonImportItems } from "./ozon-import-normalizer.mjs";
 import {
@@ -10,6 +11,8 @@ import { buildOzonCategoryRebuildMetadata } from "./ozon-category-service.mjs";
 import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 
 const HASH = /^[a-f0-9]{64}$/u;
+const BRAND_ATTRIBUTE_ID = 85;
+const OZON_NO_BRAND_VALUE = "Нет бренда";
 const RICH_CONTENT_ATTRIBUTE_ID = 11254;
 
 function failure(code, status = 422) {
@@ -117,6 +120,102 @@ function positiveId(value) {
   if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) return 0;
   const id = Number(value);
   return Number.isSafeInteger(id) ? id : 0;
+}
+
+function attributeValuePresent(value) {
+  if (plainObject(value)) {
+    return positiveId(value.dictionary_value_id ?? value.dictionaryValueId) > 0
+      || text(value.value ?? value.name ?? value.title) !== "";
+  }
+  return (typeof value === "string" && text(value) !== "")
+    || (typeof value === "number" && Number.isFinite(value));
+}
+
+function attributeCarriesBrand(attribute) {
+  const id = positiveId(attribute?.id ?? attribute?.attribute_id ?? attribute?.attributeId ?? attribute?.key);
+  const complexId = positiveId(
+    attribute?.complex_id ?? attribute?.complexId ?? attribute?.attribute_complex_id,
+  ) || 0;
+  if (id !== BRAND_ATTRIBUTE_ID || complexId !== 0) return false;
+  if (positiveId(attribute?.dictionary_value_id ?? attribute?.dictionaryValueId)) return true;
+  if (attributeValuePresent(attribute?.value)) return true;
+  const values = Array.isArray(attribute?.values) ? attribute.values
+    : Array.isArray(attribute?.collection) ? attribute.collection : [];
+  return values.some(attributeValuePresent);
+}
+
+function itemCarriesBrand(item, sourceAttributes) {
+  if (text(item?.brand)) return true;
+  const sourceVariant = plainObject(item?._sourceVariant) ? item._sourceVariant : {};
+  const directBundle = plainObject(item?._bundleItem) ? item._bundleItem : {};
+  const sourceBundle = plainObject(sourceVariant?._bundleItem) ? sourceVariant._bundleItem : {};
+  const candidates = [
+    ...(Array.isArray(item?.attributes) ? item.attributes : []),
+    ...(Array.isArray(sourceAttributes) ? sourceAttributes : []),
+    ...(Array.isArray(directBundle.attributes) ? directBundle.attributes : []),
+    ...(Array.isArray(sourceBundle.attributes) ? sourceBundle.attributes : []),
+    ...(Array.isArray(item?.bundleComplexAttrs) ? item.bundleComplexAttrs : []),
+    ...(Array.isArray(sourceVariant?._bundleComplexAttrs) ? sourceVariant._bundleComplexAttrs : []),
+    ...(Array.isArray(item?.complex_attributes)
+      ? item.complex_attributes.flatMap((group) => Array.isArray(group?.attributes) ? group.attributes : [])
+      : []),
+  ];
+  return candidates.some(attributeCarriesBrand);
+}
+
+function missingNoBrandVariantIndexes({ rawItems, sourceEvidenceAttributes, metadata }) {
+  const brand = metadata.attributes.find((attribute) => attribute.id === BRAND_ATTRIBUTE_ID
+    && attribute.complexId === 0 && attribute.required === true && positiveId(attribute.dictionaryId));
+  if (!brand) return [];
+  return rawItems.flatMap((item, index) =>
+    itemCarriesBrand(item, sourceEvidenceAttributes[index]) ? [] : [index]);
+}
+
+function normalizedNoBrand(value) {
+  return text(value).replace(/\s+/gu, " ").toLocaleLowerCase("ru-RU");
+}
+
+function canonicalNoBrandOption(values) {
+  try {
+    if (!Array.isArray(values) || utilTypes.isProxy(values)
+      || Object.getPrototypeOf(values) !== Array.prototype || values.length > 5_000) {
+      throw new Error("invalid no-brand dictionary values");
+    }
+    const matches = values.flatMap((option) => {
+      if (!plainObject(option) || utilTypes.isProxy(option)) return [];
+      const descriptors = Object.getOwnPropertyDescriptors(option);
+      const allowed = new Set(["id", "value", "info", "picture"]);
+      if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string" || !allowed.has(key)
+        || descriptors[key].get || descriptors[key].set || descriptors[key].enumerable !== true)
+        || !Object.hasOwn(descriptors, "id") || !Object.hasOwn(descriptors, "value")) return [];
+      const id = positiveId(descriptors.id.value);
+      const value = text(descriptors.value.value);
+      return id && value.length <= 500
+        && normalizedNoBrand(value) === normalizedNoBrand(OZON_NO_BRAND_VALUE)
+        ? [{ id, value }] : [];
+    });
+    if (matches.length === 1) return matches[0];
+  } catch {
+    // The fixed safe error below intentionally replaces hostile or malformed dependency data.
+  }
+  throw failure("AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED");
+}
+
+function withNoBrandCandidate(candidates) {
+  if (candidates.some((candidate) =>
+    normalizedNoBrand(candidate?.value) === normalizedNoBrand(OZON_NO_BRAND_VALUE))) return candidates;
+  return [...candidates, { value: OZON_NO_BRAND_VALUE }];
+}
+
+function injectNoBrandSourceEvidence(sourceEvidenceAttributes, indexes, option) {
+  const missing = new Set(indexes);
+  return sourceEvidenceAttributes.map((attributes, index) => missing.has(index)
+    ? [...attributes, {
+        complex_id: 0,
+        id: BRAND_ATTRIBUTE_ID,
+        values: [{ value: option.value, dictionary_value_id: option.id }],
+      }]
+    : attributes);
 }
 
 function inputAttributeKeys(items) {
@@ -330,6 +429,9 @@ export function createAutoListingListingBasePreparer({
       })),
     });
     const preliminaryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
+    const noBrandVariantIndexes = missingNoBrandVariantIndexes({
+      rawItems, sourceEvidenceAttributes, metadata: preliminaryMetadata,
+    });
     const usedAttributeKeys = inputAttributeKeys(rawItems);
     const dictionaryAttributeIds = [...new Set(preliminaryMetadata.attributes
       .filter((attribute) => attribute.dictionaryId
@@ -337,8 +439,12 @@ export function createAutoListingListingBasePreparer({
       .map((attribute) => attribute.id))].sort((left, right) => left - right);
     for (const attributeIdValue of dictionaryAttributeIds) {
       let dictionaryItems;
+      const resolvesMissingBrand = attributeIdValue === BRAND_ATTRIBUTE_ID
+        && noBrandVariantIndexes.length > 0;
       try {
-        const matchCandidates = dictionaryMatchCandidates(sourceEvidenceAttributes, attributeIdValue);
+        const sourceCandidates = dictionaryMatchCandidates(sourceEvidenceAttributes, attributeIdValue);
+        const matchCandidates = resolvesMissingBrand
+          ? withNoBrandCandidate(sourceCandidates) : sourceCandidates;
         const dictionaryResult = await categoryService.getCategoryAttributeValues({
           accountId: scope,
           store: storeAccess,
@@ -355,11 +461,25 @@ export function createAutoListingListingBasePreparer({
         }
         dictionaryItems = dictionaryResult.items;
       } catch {
-        throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+        throw failure(resolvesMissingBrand
+          ? "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED"
+          : "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
       }
       categoryDictionaryValues.set(
         dictionaryKey(sourceCategory.descriptionCategoryId, sourceCategory.typeId, attributeIdValue),
         dictionaryItems,
+      );
+    }
+    if (noBrandVariantIndexes.length) {
+      const noBrandValues = categoryDictionaryValues.get(dictionaryKey(
+        sourceCategory.descriptionCategoryId,
+        sourceCategory.typeId,
+        BRAND_ATTRIBUTE_ID,
+      ));
+      sourceEvidenceAttributes = injectNoBrandSourceEvidence(
+        sourceEvidenceAttributes,
+        noBrandVariantIndexes,
+        canonicalNoBrandOption(noBrandValues),
       );
     }
     const currentCategoryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
