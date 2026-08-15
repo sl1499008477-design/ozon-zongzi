@@ -41,23 +41,23 @@
 Run:
 
 ```bash
-curl --fail --silent --show-error http://127.0.0.1:3001/api/health
+curl --fail --silent --show-error http://127.0.0.1:3001/health
 curl --fail --silent --show-error http://127.0.0.1:3000/api/health
 ```
 
 Expected: both commands return a JSON health payload with an affirmative health result. If either fails, restore that process first; do not cancel by SQL.
 
-- [ ] **Step 2: Re-read the target item through the authenticated list contract**
+- [ ] **Step 2: Re-read the target item through the authenticated job-detail contract**
 
 With the in-app browser on `http://127.0.0.1:3000/ozon/tools/auto-listing/`, use the browser runtime to evaluate this in the top document:
 
 ```js
 const token = localStorage.getItem("token");
-const response = await fetch("/api/auto-listing/jobs?limit=50", {
+const response = await fetch("/api/auto-listing/jobs/auto_listing_job_8df06a6a5bc44dbc88adaa94fed2ea65", {
   headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
 });
 const payload = await response.json();
-const job = payload.data.find((candidate) => candidate.id === "auto_listing_job_8df06a6a5bc44dbc88adaa94fed2ea65");
+const job = payload.data;
 const item = job?.items?.find((candidate) => candidate.itemId === "auto_listing_job_8df06a6a5bc44dbc88adaa94fed2ea65_item_000");
 ({ status: response.status, ok: payload.ok, jobId: job?.id, item });
 ```
