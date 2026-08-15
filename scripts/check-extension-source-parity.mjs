@@ -66,6 +66,7 @@ const allowedLocalOnly = new Set([
   "icons/ozon-zongzi-symbol.svg",
   "icons/sonli-logo.png",
   "lib/category-readiness.js",
+  "lib/category-strategy-handoff.js",
   "lib/category-strategy-sampling.js",
   "lib/chrome-storage-promises.js",
   "lib/collector-auth-flow.js",
@@ -89,6 +90,7 @@ const allowedLocalOnly = new Set([
   "popup/__tests__/popup-routing.smoke.test.js",
   "popup/__tests__/popup-collector-session.runtime.test.js",
   "tests/category-readiness.test.js",
+  "tests/category-strategy-handoff.test.js",
   "tests/category-strategy-sampling.test.js",
   "tests/chrome-storage-promises.test.js",
   "tests/collector-auth-flow.test.js",
@@ -205,6 +207,7 @@ assert.ok(bridgeScript, "local sonli bridge content script missing");
 assert.ok(bridgeScript.matches.includes("http://localhost:3000/*"));
 assert.ok(bridgeScript.matches.includes("http://store.localhost:3000/*"));
 assert.deepEqual(bridgeScript.js, [
+  "lib/category-strategy-handoff.js",
   "lib/follow-sell-content-copy.js",
   "lib/v3-payload.js",
   "lib/sku-collect.js",

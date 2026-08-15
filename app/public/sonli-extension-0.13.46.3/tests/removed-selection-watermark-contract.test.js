@@ -18,6 +18,7 @@ const batchHtml = read("batch-upload/index.html");
 const batchJs = read("batch-upload/index.js");
 const storePicker = read("lib/store-picker.js");
 const jizhangerpBridge = read("content/jizhangerp-bridge.js");
+const categoryStrategyHandoff = read("lib/category-strategy-handoff.js");
 const portalBridgePolicy = read("lib/portal-bridge-policy.js");
 const aiWizard = read("content/1688-ai-wizard.js");
 
@@ -35,6 +36,8 @@ assert(manifest.content_scripts.some((entry) => entry.js?.includes("lib/category
   && entry.js?.includes("content/ozon-search.js")));
 assert(serviceWorker.includes("../lib/category-strategy-sampling.js"));
 for (const action of [
+  "CATEGORY_STRATEGY_READINESS",
+  "CATEGORY_STRATEGY_BROWSER_OPEN",
   "CATEGORY_STRATEGY_SESSION_START",
   "CATEGORY_STRATEGY_SESSION_GET",
   "CATEGORY_STRATEGY_PAGE_FACTS_CAPTURE",
@@ -44,6 +47,8 @@ for (const action of [
   "CATEGORY_STRATEGY_SAMPLES_CONFIRM",
   "CATEGORY_STRATEGY_SESSION_CANCEL",
 ]) assert(serviceWorker.includes(action));
+assert(serviceWorker.includes("JzCategoryStrategyHandoff.projectBrowserUrl"));
+assert(categoryStrategyHandoff.includes("zongziCategoryStrategySession"));
 assert(search.includes("zongziCategoryStrategySession"));
 assert(search.includes("data-zongzi-category-strategy-sampling"));
 assert(search.includes("zongzi-category-strategy-sampling-bar"));

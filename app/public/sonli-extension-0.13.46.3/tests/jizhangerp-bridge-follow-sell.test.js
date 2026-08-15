@@ -8,6 +8,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const categoryStrategyHandoff = require("../lib/category-strategy-handoff.js");
 
 const extensionRoot = path.resolve(__dirname, "..");
 const bridgeSource = fs.readFileSync(
@@ -67,6 +68,7 @@ function createHarness(overrides = {}) {
         };
       },
     },
+    JzCategoryStrategyHandoff: categoryStrategyHandoff,
     ...overrides.window,
   };
   const chrome = {
@@ -75,6 +77,14 @@ function createHarness(overrides = {}) {
       getManifest: () => ({ version: "0.13.46.1" }),
       sendMessage(message, callback) {
         sentToSw.push(message);
+        if (message.action === "CATEGORY_STRATEGY_READINESS") {
+          callback({ ok: true, data: { ready: true, minimumExtensionVersion: "0.13.46.3" } });
+          return;
+        }
+        if (message.action === "CATEGORY_STRATEGY_BROWSER_OPEN") {
+          callback({ ok: true, data: { opened: true } });
+          return;
+        }
         callback({ ok: true, data: { result: { task_id: 778899 } } });
       },
     },
@@ -113,6 +123,7 @@ function createHarness(overrides = {}) {
   assert.deepStrictEqual(
     qhScriptGroup.js,
     [
+      "lib/category-strategy-handoff.js",
       "lib/follow-sell-content-copy.js",
       "lib/v3-payload.js",
       "lib/sku-collect.js",
@@ -138,7 +149,40 @@ function createHarness(overrides = {}) {
         followSell: true,
         dryRunPreview: true,
         localListingBridge: true,
+        categoryStrategyHandoff: true,
       },
+    },
+  });
+
+  await harness.dispatch({
+    __jz: "v1", kind: "category-strategy.readiness.request", reqId: "strategy-ready-1",
+  });
+  await nextTick();
+  assert.deepStrictEqual(plain(harness.sentToSw[0]), {
+    action: "CATEGORY_STRATEGY_READINESS",
+  });
+  assert.deepStrictEqual(plain(harness.posted[1]), {
+    targetOrigin: harness.origin,
+    message: {
+      __jz: "v1", kind: "category-strategy.readiness.response", reqId: "strategy-ready-1",
+      ok: true, ready: true, version: "0.13.46.3",
+    },
+  });
+
+  const browserUrl = "https://www.ozon.ru/category/17028922/"
+    + "?zongziCategoryStrategySession=session-a";
+  await harness.dispatch({
+    __jz: "v1", kind: "category-strategy.open.request", reqId: "strategy-open-1", browserUrl,
+  });
+  await nextTick();
+  assert.deepStrictEqual(plain(harness.sentToSw[1]), {
+    action: "CATEGORY_STRATEGY_BROWSER_OPEN", browserUrl,
+  });
+  assert.deepStrictEqual(plain(harness.posted[2]), {
+    targetOrigin: harness.origin,
+    message: {
+      __jz: "v1", kind: "category-strategy.open.response", reqId: "strategy-open-1",
+      ok: true, opened: true,
     },
   });
 
@@ -152,8 +196,8 @@ function createHarness(overrides = {}) {
     currencyCode: "RUB",
   });
   await nextTick();
-  assert.strictEqual(harness.sentToSw.length, 1, "follow-sell should call service worker once");
-  assert.deepStrictEqual(plain(harness.sentToSw[0]), {
+  assert.strictEqual(harness.sentToSw.length, 3, "follow-sell should call service worker once after handoff probes");
+  assert.deepStrictEqual(plain(harness.sentToSw[2]), {
     action: "followSell",
     portalProtocol: "JZ_ERP",
     storeId: "local_test_store",
@@ -171,7 +215,7 @@ function createHarness(overrides = {}) {
     applyPoster: false,
     applyAiRewrite: false,
   });
-  assert.deepStrictEqual(plain(harness.posted[1]), {
+  assert.deepStrictEqual(plain(harness.posted[3]), {
     targetOrigin: harness.origin,
     message: {
       __jz: "v1",
@@ -194,8 +238,8 @@ function createHarness(overrides = {}) {
     dryRun: true,
   });
   await nextTick();
-  assert.strictEqual(harness.sentToSw.length, 2, "preview follow-sell should also call service worker");
-  assert.strictEqual(harness.sentToSw[1].dryRun, true, "dryRun should pass through to service worker");
+  assert.strictEqual(harness.sentToSw.length, 4, "preview follow-sell should also call service worker");
+  assert.strictEqual(harness.sentToSw[3].dryRun, true, "dryRun should pass through to service worker");
 
   const missingDeps = createHarness({ window: { JZV3Payload: null } });
   await missingDeps.dispatch({

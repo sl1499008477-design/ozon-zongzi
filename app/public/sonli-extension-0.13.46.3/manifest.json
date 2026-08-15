@@ -261,6 +261,7 @@
         "*://admin.qh.jizhangerp.com/*"
       ],
       "js": [
+        "lib/category-strategy-handoff.js",
         "lib/follow-sell-content-copy.js",
         "lib/v3-payload.js",
         "lib/sku-collect.js",

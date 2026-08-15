@@ -76,6 +76,9 @@ export function categoryStrategyErrorMessage(error) {
   if (code === "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY") {
     return "浏览器扩展尚未连接，请先安装或刷新扩展后重试。";
   }
+  if (code === "AUTO_LISTING_CATEGORY_STRATEGY_BROWSER_OPEN_FAILED") {
+    return "无法打开 Ozon 选样页，请刷新扩展后重试。";
+  }
   if (status === 404) return "类目策略记录不存在或你无权查看。";
   if (status === 429) return "操作过于频繁，请稍后再试。";
   if (status === 409 && new Set([

@@ -18,13 +18,15 @@ test("upstream parity accepts a newer local patch but rejects older or cross-lin
   assert.throws(() => assertCompatibleExtensionVersions("0.14.0", "0.13.46.1"), /release line/);
 });
 
-test("source parity accepts the reviewed category strategy sampling module as local-only", () => {
+test("source parity accepts the reviewed category strategy sampling and handoff modules as local-only", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "extension-source-parity-"));
   const upstreamDir = path.join(fixtureRoot, "upstream");
   cpSync(localExtensionDir, upstreamDir, { recursive: true });
   for (const relativePath of [
     "lib/category-strategy-sampling.js",
+    "lib/category-strategy-handoff.js",
     "tests/category-strategy-sampling.test.js",
+    "tests/category-strategy-handoff.test.js",
   ]) rmSync(path.join(upstreamDir, relativePath));
   try {
     const result = spawnSync(process.execPath,

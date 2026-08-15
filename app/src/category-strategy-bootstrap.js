@@ -1,10 +1,17 @@
-export async function startCategoryStrategySampling({ client, intents, draft }) {
-  const fingerprint = { draftId: draft.draftId, expectedDraftVersion: draft.draftVersion };
-  const identity = await intents.identity("category-sampling", fingerprint);
+export async function handoffCategoryStrategySampling({ client, extensionBridge, draft, identity }) {
+  await extensionBridge.ready();
   const session = await client.startSession(draft.draftId, {
     expectedDraftVersion: draft.draftVersion,
     ...identity,
   });
+  await extensionBridge.open(session.browserUrl);
+  return session;
+}
+
+export async function startCategoryStrategySampling({ client, intents, extensionBridge, draft }) {
+  const fingerprint = { draftId: draft.draftId, expectedDraftVersion: draft.draftVersion };
+  const identity = await intents.identity("category-sampling", fingerprint);
+  const session = await handoffCategoryStrategySampling({ client, extensionBridge, draft, identity });
   await intents.settle("category-sampling", fingerprint);
   return session;
 }
@@ -17,7 +24,7 @@ export function findResumableCategoryStrategyDraftId({ strategies, resume }) {
     && entry.scope.typeId === required.typeId)?.draftId || "";
 }
 
-export async function loadCategoryStrategyBootstrap({ client, intents, resume = null,
+export async function loadCategoryStrategyBootstrap({ client, intents, extensionBridge, resume = null,
   routeDraftId = "", autoStartSampling = false, onDraftReady = () => {} }) {
   let draftId = routeDraftId || resume?.required?.draftId || "";
   if (!draftId && resume?.required?.canManage) {
@@ -38,7 +45,9 @@ export async function loadCategoryStrategyBootstrap({ client, intents, resume = 
   await onDraftReady(Object.freeze({ draftId, bundle }));
   let session = bundle.session;
   if (autoStartSampling && !session) {
-    session = await startCategoryStrategySampling({ client, intents, draft: bundle.draft });
+    session = await startCategoryStrategySampling({ client, intents, extensionBridge, draft: bundle.draft });
+  } else if (autoStartSampling && session) {
+    await extensionBridge.open(session.browserUrl);
   }
   return Object.freeze({
     draftId,

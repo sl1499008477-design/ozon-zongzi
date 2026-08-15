@@ -557,6 +557,19 @@
       });
     }
 
+    async function ready() {
+      accountId(await options.currentAccount());
+      const result = descriptors(await options.request({ method: 'POST',
+        path: '/extension/auto-listing/category-strategy/readiness', headers, body: {} }),
+      new Set(['ready', 'minimumExtensionVersion']), () =>
+        failure('CATEGORY_STRATEGY_SAMPLING_REQUEST_INVALID'));
+      if (result.ready !== true || typeof result.minimumExtensionVersion !== 'string'
+        || result.minimumExtensionVersion.length < 5 || result.minimumExtensionVersion.length > 40) {
+        throw failure('CATEGORY_STRATEGY_SAMPLING_REQUEST_INVALID');
+      }
+      return freeze({ ready: true, minimumExtensionVersion: result.minimumExtensionVersion });
+    }
+
     async function getSession(raw) {
       const value = descriptors(raw, new Set(['sessionId']), () =>
         failure('CATEGORY_STRATEGY_SAMPLING_REQUEST_INVALID'));
@@ -662,7 +675,7 @@
       });
     }
 
-    return Object.freeze({ start, getSession, listFacts, rememberFact, removeFact, confirm, cancel });
+    return Object.freeze({ ready, start, getSession, listFacts, rememberFact, removeFact, confirm, cancel });
   }
 
   function directData(raw) {

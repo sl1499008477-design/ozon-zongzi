@@ -183,6 +183,48 @@
     }
   }
 
+  function exactRequest(message, keys) {
+    try {
+      if (!message || typeof message !== "object" || Array.isArray(message)) return false;
+      const descriptors = Object.getOwnPropertyDescriptors(message);
+      const own = Reflect.ownKeys(descriptors);
+      return own.length === keys.length && own.every((key) => typeof key === "string"
+        && keys.includes(key) && descriptors[key]?.enumerable === true
+        && Object.hasOwn(descriptors[key], "value"));
+    } catch {
+      return false;
+    }
+  }
+
+  async function handleCategoryStrategyReadiness(reqId) {
+    try {
+      const response = await sendToSw({ action: "CATEGORY_STRATEGY_READINESS" });
+      const ready = response?.ok === true && response.data?.ready === true;
+      const version = String(response?.data?.minimumExtensionVersion || "");
+      reply(reqId, "category-strategy.readiness.response", {
+        ok: ready,
+        ready,
+        version: ready ? version : "",
+      });
+    } catch {
+      reply(reqId, "category-strategy.readiness.response", {
+        ok: false, ready: false, version: "",
+      });
+    }
+  }
+
+  async function handleCategoryStrategyOpen(reqId, rawBrowserUrl) {
+    let browserUrl;
+    try {
+      browserUrl = window.JzCategoryStrategyHandoff.projectBrowserUrl(rawBrowserUrl);
+      const response = await sendToSw({ action: "CATEGORY_STRATEGY_BROWSER_OPEN", browserUrl });
+      const opened = response?.ok === true && response.data?.opened === true;
+      reply(reqId, "category-strategy.open.response", { ok: opened, opened });
+    } catch {
+      reply(reqId, "category-strategy.open.response", { ok: false, opened: false });
+    }
+  }
+
   window.addEventListener("message", (ev) => {
     // 同窗同源限制 — 防其他 iframe / extension 注入伪造请求
     if (ev.source !== window) return;
@@ -198,8 +240,15 @@
           followSell: true,
           dryRunPreview: true,
           localListingBridge: true,
+          categoryStrategyHandoff: true,
         },
       });
+    } else if (msg.kind === "category-strategy.readiness.request"
+      && exactRequest(msg, ["__jz", "kind", "reqId"])) {
+      handleCategoryStrategyReadiness(msg.reqId);
+    } else if (msg.kind === "category-strategy.open.request"
+      && exactRequest(msg, ["__jz", "kind", "reqId", "browserUrl"])) {
+      handleCategoryStrategyOpen(msg.reqId, msg.browserUrl);
     } else if (msg.kind === "prefetch.request") {
       handlePrefetch(msg.reqId, msg.skus);
     } else if (msg.kind === "follow-sell.request") {

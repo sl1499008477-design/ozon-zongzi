@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   findResumableCategoryStrategyDraftId,
   loadCategoryStrategyBootstrap,
+  startCategoryStrategySampling,
 } from "../src/category-strategy-bootstrap.js";
 
 const RESUME = Object.freeze({
@@ -23,19 +24,31 @@ const DRAFT = Object.freeze({ draftId: "draft-new", draftVersion: 1, status: "CO
 const SESSION = Object.freeze({
   sessionId: "session-new",
   expiresAt: "2026-08-15T18:00:00.000Z",
-  browserUrl: "https://www.ozon.ru/product/source?zongziCategoryStrategySession=session-new",
+  browserUrl: "https://www.ozon.ru/category/88265327/?zongziCategoryStrategySession=session-new",
 });
 
-function intentStore() {
+function intentStore(calls = []) {
   return {
     async identity(kind) {
       return { idempotencyKey: `${kind}-key`, correlationId: `${kind}-correlation` };
     },
-    async settle() {},
+    async settle(kind) { if (kind === "category-sampling") calls.push("intent-settle"); },
+  };
+}
+
+function extensionBridge(calls = []) {
+  return {
+    async ready() { calls.push("extension-ready"); return { ready: true, version: "0.13.46.3" }; },
+    async open(browserUrl) {
+      calls.push("extension-open");
+      assert.equal(browserUrl, SESSION.browserUrl);
+      return { opened: true };
+    },
   };
 }
 
 test("automatic-listing handoff creates a draft and starts its Ozon sampling session", async () => {
+  const calls = [];
   const client = {
     async createDraft(input) {
       if (input.scope.descriptionCategoryId !== 88_265_327
@@ -49,6 +62,7 @@ test("automatic-listing handoff creates a draft and starts its Ozon sampling ses
       return { draft: DRAFT, session: null };
     },
     async startSession(draftId, input) {
+      calls.push("start-session");
       if (draftId !== "draft-new" || input.expectedDraftVersion !== 1
         || input.idempotencyKey !== "category-sampling-key") throw new Error("wrong session input");
       return SESSION;
@@ -57,7 +71,8 @@ test("automatic-listing handoff creates a draft and starts its Ozon sampling ses
 
   const result = await loadCategoryStrategyBootstrap({
     client,
-    intents: intentStore(),
+    intents: intentStore(calls),
+    extensionBridge: extensionBridge(calls),
     resume: RESUME,
     routeDraftId: "",
     autoStartSampling: true,
@@ -65,8 +80,8 @@ test("automatic-listing handoff creates a draft and starts its Ozon sampling ses
 
   assert.equal(result.draftId, "draft-new");
   assert.equal(result.session, SESSION);
-  assert.equal(result.browserUrl,
-    "https://www.ozon.ru/product/source?zongziCategoryStrategySession=session-new");
+  assert.equal(result.browserUrl, SESSION.browserUrl);
+  assert.deepEqual(calls, ["extension-ready", "start-session", "extension-open", "intent-settle"]);
 });
 
 test("normal strategy navigation creates or loads the draft without starting sampling", async () => {
@@ -79,6 +94,7 @@ test("normal strategy navigation creates or loads the draft without starting sam
   const result = await loadCategoryStrategyBootstrap({
     client,
     intents: intentStore(),
+    extensionBridge: extensionBridge(),
     resume: RESUME,
     routeDraftId: "",
     autoStartSampling: false,
@@ -90,6 +106,7 @@ test("normal strategy navigation creates or loads the draft without starting sam
 });
 
 test("automatic handoff reuses an active sampling session instead of creating a duplicate", async () => {
+  const calls = [];
   const client = {
     async createDraft() { throw new Error("route draft must be reused"); },
     async getDraft(draftId) {
@@ -102,6 +119,7 @@ test("automatic handoff reuses an active sampling session instead of creating a 
   const result = await loadCategoryStrategyBootstrap({
     client,
     intents: intentStore(),
+    extensionBridge: extensionBridge(calls),
     resume: RESUME,
     routeDraftId: "draft-existing",
     autoStartSampling: true,
@@ -110,6 +128,7 @@ test("automatic handoff reuses an active sampling session instead of creating a 
   assert.equal(result.draftId, "draft-existing");
   assert.equal(result.session, SESSION);
   assert.equal(result.browserUrl, SESSION.browserUrl);
+  assert.deepEqual(calls, ["extension-open"]);
 });
 
 test("strategy list navigation without a draft or resumable automatic-listing state stays read-only", async () => {
@@ -122,6 +141,7 @@ test("strategy list navigation without a draft or resumable automatic-listing st
   assert.equal(await loadCategoryStrategyBootstrap({
     client,
     intents: intentStore(),
+    extensionBridge: extensionBridge(),
     resume: null,
     routeDraftId: "",
     autoStartSampling: false,
@@ -130,19 +150,27 @@ test("strategy list navigation without a draft or resumable automatic-listing st
 
 test("a created draft is exposed for recovery before automatic sampling startup can fail", async () => {
   const ready = [];
+  let startCalls = 0;
   const client = {
     async createDraft() { return DRAFT; },
     async getDraft() { return { draft: DRAFT, session: null }; },
     async startSession() {
-      throw Object.assign(new Error("extension unavailable"), {
-        code: "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY",
-      });
+      startCalls += 1;
+      throw new Error("must not create a session without extension readiness");
     },
   };
 
   await assert.rejects(loadCategoryStrategyBootstrap({
     client,
     intents: intentStore(),
+    extensionBridge: {
+      async ready() {
+        throw Object.assign(new Error("extension unavailable"), {
+          code: "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY",
+        });
+      },
+      async open() { throw new Error("must not open"); },
+    },
     resume: RESUME,
     routeDraftId: "",
     autoStartSampling: true,
@@ -152,6 +180,26 @@ test("a created draft is exposed for recovery before automatic sampling startup 
   assert.equal(ready.length, 1);
   assert.equal(ready[0].draftId, "draft-new");
   assert.equal(ready[0].bundle.draft, DRAFT);
+  assert.equal(startCalls, 0);
+});
+
+test("an extension open failure leaves the durable sampling intent unsettled", async () => {
+  const calls = [];
+  const error = Object.assign(new Error("open failed"), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_BROWSER_OPEN_FAILED",
+  });
+  await assert.rejects(startCategoryStrategySampling({
+    client: {
+      async startSession() { calls.push("start-session"); return SESSION; },
+    },
+    intents: intentStore(calls),
+    extensionBridge: {
+      async ready() { calls.push("extension-ready"); return { ready: true, version: "0.13.46.3" }; },
+      async open() { calls.push("extension-open"); throw error; },
+    },
+    draft: DRAFT,
+  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_BROWSER_OPEN_FAILED" });
+  assert.deepEqual(calls, ["extension-ready", "start-session", "extension-open"]);
 });
 
 test("resume recovery selects only the existing draft with the exact required current scope", () => {

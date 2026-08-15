@@ -33,9 +33,11 @@ import {
 } from "./category-strategy-client.js";
 import {
   findResumableCategoryStrategyDraftId,
+  handoffCategoryStrategySampling,
   loadCategoryStrategyBootstrap,
   startCategoryStrategySampling,
 } from "./category-strategy-bootstrap.js";
+import { createCategoryStrategyExtensionBridge } from "./category-strategy-extension-bridge.js";
 import {
   CATEGORY_STRATEGY_ROLES,
   categoryStrategyCountdown,
@@ -122,6 +124,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
   navigate = () => {} } = {}) {
   const [form] = Form.useForm();
   const client = useMemo(() => createCategoryStrategyClient(), []);
+  const extensionBridge = useMemo(() => createCategoryStrategyExtensionBridge(), []);
   const accountId = String(account?.id || "").trim();
   const resume = useMemo(() => readStrategyResumeDraft(globalThis.sessionStorage, accountId, {
     sourceVersionOf: (collectItemId) => currentCollectSourceVersion(localData, collectItemId),
@@ -189,6 +192,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
       const bootstrap = await loadCategoryStrategyBootstrap({
         client,
         intents,
+        extensionBridge,
         resume,
         routeDraftId: resumableDraftId,
         autoStartSampling,
@@ -204,16 +208,13 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
       if (requestId !== loadRequestRef.current) return;
       if (bootstrap) {
         applyBundle({ ...bootstrap.bundle, session: bootstrap.session });
-        if (bootstrap.browserUrl) {
-          window.open(bootstrap.browserUrl, "_blank", "noopener,noreferrer");
-        }
       }
     } catch (caught) {
       if (requestId === loadRequestRef.current) setError(categoryStrategyErrorMessage(caught));
     } finally {
       if (requestId === loadRequestRef.current) setLoading(false);
     }
-  }, [applyBundle, autoStartSampling, clearBundle, client, intents, resume, routeDraftId]);
+  }, [applyBundle, autoStartSampling, clearBundle, client, extensionBridge, intents, resume, routeDraftId]);
 
   useEffect(() => {
     loadRequestRef.current += 1;
@@ -256,10 +257,9 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
   const settleIntent = (kind, fingerprint) => intents.settle(kind, fingerprint);
 
   const beginSampling = () => runAction("sampling", async (context) => {
-    const next = await startCategoryStrategySampling({ client, intents, draft: detail });
+    const next = await startCategoryStrategySampling({ client, intents, extensionBridge, draft: detail });
     if (!isCurrentAction(context)) return;
     setSession(next);
-    window.open(next.browserUrl, "_blank", "noopener,noreferrer");
   });
 
   const replaceSample = (sample) => runAction(`replace:${sample.sampleId}`, async (context) => {
@@ -269,13 +269,16 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     const prepared = await client.removeSample(detail.draftId, sample.sampleId, {
       expectedDraftVersion: detail.draftVersion, ...removeIdentity,
     });
-    const next = await client.startSession(detail.draftId, {
-      expectedDraftVersion: detail.draftVersion, ...prepared.samplingIdentity,
+    const next = await handoffCategoryStrategySampling({
+      client, extensionBridge, draft: detail, identity: prepared.samplingIdentity,
     });
     await settleIntent("category-sample-revision", removeFingerprint);
     if (!isCurrentAction(context)) return;
     setSession(next);
-    window.open(next.browserUrl, "_blank", "noopener,noreferrer");
+  });
+
+  const reopenSampling = () => runAction("reopen", async () => {
+    await extensionBridge.open(session.browserUrl);
   });
 
   const createNextDraft = () => runAction("new-draft", async (context) => {
@@ -418,9 +421,8 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
           {session ? <Alert type={view.countdown.expired ? "warning" : "info"} showIcon
             title={view.countdown.expired ? "选样会话已过期" : "扩展选样会话已开启"}
             description={<span role="status">会话剩余时间：{view.countdown.label}。如果页面没有自动打开，请使用右侧按钮。</span>}
-            action={!view.countdown.expired ? <Button onClick={() => {
-              window.open(session.browserUrl, "_blank", "noopener,noreferrer");
-            }}>打开 Ozon 选样页</Button> : null} /> : null}
+            action={!view.countdown.expired ? <Button loading={action === "reopen"}
+              onClick={reopenSampling}>打开 Ozon 选样页</Button> : null} /> : null}
           <p>已确认 {detail.sampleCount} 个商品；达到 5～20 个有效样本后才可分析。</p>
           {samples.length ? <div className="category-strategy-samples">{samples.map((sample) => <article key={sample.sampleId}>
             <ProtectedThumbnail sample={sample} />

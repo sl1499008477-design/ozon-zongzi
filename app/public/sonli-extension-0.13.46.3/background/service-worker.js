@@ -37,6 +37,7 @@ try {
     '../lib/cdn-buster.js',
     '../lib/web-bridge-policy.js',
     '../lib/collector-session.js',
+    '../lib/category-strategy-handoff.js',
     '../lib/category-strategy-sampling.js',
     '../lib/ozon-enrichment-contract.js',
     '../lib/collector-capture-deadline.js',
@@ -4062,6 +4063,22 @@ try {
       const backendUrl = await getBackendUrl();
 
       switch (message?.action) {
+        case 'CATEGORY_STRATEGY_READINESS': {
+          if (!exactRuntimeMessage(message, ['action'])) {
+            throw categoryStrategyError('CATEGORY_STRATEGY_SAMPLING_REQUEST_INVALID');
+          }
+          return { ok: true, data: await categoryStrategySamplingClient.ready() };
+        }
+        case 'CATEGORY_STRATEGY_BROWSER_OPEN': {
+          if (!exactRuntimeMessage(message, ['action', 'browserUrl'])) {
+            throw categoryStrategyError('CATEGORY_STRATEGY_SAMPLING_REQUEST_INVALID');
+          }
+          const browserUrl = globalThis.JzCategoryStrategyHandoff.projectBrowserUrl(
+            message.browserUrl,
+          );
+          await chrome.tabs.create({ url: browserUrl, active: true });
+          return { ok: true, data: { opened: true } };
+        }
         case 'CATEGORY_STRATEGY_SESSION_START': {
           if (!exactRuntimeMessage(message, ['action', 'sessionId'])) {
             throw categoryStrategyError('CATEGORY_STRATEGY_SAMPLING_REQUEST_INVALID');

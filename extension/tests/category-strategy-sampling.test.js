@@ -282,6 +282,33 @@ test('background client stores the raw session only in session storage and retur
   assert.equal(requests[0].headers['x-zongzi-extension-version'], '0.13.46.3');
 });
 
+test('background readiness authenticates the account before announcing the extension without a session', async () => {
+  const calls = [];
+  const client = createCategoryStrategySamplingBackgroundClient({
+    storageSession: {
+      async get() { return {}; },
+      async set() { throw new Error('readiness must not write session storage'); },
+      async remove() {},
+    },
+    async currentAccount() { calls.push('account'); return { id: 'account-a' }; },
+    extensionVersion: '0.13.46.3',
+    async request(input) {
+      calls.push(input);
+      return { ready: true, minimumExtensionVersion: '0.13.46.3' };
+    },
+  });
+
+  assert.deepEqual(await client.ready(), {
+    ready: true, minimumExtensionVersion: '0.13.46.3',
+  });
+  assert.deepEqual(calls, ['account', {
+    method: 'POST',
+    path: '/extension/auto-listing/category-strategy/readiness',
+    headers: { 'x-zongzi-extension-version': '0.13.46.3' },
+    body: {},
+  }]);
+});
+
 test('background confirmation uses only the dedicated endpoint and clears secret state on success', async () => {
   const state = { [PRIVATE_SESSION_KEY]: {
     accountId: 'account-a', ...session(), sessionSecret: 'secret-value-at-least-32-characters',

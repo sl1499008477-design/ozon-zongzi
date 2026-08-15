@@ -72,10 +72,14 @@ test("same-route strategy navigation reloads the selected draft from the query",
   assert.match(page, /new URLSearchParams\(locationSearch\)/u);
 });
 
-test("automatic-listing handoff starts sampling, opens Ozon and keeps a manual reopen control", () => {
+test("automatic-listing handoff delegates readiness and Ozon opening to the extension bridge", () => {
   assert.match(page, /loadCategoryStrategyBootstrap/u);
+  assert.match(page, /createCategoryStrategyExtensionBridge/u);
+  assert.match(page, /handoffCategoryStrategySampling/u);
   assert.match(page, /from-auto-listing|from=auto-listing|autoStartSampling/u);
-  assert.match(page, /window\.open\(bootstrap\.browserUrl, "_blank", "noopener,noreferrer"\)/u);
+  assert.match(page, /extensionBridge/u);
+  assert.match(page, /extensionBridge\.open\(session\.browserUrl\)/u);
+  assert.doesNotMatch(page, /window\.open\(/u);
   assert.match(page, /打开 Ozon 选样页/u);
   assert.match(page, /window\.history\.replaceState/u);
   assert.match(page, /findResumableCategoryStrategyDraftId/u);
@@ -99,7 +103,7 @@ test("all write commands reuse a durable logical intent until the response is co
     "category-analysis", "category-edit", "category-publish", "category-rollback"]) {
     assert.match(writeFlow, new RegExp(`(?:intentIdentity|intents\\.identity)\\(\"${command}\"`, "u"));
   }
-  assert.match(page, /replaceSample[\s\S]*intentIdentity\("category-sample-revision"[\s\S]*client\.removeSample[\s\S]*client\.startSession[\s\S]*settleIntent\("category-sample-revision"/u);
+  assert.match(page, /replaceSample[\s\S]*intentIdentity\("category-sample-revision"[\s\S]*client\.removeSample[\s\S]*handoffCategoryStrategySampling[\s\S]*settleIntent\("category-sample-revision"/u);
   assert.match(page, /settleIntent/u);
 });
 
