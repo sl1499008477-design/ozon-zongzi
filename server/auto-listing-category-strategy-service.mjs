@@ -11,6 +11,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
 const MODES = new Set(["LEGACY_FALLBACK", "REQUIRE_EXACT_STRATEGY"]);
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+const SAMPLE_REVISION_STATUSES = new Set(["COLLECTING", "SAMPLES_READY", "DRAFT_READY", "NEEDS_REVIEW"]);
 const REPLAY_CACHE_TTL_MS = 30 * 60 * 1000;
 const FACTORY_KEYS = new Set([
   "repository", "readModel", "sampleStore", "exactProductFacts", "extensionSessionChannel",
@@ -201,16 +202,17 @@ function createdDraftRow(raw, accountId, expectedScope, expectedSourceCollectIte
   });
 }
 
-function samplingSessionRow(raw, accountId, draftId) {
+function samplingSessionRow(raw, accountId, draftId, { allowCancelled = false } = {}) {
   return dependencyDto(() => {
     const value = closed(raw, new Set([
       "sessionId", "draftId", "accountId", "state", "createdAt", "expiresAt", "duplicate",
     ]));
-    if (identifier(value.accountId) !== accountId || identifier(value.draftId) !== draftId
-      || value.state !== "ACTIVE") throw invalid();
+    const projectedDraftId = identifier(value.draftId);
+    if (identifier(value.accountId) !== accountId || (draftId !== undefined && projectedDraftId !== draftId)
+      || !(value.state === "ACTIVE" || (allowCancelled && value.state === "CANCELLED"))) throw invalid();
     exactIsoDate(value.createdAt);
-    return Object.freeze({ sessionId: identifier(value.sessionId), expiresAt: exactIsoDate(value.expiresAt),
-      duplicate: duplicate(value.duplicate) });
+    return Object.freeze({ sessionId: identifier(value.sessionId), draftId: projectedDraftId,
+      state: value.state, expiresAt: exactIsoDate(value.expiresAt), duplicate: duplicate(value.duplicate) });
   });
 }
 
@@ -238,6 +240,20 @@ function committedSampleSetRow(raw, expected) {
     return Object.freeze({ sampleSetId, sampleSetHash: value.sampleSetHash,
       sampleCount: value.sampleCount, draftVersion: value.draftVersion, status: value.status,
       duplicate: duplicate(value.duplicate) });
+  });
+}
+
+function sampleRevisionRow(raw, expected) {
+  return dependencyDto(() => {
+    const value = closed(raw, new Set([
+      "draftId", "sampleId", "expectedDraftVersion", "samplingIdempotencyKey",
+      "samplingCorrelationId", "duplicate",
+    ]));
+    if (identifier(value.draftId) !== expected.draftId
+      || identifier(value.sampleId) !== expected.sampleId
+      || positive(value.expectedDraftVersion) !== expected.expectedDraftVersion) throw invalid();
+    return Object.freeze({ samplingIdempotencyKey: identifier(value.samplingIdempotencyKey),
+      samplingCorrelationId: identifier(value.samplingCorrelationId), duplicate: duplicate(value.duplicate) });
   });
 }
 
@@ -592,7 +608,8 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
     publicationService, analyzer, objectStorage, now, deriveSessionIdentity, observability = null } = options;
   const analysisPort = analyzer ?? absentAnalyzer();
   if (!["getDraftReplay", "createDraft", "startSamplingSession", "getSamplingSessionReplay", "validateSamplingSession",
-    "getCommittedSampleSetReplay", "commitSampleSetCanonical", "transitionAccountPolicy",
+    "getCommittedSampleSetReplay", "commitSampleSetCanonical", "prepareSampleRevision",
+    "cancelSamplingSession", "transitionAccountPolicy",
     "getAccountPolicy"].every((method) => typeof repository?.[method] === "function")
     || typeof readModel?.listStrategies !== "function" || typeof readModel?.getDraft !== "function"
     || typeof readModel?.getDraftDetail !== "function" || typeof readModel?.getThumbnailEvidence !== "function"
@@ -814,7 +831,10 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
             sessionSecretHash: hash(replay.sessionSecret), idempotencyKey, correlationId });
         } catch (error) { dependencyError(error); }
         if (durable) {
-          const row = samplingSessionRow(durable, accountId, draftId);
+          const row = samplingSessionRow(durable, accountId, draftId, { allowCancelled: true });
+          if (row.state === "CANCELLED") {
+            throw failure("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_CANCELLED", 409, false);
+          }
           try {
             await extensionSessionChannel.putSession({ accountId, actorId: accountId, draftId,
               expectedDraftVersion,
@@ -857,6 +877,33 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
         if (current === replay && current.promise === promise) current.promise = null;
       });
       return promise;
+    },
+
+    async cancelSamplingSession(raw = {}) {
+      const input = closed(raw, new Set(["actor", "sessionId"]));
+      const accountId = actorAccount(input.actor);
+      const sessionId = identifier(input.sessionId);
+      const startedAt = observationStartedAt();
+      let row;
+      try {
+        row = samplingSessionRow(await repository.cancelSamplingSession({
+          accountId, actorId: accountId, sessionId,
+        }), accountId, undefined, { allowCancelled: true });
+      } catch (error) { dependencyError(error); }
+      if (row.state !== "CANCELLED") throw dataBoundary();
+      for (const [key, replay] of sessionReplays) {
+        if (replay.sessionId === sessionId) sessionReplays.delete(key);
+      }
+      let draft = null;
+      if (observability) {
+        try { draft = await ownDraft(accountId, row.draftId); } catch {}
+      }
+      if (draft) await observe({ metric: "category_strategy_sampling_started_total", accountId,
+        draftId: row.draftId, sessionId, scope: draft.scope,
+        correlationId: operationId("cancel-correlation", accountId, sessionId),
+        outcome: row.duplicate ? "cancel_replay" : "cancelled",
+        startedAt });
+      return Object.freeze({ sessionId, cancelled: true, duplicate: row.duplicate });
     },
 
     async confirmSampleSet(raw = {}) {
@@ -913,7 +960,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
         }
         await requireEnabled(accountId);
         const draft = await ownDraft(accountId, draftId);
-        if (draft.draftVersion !== expectedDraftVersion || draft.status !== "COLLECTING") {
+        if (draft.draftVersion !== expectedDraftVersion || !SAMPLE_REVISION_STATUSES.has(draft.status)) {
           throw failure("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT", 409);
         }
         try {
@@ -964,14 +1011,48 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
       const replay = { fingerprint, promise, settled: false, cachedAt: currentTime };
       sampleReplays.set(replayKey, replay);
       promise.then(() => { markReplaySettled(replay); }, () => { markReplaySettled(replay); });
+      promise.catch(async (error) => {
+        if (!observability) return;
+        let draft = null;
+        try { draft = await ownDraft(accountId, draftId); } catch {}
+        if (!draft) return;
+        const code = String(error?.code || "");
+        const outcome = code.includes("EXPIRED") ? "session_expired"
+          : code.includes("SCOPE") || code.includes("FACTS") ? "scope_mismatch"
+            : code.includes("IMAGE") ? "image_excluded" : "failed";
+        await observe({ metric: "category_strategy_sample_set_committed_total", accountId, draftId,
+          sessionId, scope: draft.scope, correlationId, outcome, startedAt });
+      });
       promise.catch(() => { if (sampleReplays.get(replayKey)?.promise === promise) sampleReplays.delete(replayKey); });
       return promise;
     },
 
     async removeSample(raw = {}) {
       const input = closed(raw, new Set(["actor", "draftId", "sampleId", "expectedDraftVersion", "idempotencyKey", "correlationId"]));
-      await requireEnabled(actorAccount(input.actor));
-      throw failure("AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_CHANGE_NOT_READY", 409);
+      const accountId = actorAccount(input.actor);
+      const draftId = identifier(input.draftId);
+      const sampleId = identifier(input.sampleId);
+      const expectedDraftVersion = positive(input.expectedDraftVersion);
+      const idempotencyKey = identifier(input.idempotencyKey);
+      const correlationId = identifier(input.correlationId);
+      await requireEnabled(accountId);
+      const detail = publicDraftDetail(await readModel.getDraftDetail({ accountId, draftId }), accountId);
+      const samplingIdempotencyKey = operationId("revision-session", accountId, draftId, idempotencyKey);
+      const samplingCorrelationId = operationId("revision-correlation", accountId, draftId, correlationId);
+      let prepared;
+      try {
+        prepared = sampleRevisionRow(await repository.prepareSampleRevision({ accountId, actorId: accountId, draftId,
+          sampleId, expectedDraftVersion, samplingIdempotencyKey, samplingCorrelationId,
+          idempotencyKey, correlationId }), { draftId, sampleId, expectedDraftVersion });
+      } catch (error) { dependencyError(error); }
+      await observe({ metric: "category_strategy_sampling_started_total", accountId, draftId,
+        scope: detail.draft.scope, correlationId, outcome: "revision_requested",
+        startedAt: observationStartedAt() });
+      return Object.freeze({ draftId, sampleId, expectedDraftVersion, idempotencyKey,
+        replacementRequired: true, samplingIdentity: Object.freeze({
+          idempotencyKey: identifier(prepared.samplingIdempotencyKey),
+          correlationId: identifier(prepared.samplingCorrelationId),
+        }) });
     },
 
     async createAnalysisAttempt(raw = {}) {
@@ -1044,13 +1125,25 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
       const input = closed(raw, new Set(["actor", "draftId", "targetStrategyVersionId",
         "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId"]));
       const accountId = actorAccount(input.actor);
-      await ownDraft(accountId, identifier(input.draftId));
+      const draftId = identifier(input.draftId);
+      const correlationId = identifier(input.correlationId);
+      const startedAt = observationStartedAt();
+      const draft = await ownDraft(accountId, draftId);
       try {
-        return publicationDto(await publicationService.rollbackCategoryStrategyVersion({ actor: { id: accountId, role: "admin" },
+        const result = publicationDto(await publicationService.rollbackCategoryStrategyVersion({ actor: { id: accountId, role: "admin" },
           targetStrategyVersionId: identifier(input.targetStrategyVersionId),
           expectedPublishedStrategyVersionId: identifier(input.expectedPublishedStrategyVersionId),
-          idempotencyKey: identifier(input.idempotencyKey), correlationId: identifier(input.correlationId) }));
-      } catch (error) { dependencyError(error); }
+          idempotencyKey: identifier(input.idempotencyKey), correlationId }));
+        await observe({ metric: "category_strategy_publish_total", accountId, draftId,
+          strategyVersionId: result.id, scope: draft.scope, correlationId,
+          outcome: result.duplicate ? "rollback_replay" : "rollback_success", startedAt });
+        return result;
+      } catch (error) {
+        await observe({ metric: "category_strategy_publish_total", accountId, draftId,
+          scope: draft.scope, correlationId,
+          outcome: Number(error?.status) === 409 ? "rollback_conflict" : "rollback_failed", startedAt });
+        dependencyError(error);
+      }
     },
   });
 }

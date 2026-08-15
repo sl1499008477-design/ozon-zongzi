@@ -30,15 +30,17 @@
    - `category_strategy_publish_total`
    - `category_strategy_continue_create_total`
 4. Structured events may contain only account hash, draft/session/attempt/strategy-version IDs, exact category scope, correlation ID, bounded outcome, and duration. They must never contain account ID, secrets, cookies, Ozon URLs, image keys, raw evidence, prompts, AI response, credentials, SKU, title, or store credentials.
+   Operational outcome mapping stays inside the six fixed names: sampling cancellation/replay and sample-revision requests use `category_strategy_sampling_started_total` events; expired sessions, scope/fact mismatch, and rejected image evidence use `category_strategy_sample_set_committed_total` events; audited rollback success/replay/conflict/failure uses `category_strategy_publish_total` outcomes. No additional metric family is created.
 5. Verify a missing exact strategy returns 409 before job, item, outbox, paid AI, or generation-object side effects. After immutable publication, the user must continue with a new idempotency key; the created task freezes the selected strategy version and rule while preserving the exact requested image counts.
 
 ## Expected failures and recovery
 
 - Four samples, twenty-one samples, duplicate SKU, mixed category/type, stale source version, expired session, wrong account, wrong extension version, or mismatched facts are rejected without a sealed sample set. Correct the input and retry with a new command key where required.
 - Five through twenty exact, unique, same-scope samples are valid. A lost response may be retried only with the identical idempotency key and identical request; the durable result is replayed.
+- Replacing or supplementing samples is a two-stage immutable revision. The remove action validates the selected sample and opens a new exact sampling session; the administrator then confirms the complete replacement set of 5–20 samples. Confirmation appends a new SEALED sample-set/hash and advances the draft version. The prior SEALED set, images, hashes, and audit events remain unchanged. Until confirmation succeeds, the prior set remains authoritative.
 - Paid AI is called only after explicit cost confirmation. A known timeout/failure, malformed output, or missing evidence moves the draft to **NEEDS_REVIEW**. If the response outcome is unknown, the reserved attempt stays pending in **ANALYZING**; recover that same attempt with the same idempotency/request identity. In either case, do not auto-publish and never create a second paid request for an already reserved identity.
 - Object writes use PREPARING manifests. **DONE** is authoritative committed evidence and is never garbage-collected. **ABORTED** is an authoritative cleanup tombstone: remove only its owned non-published objects under expected ETag/hash fencing, retain the ABORTED manifest, and make cleanup idempotent. A missing or ambiguous manifest is not permission to delete.
-- Session cancellation clears only process-local selection facts and makes the durable session unusable. It does not delete committed evidence, published versions, ordinary collection records, or generation assets.
+- Session cancellation first records the durable session as CANCELLED, then clears process-local selection facts. Exact start replay after a process restart remains cancelled and cannot be handed off again. Cancellation does not delete committed evidence, published versions, ordinary collection records, or generation assets.
 - Old V1 tasks and idempotent replays continue to reference their frozen version. Turning the feature off restores LEGACY_FALLBACK for new requests; it does not rewrite old jobs.
 
 ## Disable, rollback, and data preservation

@@ -79,7 +79,7 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   now = new Date("2026-08-15T00:00:00.000Z") } = {}) {
   const calls = { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
     handoff: 0, publish: 0, rollback: 0 };
-  const records = { session: [], handoff: [], persist: [], commit: [], identity: [] };
+  const records = { session: [], handoff: [], persist: [], commit: [], identity: [], cancel: [], revision: [] };
   records.analysis = [];
   records.edit = [];
   let currentPolicyMode = policyMode;
@@ -128,6 +128,27 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
         accountId: input.accountId, sampleSetHash: HASH,
         sampleCount: input.samples.length, draftVersion: input.expectedDraftVersion + 1,
         status: "SAMPLES_READY", idempotencyKey: input.idempotencyKey, duplicate: false });
+    },
+    async prepareSampleRevision(input) {
+      if (!Array.from({ length: currentDraft.sampleCount || 0 }, (_, index) => `sample-${index + 1}`)
+        .includes(input.sampleId)) {
+        throw Object.assign(new Error("not found"), {
+          code: "AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_NOT_FOUND", status: 404,
+        });
+      }
+      records.revision.push(input);
+      return { draftId: input.draftId, sampleId: input.sampleId,
+        expectedDraftVersion: input.expectedDraftVersion,
+        samplingIdempotencyKey: input.samplingIdempotencyKey,
+        samplingCorrelationId: input.samplingCorrelationId, duplicate: false };
+    },
+    async cancelSamplingSession(input) {
+      records.cancel.push(input);
+      const cancelled = { sessionId: input.sessionId, draftId: currentDraft.draftId, accountId: input.accountId,
+        state: "CANCELLED", createdAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + (2 * 60 * 60 * 1000)).toISOString(), duplicate: records.cancel.length > 1 };
+      if (storedSession?.sessionId === input.sessionId) storedSession = { ...cancelled, duplicate: true };
+      return cancelled;
     },
     async transitionAccountPolicy(input) {
       calls.policy += 1;
@@ -263,6 +284,42 @@ test("successful sampling, sample commit, analysis, and publish emit the fixed s
     assert.equal(Object.hasOwn(event, "guidance"), false);
     assert.equal(Object.hasOwn(event, "sourceReferences"), false);
   }
+});
+
+test("revision, cancellation, rejected evidence and rollback stay within the six fixed safe event names", async () => {
+  const events = [];
+  const observability = { async observe(event) { events.push(event); } };
+  const revision = harness({ currentDraft: draft({ status: "SAMPLES_READY", draftVersion: 2, sampleCount: 5 }), observability });
+  await revision.service.removeSample({ actor: ACTOR, draftId: "draft-a", sampleId: "sample-1",
+    expectedDraftVersion: 2, idempotencyKey: "revision-a", correlationId: "revision-correlation" });
+  await revision.service.cancelSamplingSession({ actor: ACTOR, sessionId: "session-a" });
+  await revision.service.rollbackDraft({ actor: ACTOR, draftId: "draft-a",
+    targetStrategyVersionId: "strategy-v1", expectedPublishedStrategyVersionId: "strategy-v2",
+    idempotencyKey: "rollback-a", correlationId: "rollback-correlation" });
+
+  const imageFailure = Object.assign(new Error("safe failure"), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_STORAGE_FAILED", status: 503, retryable: true,
+  });
+  const rejected = harness({ persistFailure: imageFailure, observability });
+  const session = await rejected.service.startSamplingSession({ actor: ACTOR, draftId: "draft-a",
+    expectedDraftVersion: 1, idempotencyKey: "reject-session", correlationId: "reject-session-correlation" });
+  await assert.rejects(rejected.service.confirmSampleSet({ actor: ACTOR, draftId: "draft-a",
+    expectedDraftVersion: 1, sessionId: session.sessionId,
+    sessionSecret: rejected.records.handoff[0].sessionSecret, samples: selectedSamples(5),
+    idempotencyKey: "reject-samples", correlationId: "reject-samples-correlation" }), {
+    code: imageFailure.code,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(events.map(({ metric, outcome }) => ({ metric, outcome })), [
+    { metric: "category_strategy_sampling_started_total", outcome: "revision_requested" },
+    { metric: "category_strategy_sampling_started_total", outcome: "cancelled" },
+    { metric: "category_strategy_publish_total", outcome: "rollback_success" },
+    { metric: "category_strategy_sampling_started_total", outcome: "success" },
+    { metric: "category_strategy_sample_set_committed_total", outcome: "image_excluded" },
+  ]);
+  assert.equal(new Set(events.map((event) => event.metric)).size, 3);
+  assert.equal(JSON.stringify(events).includes("safe failure"), false);
 });
 
 test("durable detail read returns only the closed reloadable Web evidence bundle", async () => {
@@ -697,7 +754,7 @@ test("repository result DTOs are exact descriptor-safe server boundaries", async
   assert.equal(accessor.calls.handoff, 0);
 });
 
-test("analysis and manual edit use the analyzer while sample removal remains fail-closed", async () => {
+test("analysis/manual edit work and sample revision requires a full immutable replacement set", async () => {
   const h = harness();
   assert.equal((await h.service.createAnalysisAttempt({
     actor: ACTOR, draftId: "draft-a", costConfirmed: true,
@@ -713,12 +770,57 @@ test("analysis and manual edit use the analyzer while sample removal remains fai
   assert.deepEqual(h.records.analysis[0], { accountId: "account-a", actorId: "account-a", draftId: "draft-a",
     costConfirmed: true, idempotencyKey: "analysis-a", correlationId: "correlation-a" });
   assert.equal(h.records.edit[0].baseAnalysisAttemptId, "attempt-a");
-  await assert.rejects(h.service.removeSample({
-    actor: ACTOR, draftId: "draft-a", sampleId: "sample-a",
-    expectedDraftVersion: 1, idempotencyKey: "remove-a", correlationId: "correlation-a",
-  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_CHANGE_NOT_READY", status: 409 });
+  const revision = harness({ currentDraft: draft({ status: "SAMPLES_READY", draftVersion: 2, sampleCount: 5 }) });
+  const prepared = await revision.service.removeSample({
+    actor: ACTOR, draftId: "draft-a", sampleId: "sample-1",
+    expectedDraftVersion: 2, idempotencyKey: "remove-a", correlationId: "correlation-a",
+  });
+  assert.deepEqual({ ...prepared, samplingIdentity: undefined }, {
+    draftId: "draft-a", sampleId: "sample-1", expectedDraftVersion: 2,
+    idempotencyKey: "remove-a", replacementRequired: true, samplingIdentity: undefined,
+  });
+  assert.match(prepared.samplingIdentity.idempotencyKey, /^revision-session-/u);
+  assert.match(prepared.samplingIdentity.correlationId, /^revision-correlation-/u);
+  await assert.rejects(revision.service.removeSample({
+    actor: ACTOR, draftId: "draft-a", sampleId: "sample-missing",
+    expectedDraftVersion: 2, idempotencyKey: "remove-b", correlationId: "correlation-b",
+  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_NOT_FOUND", status: 404 });
   assert.deepEqual(h.calls, { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
     handoff: 0, publish: 0, rollback: 0 });
+});
+
+test("durable sampling cancellation is idempotent and a cancelled start replay cannot hand off again", async () => {
+  const h = harness();
+  assert.deepEqual(await h.service.cancelSamplingSession({ actor: ACTOR, sessionId: "session-a" }), {
+    sessionId: "session-a", cancelled: true, duplicate: false,
+  });
+  assert.deepEqual(await h.service.cancelSamplingSession({ actor: ACTOR, sessionId: "session-a" }), {
+    sessionId: "session-a", cancelled: true, duplicate: true,
+  });
+  assert.deepEqual(h.records.cancel, [
+    { accountId: "account-a", actorId: "account-a", sessionId: "session-a" },
+    { accountId: "account-a", actorId: "account-a", sessionId: "session-a" },
+  ]);
+
+  const cancelled = harness({ sessionReplay: {
+    sessionId: "session-a", draftId: "draft-a", accountId: "account-a", state: "CANCELLED",
+    createdAt: "2026-08-15T00:00:00.000Z", expiresAt: "2026-08-15T02:00:00.000Z", duplicate: true,
+  } });
+  await assert.rejects(cancelled.service.startSamplingSession({ actor: ACTOR, draftId: "draft-a",
+    expectedDraftVersion: 1, idempotencyKey: "session-a", correlationId: "correlation-a" }), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_CANCELLED", status: 409,
+  });
+  assert.equal(cancelled.calls.handoff, 0);
+
+  const sameProcess = harness();
+  const command = { actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+    idempotencyKey: "same-process-session", correlationId: "same-process-correlation" };
+  const started = await sameProcess.service.startSamplingSession(command);
+  await sameProcess.service.cancelSamplingSession({ actor: ACTOR, sessionId: started.sessionId });
+  await assert.rejects(sameProcess.service.startSamplingSession(command), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_CANCELLED", status: 409,
+  });
+  assert.equal(sameProcess.calls.handoff, 1);
 });
 
 test("analysis requires exact true before policy or analyzer calls", async () => {

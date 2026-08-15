@@ -253,9 +253,17 @@ export function createAutoListingCategoryStrategyExtensionHttpHandler({
       if (route.kind === "cancel") {
         const body = closedBody(await readJson(req), new Set(["sessionId"]));
         if (decodeId(body.sessionId) !== route.sessionId) throw routeError();
-        const cancelled = await extensionChannel.cancelSession({ accountId,
-          sessionId: route.sessionId, extensionVersion: version });
-        sendJson(res, 200, { ok: true, data: { cancelled } });
+        const service = await getService();
+        let durable;
+        let durableError;
+        try {
+          durable = await service.cancelSamplingSession({ actor: account, sessionId: route.sessionId });
+        } catch (error) { durableError = error; }
+        const cancelled = await extensionChannel.cancelSession({ accountId, sessionId: route.sessionId,
+          extensionVersion: version });
+        if (durableError) throw durableError;
+        sendJson(res, 200, { ok: true, data: { cancelled: durable.cancelled === true,
+          localSessionRemoved: cancelled } });
         return true;
       }
       const body = closedBody(await readJson(req), new Set([

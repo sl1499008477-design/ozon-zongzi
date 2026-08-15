@@ -412,12 +412,75 @@ if (!enabled) {
       assert.deepEqual({ hash: durableCanonicalReplay.sampleSetHash,
         duplicate: durableCanonicalReplay.duplicate }, { hash: canonicalExpectedHash, duplicate: true });
 
+      const revisionSessionInput = {
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId, expectedDraftVersion: 2,
+        sessionId: `revision-session-${suffix}`, sessionSecretHash: sha(`revision-secret-${suffix}`),
+        expiresAt: new Date(Date.now() + (2 * 60 * 60 * 1000)).toISOString(),
+        idempotencyKey: `revision-session-command-${suffix}`,
+        correlationId: `revision-session-corr-${suffix}`,
+      };
+      const preparedRevision = await repository.prepareSampleRevision({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        sampleId: canonicalSamples[0].sampleId, expectedDraftVersion: 2,
+        samplingIdempotencyKey: revisionSessionInput.idempotencyKey,
+        samplingCorrelationId: revisionSessionInput.correlationId,
+        idempotencyKey: `revision-request-${suffix}`, correlationId: `revision-request-corr-${suffix}`,
+      });
+      assert.equal(preparedRevision.duplicate, false);
+      assert.equal((await repository.prepareSampleRevision({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        sampleId: canonicalSamples[0].sampleId, expectedDraftVersion: 2,
+        samplingIdempotencyKey: revisionSessionInput.idempotencyKey,
+        samplingCorrelationId: revisionSessionInput.correlationId,
+        idempotencyKey: `revision-request-${suffix}`, correlationId: `revision-request-corr-${suffix}`,
+      })).duplicate, true);
+      const revisionSession = await repository.startSamplingSession(revisionSessionInput);
+      const revisionSampleSetId = `revision-sample-set-${suffix}`;
+      const reselectedRevisionSamples = Array.from({ length: 6 }, (_, ordinal) => sample({
+        suffix: `revision-${suffix}`, ordinal, scope: canonicalScope,
+        accountId: accountB, draftId: canonicalDraft.draftId, sampleSetId: revisionSampleSetId,
+      }));
+      await assert.rejects(repository.commitSampleSetCanonical({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        sessionId: revisionSession.sessionId, sessionSecretHash: revisionSessionInput.sessionSecretHash,
+        expectedDraftVersion: 2, samples: reselectedRevisionSamples,
+        idempotencyKey: `revision-reselected-${suffix}`, correlationId: `revision-reselected-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_EXCLUDED_RESELECTED", status: 409 });
+      const revisionSamples = reselectedRevisionSamples.map((entry, ordinal) => ordinal === 0 ? {
+        ...entry, sourceProductId: 4_862_904_999, sourceProductRef: `replacement-product-${suffix}`,
+        sourceProductResponseHash: sha(`replacement-product-${suffix}`),
+      } : entry);
+      const revisionExpectedHash = await expectedSampleSetHash(pool, {
+        accountId: accountB, draftId: canonicalDraft.draftId, sessionId: revisionSession.sessionId,
+        scope: canonicalScope, samples: revisionSamples,
+      });
+      const revised = await repository.commitSampleSetCanonical({
+        accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
+        sessionId: revisionSession.sessionId, sessionSecretHash: revisionSessionInput.sessionSecretHash,
+        expectedDraftVersion: 2, samples: revisionSamples,
+        idempotencyKey: `revision-commit-${suffix}`, correlationId: `revision-commit-corr-${suffix}`,
+      });
+      assert.deepEqual({ sampleSetId: revised.sampleSetId, hash: revised.sampleSetHash,
+        sampleCount: revised.sampleCount, draftVersion: revised.draftVersion }, {
+        sampleSetId: revisionSampleSetId, hash: revisionExpectedHash, sampleCount: 6, draftVersion: 3,
+      });
+      const immutableSets = await pool.query(
+        `SELECT id,sample_set_hash,sample_count FROM auto_listing_category_strategy_sample_sets
+          WHERE account_id=$1 AND draft_id=$2 AND status='SEALED' ORDER BY sealed_at,id`,
+        [accountB, canonicalDraft.draftId],
+      );
+      assert.deepEqual(immutableSets.rows.map((row) => ({ id: row.id, hash: row.sample_set_hash,
+        count: Number(row.sample_count) })), [
+        { id: canonicalSampleSetId, hash: canonicalExpectedHash, count: 5 },
+        { id: revisionSampleSetId, hash: revisionExpectedHash, count: 6 },
+      ]);
+
       const analysisEvidence = await repository.loadAnalysisEvidence({
         accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
       });
       assert.deepEqual({ status: analysisEvidence.status, sampleSetHash: analysisEvidence.sampleSetHash,
         sampleCount: analysisEvidence.samples.length }, {
-        status: "SAMPLES_READY", sampleSetHash: canonicalExpectedHash, sampleCount: 5,
+        status: "SAMPLES_READY", sampleSetHash: revisionExpectedHash, sampleCount: 6,
       });
       assert.equal(analysisEvidence.samples.every((entry) => entry.images.every((image) => image.state === "READY")), true);
 
@@ -428,8 +491,8 @@ if (!enabled) {
       };
       const reserveInput = {
         accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
-        expectedDraftVersion: 2, sampleSetId: canonicalSampleSetId,
-        sampleSetHash: canonicalExpectedHash, analysisInputHash,
+        expectedDraftVersion: 3, sampleSetId: revisionSampleSetId,
+        sampleSetHash: revisionExpectedHash, analysisInputHash,
         modelConfigSnapshot, modelConfigHash: jsonHash(modelConfigSnapshot), costConfirmed: true,
         idempotencyKey: `analysis-${suffix}`, correlationId: `analysis-correlation-${suffix}`,
       };
@@ -445,7 +508,7 @@ if (!enabled) {
       const acceptedGuidance = guidance("accepted");
       const completeInput = {
         accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
-        attemptId: reserved.attemptId, expectedDraftVersion: 3, analysisInputHash,
+        attemptId: reserved.attemptId, expectedDraftVersion: 4, analysisInputHash,
         outcome: "ACCEPTED", safeCode: null,
         rawResponse: { validationStatus: "ACCEPTED", safeCode: null, response: { schemaVersion: 2 } },
         rawResponseHash: jsonHash({ validationStatus: "ACCEPTED", safeCode: null,
@@ -474,7 +537,7 @@ if (!enabled) {
       const editedGuidance = guidance("edited");
       const edited = await repository.appendManualAnalysisResult({
         accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
-        expectedDraftVersion: 4, baseAnalysisAttemptId: reserved.attemptId,
+        expectedDraftVersion: 5, baseAnalysisAttemptId: reserved.attemptId,
         guidance: editedGuidance, guidanceHash: jsonHash(editedGuidance),
         idempotencyKey: `edit-${suffix}`, correlationId: `edit-correlation-${suffix}`,
       });
@@ -485,29 +548,29 @@ if (!enabled) {
       });
       assert.equal((await repository.appendManualAnalysisResult({
         accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
-        expectedDraftVersion: 4, baseAnalysisAttemptId: reserved.attemptId,
+        expectedDraftVersion: 5, baseAnalysisAttemptId: reserved.attemptId,
         guidance: editedGuidance, guidanceHash: jsonHash(editedGuidance),
         idempotencyKey: `edit-${suffix}`, correlationId: `edit-correlation-${suffix}`,
       })).duplicate, true);
       const secondEditedGuidance = guidance("edited-again");
       const secondEdited = await repository.appendManualAnalysisResult({
         accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
-        expectedDraftVersion: 5, baseAnalysisAttemptId: reserved.attemptId,
+        expectedDraftVersion: 6, baseAnalysisAttemptId: reserved.attemptId,
         guidance: secondEditedGuidance, guidanceHash: jsonHash(secondEditedGuidance),
         idempotencyKey: `edit-again-${suffix}`, correlationId: `edit-again-correlation-${suffix}`,
       });
-      assert.equal(secondEdited.draftVersion, 6);
-      assert.equal((await repository.completeAnalysisAttempt(completeInput)).draftVersion, 4);
-      assert.equal((await repository.reserveAnalysisAttempt(reserveInput)).result.draftVersion, 4);
+      assert.equal(secondEdited.draftVersion, 7);
+      assert.equal((await repository.completeAnalysisAttempt(completeInput)).draftVersion, 5);
+      assert.equal((await repository.reserveAnalysisAttempt(reserveInput)).result.draftVersion, 5);
       assert.equal((await repository.reserveAnalysisAttempt({
-        ...reserveInput, expectedDraftVersion: 6,
+        ...reserveInput, expectedDraftVersion: 7,
       })).result.resultId, completed.resultId);
       assert.equal((await repository.appendManualAnalysisResult({
         accountId: accountB, actorId: accountB, draftId: canonicalDraft.draftId,
-        expectedDraftVersion: 4, baseAnalysisAttemptId: reserved.attemptId,
+        expectedDraftVersion: 5, baseAnalysisAttemptId: reserved.attemptId,
         guidance: editedGuidance, guidanceHash: jsonHash(editedGuidance),
         idempotencyKey: `edit-${suffix}`, correlationId: `edit-correlation-${suffix}`,
-      })).draftVersion, 5);
+      })).draftVersion, 6);
       assert.equal(Number((await pool.query(
         "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_analysis_results WHERE account_id=$1 AND attempt_id=$2 AND source_kind='AI'",
         [accountB, reserved.attemptId],
@@ -583,16 +646,21 @@ if (!enabled) {
       assert.equal(typeof session.createdAt, "string");
       assert.equal(Date.parse(session.expiresAt) - Date.parse(session.createdAt), 2 * 60 * 60 * 1000);
       assert.equal((await repository.startSamplingSession(sessionInput)).duplicate, true);
-      await pool.query(
-        `UPDATE auto_listing_category_strategy_sampling_sessions SET state='CANCELLED'
-          WHERE account_id=$1 AND id=$2 AND state='ACTIVE'`,
-        [accountA, session.sessionId],
-      );
+      const cancellation = await repository.cancelSamplingSession({
+        accountId: accountA, actorId: accountA, sessionId: session.sessionId,
+      });
+      assert.deepEqual({ state: cancellation.state, duplicate: cancellation.duplicate }, {
+        state: "CANCELLED", duplicate: false,
+      });
+      assert.equal((await repository.cancelSamplingSession({
+        accountId: accountA, actorId: accountA, sessionId: session.sessionId,
+      })).duplicate, true);
       const eventsBeforeCancelledReplay = Number((await pool.query(
         "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1 AND idempotency_key=$2",
         [accountA, sessionInput.idempotencyKey],
       )).rows[0].count);
-      const cancelledSessionReplay = await repository.startSamplingSession(sessionInput);
+      const restartedRepository = createAutoListingCategoryStrategyPostgres({ pool });
+      const cancelledSessionReplay = await restartedRepository.startSamplingSession(sessionInput);
       assert.deepEqual({
         sessionId: cancelledSessionReplay.sessionId,
         draftId: cancelledSessionReplay.draftId,
@@ -605,7 +673,7 @@ if (!enabled) {
         sessionId: session.sessionId,
         draftId: session.draftId,
         accountId: session.accountId,
-        state: "ACTIVE",
+        state: "CANCELLED",
         createdAt: session.createdAt,
         expiresAt: session.expiresAt,
         duplicate: true,

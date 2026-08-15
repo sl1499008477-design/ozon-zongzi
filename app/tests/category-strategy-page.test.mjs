@@ -41,6 +41,8 @@ test("published strategies create a successor draft instead of reopening the imm
   assert.match(page, /expectedSourceVersion:\s*detail\.expectedSourceVersion/u);
   assert.match(page, /创建新草稿/u);
   assert.match(page, /disabled=\{!view\?\.canStartSampling/u);
+  assert.match(page, /替换此样本/u);
+  assert.match(page, /client\.removeSample/u);
 });
 
 test("samples, errors and controls are accessible without relying only on color", () => {
@@ -82,9 +84,11 @@ test("removing the draft query clears the prior detail and returns to the strate
 
 test("all write commands reuse a durable logical intent until the response is confirmed", () => {
   assert.match(page, /createCategoryStrategyIntentStore/u);
-  for (const command of ["category-draft", "category-sampling", "category-analysis", "category-edit", "category-publish", "category-rollback"]) {
+  for (const command of ["category-draft", "category-sampling", "category-sample-revision",
+    "category-analysis", "category-edit", "category-publish", "category-rollback"]) {
     assert.match(page, new RegExp(`(?:intentIdentity|intents\\.identity)\\(\"${command}\"`, "u"));
   }
+  assert.match(page, /replaceSample[\s\S]*intentIdentity\("category-sample-revision"[\s\S]*client\.removeSample[\s\S]*client\.startSession[\s\S]*settleIntent\("category-sample-revision"/u);
   assert.match(page, /settleIntent/u);
 });
 

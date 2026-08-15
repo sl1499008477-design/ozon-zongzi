@@ -258,6 +258,8 @@ test("default category runtime session route returns NOT_READY before a database
     async getDraftReplay() { return null; },
     async createDraft() { throw new Error("not used"); },
     async getSamplingSessionReplay() { return null; },
+    async prepareSampleRevision() { throw new Error("must not write"); },
+    async cancelSamplingSession() { throw new Error("must not write"); },
     async startSamplingSession() { sessionWrites += 1; throw new Error("must not write"); },
     async validateSamplingSession() { throw new Error("not used"); },
     async getCommittedSampleSetReplay() { return null; },
@@ -432,6 +434,42 @@ test("extension facts route reprojects captured page and card evidence before Ta
     new URL("https://example.test/extension/auto-listing/category-strategy/sampling-sessions/session-a/cancel")), true);
   assert.equal(responses[4].status, 403);
   assert.equal(confirmCalls, 2);
+});
+
+test("extension cancellation clears local facts even when durable cancellation reports a safe failure", async () => {
+  let localCancels = 0;
+  const responses = [];
+  const handler = createAutoListingCategoryStrategyExtensionHttpHandler({
+    async authenticateExtension() { return { id: "account-a", role: "admin" }; },
+    async getService() { return { async cancelSamplingSession() {
+      throw Object.assign(new Error("database raw"), {
+        code: "AUTO_LISTING_CATEGORY_STRATEGY_DATABASE_FAILED", status: 503, retryable: true,
+      });
+    } }; },
+    extensionChannel: {
+      async markReady() {},
+      async getSession() {},
+      async putFacts() {},
+      async completeSession() {},
+      async cancelSession(input) {
+      localCancels += 1;
+      assert.deepEqual(input, { accountId: "account-a", sessionId: "session-a",
+        extensionVersion: "0.13.46.3" });
+      return true;
+      },
+    },
+    async readJson() { return { sessionId: "session-a" }; },
+    sendJson(_res, status, payload) { responses.push({ status, payload }); },
+  });
+  assert.equal(await handler({ method: "POST", headers: {
+    "x-zongzi-extension-version": "0.13.46.3",
+  } }, {}, new URL(
+    "https://example.test/extension/auto-listing/category-strategy/sampling-sessions/session-a/cancel",
+  )), true);
+  assert.equal(localCancels, 1);
+  assert.deepEqual(responses, [{ status: 503, payload: { ok: false,
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_DATABASE_FAILED",
+    message: "类目策略扩展服务暂时不可用" } }]);
 });
 
 test("extension facts channel rejects extra, accessor, wrong-account, and mixed-scope evidence with zero confirm", async () => {

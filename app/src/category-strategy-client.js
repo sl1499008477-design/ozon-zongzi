@@ -18,6 +18,7 @@ const REQUEST_KEYS = Object.freeze({
   settings: new Set(["expectedVersion", "mode", "idempotencyKey", "correlationId"]),
   create: new Set(["scope", "sourceCollectItemId", "expectedSourceVersion", "idempotencyKey", "correlationId"]),
   session: new Set(["expectedDraftVersion", "idempotencyKey", "correlationId"]),
+  remove: new Set(["expectedDraftVersion", "idempotencyKey", "correlationId"]),
   analysis: new Set(["costConfirmed", "idempotencyKey", "correlationId"]),
   edit: new Set(["expectedDraftVersion", "patch", "idempotencyKey", "correlationId"]),
   publish: new Set(["expectedDraftVersion", "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId"]),
@@ -77,9 +78,12 @@ export function categoryStrategyErrorMessage(error) {
   if (status === 409 && new Set([
     "AUTO_LISTING_CATEGORY_STRATEGY_VERSION_CONFLICT", "AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_VERSION_CONFLICT",
     "AUTO_LISTING_CATEGORY_STRATEGY_CHANGED", "AUTO_LISTING_CATEGORY_STRATEGY_IDEMPOTENCY_CONFLICT",
+    "AUTO_LISTING_CATEGORY_STRATEGY_PUBLISHED_VERSION_CONFLICT",
   ]).has(code)) return "类目策略已被其他管理员更新，请刷新后再操作。";
+  if (code === "AUTO_LISTING_CATEGORY_STRATEGY_AI_RESPONSE_UNKNOWN") {
+    return "AI 返回状态暂时无法确认，系统会保留本次分析并使用同一次请求恢复，请勿重新发起以免重复付费。";
+  }
   if (code === "AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_NOT_READY"
-    || code === "AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_RESPONSE_UNKNOWN"
     || (status === 503 && code.includes("ANALYSIS"))) {
     return "AI 分析服务暂时不可用，未产生新的付费调用。";
   }
@@ -274,6 +278,23 @@ export function createCategoryStrategyClient({ request = apiRequest } = {}) {
         `${BASE}/${encodeURIComponent(identifier(draftId))}/sampling-sessions`,
         { method: "POST", body: categoryStrategyRequestBody("session", input) },
       )));
+    },
+    async removeSample(draftId, sampleId, input) {
+      const safeDraftId = identifier(draftId);
+      const safeSampleId = identifier(sampleId);
+      const data = envelope(await request(`${BASE}/${encodeURIComponent(safeDraftId)}/samples/${encodeURIComponent(safeSampleId)}`, {
+        method: "DELETE", body: categoryStrategyRequestBody("remove", input),
+      }));
+      const value = closed(data, new Set(["draftId", "sampleId", "expectedDraftVersion", "idempotencyKey",
+        "replacementRequired", "samplingIdentity"]));
+      if (identifier(value.draftId) !== safeDraftId || identifier(value.sampleId) !== safeSampleId
+        || value.replacementRequired !== true || !Number.isSafeInteger(value.expectedDraftVersion)
+        || value.expectedDraftVersion < 1) throw clientError();
+      const samplingIdentity = closed(value.samplingIdentity, new Set(["idempotencyKey", "correlationId"]));
+      return Object.freeze({ ...value, samplingIdentity: Object.freeze({
+        idempotencyKey: identifier(samplingIdentity.idempotencyKey),
+        correlationId: identifier(samplingIdentity.correlationId),
+      }) });
     },
     async analyze(draftId, input) {
       return projectCategoryStrategyAnalysis(envelope(await request(

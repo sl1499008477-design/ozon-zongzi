@@ -42,7 +42,8 @@ function repositoryShape() {
   const unused = async () => { throw new Error("unused repository method"); };
   return Object.freeze({
     getDraftReplay: unused, createDraft: unused, startSamplingSession: unused,
-    getSamplingSessionReplay: unused, validateSamplingSession: unused,
+    getSamplingSessionReplay: unused, validateSamplingSession: unused, prepareSampleRevision: unused,
+    cancelSamplingSession: unused,
     getCommittedSampleSetReplay: unused, commitSampleSetCanonical: unused,
     transitionAccountPolicy: unused, getAccountPolicy: unused,
   });

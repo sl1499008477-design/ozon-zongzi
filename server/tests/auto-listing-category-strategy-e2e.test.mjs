@@ -760,6 +760,10 @@ if (!enabled) {
         { sessionId: storageCase.session.sessionId });
       assert.equal(cancelled.status, 200);
       assert.equal(cancelled.payload.data.cancelled, true);
+      assert.equal((await pool.query(
+        `SELECT state FROM auto_listing_category_strategy_sampling_sessions
+          WHERE account_id=$1 AND id=$2`, [accountId, storageCase.session.sessionId],
+      )).rows[0].state, "CANCELLED");
       assert.equal((await callExtension(runtime, actor, "POST",
         `/extension/auto-listing/category-strategy/sampling-sessions/${storageCase.session.sessionId}/confirm`, {
           sessionId: storageCase.session.sessionId, pageFact, samples: expandedSamples.slice(0, 5),
@@ -846,6 +850,8 @@ if (!enabled) {
       assert.deepEqual(pendingUnknown.rows[0], { status: "ANALYZING", attempt_count: 1 });
       assert.deepEqual(metrics.slice(9).map(({ name, labels }) => ({ name, labels })), [
         { name: "category_strategy_sampling_started_total", labels: {} },
+        { name: "category_strategy_sampling_started_total", labels: {} },
+        { name: "category_strategy_sample_set_committed_total", labels: {} },
         { name: "category_strategy_sampling_started_total", labels: {} },
         { name: "category_strategy_sampling_started_total", labels: {} },
         { name: "category_strategy_sample_set_committed_total", labels: {} },

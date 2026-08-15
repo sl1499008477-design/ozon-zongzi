@@ -17,6 +17,7 @@ import {
 import {
   ArrowLeftOutlined,
   CheckCircleOutlined,
+  DeleteOutlined,
   EditOutlined,
   EyeOutlined,
   HistoryOutlined,
@@ -251,6 +252,22 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     window.open(next.browserUrl, "_blank", "noopener,noreferrer");
   });
 
+  const replaceSample = (sample) => runAction(`replace:${sample.sampleId}`, async (context) => {
+    const removeFingerprint = { draftId: detail.draftId, sampleId: sample.sampleId,
+      expectedDraftVersion: detail.draftVersion };
+    const removeIdentity = await intentIdentity("category-sample-revision", removeFingerprint);
+    const prepared = await client.removeSample(detail.draftId, sample.sampleId, {
+      expectedDraftVersion: detail.draftVersion, ...removeIdentity,
+    });
+    const next = await client.startSession(detail.draftId, {
+      expectedDraftVersion: detail.draftVersion, ...prepared.samplingIdentity,
+    });
+    await settleIntent("category-sample-revision", removeFingerprint);
+    if (!isCurrentAction(context)) return;
+    setSession(next);
+    window.open(next.browserUrl, "_blank", "noopener,noreferrer");
+  });
+
   const createNextDraft = () => runAction("new-draft", async (context) => {
     const fingerprint = { scope: detail.scope, sourceCollectItemId: detail.sourceCollectItemId,
       expectedSourceVersion: detail.expectedSourceVersion };
@@ -396,6 +413,8 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
             <ProtectedThumbnail sample={sample} />
             <strong>{sample.title || sample.sku}</strong>
             <label><input aria-label={`选择样本 ${sample.sku}`} type="checkbox" disabled /> SKU {sample.sku}</label>
+            <Button size="small" danger icon={<DeleteOutlined />} disabled={!view?.canStartSampling || Boolean(action)}
+              onClick={() => replaceSample(sample)}>替换此样本</Button>
           </article>)}</div> : <Empty description="样本缩略图由安全代理准备后显示" />}
         </Card>
 

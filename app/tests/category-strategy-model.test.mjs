@@ -290,6 +290,7 @@ test("page state applies the 5-20 gate, session countdown and same-account impac
     now: "2026-08-15T01:00:00.000Z",
   });
   assert.equal(model.canAnalyze, true);
+  assert.equal(model.canStartSampling, true);
   assert.equal(model.impactText, "发布后供当前账号内命中此精确类目的商品共用，不影响其他账号。");
   assert.deepEqual(categoryStrategyCountdown({
     expiresAt: "2026-08-15T01:01:05.000Z", now: "2026-08-15T01:00:00.000Z",
@@ -306,8 +307,10 @@ test("client messages and write bodies are fixed, closed and versioned", () => {
     [{ status: 404, code: "AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND", message: "raw" }, "类目策略记录不存在或你无权查看。"],
     [{ status: 409, code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT", message: "raw" }, "来源资料已变化，请返回自动上架页刷新后重试。"],
     [{ status: 409, code: "AUTO_LISTING_CATEGORY_STRATEGY_VERSION_CONFLICT", message: "raw" }, "类目策略已被其他管理员更新，请刷新后再操作。"],
+    [{ status: 409, code: "AUTO_LISTING_CATEGORY_STRATEGY_PUBLISHED_VERSION_CONFLICT", message: "raw" }, "类目策略已被其他管理员更新，请刷新后再操作。"],
     [{ status: 429, code: "TOO_MANY_REQUESTS", message: "raw" }, "操作过于频繁，请稍后再试。"],
     [{ status: 503, code: "AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_NOT_READY", message: "vendor raw" }, "AI 分析服务暂时不可用，未产生新的付费调用。"],
+    [{ status: 503, code: "AUTO_LISTING_CATEGORY_STRATEGY_AI_RESPONSE_UNKNOWN", message: "vendor raw" }, "AI 返回状态暂时无法确认，系统会保留本次分析并使用同一次请求恢复，请勿重新发起以免重复付费。"],
   ]) assert.equal(categoryStrategyErrorMessage(error), expected);
 
   assert.deepEqual(categoryStrategyRequestBody("analysis", {

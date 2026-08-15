@@ -430,7 +430,7 @@ export function categoryStrategyPageModel({ detail, session = null, analysis = n
   return deepFreeze({
     detail: safeDetail, session: safeSession, analysis: safeAnalysis, published: safePublished, countdown,
     canCreateDraft: safeDetail.status === "PUBLISHED",
-    canStartSampling: safeDetail.status === "COLLECTING",
+    canStartSampling: new Set(["COLLECTING", "SAMPLES_READY", "DRAFT_READY", "NEEDS_REVIEW"]).has(safeDetail.status),
     canAnalyze: safeDetail.sampleCount >= 5 && safeDetail.sampleCount <= 20
       && new Set(["SAMPLES_READY", "NEEDS_REVIEW"]).has(safeDetail.status),
     analysisIsCurrent,
