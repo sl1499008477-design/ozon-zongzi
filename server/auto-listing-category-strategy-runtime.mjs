@@ -4,6 +4,7 @@ import { types } from "node:util";
 import { createAutoListingAiAdminPostgres } from "./auto-listing-ai-admin-postgres.mjs";
 import { createAutoListingAiAdminService } from "./auto-listing-ai-admin-service.mjs";
 import { createCategoryStrategyAnalyzer } from "./auto-listing-category-strategy-analyzer.mjs";
+import { createCategoryStrategyObservability } from "./auto-listing-category-strategy-observability.mjs";
 import { createAutoListingCategoryStrategyPostgres } from "./auto-listing-category-strategy-postgres.mjs";
 import { createCategoryStrategySampleStore } from "./auto-listing-category-strategy-sample-store.mjs";
 import { createAutoListingCategoryStrategyService } from "./auto-listing-category-strategy-service.mjs";
@@ -585,6 +586,9 @@ export function createAutoListingCategoryStrategyRuntime({
   downloadImage = downloadSourceImage,
   now = () => new Date(),
   maxDownloadBytes = MAX_DOWNLOAD_BYTES,
+  metrics = null,
+  logger = console,
+  createObservability = createCategoryStrategyObservability,
 } = {}) {
   if (!env || typeof env !== "object" || Array.isArray(env) || typeof resolvePool !== "function"
     || typeof createRepository !== "function" || typeof createStrategyReadModel !== "function"
@@ -598,6 +602,9 @@ export function createAutoListingCategoryStrategyRuntime({
     || !(extensionSessionChannel === null || (typeof extensionSessionChannel?.assertReady === "function"
       && typeof extensionSessionChannel?.putSession === "function"))
     || !(deriveSessionIdentity === null || typeof deriveSessionIdentity === "function")
+    || !(metrics === null || typeof metrics?.increment === "function")
+    || !(logger === null || typeof logger?.info === "function")
+    || typeof createObservability !== "function"
     || typeof downloadImage !== "function" || typeof now !== "function"
     || !Number.isInteger(maxDownloadBytes) || maxDownloadBytes < 1 || maxDownloadBytes > MAX_DOWNLOAD_BYTES) {
     throw new TypeError("Auto-listing category strategy runtime dependencies are required");
@@ -610,6 +617,11 @@ export function createAutoListingCategoryStrategyRuntime({
   });
   const factsPort = exactProductFacts
     ?? (extensionSessionChannel === null ? sessionChannel : absentExactProductFacts());
+  const observabilitySecret = String(
+    env.AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET || "",
+  );
+  const observability = observabilitySecret ? createObservability({ metrics, logger,
+    now: () => new Date(now()).getTime(), accountHashSecret: observabilitySecret }) : null;
   let servicePromise = null;
   function getService() {
     if (!autoListingEnabled(env)) {
@@ -639,7 +651,8 @@ export function createAutoListingCategoryStrategyRuntime({
           return createService({ repository, readModel, sampleStore, analyzer, objectStorage,
             exactProductFacts: factsPort,
             extensionSessionChannel: sessionChannel, publicationService, now,
-            deriveSessionIdentity: deriveSessionIdentity ?? createSessionIdentityDeriver(env) });
+            deriveSessionIdentity: deriveSessionIdentity ?? createSessionIdentityDeriver(env),
+            ...(observability ? { observability } : {}) });
         } catch (error) {
           if (typeof error?.code === "string" && error.code.startsWith("AUTO_LISTING_CATEGORY_STRATEGY_")) throw error;
           throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_INITIALIZATION_FAILED");

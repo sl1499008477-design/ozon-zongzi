@@ -224,6 +224,34 @@ test("category strategy runtime composes real non-analysis ports and fails exact
   assert.equal(poolReads, 1);
 });
 
+test("category strategy runtime wires safe observability only when its hash secret is configured", async () => {
+  const increments = [];
+  const logs = [];
+  let captured;
+  const runtime = createAutoListingCategoryStrategyRuntime({
+    env: { AUTO_LISTING_ENABLED: "true",
+      APP_ENCRYPTION_KEY: "test-only-category-session-key-at-least-32-characters",
+      AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET: "test-observer-hash-secret-long-enough" },
+    metrics: { increment(name, labels) { increments.push({ name, labels }); } },
+    logger: { info(event) { logs.push(event); } },
+    async getPostgresPool() { return { async query() {}, async connect() {} }; },
+    createRepository() { return {}; }, createStrategyReadModel() { return {}; },
+    createSampleStore() { return {}; }, createObjectStorage() { return {}; },
+    createAnalyzer() { return { analyze() {}, editGuidance() {} }; },
+    createPublicationRepository() { return {}; },
+    createAdminService() { return { publishCategoryStrategyDraft() {}, rollbackCategoryStrategyVersion() {} }; },
+    createService(input) { captured = input; return { marker: "service" }; },
+  });
+  await runtime.getService();
+  assert.equal(typeof captured.observability.observe, "function");
+  await captured.observability.observe({ metric: "category_strategy_publish_total", accountId: "private-account",
+    draftId: "draft-a", sessionId: null, attemptId: null, strategyVersionId: "strategy-v2",
+    scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 },
+    correlationId: "correlation-a", outcome: "success", startedAt: Date.now() });
+  assert.deepEqual(increments, [{ name: "category_strategy_publish_total", labels: { outcome: "success" } }]);
+  assert.equal(JSON.stringify(logs).includes("private-account"), false);
+});
+
 test("default category runtime session route returns NOT_READY before a database session write", async () => {
   let sessionWrites = 0;
   const repository = {

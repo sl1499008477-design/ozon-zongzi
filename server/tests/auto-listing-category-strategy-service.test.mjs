@@ -75,6 +75,7 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   policyMode = "REQUIRE_EXACT_STRATEGY",
   publicationFailure = null,
   publicationOverrides = {}, detailRead = null, thumbnailBytes = Buffer.from("thumbnail-webp"),
+  observability = null,
   now = new Date("2026-08-15T00:00:00.000Z") } = {}) {
   const calls = { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
     handoff: 0, publish: 0, rollback: 0 };
@@ -216,6 +217,7 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
       async readObjectExpected() { return thumbnailBytes; },
     },
     now: () => new Date(now),
+    ...(observability ? { observability } : {}),
     async deriveSessionIdentity(input) {
       records.identity.push(input);
       const material = JSON.stringify(input);
@@ -228,6 +230,40 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   });
   return { service, calls, records };
 }
+
+test("successful sampling, sample commit, analysis, and publish emit the fixed safe observations", async () => {
+  const events = [];
+  const h = harness({ observability: { async observe(event) { events.push(event); } } });
+  const session = await h.service.startSamplingSession({
+    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+    idempotencyKey: "observe-session", correlationId: "correlation-session",
+  });
+  await h.service.confirmSampleSet({
+    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+    sessionId: session.sessionId, sessionSecret: h.records.handoff[0].sessionSecret,
+    samples: selectedSamples(5), idempotencyKey: "observe-samples", correlationId: "correlation-samples",
+  });
+  await h.service.createAnalysisAttempt({ actor: ACTOR, draftId: "draft-a", costConfirmed: true,
+    idempotencyKey: "observe-analysis", correlationId: "correlation-analysis" });
+  await h.service.publishDraft({ actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 4,
+    expectedPublishedStrategyVersionId: "strategy-v1", idempotencyKey: "observe-publish",
+    correlationId: "correlation-publish" });
+
+  assert.deepEqual(events.map(({ metric, outcome }) => ({ metric, outcome })), [
+    { metric: "category_strategy_sampling_started_total", outcome: "success" },
+    { metric: "category_strategy_sample_set_committed_total", outcome: "success" },
+    { metric: "category_strategy_analysis_attempt_total", outcome: "success" },
+    { metric: "category_strategy_publish_total", outcome: "success" },
+  ]);
+  for (const event of events) {
+    assert.equal(event.accountId, "account-a");
+    assert.deepEqual(event.scope, { taxonomyScope: "OZON:DEFAULT",
+      descriptionCategoryId: 17028922, typeId: 91542 });
+    assert.equal(Object.hasOwn(event, "sessionSecret"), false);
+    assert.equal(Object.hasOwn(event, "guidance"), false);
+    assert.equal(Object.hasOwn(event, "sourceReferences"), false);
+  }
+});
 
 test("durable detail read returns only the closed reloadable Web evidence bundle", async () => {
   const analysis = {
@@ -782,6 +818,27 @@ test("publication and rollback expose only the closed immutable strategy summary
     }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", status: 500 });
   }
   assert.deepEqual({ traps, reads }, { traps: 0, reads: 0 });
+});
+
+test("publication translates the AI-admin current-version race into a stable category conflict", async () => {
+  const events = [];
+  const publicationFailure = Object.assign(new Error("private AI-admin conflict"), {
+    code: "AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", status: 409, retryable: false,
+  });
+  const h = harness({ publicationFailure,
+    observability: { async observe(event) { events.push(event); } } });
+
+  await assert.rejects(h.service.publishDraft({
+    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+    expectedPublishedStrategyVersionId: "strategy-v1",
+    idempotencyKey: "publish-race", correlationId: "correlation-race",
+  }), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_PUBLISHED_VERSION_CONFLICT", status: 409, retryable: false,
+  });
+  assert.equal(h.calls.publish, 1);
+  assert.deepEqual(events.map(({ metric, outcome }) => ({ metric, outcome })), [
+    { metric: "category_strategy_publish_total", outcome: "conflict" },
+  ]);
 });
 
 test("publication delegates rollout gating to the atomic publication transaction and preserves READ_ONLY", async () => {

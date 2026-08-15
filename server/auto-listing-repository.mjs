@@ -362,7 +362,8 @@ function defaultIdFactory(prefix) {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
-function eventDetails(item) {
+function eventDetails(item, categoryStrategyGate) {
+  const targetCategory = item.snapshot?.targetCategory;
   return {
     sourceRecordId: item.sourceRecordId,
     sourceVersion: item.sourceVersion,
@@ -373,6 +374,12 @@ function eventDetails(item) {
     style: item.style,
     matchedBy: item.matchedBy,
     planningContract: item.planningContract,
+    categoryStrategyMode: categoryStrategyGate?.mode || null,
+    categoryStrategyScope: targetCategory ? {
+      taxonomyScope: targetCategory.taxonomyScope,
+      descriptionCategoryId: targetCategory.descriptionCategoryId,
+      typeId: targetCategory.typeId,
+    } : null,
     ...(item.price ? { price: item.price } : {}),
     ...(item.failureCode ? { failureCode: item.failureCode } : {}),
   };
@@ -437,6 +444,8 @@ function mapJob(row, items, events) {
         ruleId: audit.ruleId || null,
         style: audit.style || null,
         matchedBy: audit.matchedBy || null,
+        categoryStrategyMode: audit.categoryStrategyMode || null,
+        categoryStrategyScope: audit.categoryStrategyScope || null,
         ...(audit.price ? { price: audit.price } : {}),
         ...(item.failure_code ? { failureCode: item.failure_code } : {}),
         ...(workflowProgress ? { workflowProgress } : {}),
@@ -1929,7 +1938,7 @@ export function createAutoListingRepository({
              ) VALUES ($1,$2,$3,$4,$5,'CREATED',$6,$7,$8,$9::jsonb)`,
             [`${itemId}_02`, graph.accountId, jobId, itemId, graph.actorAccountId,
               blocked ? "BLOCKED" : "SOURCE_READY", blocked ? "BLOCK" : "SOURCE_CAPTURED", graph.correlationId,
-              json(eventDetails(item))],
+              json(eventDetails(item, graph.categoryStrategyGate))],
           );
           if (!blocked) {
             const listingBase = freezeAutoListingListingBase({

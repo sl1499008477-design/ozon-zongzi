@@ -144,12 +144,14 @@ const createAutoListingService = ({
   listingBasePreparer = prepareListingBase,
   ensureCategoryFresh = async () => ({ status: "CURRENT" }),
   selectPlanningContract,
+  observability,
 }) => createProductionAutoListingService({
   repository,
   prepareListingBase: listingBasePreparer,
   rfbsWarehouseVerifier,
   ensureCategoryFresh,
   selectPlanningContract,
+  ...(observability ? { observability } : {}),
 });
 
 const frozenGraphConfig = () => {
@@ -1118,6 +1120,177 @@ test("strict account mode rejects a missing exact category strategy before every
   assert.deepEqual(repository.calls.map(([name]) => name), [
     "getJobByIdempotencyKey", "loadCollectSources", "loadCategoryStrategyControl", "loadPublishedStrategy",
   ]);
+});
+
+test("strict create emits required and continue-create observations without exposing source facts", async () => {
+  const events = [];
+  let published = { strategyVersion: { strategyId: "default", strategyVersionId: "before-publish" }, rules: [] };
+  const repository = fakeRepository({
+    categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 9, drafts: [] },
+  });
+  repository.loadPublishedStrategy = async (input) => {
+    repository.calls.push(["loadPublishedStrategy", input]);
+    return published;
+  };
+  const service = createAutoListingService({ repository,
+    observability: { async observe(event) { events.push(event); } } });
+  await assert.rejects(service.createAutoListingJob({ actor, collectItemIds: ["collect-1"],
+    idempotencyKey: "missing-observed", correlationId: "correlation-missing", config }), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", status: 409,
+  });
+  published = { strategyVersion: { strategyId: "default", strategyVersionId: "published-observed" },
+    rules: [exactV2Rule({ ruleId: "published-observed-rule" })] };
+  await service.createAutoListingJob({ actor, collectItemIds: ["collect-1"],
+    idempotencyKey: "continue-observed", correlationId: "correlation-continue", config });
+
+  assert.deepEqual(events.map(({ metric, outcome }) => ({ metric, outcome })), [
+    { metric: "category_strategy_required_total", outcome: "blocked" },
+    { metric: "category_strategy_continue_create_total", outcome: "success" },
+  ]);
+  assert.equal(JSON.stringify(events).includes("Product collect-1"), false);
+  assert.equal(JSON.stringify(events).includes("source.example.test"), false);
+  assert.equal(events[1].strategyVersionId, "published-observed");
+  assert.equal(events[1].correlationId, "correlation-continue");
+});
+
+test("strict collect and Excel idempotent replays emit continue observations without revalidation", async () => {
+  const events = [];
+  const existing = { id: "strict-replay", accountId: "account-a", status: "CREATED",
+    sourceType: "COLLECT_BOX", items: [{ categoryStrategyMode: "REQUIRE_EXACT_STRATEGY",
+      categoryStrategyScope: exactScope, strategyVersionId: "published-replay" }] };
+  const collectRepository = fakeRepository({ existing });
+  collectRepository.getJobByIdempotencyKey = async (input) => {
+    collectRepository.calls.push(["getJobByIdempotencyKey", input]); return existing;
+  };
+  const collect = createAutoListingService({ repository: collectRepository,
+    observability: { async observe(event) { events.push(event); } } });
+  await collect.createAutoListingJob({ actor, collectItemIds: ["changed-source"],
+    idempotencyKey: "strict-replay", correlationId: "collect-replay-correlation", config });
+  assert.deepEqual(collectRepository.calls.map(([name]) => name), ["getJobByIdempotencyKey"]);
+
+  const excelRepository = fakeRepository({ existing: { ...existing, sourceType: "EXCEL_SKU" } });
+  excelRepository.getJobByIdempotencyKey = async (input) => {
+    excelRepository.calls.push(["getJobByIdempotencyKey", input]);
+    return { ...existing, sourceType: "EXCEL_SKU" };
+  };
+  const excel = createAutoListingService({ repository: excelRepository,
+    observability: { async observe(event) { events.push(event); } } });
+  await excel.createExcelAutoListingJob({ actor, importFileId: "strict-replay" });
+  assert.deepEqual(excelRepository.calls.map(([name]) => name),
+    ["loadExcelImportContext", "getJobByIdempotencyKey"]);
+  assert.deepEqual(events.map(({ metric, outcome, strategyVersionId, scope: observedScope }) =>
+    ({ metric, outcome, strategyVersionId, scope: observedScope })), [
+    { metric: "category_strategy_continue_create_total", outcome: "replay",
+      strategyVersionId: "published-replay", scope: exactScope },
+    { metric: "category_strategy_continue_create_total", outcome: "replay",
+      strategyVersionId: "published-replay", scope: exactScope },
+  ]);
+});
+
+test("strict replay observations never execute hostile audit carriers or change collect and Excel replay", async () => {
+  for (const [label, hostileScope] of [
+    ["accessor", (counter) => {
+      const item = { id: "item-replay", status: "SOURCE_READY",
+        categoryStrategyMode: "REQUIRE_EXACT_STRATEGY", strategyVersionId: "published-replay" };
+      Object.defineProperty(item, "categoryStrategyScope", { enumerable: true,
+        get() { counter.value += 1; throw new Error("scope getter must not run"); } });
+      return item;
+    }],
+    ["proxy", (counter) => ({ id: "item-replay", status: "SOURCE_READY",
+      categoryStrategyMode: "REQUIRE_EXACT_STRATEGY", strategyVersionId: "published-replay",
+      categoryStrategyScope: new Proxy({}, {
+        getPrototypeOf() { counter.value += 1; throw new Error("scope proxy must not run"); },
+        ownKeys() { counter.value += 1; throw new Error("scope proxy must not run"); },
+      }) })],
+  ]) {
+    for (const sourceType of ["COLLECT_BOX", "EXCEL_SKU"]) {
+      for (const observerEnabled of [false, true]) {
+        const counter = { value: 0 };
+        const existing = { id: `hostile-${label}-${sourceType}`, accountId: "account-a",
+          status: "CREATED", sourceType, items: [hostileScope(counter)] };
+        const repository = fakeRepository({ existing });
+        repository.getJobByIdempotencyKey = async (input) => {
+          repository.calls.push(["getJobByIdempotencyKey", input]); return existing;
+        };
+        const events = [];
+        const service = createAutoListingService({ repository,
+          ...(observerEnabled ? { observability: { async observe(event) { events.push(event); } } } : {}) });
+        const result = sourceType === "COLLECT_BOX"
+          ? await service.createAutoListingJob({ actor, collectItemIds: ["changed-source"],
+            idempotencyKey: "hostile-replay", correlationId: "hostile-replay-correlation", config })
+          : await service.createExcelAutoListingJob({ actor, importFileId: "hostile-replay" });
+        assert.equal(result.jobId, existing.id);
+        assert.equal(counter.value, 0, `${label}/${sourceType}/${observerEnabled}`);
+        assert.deepEqual(events, []);
+      }
+    }
+  }
+});
+
+test("strict Excel non-replay emits continue success from its evaluated production gate", async () => {
+  const events = [];
+  const repository = fakeRepository({ categoryStrategyControl: {
+    mode: "REQUIRE_EXACT_STRATEGY", version: 9, drafts: [],
+  } });
+  repository.loadPublishedStrategy = async (input) => {
+    repository.calls.push(["loadPublishedStrategy", input]);
+    return { strategyVersion: { strategyId: "default", strategyVersionId: "published-excel" },
+      rules: [exactV2Rule({ ruleId: "published-excel-rule" })] };
+  };
+  const service = createAutoListingService({ repository,
+    observability: { async observe(event) { events.push(event); } } });
+  await service.createExcelAutoListingJob({ actor, importFileId: "strict-excel" });
+  assert.deepEqual(events.map(({ metric, outcome, strategyVersionId, scope: observedScope }) =>
+    ({ metric, outcome, strategyVersionId, scope: observedScope })), [{
+    metric: "category_strategy_continue_create_total", outcome: "success",
+    strategyVersionId: "published-excel", scope: exactScope,
+  }]);
+});
+
+test("a refreshed strict create observes the exact second gate frozen into the job", async () => {
+  const refreshedScope = Object.freeze({ taxonomyScope: "OZON:DEFAULT",
+    descriptionCategoryId: 17029005, typeId: 456 });
+  const stale = source("collect-observed-refresh");
+  const refreshed = structuredClone(stale);
+  refreshed.sharedCategory.version = 3;
+  refreshed.sharedCategory.source = "OZON_REFRESH";
+  refreshed.sharedCategory.currentDescriptionCategoryId = refreshedScope.descriptionCategoryId;
+  refreshed.sharedCategory.taxonomyFingerprint = "b".repeat(64);
+  const repository = fakeRepository({ sources: [stale], categoryStrategyControl: {
+    mode: "REQUIRE_EXACT_STRATEGY", version: 9, drafts: [],
+  } });
+  let sourceReads = 0;
+  let publicationReads = 0;
+  repository.loadCollectSources = async (input) => {
+    repository.calls.push(["loadCollectSources", input]);
+    sourceReads += 1;
+    return [sourceReads === 1 ? stale : refreshed];
+  };
+  repository.loadPublishedStrategy = async (input) => {
+    repository.calls.push(["loadPublishedStrategy", input]);
+    publicationReads += 1;
+    return publicationReads === 1
+      ? { strategyVersion: { strategyId: "default", strategyVersionId: "published-before-refresh" },
+        rules: [exactV2Rule({ ruleId: "rule-before-refresh" })] }
+      : { strategyVersion: { strategyId: "default", strategyVersionId: "published-after-refresh" },
+        rules: [exactV2Rule({ ruleId: "rule-after-refresh", scope: refreshedScope })] };
+  };
+  const events = [];
+  const service = createAutoListingService({ repository,
+    ensureCategoryFresh: async () => ({ status: "REFRESHED" }),
+    observability: { async observe(event) { events.push(event); } } });
+
+  await service.createAutoListingJob({ actor, collectItemIds: [stale.id],
+    idempotencyKey: "observed-refresh", correlationId: "observed-refresh-correlation", config });
+
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.strategyVersionId, "published-after-refresh");
+  assert.equal(graph.items[0].ruleId, "rule-after-refresh");
+  assert.deepEqual(events.map(({ metric, outcome, strategyVersionId, scope: observedScope }) =>
+    ({ metric, outcome, strategyVersionId, scope: observedScope })), [{
+    metric: "category_strategy_continue_create_total", outcome: "success",
+    strategyVersionId: graph.strategyVersionId, scope: refreshedScope,
+  }]);
 });
 
 test("strict missing-strategy details hide same-account draft identity from ordinary users", async () => {

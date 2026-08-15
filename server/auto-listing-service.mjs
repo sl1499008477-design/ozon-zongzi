@@ -511,6 +511,7 @@ export function createAutoListingService({
   ensureCategoryFresh = async () => Object.freeze({ status: "CURRENT" }),
   uploadPolicyGates = {},
   selectPlanningContract = () => AUTO_LISTING_PLANNING_CONTRACTS.LEGACY,
+  observability = null,
 } = {}) {
   const storage = requireRepository(repository);
   if (typeof prepareListingBase !== "function") {
@@ -522,8 +523,73 @@ export function createAutoListingService({
   if (typeof selectPlanningContract !== "function" || utilTypes.isProxy(selectPlanningContract)) {
     throw new TypeError("Auto listing planning contract selector dependency is required");
   }
+  if (!(observability === null || typeof observability?.observe === "function")) {
+    throw new TypeError("Auto listing category strategy observability dependency is invalid");
+  }
   const verifier = requireRfbsWarehouseVerifier(rfbsWarehouseVerifier);
-  async function evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources }) {
+  const observationStartedAt = () => Date.now();
+  async function observe(input) {
+    if (!observability) return;
+    try { await observability.observe(input); } catch {}
+  }
+  function strictObservation(gate) {
+    const selected = gate?.graph?.mode === "REQUIRE_EXACT_STRATEGY" ? gate.graph.scopes?.[0] : null;
+    if (!selected) return null;
+    return Object.freeze({
+      scope: Object.freeze({ taxonomyScope: selected.taxonomyScope,
+        descriptionCategoryId: selected.descriptionCategoryId, typeId: selected.typeId }),
+      strategyVersionId: gate.published.strategyVersion.strategyVersionId,
+    });
+  }
+  function replayStrictObservation(replay) {
+    try {
+      if (!replay || typeof replay !== "object" || Array.isArray(replay) || utilTypes.isProxy(replay)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(replay))) return null;
+      const replayDescriptors = Object.getOwnPropertyDescriptors(replay);
+      const itemsDescriptor = replayDescriptors.items;
+      if (!itemsDescriptor || !Object.hasOwn(itemsDescriptor, "value")) return null;
+      const items = itemsDescriptor.value;
+      if (!Array.isArray(items) || utilTypes.isProxy(items) || Object.getPrototypeOf(items) !== Array.prototype) return null;
+      const itemDescriptor = Object.getOwnPropertyDescriptor(items, "0");
+      if (!itemDescriptor || !Object.hasOwn(itemDescriptor, "value")) return null;
+      const item = itemDescriptor.value;
+      if (!item || typeof item !== "object" || Array.isArray(item) || utilTypes.isProxy(item)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(item))) return null;
+      const itemDescriptors = Object.getOwnPropertyDescriptors(item);
+      const value = (key) => itemDescriptors[key]?.enumerable === true
+        && Object.hasOwn(itemDescriptors[key], "value") ? itemDescriptors[key].value : undefined;
+      const candidate = value("categoryStrategyScope");
+      if (value("categoryStrategyMode") !== "REQUIRE_EXACT_STRATEGY" || !candidate
+        || typeof candidate !== "object" || Array.isArray(candidate) || utilTypes.isProxy(candidate)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(candidate))) return null;
+      const scopeDescriptors = Object.getOwnPropertyDescriptors(candidate);
+      const scopeValue = (key) => scopeDescriptors[key]?.enumerable === true
+        && Object.hasOwn(scopeDescriptors[key], "value") ? scopeDescriptors[key].value : undefined;
+      const taxonomyScope = scopeValue("taxonomyScope");
+      const descriptionCategoryId = scopeValue("descriptionCategoryId");
+      const typeId = scopeValue("typeId");
+      const strategyVersionId = value("strategyVersionId");
+      if (taxonomyScope !== "OZON:DEFAULT"
+        || !/^[1-9][0-9]*$/u.test(String(descriptionCategoryId ?? ""))
+        || !/^[1-9][0-9]*$/u.test(String(typeId ?? ""))
+        || !text(strategyVersionId)) return null;
+      return Object.freeze({ strategyVersionId: text(strategyVersionId), scope: Object.freeze({
+        taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: Number(descriptionCategoryId),
+        typeId: Number(typeId),
+      }) });
+    } catch {
+      return null;
+    }
+  }
+  async function observeContinue({ accountId, observation, correlationId, outcome, startedAt }) {
+    if (!observation) return;
+    await observe({ metric: "category_strategy_continue_create_total", accountId,
+      draftId: null, sessionId: null, attemptId: null,
+      strategyVersionId: observation.strategyVersionId, scope: observation.scope,
+      correlationId, outcome, startedAt });
+  }
+  async function evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources,
+    correlationId = "category-strategy-required", startedAt = observationStartedAt() }) {
     let projectedSources;
     try {
       projectedSources = closedDenseArray(sources)
@@ -559,6 +625,10 @@ export function createAutoListingService({
       });
     }
     if (!published) {
+      await observe({ metric: "category_strategy_required_total", accountId, draftId: null,
+        sessionId: null, attemptId: null, strategyVersionId: null, scope: uniqueScopes[0],
+        correlationId, outcome: "blocked",
+        startedAt });
       throw strategyRequired({ scope: uniqueScopes[0], control, actor });
     }
     const selectedScopes = [];
@@ -567,7 +637,13 @@ export function createAutoListingService({
       const rawRule = findPublishedRule(published, resolved.ruleId);
       const accepted = resolved.matchedBy === "EXACT_CATEGORY_TYPE_V2"
         || (resolved.matchedBy === "EXACT_CATEGORY" && rawRule && exactV1TypeIdentity(rawRule, scope));
-      if (!accepted) throw strategyRequired({ scope, control, actor });
+      if (!accepted) {
+        await observe({ metric: "category_strategy_required_total", accountId, draftId: null,
+          sessionId: null, attemptId: null, strategyVersionId: null, scope,
+          correlationId, outcome: "blocked",
+          startedAt });
+        throw strategyRequired({ scope, control, actor });
+      }
       selectedScopes.push(Object.freeze({ ...scope, ruleId: resolved.ruleId }));
     }
     return Object.freeze({
@@ -586,7 +662,8 @@ export function createAutoListingService({
     targetStore: suppliedStore = null, categoryStrategyGate: suppliedCategoryStrategyGate = null,
   }) {
     const categoryStrategyGate = suppliedCategoryStrategyGate
-      || await evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources });
+      || await evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources,
+        correlationId, startedAt: observationStartedAt() });
     sources = categoryStrategyGate.sources;
     const store = suppliedStore || await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
     const targetStore = suppliedStore || validateTargetStoreRecord({ accountId, targetStoreId: config.targetStoreId, store });
@@ -720,16 +797,25 @@ export function createAutoListingService({
     async createAutoListingJob(input = {}) {
       assertPermission(input.actor, PERMISSIONS.TENANT_OPERATE);
       const { collectItemIds, idempotencyKey, correlationId } = assertRequest(input);
+      const requestStartedAt = observationStartedAt();
       const accountId = text(input.actor.id);
       if (!accountId) throw error("AUTO_LISTING_REQUEST_INVALID");
       const { config, configHash } = normalizeAndHashAutoListingConfig(input.config);
       const replay = await storage.getJobByIdempotencyKey({ accountId, idempotencyKey });
-      if (replay) return safeJob(replay);
+      if (replay) {
+        await observeContinue({ accountId, observation: observability ? replayStrictObservation(replay) : null, correlationId,
+          outcome: "replay", startedAt: requestStartedAt });
+        return safeJob(replay);
+      }
       let sources = await storage.loadCollectSources({ accountId, collectItemIds });
       let categoryStrategyGate = await evaluateCategoryStrategyGate({
-        accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources,
+        accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources, correlationId,
+        startedAt: requestStartedAt,
       });
       sources = categoryStrategyGate.sources;
+      const strictStartedAt = requestStartedAt;
+      let strict = strictObservation(categoryStrategyGate);
+      try {
       if (sources.length !== collectItemIds.length) throw error("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
       const freshness = await ensureCategoryFresh({
         accountId, targetStoreId: config.targetStoreId, sources,
@@ -740,18 +826,30 @@ export function createAutoListingService({
       if (freshness.status === "REFRESHED") {
         sources = await storage.loadCollectSources({ accountId, collectItemIds });
         categoryStrategyGate = await evaluateCategoryStrategyGate({
-          accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources,
+          accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources, correlationId,
+          startedAt: requestStartedAt,
         });
         sources = categoryStrategyGate.sources;
+        strict = strictObservation(categoryStrategyGate);
         if (sources.length !== collectItemIds.length) throw error("AUTO_LISTING_CATEGORY_REFRESH_REQUIRED", 409);
       }
-      return createFromSources({
+      const created = await createFromSources({
         accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources, idempotencyKey, correlationId,
         config, configHash, categoryStrategyGate,
       });
+      await observeContinue({ accountId, observation: strict, correlationId,
+        outcome: "success", startedAt: strictStartedAt });
+      return created;
+      } catch (caught) {
+        if (strict) await observeContinue({ accountId, observation: strict, correlationId,
+          outcome: caught?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED" ? "strategy_changed" : "failed",
+          startedAt: strictStartedAt });
+        throw caught;
+      }
     },
     async createExcelAutoListingJob(input = {}) {
       assertPermission(input.actor, PERMISSIONS.TENANT_OPERATE);
+      const requestStartedAt = observationStartedAt();
       const accountId = text(input.actor?.id);
       const importFileId = text(input.importFileId);
       if (!accountId || !importFileId || importFileId.length > 240
@@ -769,7 +867,11 @@ export function createAutoListingService({
         throw error("AUTO_LISTING_IMPORT_NOT_FINALIZABLE", 409);
       }
       const replay = await storage.getJobByIdempotencyKey({ accountId, idempotencyKey: file.idempotencyKey });
-      if (replay) return safeJob(replay);
+      if (replay) {
+        await observeContinue({ accountId, observation: observability ? replayStrictObservation(replay) : null,
+          correlationId: file.correlationId, outcome: "replay", startedAt: requestStartedAt });
+        return safeJob(replay);
+      }
       const store = await storage.loadTargetStore({ accountId, targetStoreId: frozen.config.targetStoreId });
       const targetStore = validateTargetStoreRecord({
         accountId, targetStoreId: frozen.config.targetStoreId, store,
@@ -800,12 +902,24 @@ export function createAutoListingService({
         || sources.some((source) => !text(source?.id) || !text(source?.collectItemId))) {
         throw error("AUTO_LISTING_IMPORT_NOT_FINALIZABLE", 409);
       }
-      return createFromSources({
-        accountId, actor: input.actor, sourceType: "EXCEL_SKU", sources,
-        idempotencyKey: file.idempotencyKey, correlationId: file.correlationId,
-        config: frozen.config, configHash: frozen.configHash,
-        targetStore,
-      });
+      const categoryStrategyGate = await evaluateCategoryStrategyGate({ accountId, actor: input.actor,
+        sourceType: "EXCEL_SKU", sources, correlationId: file.correlationId, startedAt: requestStartedAt });
+      const strict = strictObservation(categoryStrategyGate);
+      try {
+        const created = await createFromSources({
+          accountId, actor: input.actor, sourceType: "EXCEL_SKU", sources,
+          idempotencyKey: file.idempotencyKey, correlationId: file.correlationId,
+          config: frozen.config, configHash: frozen.configHash, targetStore, categoryStrategyGate,
+        });
+        await observeContinue({ accountId, observation: strict, correlationId: file.correlationId,
+          outcome: "success", startedAt: requestStartedAt });
+        return created;
+      } catch (caught) {
+        await observeContinue({ accountId, observation: strict, correlationId: file.correlationId,
+          outcome: caught?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED" ? "strategy_changed" : "failed",
+          startedAt: requestStartedAt });
+        throw caught;
+      }
     },
     async getAutoListingJob({ actor, jobId } = {}) {
       assertPermission(actor, PERMISSIONS.TENANT_OPERATE);

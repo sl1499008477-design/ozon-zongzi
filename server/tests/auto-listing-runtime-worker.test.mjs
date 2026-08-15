@@ -294,6 +294,23 @@ test("runtime injects the AI workflow into job creation only when both feature f
   }
 });
 
+test("auto-listing runtime injects the shared safe category observability boundary", async () => {
+  let serviceInput;
+  const runtime = createAutoListingRuntime({
+    env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0",
+      AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET: "test-observer-hash-secret-long-enough" }),
+    metrics: { increment() {} }, logger: { info() {} },
+    getPostgresPool: async () => ({ name: "pool-a" }),
+    createRepository: () => ({ async loadCategoryStrategyControl() {} }),
+    createListingBasePreparer: async () => async () => ({}),
+    createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
+    createRfbsWarehouseVerifier: () => ({ async verifyRfbsWarehouse() {} }),
+    createService(input) { serviceInput = input; return { marker: "service" }; },
+  });
+  await runtime.getService();
+  assert.equal(typeof serviceInput.observability.observe, "function");
+});
+
 test("runtime rejects an open AI workflow factory result before constructing the repository", async () => {
   let repositories = 0;
   const runtime = createAutoListingRuntime({
