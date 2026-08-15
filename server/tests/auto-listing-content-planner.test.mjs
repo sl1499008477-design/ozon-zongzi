@@ -673,6 +673,7 @@ test("fixed contract uses the reduced skeleton before repository reservation and
     gateway: { async createTextResponse(input) {
       gatewayCalls += 1;
       assert.equal(input.jsonSchema.properties.fills.required.length, 7);
+      assert.ok(input.jsonSchema.properties.fills.required.every((slotKey) => !slotKey.includes(":specification:")));
       throw Object.assign(new Error("stop after reduced skeleton"), { code: "RETRYABLE_GATEWAY" });
     } },
     repository: { async reserveContentPlan(input) {
@@ -682,6 +683,7 @@ test("fixed contract uses the reduced skeleton before repository reservation and
         promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1",
       });
       const skeleton = buildFixedSkeleton({ plannerContext: context });
+      assert.equal(skeleton.plan.slots.some((slot) => slot.role === "SPECIFICATION"), false);
       return reserved(input, {
         planningContract: "FIXED_SKELETON_V1",
         skeletonHash: skeleton.skeletonHash,
