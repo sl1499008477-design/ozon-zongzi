@@ -184,7 +184,7 @@ test("presents durable queue progress with attempts and safe canonical timestamp
   });
   assert.deepEqual(item.workflowProgress, {
     label: "等待自动重试", detail: "图片内容规划 · 已尝试 2 次",
-    updatedLabel: "最后更新 2026-08-14 01:02:03", retryLabel: "下次重试 2026-08-14 01:03:03",
+    updatedLabel: "最后更新 2026-08-14 09:02:03", retryLabel: "下次重试 2026-08-14 09:03:03",
   });
 });
 
@@ -355,8 +355,10 @@ test("item presentation fails closed for hostile rows and action carriers", () =
   assert.equal(trapCalls, 0);
 });
 
-test("formats only a persisted timestamp and never substitutes the current time", () => {
-  assert.equal(autoListingCreatedAtLabel("2026-08-12T01:02:03.456Z"), "2026-08-12 01:02:03");
+test("formats persisted timestamps in China time and never substitutes the current time", () => {
+  assert.equal(autoListingCreatedAtLabel("2026-08-15T11:13:23.454Z"), "2026-08-15 19:13:23");
+  assert.equal(autoListingCreatedAtLabel("2026-08-15T17:30:00.000Z"), "2026-08-16 01:30:00");
+  assert.equal(autoListingCreatedAtLabel("2026-08-15T16:00:00.000Z"), "2026-08-16 00:00:00");
   assert.equal(autoListingCreatedAtLabel("not-a-time"), "—");
   assert.equal(autoListingCreatedAtLabel(""), "—");
   assert.equal(autoListingCreatedAtLabel(undefined), "—");

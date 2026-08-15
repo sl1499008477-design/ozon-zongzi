@@ -71,6 +71,16 @@ const WORKFLOW_PHASES = Object.freeze({
   GENERATE_RICH_CONTENT: "生成富文本",
 });
 const WORKFLOW_STATES = new Set(["QUEUED", "RUNNING", "RETRY_WAIT", "COMPLETED", "FAILED"]);
+const AUTO_LISTING_CHINA_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
 
 const runtimeIsProxy = (() => {
   try {
@@ -339,5 +349,11 @@ export function autoListingTaskRows(jobs) {
 
 export function autoListingCreatedAtLabel(value) {
   const timestamp = canonicalTimestamp(value);
-  return timestamp ? `${timestamp.slice(0, 10)} ${timestamp.slice(11, 19)}` : "—";
+  if (!timestamp) return "—";
+  const parts = Object.fromEntries(
+    AUTO_LISTING_CHINA_TIME_FORMATTER.formatToParts(new Date(timestamp))
+      .filter(({ type }) => ["year", "month", "day", "hour", "minute", "second"].includes(type))
+      .map(({ type, value: partValue }) => [type, partValue]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
