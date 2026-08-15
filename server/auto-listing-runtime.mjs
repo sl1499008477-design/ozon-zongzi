@@ -3,9 +3,16 @@ import { createAutoListingRepository } from "./auto-listing-repository.mjs";
 import { createAutoListingService } from "./auto-listing-service.mjs";
 import { createAutoListingAiWorker } from "./auto-listing-ai-worker.mjs";
 import { createAutoListingRfbsWarehouseVerifier } from "./auto-listing-rfbs-warehouse-verifier.mjs";
+import { createCategoryStrategyObservability } from "./auto-listing-category-strategy-observability.mjs";
 import { getPostgresPool } from "./db/connection.mjs";
 import { callOzonSellerApi as defaultCallOzonSellerApi } from "./ozon-client.mjs";
-import { autoListingAiEnabled, autoListingEnabled, autoListingUploadEnabled } from "./runtime-config.mjs";
+import { selectAutoListingPlanningContract } from "./auto-listing-planning-contract.mjs";
+import {
+  autoListingAiEnabled,
+  autoListingEnabled,
+  autoListingFixedSkeletonPilotScope,
+  autoListingUploadEnabled,
+} from "./runtime-config.mjs";
 
 function runtimeError(code, message) {
   const error = new Error(message);
@@ -60,6 +67,17 @@ function closeRfbsWarehouseVerifier(value) {
     return Object.freeze({ verifyRfbsWarehouse: descriptors.verifyRfbsWarehouse.value });
   } catch {
     return null;
+  }
+}
+
+function hasCategoryStrategyReadPort(value) {
+  try {
+    if (!value || typeof value !== "object" || utilTypes.isProxy(value)) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, "loadCategoryStrategyControl");
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value")
+      && typeof descriptor.value === "function" && !utilTypes.isProxy(descriptor.value);
+  } catch {
+    return false;
   }
 }
 
@@ -123,6 +141,9 @@ export function createAutoListingRuntime({
   readStoreCredential = null,
   callOzonSellerApi = defaultCallOzonSellerApi,
   persistenceMode = () => "postgres",
+  metrics = null,
+  logger = console,
+  createCategoryStrategyObservability: createObservability = createCategoryStrategyObservability,
 } = {}) {
   if (typeof resolvePool !== "function" || typeof createRepository !== "function" || typeof createService !== "function"
     || !env || typeof env !== "object" || typeof createAiWorker !== "function"
@@ -133,7 +154,10 @@ export function createAutoListingRuntime({
     || !(createCategoryFreshness === null || typeof createCategoryFreshness === "function")
     || typeof createRfbsWarehouseVerifier !== "function"
     || !(readStoreCredential === null || typeof readStoreCredential === "function")
-    || typeof callOzonSellerApi !== "function" || typeof persistenceMode !== "function") {
+    || typeof callOzonSellerApi !== "function" || typeof persistenceMode !== "function"
+    || !(metrics === null || typeof metrics?.increment === "function")
+    || !(logger === null || typeof logger?.info === "function")
+    || typeof createObservability !== "function") {
     throw new TypeError("Auto listing runtime dependencies are required");
   }
 
@@ -141,6 +165,16 @@ export function createAutoListingRuntime({
   let aiWorkerPromise = null;
   const serviceDisabled = !autoListingEnabled(env);
   const aiEnabled = autoListingEnabled(env) && autoListingAiEnabled(env);
+  const planningPilotScope = autoListingFixedSkeletonPilotScope(env);
+  const observabilitySecret = String(
+    env.AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET || "",
+  );
+  const observability = observabilitySecret ? createObservability({ metrics, logger,
+    accountHashSecret: observabilitySecret }) : null;
+  const selectPlanningContract = (input) => selectAutoListingPlanningContract({
+    pilotScope: planningPilotScope,
+    ...input,
+  });
   const resolveAiWorkerDependencies = createAiWorkerDependencies || (async ({ env: runtimeEnv, resolvePool: runtimePool }) => {
     const { createDefaultAutoListingAiProductionDependencies } = await import("./auto-listing-ai-runtime-composition.mjs");
     return createDefaultAutoListingAiProductionDependencies({ env: runtimeEnv, resolvePool: runtimePool });
@@ -224,6 +258,10 @@ export function createAutoListingRuntime({
           }
           repository = createRepository({ pool, stageInitialPlanWork: workflow.stageInitialPlanWork });
         } else repository = createRepository({ pool });
+        if (createService === createAutoListingService && !hasCategoryStrategyReadPort(repository)) {
+          throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_RUNTIME_INITIALIZATION_FAILED",
+            "自动上架类目策略运行时初始化失败");
+        }
         let rfbsWarehouseVerifier;
         try {
           rfbsWarehouseVerifier = createRfbsWarehouseVerifier({
@@ -248,12 +286,14 @@ export function createAutoListingRuntime({
           repository,
           prepareListingBase,
           ensureCategoryFresh,
+          selectPlanningContract,
           rfbsWarehouseVerifier: closedRfbsWarehouseVerifier,
           uploadPolicyGates: {
             directUploadAllowed,
             uploadEnabled: autoListingUploadEnabled(env),
             listingPipelineEnabled,
           },
+          ...(observability ? { observability } : {}),
         });
       });
       servicePromise = initialization;

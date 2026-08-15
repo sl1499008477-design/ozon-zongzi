@@ -62,6 +62,31 @@ function fixture({
       return { id: input.strategyVersionId, accountId: input.accountId, strategyKey: input.strategyKey,
         version: input.version, status: "PUBLISHED", duplicate: false };
     },
+    async publishCategoryStrategyDraft(input) {
+      calls.push(["publishCategoryStrategyDraft", input]);
+      return {
+        id: "strategy-category-v2", accountId: input.accountId, strategyKey: "default", version: 8,
+        status: "PUBLISHED", content: { schemaVersion: "V2" }, duplicate: false,
+        rules: [{
+          ruleId: "category-rule-v2", ruleOrder: 1, matchType: "EXACT_CATEGORY_TYPE_V2",
+          scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 },
+          overallStyle: "clean", prohibitedPatterns: ["clutter"],
+          roleGuidance: Object.fromEntries([
+            "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+          ].map((role) => [role, {
+            composition: `${role} composition`, background: `${role} background`,
+            textDensity: role === "MAIN" ? "NONE" : "LIGHT", layout: `${role} layout`,
+          }])),
+          sampleSetHash: "a".repeat(64), analysisAttemptId: "category-attempt-a",
+          analysisResultId: "category-result-a",
+        }],
+      };
+    },
+    async rollbackCategoryStrategyVersion(input) {
+      calls.push(["rollbackCategoryStrategyVersion", input]);
+      return { id: "strategy-category-rollback", accountId: input.accountId, strategyKey: "default",
+        version: 9, status: "PUBLISHED", content: { schemaVersion: "V2" }, rules: [], duplicate: false };
+    },
   };
   const capabilityService = {
     async testGatewayCapabilities(input) {
@@ -124,6 +149,12 @@ test("every admin operation rejects ordinary users before repository or capabili
     () => service.listStrategyVersions({ actor: ordinary, strategyKey: "default" }),
     () => service.publishStrategyVersion({ actor: ordinary, strategyKey: "default", strategyVersionId: "strategy-version-a",
       version: 1, idempotencyKey: "idem-a", correlationId: "corr-a" }),
+    () => service.publishCategoryStrategyDraft({ actor: ordinary, draftId: "category-draft-a",
+      expectedDraftVersion: 4, expectedPublishedStrategyVersionId: "strategy-version-a",
+      idempotencyKey: "idem-a", correlationId: "corr-a" }),
+    () => service.rollbackCategoryStrategyVersion({ actor: ordinary,
+      targetStrategyVersionId: "strategy-version-old", expectedPublishedStrategyVersionId: "strategy-version-a",
+      idempotencyKey: "idem-a", correlationId: "corr-a" }),
   ];
   for (const invoke of invocations) {
     await assert.rejects(invoke(), (error) => error?.code === "PERMISSION_FORBIDDEN");
@@ -361,4 +392,60 @@ test("strategy reads return the complete closed rule contract", async () => {
   const rows = await service.listStrategyVersions({ actor: admin, strategyKey: "default" });
   assert.deepEqual(rows[0].rules, [{ ...validRule }]);
   assert.doesNotMatch(JSON.stringify(rows), /secret|api.?key|credential/iu);
+});
+
+test("category draft publication passes exact account, draft, and current bundle CAS authority", async () => {
+  const { service, calls } = fixture();
+  const published = await service.publishCategoryStrategyDraft({
+    actor: admin,
+    draftId: "category-draft-a",
+    expectedDraftVersion: 4,
+    expectedPublishedStrategyVersionId: "strategy-version-a",
+    idempotencyKey: "publish-category-a",
+    correlationId: "publish-category-a-corr",
+  });
+  assert.deepEqual(calls[0], ["publishCategoryStrategyDraft", {
+    accountId: "account-admin",
+    actorId: "account-admin",
+    draftId: "category-draft-a",
+    expectedDraftVersion: 4,
+    expectedPublishedStrategyVersionId: "strategy-version-a",
+    idempotencyKey: "publish-category-a",
+    correlationId: "publish-category-a-corr",
+  }]);
+  assert.deepEqual({ id: published.id, version: published.version, status: published.status }, {
+    id: "strategy-category-v2", version: 8, status: "PUBLISHED",
+  });
+  await assert.rejects(service.publishCategoryStrategyDraft({
+    actor: admin,
+    draftId: "category-draft-a",
+    expectedDraftVersion: 4,
+    expectedPublishedStrategyVersionId: "strategy-version-a",
+    idempotencyKey: "publish-category-extra",
+    correlationId: "publish-category-extra-corr",
+    accountId: "account-other",
+  }), (error) => error?.code === "AUTO_LISTING_AI_ADMIN_REQUEST_INVALID");
+  assert.equal(calls.filter(([name]) => name === "publishCategoryStrategyDraft").length, 1);
+});
+
+test("category rollback is a closed copy-on-write account version command", async () => {
+  const { service, calls } = fixture();
+  const rolledBack = await service.rollbackCategoryStrategyVersion({
+    actor: admin,
+    targetStrategyVersionId: "strategy-version-old",
+    expectedPublishedStrategyVersionId: "strategy-version-current",
+    idempotencyKey: "rollback-category",
+    correlationId: "rollback-category-corr",
+  });
+  assert.deepEqual(calls[0], ["rollbackCategoryStrategyVersion", {
+    accountId: "account-admin",
+    actorId: "account-admin",
+    targetStrategyVersionId: "strategy-version-old",
+    expectedPublishedStrategyVersionId: "strategy-version-current",
+    idempotencyKey: "rollback-category",
+    correlationId: "rollback-category-corr",
+  }]);
+  assert.deepEqual({ id: rolledBack.id, version: rolledBack.version }, {
+    id: "strategy-category-rollback", version: 9,
+  });
 });

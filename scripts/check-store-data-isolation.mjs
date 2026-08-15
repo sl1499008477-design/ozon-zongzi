@@ -56,7 +56,7 @@ assert.match(
 );
 assert.match(
   formalPersistenceSource,
-  /export async function hydrateStoreCatalogFromRelationalTables[\s\S]*FROM products[\s\S]*FROM warehouses[\s\S]*state\.caches\.products = products\.rows\.map\(hydratedProductRow\)[\s\S]*state\.caches\.warehouses = warehouses\.rows\.map\(hydratedWarehouseRow\)/,
+  /export async function hydrateStoreCatalogFromRelationalTables[\s\S]*FROM products[\s\S]*FROM warehouses[\s\S]*state\.caches\.products = products\.rows\.map\(hydratedProductRow\)[\s\S]*state\.caches\.warehouses = warehouses\.rows\.map\(formalWarehouseCacheRow\)/,
   "formal PostgreSQL products and warehouses must hydrate the store-scoped frontend cache",
 );
 assert.match(

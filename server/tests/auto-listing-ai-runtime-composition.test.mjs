@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createAutoListingAiProductionDependencies,
   createAutoListingAiProductionOutboxRelay,
+  createAutoListingPlanDiagnosticProductionPorts,
   createDefaultAutoListingAiProductionDependencies,
   createDefaultAutoListingAiProductionOutboxRelay,
 } from "../auto-listing-ai-runtime-composition.mjs";
@@ -92,6 +93,14 @@ function testPorts(events) {
       });
     },
     createContentPlanRepository({ pool }) { events.push(["content", pool]); return repository("content"); },
+    createContentPlanEvidenceRepository({ pool }) {
+      events.push(["content-evidence", pool]);
+      return Object.freeze({
+        async recordResponse() {},
+        async recordValidation() {},
+        async loadOutcome() {},
+      });
+    },
     createSourceMaterializationRepository({ pool }) { events.push(["source", pool]); return repository("source"); },
     createGenerationRepository({ pool }) { events.push(["generation", pool]); return repository("generation"); },
     createRichContentRepository({ pool }) { events.push(["rich", pool]); return repository("rich"); },
@@ -150,11 +159,12 @@ test("production composition keeps account/job-frozen profiles per message and h
   assert.equal(events.filter(([name]) => name === "boss").length, 0);
   const options = events.find(([name]) => name === "context-loader")[1];
   assert.deepEqual(Object.keys(options).sort(), [
-    "contentPlanRepository", "downloader", "gateway", "generationRepository", "logger", "maxAttempts",
-    "planPromptTemplateVersion", "pool", "prohibitedClaims", "richContentLeaseOwner",
+    "contentPlanEvidenceRepository", "contentPlanRepository", "downloader", "gateway", "generationRepository", "logger", "maxAttempts",
+    "planPromptTemplateVersion", "pool", "prohibitedClaims", "referenceProjector", "richContentLeaseOwner",
     "richContentRepository", "sourceAssetLoader", "sourceMaterializationRepository", "storage",
   ]);
   assert.equal(options.planPromptTemplateVersion, "AUTO_LISTING_CONTENT_PLAN_V3");
+  assert.equal(typeof options.referenceProjector, "function");
 
   const message = (accountId, itemId) => ({
     contractVersion: "V1", accountId, itemId, phase: "PLAN_CONTENT",
@@ -273,6 +283,25 @@ test("production composition input and ports are closed before database or exter
   );
 });
 
+test("production composition rejects an incomplete content-plan evidence repository before loading context", async () => {
+  const events = [];
+  const ports = testPorts(events);
+  await assert.rejects(
+    createAutoListingAiProductionDependencies({
+      env: enabledEnv(),
+      resolvePool: async () => Object.freeze({ async query() {}, async connect() {} }),
+      ports: Object.freeze({
+        ...ports,
+        createContentPlanEvidenceRepository() {
+          return Object.freeze({ async recordResponse() {} });
+        },
+      }),
+    }),
+    (error) => error?.code === "AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED",
+  );
+  assert.equal(events.some(([name]) => name === "context-loader"), false);
+});
+
 test("production composition accepts the host process.env object shape while still projecting closed configuration", async () => {
   const env = Object.assign(Object.create({ runtimeEnvironment: true }), enabledEnv());
   const events = [];
@@ -299,6 +328,33 @@ test("the real production dependency graph composes without starting PgBoss, Min
   assert.deepEqual(Object.keys(dependencies).sort(), ["bossFactory", "loadContext", "orchestrate", "workflow"]);
   assert.equal(queries, 0);
   assert.equal(connections, 0);
+});
+
+test("text-only diagnostic production ports reuse the closed credential boundary without image or storage work", async () => {
+  const events = [];
+  const pool = Object.freeze({ async query() {}, async connect() {} });
+  const gateway = Object.freeze({
+    async createTextResponse() {},
+    async generateImage() { throw new Error("diagnostic must not generate images"); },
+    async inspectImage() { throw new Error("diagnostic must not inspect images"); },
+  });
+  const evidenceRepository = Object.freeze({
+    async recordResponse() {}, async recordValidation() {}, async loadOutcome() {},
+  });
+  const ports = Object.freeze({
+    async loadCredentialKey() { events.push("key"); return Buffer.alloc(32, 7); },
+    createCipher() { events.push("cipher"); return {}; },
+    createCredentialRepository(input) { events.push(["credentials", input]); return {}; },
+    createCredentialResolver() { events.push("resolver"); return { async resolveSecret() {} }; },
+    createGateway(input) { events.push(["gateway", input]); return gateway; },
+    createEvidenceRepository(input) { events.push(["evidence", input]); return evidenceRepository; },
+  });
+  const result = await createAutoListingPlanDiagnosticProductionPorts({
+    env: enabledEnv(), resolvePool: async () => pool, ports,
+  });
+  assert.deepEqual(result, { pool, gateway, evidenceRepository });
+  assert.equal(events.some((entry) => Array.isArray(entry) && entry[0] === "storage"), false);
+  assert.equal(events.filter((entry) => Array.isArray(entry) && entry[0] === "gateway").length, 1);
 });
 
 test("production relay discovers runnable accounts from the shared outbox in fair pages and starts with replay", async () => {

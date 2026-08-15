@@ -20,6 +20,19 @@ function sourceCapture(variants) {
     sourceType: "COLLECT_BOX",
     sourceRecordId: "collect-1",
     sourceVersion: "1",
+    targetStoreId: "store-a",
+    targetStoreCurrency: "RUB",
+    categoryEvidence: {
+      id: "category-evidence-1", accountId: "account-a",
+      sourceDescriptionCategoryId: 170, sourceTypeId: 99, taxonomyScope: "OZON:DEFAULT",
+    },
+    sharedCategory: {
+      id: "shared-category-1", accountId: "account-a", version: 1,
+      evidenceId: "category-evidence-1", status: "ACTIVE", source: "SOURCE_DIRECT",
+      sourceDescriptionCategoryId: 170, sourceTypeId: 99,
+      currentDescriptionCategoryId: 170, currentTypeId: 99,
+      taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null,
+    },
     collectItem: {
       id: "collect-1",
       accountId: "account-a",

@@ -351,6 +351,7 @@ function warehouseGraph({ itemCount = 1 } = {}) {
     const captured = buildAutoListingSourceSnapshot({
       accountId: "account-a",
       sourceType: "COLLECT_BOX",
+      planningContract: "LEGACY_FULL_PLAN_V3",
       sourceRecordId,
       sourceVersion: "1",
       targetStoreId: "store-a",
@@ -371,6 +372,7 @@ function warehouseGraph({ itemCount = 1 } = {}) {
           blackKopecks: "10000",
           greenKopecks: "8000",
           images: [],
+          productMeasurements: { reliable: true, length: 28, unit: "cm", source: "manufacturer" },
           variants: [{ sku: `sku-lock-${sourceOrder}`, offerId: `offer-lock-${sourceOrder}` }],
           categoryResolution: {
             status: "MATCHED", method: "test",
@@ -391,6 +393,7 @@ function warehouseGraph({ itemCount = 1 } = {}) {
       targetWarehouseId: config.targetWarehouseId,
       sourceOrder,
       status: "SOURCE_READY",
+      planningContract: "LEGACY_FULL_PLAN_V3",
       strategyId: "strategy-a",
       strategyVersionId: "strategy-version-a",
       ruleId: null,
@@ -458,6 +461,7 @@ function excelWarehouseGraph() {
       listingDraft: {
         sku: "sku-lock-0", offerId: "offer-lock-0", title: "Locked evidence product",
         currency: "RUB", blackKopecks: "10000", greenKopecks: "8000", images: [],
+        productMeasurements: { reliable: true, length: 28, unit: "cm", source: "manufacturer" },
         variants: [{ sku: "sku-lock-0", offerId: "offer-lock-0" }],
         categoryResolution: {
           status: "MATCHED", method: "test",
@@ -1102,6 +1106,7 @@ function blockedSourceGraph() {
   });
   graph.items = [{
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-reused-blocked", sourceVersion: "1",
+    planningContract: "LEGACY_FULL_PLAN_V3",
     blockedEvidence: evidence.blockedEvidence, snapshotHash: evidence.snapshotHash, rawResponseRef: evidence.rawResponseRef,
     targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0,
     status: "BLOCKED", failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",
@@ -1176,6 +1181,7 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
           id: params[0], job_id: params[1], account_id: params[2], snapshot_id: params[3],
           target_store_id: params[4], target_warehouse_id: params[5], status: params[6],
           status_version: 1, failure_code: params[7], created_at: new Date(0), updated_at: new Date(0),
+          planning_contract: params[9],
         });
         return { rows: [] };
       }
@@ -1239,6 +1245,37 @@ test("successful creation without the AI workflow keeps ready statuses and stage
   assert.equal(stageCalls.length, 0);
   const jobInsert = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
   assert.deepEqual(jobInsert.params.slice(7, 10), ["upload-policy-review-a", null, null]);
+});
+
+test("job graph persists and returns each server-selected planning contract", async () => {
+  const { repository, calls } = successfulCreationFixture();
+  const graph = warehouseGraph();
+  graph.items[0].planningContract = "FIXED_SKELETON_V1";
+  const created = await repository.createJobGraph(graph);
+
+  const itemInsert = calls.find(({ sql }) => /INSERT INTO auto_listing_job_items/.test(sql));
+  assert.match(itemInsert.sql, /planning_contract/u);
+  assert.equal(itemInsert.params.at(-1), "FIXED_SKELETON_V1");
+  assert.equal(created.items[0].planningContract, "FIXED_SKELETON_V1");
+});
+
+test("job graph rejects a missing or unknown planning contract before PostgreSQL", async () => {
+  for (const planningContract of [undefined, null, "", "FIXED_V2"] ) {
+    let connections = 0;
+    const repository = createAutoListingRepository({
+      pool: {
+        async connect() { connections += 1; throw new Error("must not connect"); },
+        async query() { throw new Error("must not query"); },
+      },
+    });
+    const graph = warehouseGraph();
+    if (planningContract === undefined) delete graph.items[0].planningContract;
+    else graph.items[0].planningContract = planningContract;
+    await assert.rejects(repository.createJobGraph(graph), {
+      code: "AUTO_LISTING_REPOSITORY_INVALID",
+    });
+    assert.equal(connections, 0);
+  }
 });
 
 test("optional AI workflow stages every ready sibling after its original event and leaves blocked siblings untouched", async () => {
@@ -1353,6 +1390,7 @@ function reusedEvidenceFixture({ graph, persistedSnapshot }) {
       calls.push({ sql, params });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2/.test(sql)) return { rows: [] };
+      if (/SELECT id FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
       if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
       if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
       if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
@@ -1496,6 +1534,7 @@ test("repository accepts only canonical blocked-source evidence before connectin
     uploadPolicyVersionId: "upload-policy-review-a",
     items: [{
       sourceType: "COLLECT_BOX", sourceRecordId: "collect-blocked", sourceVersion: "1",
+      planningContract: "LEGACY_FULL_PLAN_V3",
       blockedEvidence: evidence.blockedEvidence, snapshotHash: evidence.snapshotHash, rawResponseRef: evidence.rawResponseRef,
       targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0,
       status: "BLOCKED", failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",

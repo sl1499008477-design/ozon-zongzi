@@ -68,6 +68,9 @@ await writeFile(dataFile, `${JSON.stringify({
     clientId: "submit-client",
     apiKey: "submit-key",
     status: "active",
+    currencyCode: "CNY",
+    currencySource: "OZON_SELLER_INFO",
+    currencySyncedAt: "2026-07-28T00:00:00.000Z",
   }, {
     id: "foreign-submit-store",
     ownerAccountId: "acct_foreign",

@@ -27,6 +27,32 @@ const publicationPolicyHash = crypto.createHash("sha256").update(JSON.stringify(
   prefix: publicationPolicy.prefix, publicationVersion: publicationPolicy.publicationVersion,
 })).digest("hex");
 
+function exactCategoryStrategyRule(ruleId) {
+  const roleGuidance = Object.fromEntries([
+    "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+  ].map((role) => [role, { composition: `composition-${role}`, background: `background-${role}`,
+    textDensity: role === "MAIN" ? "NONE" : "LIGHT", layout: `layout-${role}` }]));
+  return { ruleId, matchType: "EXACT_CATEGORY_TYPE_V2",
+    scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 123, typeId: 456 },
+    overallStyle: "exact integration strategy", prohibitedPatterns: [], roleGuidance,
+    sampleSetHash: "a".repeat(64), analysisAttemptId: `attempt-${ruleId}`, analysisResultId: `result-${ruleId}` };
+}
+
+function withExactCategoryStrategy(input, { strategyVersionId, ruleId, policyVersion }) {
+  input.strategyVersionId = strategyVersionId;
+  input.categoryStrategyGate = { mode: "REQUIRE_EXACT_STRATEGY", policyVersion,
+    scopes: [{ taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 123, typeId: 456, ruleId }] };
+  for (const item of input.items) {
+    if (item.status !== "SOURCE_READY") continue;
+    item.strategyId = "default";
+    item.strategyVersionId = strategyVersionId;
+    item.ruleId = ruleId;
+    item.style = "BALANCED_DEFAULT";
+    item.matchedBy = "EXACT_CATEGORY_TYPE_V2";
+  }
+  return input;
+}
+
 function categoryAuthority(accountId, suffix) {
   const evidenceId = `category-evidence-${suffix}`;
   return {
@@ -48,6 +74,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     targetWarehouseId: `warehouse-${accountId}`,
     stock: 1,
     priceAdjustmentKopecks: "0",
+    image: { roles: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 0, infographic: 1 }, total: 7 },
   });
   const captured = buildAutoListingSourceSnapshot({
     accountId,
@@ -67,6 +94,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
         sku: `sku-${suffix}`,
         offerId: `offer-${suffix}`,
         title: `Product ${suffix}`,
+        productMeasurements: { reliable: true, length: 20, width: 10, height: 5, unit: "cm", source: "test" },
         currency: "RUB", blackKopecks: "10000", greenKopecks: "8000", images: [], variants: [{ sku: `sku-${suffix}`, offerId: `offer-${suffix}` }],
         categoryResolution: { status: "MATCHED", method: "test", target: { storeId: `store-${accountId}`, descriptionCategoryId: "123", typeId: "456" }, source: { path: [] } },
       },
@@ -95,7 +123,8 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
       targetWarehouseId: `warehouse-${accountId}`,
       sourceOrder: 0,
       status: "SOURCE_READY",
-      strategyId: `strategy-${accountId}`,
+      planningContract: "LEGACY_FULL_PLAN_V3",
+      strategyId: "default",
       strategyVersionId: `strategy-version-${accountId}`,
       ruleId: null,
       style: "BALANCED_DEFAULT",
@@ -743,7 +772,7 @@ if (!enabled) {
     }
   });
 
-  test("PostgreSQL repository rolls back graphs, scopes replays, preserves snapshots and orders events", { timeout: 20_000 }, async () => {
+  test("PostgreSQL repository rolls back graphs and exact category gate drift, then freezes continuation evidence", { timeout: 30_000 }, async () => {
     const { Pool, Client } = await import("pg");
     const pool = new Pool({ connectionString: databaseUrl });
     const client = await pool.connect();
@@ -764,8 +793,9 @@ if (!enabled) {
           [accountId, `user-${accountId}`],
         );
         await client.query(
-          `INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id)
-           VALUES ($1,$2,$2,$3,'active',$4)`,
+          `INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id,
+             currency_code,currency_source,currency_synced_at)
+           VALUES ($1,$2,$2,$3,'active',$4,'RUB','OZON_SELLER_INFO',STATEMENT_TIMESTAMP())`,
           [`store-${accountId}`, `Store ${accountId}`, `client-${accountId}`, accountId],
         );
         await client.query(
@@ -788,7 +818,7 @@ if (!enabled) {
         await client.query(
           `INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash)
            VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,$4)`,
-          [`strategy-version-${accountId}`, accountId, `strategy-${accountId}`, `strategy-hash-${accountId}`],
+          [`strategy-version-${accountId}`, accountId, "default", `strategy-hash-${accountId}`],
         );
         await client.query(
           `INSERT INTO auto_listing_upload_policy_versions (
@@ -954,6 +984,7 @@ if (!enabled) {
         targetWarehouseId: mixedSourceBusiness.configSnapshot.targetWarehouseId,
         sourceOrder: 1,
         status: "BLOCKED",
+        planningContract: "LEGACY_FULL_PLAN_V3",
         failureCode: "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
       });
       await registerGraphSources(client, mixedSourceBusiness);
@@ -1092,9 +1123,10 @@ if (!enabled) {
       sharedRight.categoryPreparationLeaseId = `category-lease-race-same-right-${suffix}`;
       await registerGraphSources(client, sharedLeft);
       await registerGraphSources(client, sharedRight);
-      const sameHashBarrier = twoConnectionSnapshotBarrier(scopedPool);
-      const sameHashRepository = createAutoListingRepository({ pool: sameHashBarrier });
-      const sameHashResults = await runBarrierRace(sameHashRepository, sameHashBarrier, [sharedLeft, sharedRight]);
+      const sameHashRepository = createAutoListingRepository({ pool: scopedPool });
+      const sameHashResults = await Promise.allSettled([
+        sameHashRepository.createJobGraph(sharedLeft), sameHashRepository.createJobGraph(sharedRight),
+      ]);
       assert.equal(sameHashResults.every((result) => result.status === "fulfilled"), true);
       const [sharedOne, sharedTwo] = sameHashResults.map((result) => result.value);
       assert.notEqual(sharedOne.id, sharedTwo.id);
@@ -1211,9 +1243,10 @@ if (!enabled) {
       conflictRight.categoryPreparationLeaseId = `category-lease-race-conflict-right-${suffix}`;
       await registerGraphSources(client, conflictLeft);
       await registerGraphSources(client, conflictRight);
-      const conflictBarrier = twoConnectionSnapshotBarrier(scopedPool);
-      const conflictRepository = createAutoListingRepository({ pool: conflictBarrier });
-      const conflictResults = await runBarrierRace(conflictRepository, conflictBarrier, [conflictLeft, conflictRight]);
+      const conflictRepository = createAutoListingRepository({ pool: scopedPool });
+      const conflictResults = await Promise.allSettled([
+        conflictRepository.createJobGraph(conflictLeft), conflictRepository.createJobGraph(conflictRight),
+      ]);
       assert.equal(conflictResults.filter((result) => result.status === "fulfilled").length, 1);
       assert.equal(conflictResults.find((result) => result.status === "rejected")?.reason?.code, "AUTO_LISTING_SOURCE_VERSION_CONFLICT");
       assert.equal(Number((await client.query(
@@ -1257,8 +1290,9 @@ if (!enabled) {
       const secondWarehouseId = `warehouse-second-${accountA}`;
       const secondProductId = `product-second-${accountA}`;
       await client.query(
-        `INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id,currency_code)
-         VALUES ($1,'Second','Second',$2,'active',$3,'RUB')`,
+        `INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id,currency_code,
+           currency_source,currency_synced_at)
+         VALUES ($1,'Second','Second',$2,'active',$3,'RUB','OZON_SELLER_INFO',STATEMENT_TIMESTAMP())`,
         [secondStoreId, `client-second-${accountA}`, accountA],
       );
       await client.query(
@@ -1799,6 +1833,246 @@ if (!enabled) {
         "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2",
         [accountA, graphExpiry.idempotencyKey],
       )).rows[0].count), 0);
+
+      const task9Account = `account-task9-${suffix}`;
+      const task9OldVersion = `strategy-task9-old-${suffix}`;
+      const task9NewVersion = `strategy-task9-new-${suffix}`;
+      const task9OldRule = `rule-task9-old-${suffix}`;
+      const task9NewRule = `rule-task9-new-${suffix}`;
+      const task9RecoveryVersion = `strategy-task9-recovery-${suffix}`;
+      const task9RecoveryRule = `rule-task9-recovery-${suffix}`;
+      await client.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
+        [task9Account, `user-${task9Account}`],
+      );
+      await client.query(
+        `INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id,
+           currency_code,currency_source,currency_synced_at)
+         VALUES ($1,'Task9','Task9',$2,'active',$3,'RUB','OZON_SELLER_INFO',STATEMENT_TIMESTAMP())`,
+        [`store-${task9Account}`, `client-${task9Account}`, task9Account],
+      );
+      await client.query(
+        "INSERT INTO store_credentials (store_id,client_id,encrypted_api_key,iv,auth_tag) VALUES ($1,$2,'ciphertext','iv','tag')",
+        [`store-${task9Account}`, `client-${task9Account}`],
+      );
+      await client.query(
+        `INSERT INTO warehouses (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived)
+         VALUES ($1,$2,$3,'FBS','active',TRUE,FALSE)`,
+        [`warehouse-${task9Account}`, `store-${task9Account}`, `platform-${task9Account}`],
+      );
+      await client.query(
+        "INSERT INTO products (id,store_id,product_id,sku,status,raw) VALUES ($1,$2,$3,$4,'active','{}'::jsonb)",
+        [`product-${task9Account}`, `store-${task9Account}`, `product-${task9Account}`, `sku-${task9Account}`],
+      );
+      await client.query(
+        "INSERT INTO product_stocks (product_id,warehouse_id,store_id,source) VALUES ($1,$2,$3,'fbs')",
+        [`product-${task9Account}`, `warehouse-${task9Account}`, `store-${task9Account}`],
+      );
+      for (const [strategyVersionId, version, status, ruleId] of [
+        [task9OldVersion, 1, "RETIRED", task9OldRule],
+        [task9NewVersion, 2, "PUBLISHED", task9NewRule],
+      ]) {
+        await client.query(
+          `INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash)
+           VALUES ($1,$2,'default',$3,'DRAFT','{"schemaVersion":"V2"}'::jsonb,$4)`,
+          [strategyVersionId, task9Account, version, `${status.toLowerCase()}-hash-${suffix}`],
+        );
+        await client.query(
+          `INSERT INTO ai_content_strategy_rules
+             (id,account_id,strategy_version_id,rule_kind,rule_order,category_id,rule)
+           VALUES ($1,$2,$3,'EXACT_CATEGORY',1,'123',$4::jsonb)`,
+          [`physical-${ruleId}`, task9Account, strategyVersionId,
+            JSON.stringify(exactCategoryStrategyRule(ruleId))],
+        );
+        await client.query(
+          `UPDATE ai_content_strategy_versions
+              SET status='PUBLISHED',published_at=STATEMENT_TIMESTAMP(),published_by=$2
+            WHERE account_id=$2 AND id=$1 AND status='DRAFT'`,
+          [strategyVersionId, task9Account],
+        );
+        if (status === "RETIRED") {
+          await client.query(
+            "UPDATE ai_content_strategy_versions SET status='RETIRED' WHERE account_id=$1 AND id=$2 AND status='PUBLISHED'",
+            [task9Account, strategyVersionId],
+          );
+        }
+      }
+      await client.query(
+        `UPDATE auto_listing_category_strategy_account_settings
+            SET mode='REQUIRE_EXACT_STRATEGY',version=2,idempotency_key=$2,correlation_id=$3,
+                request_hash=$4,actor_account_id=$1,updated_at=STATEMENT_TIMESTAMP()
+          WHERE account_id=$1 AND mode='LEGACY_FALLBACK' AND version=1`,
+        [task9Account, `settings-task9-${suffix}`, `settings-task9-corr-${suffix}`, "c".repeat(64)],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_upload_policy_versions (
+           id,account_id,mode,enabled,version,publication_reason,created_by,published_by,published_at,
+           publication_origin,publication_base_url,publication_prefix,publication_version,publication_policy_hash
+         ) VALUES ($1,$2,'REVIEW',TRUE,1,'task9 review policy',$2,$2,NOW(),$3,$4,$5,$6,$7)`,
+        [`upload-policy-${task9Account}`, task9Account, publicationPolicy.origin, publicationPolicy.baseUrl,
+          publicationPolicy.prefix, publicationPolicy.publicationVersion, publicationPolicyHash],
+      );
+      await client.query(
+        `INSERT INTO ai_gateway_profiles
+          (id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,text_model,image_model,config_version,enabled)
+         VALUES ($1,$2,'Task9','https://gateway.invalid','TASK9_AI_KEY','SUB2API_RESPONSES',
+           'SUB2API_OPENAI_IMAGES','text','image',1,TRUE)`,
+        [`profile-${task9Account}`, task9Account],
+      );
+      const task9Repository = createAutoListingRepository({ pool: scopedPool });
+      const assertTask9ZeroWrites = async (input) => {
+        const row = (await client.query(
+          `SELECT
+             (SELECT COUNT(*)::INT FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2) AS jobs,
+             (SELECT COUNT(*)::INT FROM auto_listing_source_snapshots WHERE account_id=$1 AND source_record_id=$3) AS snapshots,
+             (SELECT COUNT(*)::INT FROM auto_listing_listing_bases WHERE account_id=$1 AND collect_item_id=$3) AS bases,
+             (SELECT COUNT(*)::INT FROM auto_listing_ai_outbox WHERE account_id=$1 AND job_id IN
+               (SELECT id FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2)) AS outbox`,
+          [task9Account, input.idempotencyKey, input.items[0].sourceRecordId],
+        )).rows[0];
+        assert.deepEqual(row, { jobs: 0, snapshots: 0, bases: 0, outbox: 0 });
+      };
+
+      const modeDrift = withExactCategoryStrategy(
+        graph(task9Account, `mode-drift-${suffix}`, `mode-drift-${suffix}`),
+        { strategyVersionId: task9NewVersion, ruleId: task9NewRule, policyVersion: 3 },
+      );
+      await registerGraphSources(client, modeDrift);
+      await assert.rejects(task9Repository.createJobGraph(modeDrift),
+        { code: "AUTO_LISTING_CATEGORY_STRATEGY_CHANGED", status: 409 });
+      await assertTask9ZeroWrites(modeDrift);
+
+      const publishDrift = withExactCategoryStrategy(
+        graph(task9Account, `publish-drift-${suffix}`, `publish-drift-${suffix}`),
+        { strategyVersionId: task9OldVersion, ruleId: task9OldRule, policyVersion: 2 },
+      );
+      await registerGraphSources(client, publishDrift);
+      await assert.rejects(task9Repository.createJobGraph(publishDrift),
+        { code: "AUTO_LISTING_STRATEGY_NOT_PUBLISHED", status: 409 });
+      await assertTask9ZeroWrites(publishDrift);
+
+      const sourceDrift = withExactCategoryStrategy(
+        graph(task9Account, `source-drift-${suffix}`, `source-drift-${suffix}`),
+        { strategyVersionId: task9NewVersion, ruleId: task9NewRule, policyVersion: 2 },
+      );
+      await registerGraphSources(client, sourceDrift);
+      await client.query(
+        "UPDATE account_ozon_shared_categories SET version=2,updated_at=STATEMENT_TIMESTAMP() WHERE account_id=$1 AND id=$2",
+        [task9Account, sourceDrift.items[0].snapshot.targetCategory.sharedCategoryId],
+      );
+      await assert.rejects(task9Repository.createJobGraph(sourceDrift),
+        { code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT", status: 409 });
+      await assertTask9ZeroWrites(sourceDrift);
+
+      const continuation = withExactCategoryStrategy(bindGraphToSharedVersion(
+        graph(task9Account, `continue-new-key-${suffix}`, `continue-new-key-${suffix}`), 2,
+      ), { strategyVersionId: task9NewVersion, ruleId: task9NewRule, policyVersion: 2 });
+      await registerGraphSources(client, continuation);
+      const task9Created = await task9Repository.createJobGraph(continuation);
+      assert.equal(task9Created.accountId, task9Account);
+      const task9Frozen = (await client.query(
+        `SELECT job.strategy_version_id,job.config_snapshot,item.target_store_id,item.target_warehouse_id,
+                event.details->>'ruleId' AS rule_id,event.details->>'matchedBy' AS matched_by
+           FROM auto_listing_jobs job
+           JOIN auto_listing_job_items item ON item.account_id=job.account_id AND item.job_id=job.id
+           JOIN auto_listing_events event ON event.account_id=job.account_id AND event.job_id=job.id
+             AND event.item_id=item.id AND event.event_type='SOURCE_CAPTURED'
+          WHERE job.account_id=$1 AND job.idempotency_key=$2`,
+        [task9Account, continuation.idempotencyKey],
+      )).rows[0];
+      assert.equal(task9Frozen.strategy_version_id, task9NewVersion);
+      assert.equal(task9Frozen.rule_id, task9NewRule);
+      assert.equal(task9Frozen.matched_by, "EXACT_CATEGORY_TYPE_V2");
+      assert.equal(task9Frozen.target_store_id, continuation.configSnapshot.targetStoreId);
+      assert.equal(task9Frozen.target_warehouse_id, continuation.configSnapshot.targetWarehouseId);
+      assert.equal(task9Frozen.config_snapshot.image.total, 7);
+      assert.deepEqual(task9Frozen.config_snapshot.image.roles, continuation.configSnapshot.image.roles);
+      assert.equal(task9Created.items[0].price.currency, "RUB");
+
+      const accountAttemptPool = () => {
+        let resolveAttempt;
+        const attempted = new Promise((resolve) => { resolveAttempt = resolve; });
+        return {
+          attempted,
+          pool: {
+            query: (...args) => scopedPool.query(...args),
+            async connect() {
+              const connection = await scopedPool.connect();
+              return {
+                async query(sql, params) {
+                  if (/SELECT id FROM accounts WHERE id=\$1 FOR UPDATE/u.test(sql)) resolveAttempt();
+                  return connection.query(sql, params);
+                },
+                release: (...args) => connection.release(...args),
+              };
+            },
+          },
+        };
+      };
+      const stageInitialPlanWork = async () => ({ status: "PLANNING", statusVersion: 2 });
+
+      const publishWins = withExactCategoryStrategy(bindGraphToSharedVersion(
+        graph(task9Account, `publish-wins-${suffix}`, `publish-wins-${suffix}`), 2,
+      ), { strategyVersionId: task9NewVersion, ruleId: task9NewRule, policyVersion: 2 });
+      await registerGraphSources(client, publishWins);
+      const publisher = await pool.connect();
+      await publisher.query(`SET search_path TO ${schemaSql}, public`);
+      await publisher.query("BEGIN");
+      await publisher.query("SELECT id FROM accounts WHERE id=$1 FOR UPDATE", [task9Account]);
+      const blockedCreate = accountAttemptPool();
+      const blockedRepository = createAutoListingRepository({ pool: blockedCreate.pool, stageInitialPlanWork });
+      const blockedCreation = blockedRepository.createJobGraph(publishWins);
+      await blockedCreate.attempted;
+      await publisher.query(
+        "UPDATE ai_content_strategy_versions SET status='RETIRED' WHERE account_id=$1 AND id=$2 AND status='PUBLISHED'",
+        [task9Account, task9NewVersion],
+      );
+      await publisher.query("COMMIT");
+      publisher.release();
+      await assert.rejects(blockedCreation, { code: "AUTO_LISTING_STRATEGY_NOT_PUBLISHED", status: 409 });
+      await assertTask9ZeroWrites(publishWins);
+
+      await client.query(
+        `INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash)
+         VALUES ($1,$2,'default',3,'DRAFT','{"schemaVersion":"V2"}'::jsonb,$3)`,
+        [task9RecoveryVersion, task9Account, `recovery-hash-${suffix}`],
+      );
+      await client.query(
+        `INSERT INTO ai_content_strategy_rules
+           (id,account_id,strategy_version_id,rule_kind,rule_order,category_id,rule)
+         VALUES ($1,$2,$3,'EXACT_CATEGORY',1,'123',$4::jsonb)`,
+        [`physical-${task9RecoveryRule}`, task9Account, task9RecoveryVersion,
+          JSON.stringify(exactCategoryStrategyRule(task9RecoveryRule))],
+      );
+      await client.query(
+        `UPDATE ai_content_strategy_versions SET status='PUBLISHED',published_at=STATEMENT_TIMESTAMP(),published_by=$2
+          WHERE account_id=$2 AND id=$1 AND status='DRAFT'`,
+        [task9RecoveryVersion, task9Account],
+      );
+      const rollbackWins = withExactCategoryStrategy(bindGraphToSharedVersion(
+        graph(task9Account, `publish-rolls-back-${suffix}`, `publish-rolls-back-${suffix}`), 2,
+      ), { strategyVersionId: task9RecoveryVersion, ruleId: task9RecoveryRule, policyVersion: 2 });
+      await registerGraphSources(client, rollbackWins);
+      const rollingPublisher = await pool.connect();
+      await rollingPublisher.query(`SET search_path TO ${schemaSql}, public`);
+      await rollingPublisher.query("BEGIN");
+      await rollingPublisher.query("SELECT id FROM accounts WHERE id=$1 FOR UPDATE", [task9Account]);
+      await rollingPublisher.query(
+        "UPDATE ai_content_strategy_versions SET status='RETIRED' WHERE account_id=$1 AND id=$2 AND status='PUBLISHED'",
+        [task9Account, task9RecoveryVersion],
+      );
+      const rollbackCreate = accountAttemptPool();
+      const rollbackRepository = createAutoListingRepository({ pool: rollbackCreate.pool, stageInitialPlanWork });
+      const rollbackCreation = rollbackRepository.createJobGraph(rollbackWins);
+      await rollbackCreate.attempted;
+      await rollingPublisher.query("ROLLBACK");
+      rollingPublisher.release();
+      const rollbackCreated = await rollbackCreation;
+      assert.equal(rollbackCreated.accountId, task9Account);
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2",
+        [task9Account, rollbackWins.idempotencyKey],
+      )).rows[0].count), 1);
     } finally {
       await client.query("RESET search_path").catch(() => {});
       await client.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
@@ -1839,7 +2113,9 @@ if (!enabled) {
         [accountId, `user-${accountId}`],
       );
       await client.query(
-        "INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,$2,$2,$3,'active',$4)",
+        `INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id,
+           currency_code,currency_source,currency_synced_at)
+         VALUES ($1,$2,$2,$3,'active',$4,'RUB','OZON_SELLER_INFO',STATEMENT_TIMESTAMP())`,
         [storeId, `Store ${accountId}`, `client-${accountId}`, accountId],
       );
       await client.query(
@@ -1860,7 +2136,7 @@ if (!enabled) {
       );
       await client.query(
         "INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash) VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,$4)",
-        [`strategy-version-${accountId}`, accountId, `strategy-${accountId}`, `strategy-hash-${accountId}`],
+        [`strategy-version-${accountId}`, accountId, "default", `strategy-hash-${accountId}`],
       );
       await client.query(
         `INSERT INTO auto_listing_upload_policy_versions (

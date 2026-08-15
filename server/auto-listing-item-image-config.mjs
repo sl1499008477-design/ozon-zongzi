@@ -25,6 +25,13 @@ function inputError() {
   return error;
 }
 
+function productDimensionsError() {
+  const error = new Error("AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED");
+  error.code = "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED";
+  error.status = 422;
+  return error;
+}
+
 export function deriveEffectiveAutoListingImageConfig(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)
     || Object.getPrototypeOf(input) !== Object.prototype
@@ -34,17 +41,15 @@ export function deriveEffectiveAutoListingImageConfig(input = {}) {
   const { config } = verifyAutoListingFrozenConfig(configSnapshot, configHash);
   const { snapshot } = verifyAutoListingSourceSnapshot(sourceCapture);
   const reliable = hasReliableProductDimensions(snapshot.productMeasurements);
-  const roles = {
-    ...config.image.roles,
-    specification: reliable ? config.image.roles.specification : 0,
-  };
-  return {
+  if (config.image.roles.specification > 0 && !reliable) throw productDimensionsError();
+  const roles = Object.freeze({ ...config.image.roles });
+  return Object.freeze({
     ratio: config.image.ratio,
     resolution: config.image.resolution,
     quality: config.image.quality,
     language: config.image.language,
     roles,
-    total: Object.values(roles).reduce((sum, count) => sum + count, 0),
-    reasonCodes: reliable ? [] : ["PRODUCT_DIMENSIONS_UNAVAILABLE"],
-  };
+    total: config.image.total,
+    reasonCodes: Object.freeze([]),
+  });
 }

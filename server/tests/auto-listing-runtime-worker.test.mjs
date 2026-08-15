@@ -64,6 +64,30 @@ test("auto listing fails closed before PostgreSQL when shared category authority
   assert.equal(pools, 0);
 });
 
+test("production service composition fails closed when the exact category-strategy read port is absent or hostile", async () => {
+  for (const [label, repository] of [
+    ["absent", { async loadTargetWarehouse() { return null; } }],
+    ["proxy", new Proxy({ async loadCategoryStrategyControl() {} }, {})],
+    ["accessor", (() => {
+      const value = {};
+      Object.defineProperty(value, "loadCategoryStrategyControl", { enumerable: true, get() { throw new Error("must not read"); } });
+      return value;
+    })()],
+  ]) {
+    const runtime = createAutoListingRuntime({
+      env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0" }),
+      getPostgresPool: async () => ({ name: "pool-a" }),
+      createRepository: () => repository,
+      createListingBasePreparer: async () => async () => ({}),
+      createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
+    });
+    await assert.rejects(runtime.getService(), {
+      code: "AUTO_LISTING_CATEGORY_STRATEGY_RUNTIME_INITIALIZATION_FAILED",
+      message: "自动上架类目策略运行时初始化失败",
+    }, label);
+  }
+});
+
 test("enabled runtime starts the queue consumer before startup replay and stops relay before draining the worker", async () => {
   const events = [];
   const runtime = createAutoListingRuntime({
@@ -248,8 +272,9 @@ test("runtime injects the AI workflow into job creation only when both feature f
         assert.equal(Object.isFrozen(input.rfbsWarehouseVerifier), true);
         assert.deepEqual(Object.keys(input.rfbsWarehouseVerifier), ["verifyRfbsWarehouse"]);
         assert.equal(input.rfbsWarehouseVerifier.verifyRfbsWarehouse, rfbsWarehouseVerifier.verifyRfbsWarehouse);
-        assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined }, {
-          repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
+        assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined, selectPlanningContract: undefined }, {
+          repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined,
+          selectPlanningContract: undefined, uploadPolicyGates: {
           directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
           },
         });
@@ -267,6 +292,23 @@ test("runtime injects the AI workflow into job creation only when both feature f
     assert.deepEqual(repositoryInputs, [expectedWorkflowFactories
       ? { pool, stageInitialPlanWork: workflow.stageInitialPlanWork } : { pool }]);
   }
+});
+
+test("auto-listing runtime injects the shared safe category observability boundary", async () => {
+  let serviceInput;
+  const runtime = createAutoListingRuntime({
+    env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0",
+      AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET: "test-observer-hash-secret-long-enough" }),
+    metrics: { increment() {} }, logger: { info() {} },
+    getPostgresPool: async () => ({ name: "pool-a" }),
+    createRepository: () => ({ async loadCategoryStrategyControl() {} }),
+    createListingBasePreparer: async () => async () => ({}),
+    createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
+    createRfbsWarehouseVerifier: () => ({ async verifyRfbsWarehouse() {} }),
+    createService(input) { serviceInput = input; return { marker: "service" }; },
+  });
+  await runtime.getService();
+  assert.equal(typeof serviceInput.observability.observe, "function");
 });
 
 test("runtime rejects an open AI workflow factory result before constructing the repository", async () => {
@@ -318,8 +360,9 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
       assert.notEqual(input.rfbsWarehouseVerifier, rfbsWarehouseVerifier);
       assert.equal(Object.isFrozen(input.rfbsWarehouseVerifier), true);
       assert.equal(input.rfbsWarehouseVerifier.verifyRfbsWarehouse, rfbsWarehouseVerifier.verifyRfbsWarehouse);
-      assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined }, {
-        repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
+      assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined, selectPlanningContract: undefined }, {
+        repository, prepareListingBase, ensureCategoryFresh, rfbsWarehouseVerifier: undefined,
+        selectPlanningContract: undefined, uploadPolicyGates: {
         directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
         },
       });
@@ -332,6 +375,33 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
   assert.equal(await runtime.getService(), service);
   assert.equal(await runtime.getService(), service);
   assert.deepEqual({ pools, repositories, services }, { pools: 1, repositories: 1, services: 1 });
+});
+
+test("runtime injects an exact server-owned fixed skeleton selector", async () => {
+  let serviceInput;
+  const runtime = createAutoListingRuntime({
+    env: enabledEnv({
+      AUTO_LISTING_AI_ENABLED: "0",
+      AUTO_LISTING_FIXED_SKELETON_PILOT_ENABLED: "true",
+      AUTO_LISTING_FIXED_SKELETON_PILOT_ACCOUNT_ID: "account-a",
+      AUTO_LISTING_FIXED_SKELETON_PILOT_COLLECT_ITEM_ID: "collect-a",
+    }),
+    getPostgresPool: async () => ({ name: "pool-a" }),
+    createRepository: () => ({ name: "repository-a" }),
+    createListingBasePreparer: async () => async () => {},
+    createCategoryFreshness: async () => async () => ({ status: "CURRENT" }),
+    createRfbsWarehouseVerifier: () => ({ async verifyRfbsWarehouse() {} }),
+    createService(input) { serviceInput = input; return { name: "service-a" }; },
+  });
+
+  await runtime.getService();
+  assert.equal(typeof serviceInput.selectPlanningContract, "function");
+  assert.equal(serviceInput.selectPlanningContract({
+    accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a",
+  }), "FIXED_SKELETON_V1");
+  assert.equal(serviceInput.selectPlanningContract({
+    accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-b",
+  }), "LEGACY_FULL_PLAN_V3");
 });
 
 test("runtime composes the RFBS verifier from tenant-scoped warehouse and credential ports", async () => {

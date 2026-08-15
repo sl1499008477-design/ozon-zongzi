@@ -6,6 +6,10 @@ import {
   verifySub2ApiGatewayDnsBoundary,
 } from "./sub2api-gateway-boundary.mjs";
 import { normalizeAutoListingTextDensityByRole } from "./auto-listing-text-density-contract.mjs";
+import {
+  projectCategoryStrategyGuidanceV2,
+  projectCategoryStrategyScope,
+} from "./auto-listing-category-strategy-contract.mjs";
 
 const PROFILE_KEYS = new Set([
   "displayName", "baseUrl", "apiKeyEnvName", "textProtocol", "imageProtocol", "textModel", "imageModel",
@@ -183,6 +187,49 @@ function normalizeRule(raw) {
   const code = "AUTO_LISTING_AI_ADMIN_STRATEGY_INVALID";
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw adminError(code);
   const matchType = raw.matchType;
+  if (matchType === "EXACT_CATEGORY_TYPE_V2") {
+    const value = closedObject(raw, new Set([
+      "ruleId", "ruleOrder", "matchType", "scope", "overallStyle", "prohibitedPatterns",
+      "roleGuidance", "sampleSetHash", "analysisAttemptId", "analysisResultId",
+    ]), code);
+    if (!Number.isInteger(value.ruleOrder) || value.ruleOrder < 1
+      || typeof value.sampleSetHash !== "string" || !/^[a-f0-9]{64}$/u.test(value.sampleSetHash)) {
+      throw adminError(code);
+    }
+    try {
+      const ruleScope = closedObject(value.scope,
+        new Set(["taxonomyScope", "descriptionCategoryId", "typeId"]), code);
+      const scope = projectCategoryStrategyScope({
+        accountId: "account-placeholder",
+        taxonomyScope: ruleScope.taxonomyScope,
+        descriptionCategoryId: ruleScope.descriptionCategoryId,
+        typeId: ruleScope.typeId,
+      });
+      const guidance = projectCategoryStrategyGuidanceV2({
+        overallStyle: value.overallStyle,
+        prohibitedPatterns: value.prohibitedPatterns,
+        roles: value.roleGuidance,
+      });
+      return {
+        ruleId: text(value.ruleId, { code }),
+        ruleOrder: value.ruleOrder,
+        matchType,
+        scope: {
+          taxonomyScope: scope.taxonomyScope,
+          descriptionCategoryId: scope.descriptionCategoryId,
+          typeId: scope.typeId,
+        },
+        overallStyle: guidance.overallStyle,
+        prohibitedPatterns: guidance.prohibitedPatterns,
+        roleGuidance: guidance.roles,
+        sampleSetHash: value.sampleSetHash,
+        analysisAttemptId: text(value.analysisAttemptId, { code }),
+        analysisResultId: text(value.analysisResultId, { code }),
+      };
+    } catch {
+      throw adminError(code);
+    }
+  }
   if (!MATCH_TYPES.has(matchType)) throw adminError(code);
   const keys = new Set(["ruleId", "ruleOrder", "matchType", "style", "textDensityByRole",
     matchType === "PRODUCT_STYLE" ? "productStyle" : "categoryId"]);
@@ -255,7 +302,8 @@ function strategyDto(row, accountId) {
 function requireDependencies(repository, capabilityService) {
   const methods = [
     "createProfile", "listProfiles", "publishProfile",
-    "createStrategyVersion", "listStrategyVersions", "publishStrategyVersion",
+    "createStrategyVersion", "listStrategyVersions", "publishStrategyVersion", "publishCategoryStrategyDraft",
+    "rollbackCategoryStrategyVersion",
   ];
   if (!repository || methods.some((method) => typeof repository[method] !== "function")) {
     throw new TypeError("Auto listing AI admin repository is required");
@@ -398,6 +446,41 @@ export function createAutoListingAiAdminService({
         accountId, actorId: accountId, strategyKey: text(input.strategyKey),
         strategyVersionId: text(input.strategyVersionId), version: positiveVersion(input.version),
         idempotencyKey: text(input.idempotencyKey), correlationId: text(input.correlationId),
+      });
+      return strategyDto(row, accountId);
+    },
+
+    async publishCategoryStrategyDraft(raw = {}) {
+      const input = closedObject(raw,
+        new Set(["actor", "draftId", "expectedDraftVersion", "expectedPublishedStrategyVersionId",
+          "idempotencyKey", "correlationId"]),
+        "AUTO_LISTING_AI_ADMIN_REQUEST_INVALID");
+      const accountId = actorScope(input.actor);
+      const row = await repository.publishCategoryStrategyDraft({
+        accountId,
+        actorId: accountId,
+        draftId: text(input.draftId),
+        expectedDraftVersion: positiveVersion(input.expectedDraftVersion),
+        expectedPublishedStrategyVersionId: text(input.expectedPublishedStrategyVersionId),
+        idempotencyKey: text(input.idempotencyKey),
+        correlationId: text(input.correlationId),
+      });
+      return strategyDto(row, accountId);
+    },
+
+    async rollbackCategoryStrategyVersion(raw = {}) {
+      const input = closedObject(raw,
+        new Set(["actor", "targetStrategyVersionId", "expectedPublishedStrategyVersionId",
+          "idempotencyKey", "correlationId"]),
+        "AUTO_LISTING_AI_ADMIN_REQUEST_INVALID");
+      const accountId = actorScope(input.actor);
+      const row = await repository.rollbackCategoryStrategyVersion({
+        accountId,
+        actorId: accountId,
+        targetStrategyVersionId: text(input.targetStrategyVersionId),
+        expectedPublishedStrategyVersionId: text(input.expectedPublishedStrategyVersionId),
+        idempotencyKey: text(input.idempotencyKey),
+        correlationId: text(input.correlationId),
       });
       return strategyDto(row, accountId);
     },

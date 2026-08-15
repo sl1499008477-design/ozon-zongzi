@@ -115,6 +115,7 @@ export function removeAccountScope(
     "accountOzonCategoryConfirmations",
     "collectOzonCategoryLookupEvidence",
     "collectOzonCategoryCurrentSources",
+    "collectOzonCategoryManualConfirmationEvidence",
   ];
   const retainedCollectorOzonEnrichmentCache = collectorOzonEnrichmentCache
     .filter((record) => normalized(record?.accountId) !== accountId);

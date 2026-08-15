@@ -35,7 +35,11 @@ await writeFile(dataFile, JSON.stringify({
   sessionIssuedAt: "2026-07-28T00:00:00.000Z",
   accounts: [{ id: "category-readiness-account", username: "category-readiness", role: "admin", status: "active" }],
   currentStoreId: storeId,
-  stores: [{ id: storeId, ownerAccountId: "category-readiness-account", label: "Category readiness", clientId: "local-client", apiKey: "local-key" }],
+  stores: [{
+    id: storeId, ownerAccountId: "category-readiness-account", label: "Category readiness",
+    clientId: "local-client", apiKey: "local-key", currencyCode: "RUB",
+    currencySource: "OZON_SELLER_INFO", currencySyncedAt: "2026-07-28T00:00:00.000Z",
+  }],
   caches: { collectBox: [] },
   hashes: {}, leases: {}, browserAgents: {}, jobs: {}, reports: [],
 }), "utf8");

@@ -47,11 +47,15 @@ await writeFile(dataFile, `${JSON.stringify({
     status: "active",
   }],
   currentStoreId: storeId,
-  stores: [{ id: storeId, label: "currency-store", clientId: "currency-client", apiKey: "currency-key" }],
+  stores: [{
+    id: storeId, label: "currency-store", clientId: "currency-client", apiKey: "currency-key",
+    currencyCode: "CNY", currencySource: "OZON_SELLER_INFO",
+    currencySyncedAt: "2026-07-28T00:00:00.000Z",
+  }],
   caches: {
     products: [
-      { id: "p1", storeId, currency_code: "CNY", price: "100.00" },
-      { id: "p2", storeId, currency_code: "CNY", price: "120.00" },
+      { id: "p1", storeId, currency_code: "RUB", price: "100.00" },
+      { id: "p2", storeId, currency_code: "RUB", price: "120.00" },
     ],
   },
   hashes: {},

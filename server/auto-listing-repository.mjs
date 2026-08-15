@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { types as utilTypes } from "node:util";
 import {
   assertAutoListingTransition,
   nextAutoListingStatus,
@@ -32,6 +33,7 @@ const BLOCKED_SOURCE_FAILURE_CODES = new Set([
   "AUTO_LISTING_SOURCE_CURRENCY_MISMATCH",
 ]);
 const SOURCE_SNAPSHOT_CONTRACT_VERSION = "AUTO_LISTING_SOURCE_SNAPSHOT_V2";
+const CATEGORY_STRATEGY_MODES = new Set(["LEGACY_FALLBACK", "REQUIRE_EXACT_STRATEGY"]);
 
 function repositoryError(code, status = 422) {
   const error = new Error(code);
@@ -106,6 +108,69 @@ function plainJsonObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function closedRepositoryObject(value, expectedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.length !== expectedKeys.size || keys.some((key) => typeof key !== "string"
+    || !expectedKeys.has(key) || descriptors[key]?.enumerable !== true
+    || !Object.hasOwn(descriptors[key], "value"))) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
+}
+
+function closedRepositoryArray(value, maximum) {
+  if (!Array.isArray(value) || utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype
+    || value.length > maximum) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).length !== value.length + 1 || descriptors.length?.value !== value.length) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return Array.from({ length: value.length }, (_, index) => {
+    const descriptor = descriptors[String(index)];
+    if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    return descriptor.value;
+  });
+}
+
+function exactCategoryStrategyScope(value) {
+  const scope = closedRepositoryObject(value, new Set(["taxonomyScope", "descriptionCategoryId", "typeId"]));
+  if (scope.taxonomyScope !== "OZON:DEFAULT"
+    || !Number.isSafeInteger(scope.descriptionCategoryId) || scope.descriptionCategoryId < 1
+    || !Number.isSafeInteger(scope.typeId) || scope.typeId < 1) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return Object.freeze(scope);
+}
+
+function categoryStrategyGate(value) {
+  if (value === undefined) return null;
+  const gate = closedRepositoryObject(value, new Set(["mode", "policyVersion", "scopes"]));
+  if (!CATEGORY_STRATEGY_MODES.has(gate.mode)
+    || !Number.isSafeInteger(gate.policyVersion) || gate.policyVersion < 1) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  const scopes = closedRepositoryArray(gate.scopes, 100).map((raw) => {
+    const item = closedRepositoryObject(raw,
+      new Set(["taxonomyScope", "descriptionCategoryId", "typeId", "ruleId"]));
+    const ruleId = requiredText(item.ruleId);
+    return Object.freeze({ ...exactCategoryStrategyScope({ taxonomyScope: item.taxonomyScope,
+      descriptionCategoryId: item.descriptionCategoryId, typeId: item.typeId }), ruleId });
+  });
+  if ((gate.mode === "LEGACY_FALLBACK" && scopes.length !== 0)
+    || (gate.mode === "REQUIRE_EXACT_STRATEGY" && scopes.length === 0)
+    || new Set(scopes.map((scope) => `${scope.taxonomyScope}:${scope.descriptionCategoryId}:${scope.typeId}`)).size !== scopes.length) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return Object.freeze({ mode: gate.mode, policyVersion: gate.policyVersion, scopes: Object.freeze(scopes) });
 }
 
 function eventDetailsError() {
@@ -297,7 +362,8 @@ function defaultIdFactory(prefix) {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
-function eventDetails(item) {
+function eventDetails(item, categoryStrategyGate) {
+  const targetCategory = item.snapshot?.targetCategory;
   return {
     sourceRecordId: item.sourceRecordId,
     sourceVersion: item.sourceVersion,
@@ -307,6 +373,13 @@ function eventDetails(item) {
     ruleId: item.ruleId,
     style: item.style,
     matchedBy: item.matchedBy,
+    planningContract: item.planningContract,
+    categoryStrategyMode: categoryStrategyGate?.mode || null,
+    categoryStrategyScope: targetCategory ? {
+      taxonomyScope: targetCategory.taxonomyScope,
+      descriptionCategoryId: targetCategory.descriptionCategoryId,
+      typeId: targetCategory.typeId,
+    } : null,
     ...(item.price ? { price: item.price } : {}),
     ...(item.failureCode ? { failureCode: item.failureCode } : {}),
   };
@@ -358,6 +431,7 @@ function mapJob(row, items, events) {
         statusVersion: Number(item.status_version),
         recoveryPoint: item.recovery_point || null,
         activeContentPlanId: item.active_content_plan_id || null,
+        planningContract: item.planning_contract,
         createdAt: item.created_at,
         updatedAt: item.updated_at,
         targetStoreId: item.target_store_id,
@@ -370,6 +444,8 @@ function mapJob(row, items, events) {
         ruleId: audit.ruleId || null,
         style: audit.style || null,
         matchedBy: audit.matchedBy || null,
+        categoryStrategyMode: audit.categoryStrategyMode || null,
+        categoryStrategyScope: audit.categoryStrategyScope || null,
         ...(audit.price ? { price: audit.price } : {}),
         ...(item.failure_code ? { failureCode: item.failure_code } : {}),
         ...(workflowProgress ? { workflowProgress } : {}),
@@ -404,7 +480,7 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
   const job = jobResult.rows[0];
   if (!job) return null;
   const itemResult = await client.query(
-    `SELECT i.id,i.status,i.status_version,i.recovery_point,i.active_content_plan_id,
+    `SELECT i.id,i.status,i.status_version,i.recovery_point,i.active_content_plan_id,i.planning_contract,
             i.target_store_id,i.target_warehouse_id,i.failure_code,i.created_at,i.updated_at,
             s.source_record_id,s.source_version,s.snapshot_hash,
             progress.phase AS progress_phase,progress.state AS progress_state,
@@ -571,6 +647,9 @@ function assertGraph(graph) {
       || !["SOURCE_READY", "BLOCKED"].includes(item.status)) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
+    if (!["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(item.planningContract)) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
     if (item.targetStoreId !== configSnapshot.targetStoreId || item.targetWarehouseId !== configSnapshot.targetWarehouseId) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
@@ -615,7 +694,7 @@ function assertGraph(graph) {
       if (item.failureCode || item.strategyVersionId !== graph.strategyVersionId || !requiredText(item.strategyId)
         || !(item.ruleId === null || requiredText(item.ruleId))
         || !["VISUAL_FIRST", "PARAMETER_FIRST", "DEMONSTRATION_FIRST", "SPECIFICATION_FIRST", "BALANCED_DEFAULT"].includes(item.style)
-        || !["EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"].includes(item.matchedBy)
+        || !["EXACT_CATEGORY_TYPE_V2", "EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"].includes(item.matchedBy)
         || !plainJsonObject(item.price)) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
@@ -645,7 +724,7 @@ function assertGraph(graph) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
   return { ...graph, accountId, idempotencyKey, categoryPreparationLeaseId,
-    configSnapshot, configHash, warehouseValidation, items };
+    configSnapshot, configHash, warehouseValidation, categoryStrategyGate: categoryStrategyGate(graph.categoryStrategyGate), items };
 }
 
 function sourceVersionConflict() {
@@ -766,11 +845,58 @@ function verifiedListingBaseTemplate({ accountId, collectItemId, targetStoreId, 
 }
 
 function publishedRules(rows) {
-  return rows.map((rule) => ({
-    ruleId: rule.id, ruleOrder: Number(rule.rule_order), matchType: rule.rule_kind,
-    categoryId: rule.rule_kind === "ANCESTOR_CATEGORY" ? rule.ancestor_category_id : rule.category_id,
-    productStyle: rule.product_style, style: rule.rule?.style, textDensityByRole: rule.rule?.textDensityByRole,
-  }));
+  return rows.map((row) => {
+    const stored = plainJsonObject(row.rule) ? row.rule : {};
+    if (stored.matchType === "EXACT_CATEGORY_TYPE_V2") {
+      return { ...stored, ruleId: stored.ruleId || row.id, ruleOrder: Number(row.rule_order) };
+    }
+    const mapped = {
+      ruleId: stored.ruleId || row.id, ruleOrder: Number(row.rule_order), matchType: row.rule_kind,
+      categoryId: row.rule_kind === "ANCESTOR_CATEGORY" ? row.ancestor_category_id : row.category_id,
+      productStyle: row.product_style, style: stored.style, textDensityByRole: stored.textDensityByRole,
+    };
+    if (row.rule_kind === "EXACT_CATEGORY" && plainJsonObject(stored.exactScope)) {
+      mapped.exactScope = stored.exactScope;
+    }
+    return mapped;
+  });
+}
+
+function sameExactScope(left, right) {
+  return plainJsonObject(left) && left.taxonomyScope === right.taxonomyScope
+    && Number(left.descriptionCategoryId) === right.descriptionCategoryId
+    && Number(left.typeId) === right.typeId;
+}
+
+function assertCurrentCategoryStrategyGate(graph, setting, rules, strategy) {
+  const gate = graph.categoryStrategyGate;
+  if (!gate) return;
+  const mode = setting?.mode || "LEGACY_FALLBACK";
+  const version = Number(setting?.version || 1);
+  if (mode !== gate.mode || version !== gate.policyVersion) {
+    throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_CHANGED", 409);
+  }
+  if (gate.mode === "LEGACY_FALLBACK") return;
+  for (const scope of gate.scopes) {
+    let resolved;
+    try {
+      resolved = resolveAiContentStrategy({
+        strategyVersion: { strategyId: strategy.strategy_key, strategyVersionId: graph.strategyVersionId },
+        rules,
+        product: { taxonomyScope: scope.taxonomyScope,
+          descriptionCategoryId: String(scope.descriptionCategoryId), typeId: String(scope.typeId),
+          categoryAncestors: [], productStyle: "UNKNOWN" },
+      });
+    } catch {
+      throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_CHANGED", 409);
+    }
+    const selected = rules.find((rule) => rule.ruleId === resolved.ruleId);
+    const exact = resolved.matchedBy === "EXACT_CATEGORY_TYPE_V2"
+      || (resolved.matchedBy === "EXACT_CATEGORY" && sameExactScope(selected?.exactScope, scope));
+    if (!exact || resolved.ruleId !== scope.ruleId) {
+      throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_CHANGED", 409);
+    }
+  }
 }
 
 function validInitialAiStageOutcome(value) {
@@ -1358,11 +1484,54 @@ export function createAutoListingRepository({
       return loadWarehouseWithClient(pool, { accountId: scope, targetStoreId: storeId, targetWarehouseId: warehouseId });
     },
 
+    async loadCategoryStrategyControl({ accountId, scopes } = {}) {
+      const scope = requiredAccountId(accountId);
+      if (!Array.isArray(scopes) || scopes.length < 1 || scopes.length > 100) {
+        throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      }
+      const checked = scopes.map(exactCategoryStrategyScope);
+      const keys = checked.map((entry) => `${entry.taxonomyScope}:${entry.descriptionCategoryId}:${entry.typeId}`);
+      if (new Set(keys).size !== keys.length) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      const settingResult = await pool.query(
+        `SELECT mode,version FROM auto_listing_category_strategy_account_settings
+          WHERE account_id=$1`,
+        [scope],
+      );
+      const setting = settingResult.rows[0] || { mode: "LEGACY_FALLBACK", version: 1 };
+      if (!CATEGORY_STRATEGY_MODES.has(setting.mode)
+        || !Number.isSafeInteger(Number(setting.version)) || Number(setting.version) < 1) {
+        throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      }
+      const taxonomyScopes = checked.map((entry) => entry.taxonomyScope);
+      const descriptionCategoryIds = checked.map((entry) => entry.descriptionCategoryId);
+      const typeIds = checked.map((entry) => entry.typeId);
+      const draftResult = await pool.query(
+        `SELECT draft.id,draft.taxonomy_scope,draft.description_category_id,draft.type_id,draft.status
+           FROM UNNEST($2::TEXT[],$3::BIGINT[],$4::BIGINT[]) AS requested(taxonomy_scope,description_category_id,type_id)
+           JOIN auto_listing_category_strategy_drafts draft
+             ON draft.account_id=$1 AND draft.taxonomy_scope=requested.taxonomy_scope
+            AND draft.description_category_id=requested.description_category_id
+            AND draft.type_id=requested.type_id AND draft.ended_at IS NULL
+          ORDER BY draft.taxonomy_scope,draft.description_category_id,draft.type_id,draft.id`,
+        [scope, taxonomyScopes, descriptionCategoryIds, typeIds],
+      );
+      return Object.freeze({
+        mode: setting.mode,
+        version: Number(setting.version),
+        drafts: Object.freeze(draftResult.rows.map((row) => Object.freeze({
+          scope: Object.freeze({ taxonomyScope: row.taxonomy_scope,
+            descriptionCategoryId: Number(row.description_category_id), typeId: Number(row.type_id) }),
+          draftId: row.id,
+          status: row.status,
+        }))),
+      });
+    },
+
     async loadPublishedStrategy({ accountId } = {}) {
       const scope = requiredAccountId(accountId);
       const versionResult = await pool.query(
         `SELECT id,strategy_key,version,content FROM ai_content_strategy_versions
-          WHERE account_id=$1 AND status='PUBLISHED'
+          WHERE account_id=$1 AND strategy_key='default' AND status='PUBLISHED'
           ORDER BY version DESC,id ASC LIMIT 1`,
         [scope],
       );
@@ -1377,15 +1546,7 @@ export function createAutoListingRepository({
       );
       return {
         strategyVersion: { strategyId: version.strategy_key, strategyVersionId: version.id },
-        rules: ruleResult.rows.map((rule) => ({
-          ruleId: rule.id,
-          ruleOrder: Number(rule.rule_order),
-          matchType: rule.rule_kind,
-          categoryId: rule.rule_kind === "ANCESTOR_CATEGORY" ? rule.ancestor_category_id : rule.category_id,
-          productStyle: rule.product_style,
-          style: rule.rule?.style,
-          textDensityByRole: rule.rule?.textDensityByRole,
-        })),
+        rules: publishedRules(ruleResult.rows),
       };
     },
 
@@ -1437,6 +1598,15 @@ export function createAutoListingRepository({
           committed = true;
           return { ...existing, duplicate: true };
         }
+        // Global mutation order matches category-strategy publish/rollback: account fence first.
+        // All narrower category/settings/strategy locks are acquired only after this row lock.
+        const accountFence = await client.query(
+          "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+          [graph.accountId],
+        );
+        if (accountFence.rows.length !== 1) {
+          throw repositoryError("AUTO_LISTING_ACCOUNT_REQUIRED", 401);
+        }
         await lockCategoryGraphHandoffWithClient(client, graph);
         await assertCategoryGraphLeaseActiveWithClient(client, graph);
         await lockTargetWarehouseEvidenceWithClient(client, {
@@ -1451,6 +1621,26 @@ export function createAutoListingRepository({
           [graph.strategyVersionId, graph.accountId],
         );
         if (!strategy.rows[0]) throw repositoryError("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
+        const categoryStrategySetting = graph.categoryStrategyGate ? await client.query(
+          `SELECT mode,version FROM auto_listing_category_strategy_account_settings
+            WHERE account_id=$1 FOR SHARE`,
+          [graph.accountId],
+        ) : { rows: [] };
+        if (graph.categoryStrategyGate?.mode === "REQUIRE_EXACT_STRATEGY") {
+          const leasedScopes = await client.query(
+            `SELECT DISTINCT taxonomy_scope,description_category_id,type_id
+              FROM auto_listing_category_preparation_lease_items
+              WHERE account_id=$1 AND lease_id=$2
+              ORDER BY taxonomy_scope,description_category_id,type_id`,
+            [graph.accountId, graph.categoryPreparationLeaseId],
+          );
+          const current = leasedScopes.rows.map((row) => `${row.taxonomy_scope}:${Number(row.description_category_id)}:${Number(row.type_id)}`);
+          const selected = graph.categoryStrategyGate.scopes
+            .map((entry) => `${entry.taxonomyScope}:${entry.descriptionCategoryId}:${entry.typeId}`);
+          if (current.length !== selected.length || current.some((entry) => !selected.includes(entry))) {
+            throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_CHANGED", 409);
+          }
+        }
         const uploadPolicy = await client.query(
           `SELECT id FROM auto_listing_upload_policy_versions
             WHERE account_id=$1 AND id=$2 AND enabled IS TRUE
@@ -1467,13 +1657,6 @@ export function createAutoListingRepository({
         let aiProfileId = null;
         let aiProfileVersion = null;
         if (stageInitialPlanWork) {
-          const accountFence = await client.query(
-            "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
-            [graph.accountId],
-          );
-          if (accountFence.rows.length !== 1) {
-            throw repositoryError("AUTO_LISTING_ACCOUNT_REQUIRED", 401);
-          }
           const profiles = await client.query(
             `SELECT id,config_version,connection_id,connection_version,text_model,image_model FROM ai_gateway_profiles
               WHERE account_id=$1 AND enabled IS TRUE
@@ -1540,6 +1723,8 @@ export function createAutoListingRepository({
              ORDER BY rule_order ASC,id ASC`,
           [graph.accountId, graph.strategyVersionId],
         );
+        const currentRules = publishedRules(rules.rows);
+        assertCurrentCategoryStrategyGate(graph, categoryStrategySetting.rows[0], currentRules, strategy.rows[0]);
         for (const item of graph.items) {
           const source = graph.sourceType === "EXCEL_SKU" && item.status === "SOURCE_READY"
             ? await client.query(
@@ -1652,8 +1837,10 @@ export function createAutoListingRepository({
             }
             const resolved = resolveAiContentStrategy({
               strategyVersion: { strategyId: strategy.rows[0].strategy_key, strategyVersionId: graph.strategyVersionId },
-              rules: publishedRules(rules.rows),
-              product: { descriptionCategoryId: item.snapshot.targetCategory.descriptionCategoryId,
+              rules: currentRules,
+              product: { taxonomyScope: item.snapshot.targetCategory.taxonomyScope,
+                descriptionCategoryId: item.snapshot.targetCategory.descriptionCategoryId,
+                typeId: item.snapshot.targetCategory.typeId,
                 categoryAncestors: (item.snapshot.targetCategory.ancestorCategoryIds || []).map((categoryId, index) => ({ categoryId, distance: index + 1 })),
                 productStyle: item.snapshot.source.productStyle },
             });
@@ -1731,10 +1918,11 @@ export function createAutoListingRepository({
           await client.query(
             `INSERT INTO auto_listing_job_items (
                id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,
-               visual_group_count,failure_code,failure_detail_safe
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,0,$8,$9)`,
+               visual_group_count,failure_code,failure_detail_safe,planning_contract
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,0,$8,$9,$10)`,
             [itemId, jobId, graph.accountId, snapshotId, item.targetStoreId, item.targetWarehouseId,
-              item.status, item.failureCode || null, item.failureCode ? item.failureCode : null],
+              item.status, item.failureCode || null, item.failureCode ? item.failureCode : null,
+              item.planningContract],
           );
           await client.query(
             `INSERT INTO auto_listing_events (
@@ -1750,7 +1938,7 @@ export function createAutoListingRepository({
              ) VALUES ($1,$2,$3,$4,$5,'CREATED',$6,$7,$8,$9::jsonb)`,
             [`${itemId}_02`, graph.accountId, jobId, itemId, graph.actorAccountId,
               blocked ? "BLOCKED" : "SOURCE_READY", blocked ? "BLOCK" : "SOURCE_CAPTURED", graph.correlationId,
-              json(eventDetails(item))],
+              json(eventDetails(item, graph.categoryStrategyGate))],
           );
           if (!blocked) {
             const listingBase = freezeAutoListingListingBase({

@@ -91,6 +91,7 @@ import AccountSettingsPage from "./AccountSettingsPage.jsx";
 import StoresSettingsPage from "./StoresSettingsPage.jsx";
 import AutoListingPage from "./AutoListingPage.jsx";
 import AiModelSettingsPage from "./AiModelSettingsPage.jsx";
+import CategoryStrategyPage from "./CategoryStrategyPage.jsx";
 import { buildAutoListingCollectPush } from "./auto-listing-collect-push.js";
 import { createStoreDeletionCleanup } from "./store-deletion-cleanup.js";
 import { createStoreSwitchGate } from "./store-switch-gate.js";
@@ -259,6 +260,7 @@ const pageTitles = {
   "/ozon/tools/ai-poster-records": "AI 改图神器",
   "/ozon/tools/auto-listing": "自动上架",
   "/ozon/tools/auto-listing/ai-settings": "AI 模型配置",
+  "/ozon/tools/category-strategies": "类目图片策略",
   "/ozon/ai-image": "AI 商品套图",
   "/ozon/promotions/prices": "价格与折扣",
   "/ozon/promotions/campaigns": "促销活动",
@@ -495,6 +497,7 @@ const menuItems = [
     label: "AI 工具",
     children: [
       { key: "/ozon/tools/auto-listing", label: "自动上架" },
+      { key: "/ozon/tools/category-strategies", label: "类目图片策略" },
       { key: "/ozon/tools/ai-poster-records", label: "AI 改图神器" },
       { key: "/ozon/ai-image", label: "AI 商品套图" },
     ],
@@ -551,6 +554,7 @@ const routeParent = {
   "/ozon/tools/ai-poster-records": "ai",
   "/ozon/tools/auto-listing": "ai",
   "/ozon/tools/auto-listing/ai-settings": "ai",
+  "/ozon/tools/category-strategies": "ai",
   "/ozon/promotions/prices": "promotions",
   "/ozon/promotions/campaigns": "promotions",
   "/ozon/ai-image": "ai",
@@ -616,6 +620,7 @@ const pluginWordmarkStyle = {
 export function AppShell({ initialState = null }) {
   const { message, modal } = AntApp.useApp();
   const [route, setRoute] = useState(() => initialState?.route || normalizePath(window.location.pathname));
+  const [locationSearch, setLocationSearch] = useState(() => window.location.search);
   const [account, setAccount] = useState(() => initialState?.account || null);
   const [accounts, setAccounts] = useState([]);
   const [authChecked, setAuthChecked] = useState(() => initialState?.authChecked === true);
@@ -748,6 +753,7 @@ export function AppShell({ initialState = null }) {
     const onPop = () => {
       const normalized = normalizePath(window.location.pathname);
       setRoute(normalized);
+      setLocationSearch(window.location.search);
       const parent = routeParent[normalized];
       setOpenKeys(parent ? [parent] : []);
     };
@@ -815,6 +821,7 @@ export function AppShell({ initialState = null }) {
     }
     const normalized = normalizePath(nextRoute);
     setRoute(normalized);
+    setLocationSearch(nextSearch);
     const parent = routeParent[normalized];
     setOpenKeys(parent ? [parent] : []);
     window.history.pushState({}, "", `${normalized}/${nextSearch}`);
@@ -1288,6 +1295,7 @@ export function AppShell({ initialState = null }) {
             ) : (
               <GenericPage
                 route={route}
+                locationSearch={locationSearch}
                 binding={binding}
                 hasStore={hasStore}
                 localData={localData}
@@ -1689,7 +1697,7 @@ function MetricCard({ metric, compact = false }) {
   );
 }
 
-function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted, navigate, account, accounts }) {
+function GenericPage({ route, locationSearch, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted, navigate, account, accounts }) {
   if (route === "/extension") {
     return (
       <Card className="panel-card">
@@ -1698,7 +1706,7 @@ function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, on
     );
   }
 
-  const pageProps = { route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted, navigate, account, accounts };
+  const pageProps = { route, locationSearch, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted, navigate, account, accounts };
   if (route === "/ozon/products/list") return <ProductListPage {...pageProps} />;
   if (route.startsWith("/ozon/products/collect/edit")) return <CollectEditPage {...pageProps} />;
   if (route === "/ozon/products/collect") return <CollectPage {...pageProps} />;
@@ -1709,6 +1717,8 @@ function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, on
   if (route === "/ozon/tools/auto-listing") return <AutoListingPage {...pageProps} />;
   if (route === "/ozon/tools/auto-listing/ai-settings") return <AiModelSettingsPage
     key={`ai-settings:${account?.id || ""}:${account?.role || ""}`} {...pageProps} />;
+  if (route === "/ozon/tools/category-strategies") return <CategoryStrategyPage
+    key={`category-strategies:${account?.id || ""}:${account?.role || ""}`} {...pageProps} />;
   if (route === "/ozon/ai-image") return <AiImagePage />;
   if (route === "/ozon/promotions/prices") return <PriceDiscountPage {...pageProps} />;
   if (route === "/ozon/promotions/campaigns") return <CampaignsPage {...pageProps} />;

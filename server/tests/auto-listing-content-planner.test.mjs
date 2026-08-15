@@ -5,6 +5,7 @@ import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs"
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 import { buildVisualGroups } from "../auto-listing-visual-groups.mjs";
 import { buildPlannerInput, CONTENT_PLAN_JSON_SCHEMA, createContentPlan, validateContentPlan } from "../auto-listing-content-planner.mjs";
+import { buildFixedSkeleton } from "../auto-listing-fixed-skeleton.mjs";
 
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
@@ -79,8 +80,57 @@ function strategyCapture(style = "BALANCED_DEFAULT") {
   return { strategySnapshot, strategyHash: hash(strategySnapshot) };
 }
 
+function v2StrategyCapture({ diagnostics = [], roleGuidance } = {}) {
+  const roles = roleGuidance || Object.fromEntries([
+    "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+  ].map((role) => [role, {
+    composition: `${role} composition`,
+    background: `${role} background`,
+    textDensity: role === "MAIN" ? "NONE" : "LIGHT",
+    layout: `${role} layout`,
+  }]));
+  const strategySnapshot = {
+    strategyId: "strategy-1",
+    strategyVersionId: "strategy-v2",
+    ruleId: "category-rule-v2",
+    matchedBy: "EXACT_CATEGORY_TYPE_V2",
+    style: "BALANCED_DEFAULT",
+    textDensityByRole: Object.fromEntries(Object.entries(roles).map(([role, guidance]) => [role, guidance.textDensity])),
+    evidence: {
+      targetTaxonomyScope: "OZON:DEFAULT",
+      targetDescriptionCategoryId: "170",
+      targetTypeId: "99",
+      ruleOrder: 1,
+    },
+    scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 },
+    overallStyle: "clean commercial catalogue",
+    prohibitedPatterns: ["avoid competitor branding"],
+    roleGuidance: roles,
+    sampleSetHash: "a".repeat(64),
+    analysisAttemptId: "analysis-attempt-v2",
+    analysisResultId: "analysis-result-v2",
+    diagnostics,
+  };
+  return { strategySnapshot, strategyHash: hash(strategySnapshot) };
+}
+
 const profileRef = { id: "profile-1", configVersion: 7, textModel: "planner-model" };
-const runtimeScope = { sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7 };
+const passthroughEvidenceRepository = Object.freeze({
+  async loadOutcome() { return null; },
+  async recordResponse(input) {
+    return Object.freeze({
+      id: "response-test", response: structuredClone(input.response),
+      gatewayRequestId: input.gatewayRequestId,
+    });
+  },
+  async recordValidation(input) { return Object.freeze({ id: "validation-test", ...input }); },
+});
+const runtimeScope = {
+  sourceSnapshotId: "snapshot-db-1",
+  expectedStatusVersion: 7,
+  planningContract: "LEGACY_FULL_PLAN_V3",
+  evidenceRepository: passthroughEvidenceRepository,
+};
 const prohibitedClaims = ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"];
 
 function assertStrictLeafTypes(schema, path = "$") {
@@ -98,7 +148,7 @@ function plannerArgs(overrides = {}) {
   const groups = buildVisualGroups({ sourceCapture: source });
   return {
     sourceCapture: source,
-    strategyCapture: strategyCapture(overrides.style),
+    strategyCapture: overrides.strategyCapture || strategyCapture(overrides.style),
     configCapture: overrides.configCapture || configCapture(),
     visualGroupsCapture: groups,
     profileRef,
@@ -108,6 +158,29 @@ function plannerArgs(overrides = {}) {
   };
 }
 const planner = (overrides = {}) => buildPlannerInput(plannerArgs(overrides));
+
+function reserved(input, overrides = {}) {
+  return {
+    status: "RESERVED",
+    attemptId: "attempt-test",
+    attemptNo: 1,
+    reservationToken: "lease-1",
+    inputHash: input.inputHash,
+    planningContract: input.planningContract,
+    skeletonHash: null,
+    plannerStage: "FILLING_COPY",
+    ...overrides,
+  };
+}
+
+async function advanceStage(input) {
+  return {
+    attemptId: input.attemptId,
+    planningContract: input.planningContract,
+    skeletonHash: input.skeletonHash,
+    plannerStage: input.toStage,
+  };
+}
 
 function validPlan(built) {
   const slots = [];
@@ -157,6 +230,77 @@ test("buildPlannerInput supports all five styles, every role, stable order, and 
     assert.equal(built.plannerInput.imagesPerVisualGroup, expected);
     assert.doesNotThrow(() => validateContentPlan({ plan: validPlan(built), plannerContext: built }));
   }
+});
+
+test("published V2 role guidance enters planning while current task counts remain authoritative for 6, 8 and 13 images", () => {
+  for (const roles of Object.values(roleSets)) {
+    const built = planner({ strategyCapture: v2StrategyCapture(), configCapture: configCapture(roles) });
+    const requested = Object.fromEntries(Object.entries(roles).map(([role, count]) => [{
+      main: "MAIN", sellingPoint: "SELLING_POINT", detail: "DETAIL", scene: "SCENE",
+      specification: "SPECIFICATION", infographic: "INFOGRAPHIC",
+    }[role], count]));
+    assert.deepEqual(built.plannerInput.requestedRoleCounts, requested);
+    assert.equal(built.plannerInput.imagesPerVisualGroup, Object.values(roles).reduce((sum, count) => sum + count, 0));
+    assert.equal(built.plannerInput.strategy.matchedBy, "EXACT_CATEGORY_TYPE_V2");
+    assert.deepEqual(built.plannerInput.strategy.roleGuidance.MAIN, {
+      composition: "MAIN composition", background: "MAIN background", textDensity: "NONE", layout: "MAIN layout",
+    });
+    assert.doesNotThrow(() => validateContentPlan({ plan: validPlan(built), plannerContext: built }));
+  }
+});
+
+test("V2 fallback diagnostics are retained without exposing publication or competitor evidence to the planner prompt", () => {
+  const built = planner({
+    strategyCapture: v2StrategyCapture({ diagnostics: ["CATEGORY_STRATEGY_ROLE_GUIDANCE_FALLBACK"] }),
+  });
+  assert.ok(built.reasonCodes.includes("CATEGORY_STRATEGY_ROLE_GUIDANCE_FALLBACK"));
+  const serialized = JSON.stringify(built.plannerInput);
+  assert.match(serialized, /clean commercial catalogue|MAIN composition/);
+  for (const forbidden of [
+    "sampleSetHash", "analysisAttemptId", "analysisResultId", "analysis-attempt-v2",
+    "analysis-result-v2", "category-strategy/", "evidenceIds",
+  ]) assert.doesNotMatch(serialized, new RegExp(forbidden, "i"));
+});
+
+test("strategy capture outer envelope is exact for V1 and V2", () => {
+  for (const capture of [strategyCapture(), v2StrategyCapture()]) {
+    assert.throws(
+      () => buildPlannerInput(plannerArgs({ strategyCapture: { ...capture, currentPolicy: "mutable" } })),
+      (error) => error?.code === "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID",
+    );
+  }
+});
+
+test("fixed skeleton prompt receives only closed V2 role guidance and keeps all configured slot identities", async () => {
+  const args = plannerArgs({ strategyCapture: v2StrategyCapture() });
+  let prompt = "";
+  let gatewayCalls = 0;
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "FIXED_SKELETON_V1", evidenceRepository: passthroughEvidenceRepository,
+    ...args,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse(input) {
+      gatewayCalls += 1;
+      prompt = input.prompt;
+      assert.equal(input.jsonSchema.properties.fills.required.length, 8);
+      throw Object.assign(new Error("stop after prompt"), { code: "RETRYABLE_GATEWAY" });
+    } },
+    repository: {
+      async reserveContentPlan(input) {
+        const context = buildPlannerInput({ ...args, promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1" });
+        const skeleton = buildFixedSkeleton({ plannerContext: context });
+        return reserved(input, { planningContract: "FIXED_SKELETON_V1", skeletonHash: skeleton.skeletonHash,
+          plannerStage: "BUILDING_SKELETON" });
+      },
+      advanceContentPlanStage: advanceStage,
+      async releaseContentPlanReservation() {},
+    },
+  }), { code: "RETRYABLE_GATEWAY" });
+  assert.equal(gatewayCalls, 1);
+  assert.match(prompt, /MAIN composition/);
+  assert.doesNotMatch(prompt, /analysis-attempt-v2|analysis-result-v2|category-strategy\//i);
 });
 
 test("planner input is read-only facts only and excludes secrets, writable listing fields, price, and package logistics", () => {
@@ -249,7 +393,8 @@ test("createContentPlan reserves before one gateway call, persists canonical evi
   let gatewayCalls = 0;
   let record = null;
   const repository = {
-    async reserveContentPlan() { return record ? { status: "EXISTING", record } : { status: "RESERVED", reservationToken: "lease-1" }; },
+    async reserveContentPlan(input) { return record ? { status: "EXISTING", record } : reserved(input); },
+    advanceContentPlanStage: advanceStage,
     async saveContentPlan(input) { record = { id: "plan-1", ...input }; return record; },
     async releaseContentPlanReservation() { throw new Error("not expected"); },
   };
@@ -275,6 +420,259 @@ test("createContentPlan reserves before one gateway call, persists canonical evi
   assert.equal(first.inputHash, built.inputHash);
   assert.equal(first.planHash, hash(output));
   assert.equal(first.gatewayRequestId, "gateway-request-1");
+});
+
+test("planner records the raw response before detailed validation and saves only accepted evidence", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  const events = [];
+  const repository = {
+    async reserveContentPlan() {
+      return {
+        status: "RESERVED", attemptId: "attempt-a", attemptNo: 1,
+        reservationToken: "lease-a", inputHash: built.inputHash,
+        planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null, plannerStage: "FILLING_COPY",
+      };
+    },
+    async advanceContentPlanStage(input) {
+      events.push(`stage:${input.fromStage}->${input.toStage}`);
+      return { attemptId: input.attemptId, planningContract: input.planningContract, skeletonHash: null, plannerStage: input.toStage };
+    },
+    async saveContentPlan(input) {
+      events.push("save");
+      return { id: "plan-a", ...input };
+    },
+    async releaseContentPlanReservation() {},
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) {
+      events.push("response");
+      assert.deepEqual(input.response, output);
+      return Object.freeze({ id: "response-a", response: structuredClone(output) });
+    },
+    async recordValidation(input) {
+      events.push(`validation:${input.status}`);
+      assert.deepEqual(input.issues, []);
+      return Object.freeze({ id: "validation-a", ...input });
+    },
+  };
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() {
+      events.push("gateway");
+      return { value: output, requestId: "gateway-a" };
+    } },
+    repository,
+  });
+  assert.equal(result.id, "plan-a");
+  assert.deepEqual(events, [
+    "gateway", "response", "stage:FILLING_COPY->VALIDATING_COPY", "validation:ACCEPTED", "save",
+  ]);
+});
+
+test("invalid business output keeps rejected evidence and never saves a content plan", async () => {
+  const built = planner();
+  const invalidOutput = validPlan(built);
+  invalidOutput.slots.pop();
+  const events = [];
+  let saves = 0;
+  const repository = {
+    async reserveContentPlan() {
+      return {
+        status: "RESERVED", attemptId: "attempt-a", attemptNo: 1,
+        reservationToken: "lease-a", inputHash: built.inputHash,
+        planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null, plannerStage: "FILLING_COPY",
+      };
+    },
+    async advanceContentPlanStage() { events.push("stage"); },
+    async saveContentPlan() { saves += 1; },
+    async releaseContentPlanReservation() { events.push("release"); },
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) {
+      events.push("response");
+      return { id: "response-a", response: structuredClone(input.response) };
+    },
+    async recordValidation(input) {
+      events.push(`validation:${input.status}`);
+      assert.ok(input.issues.some((issue) => issue.code === "SLOT_COUNT_MISMATCH"));
+      return { id: "validation-a", ...input };
+    },
+  };
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { events.push("gateway"); return { value: invalidOutput, requestId: "gateway-a" }; } },
+    repository,
+  }), { code: "AUTO_LISTING_CONTENT_PLAN_INVALID" });
+  assert.deepEqual(events, ["gateway", "response", "stage", "validation:REJECTED", "release"]);
+  assert.equal(saves, 0);
+});
+
+test("response-loss replay resumes exact recorded evidence without a second gateway request", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  let gatewayCalls = 0;
+  let stageCalls = 0;
+  let saved = 0;
+  const repository = {
+    async reserveContentPlan(input) { return reserved(input, { plannerStage: "VALIDATING_COPY" }); },
+    async advanceContentPlanStage() { stageCalls += 1; throw new Error("already validating"); },
+    async saveContentPlan(input) { saved += 1; return { id: "plan-replayed", ...input }; },
+    async releaseContentPlanReservation() {},
+  };
+  const evidenceRepository = {
+    async loadOutcome() {
+      return {
+        response: { id: "response-a", response: structuredClone(output), gatewayRequestId: "gateway-original" },
+        validation: null,
+      };
+    },
+    async recordResponse() { throw new Error("must not record twice"); },
+    async recordValidation(input) { return { id: "validation-a", ...input }; },
+  };
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { gatewayCalls += 1; throw new Error("must not call"); } },
+    repository,
+  });
+  assert.equal(result.id, "plan-replayed");
+  assert.equal(result.gatewayRequestId, "gateway-original");
+  assert.equal(gatewayCalls, 0);
+  assert.equal(stageCalls, 0);
+  assert.equal(saved, 1);
+});
+
+test("fixed contract builds the configured skeleton, lets AI fill only claims, and persists exact identity", async () => {
+  const planningArgs = plannerArgs();
+  const fixedContext = buildPlannerInput({
+    ...planningArgs,
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1",
+  });
+  const skeleton = buildFixedSkeleton({ plannerContext: fixedContext });
+  const fills = Object.fromEntries(skeleton.plan.slots.map((slot) => {
+    const fact = skeleton.allowedClaimsBySlot[slot.slotKey][0];
+    const text = fact.kind === "DIMENSION_HEIGHT" ? "Высота 22 см"
+      : fact.kind === "COLOR" ? `Цвет: ${fact.value}`
+        : fact.kind === "MATERIAL" ? `Материал: ${fact.value}` : fact.value;
+    return [slot.slotKey, { claims: slot.role === "MAIN" ? [] : [{
+      text, claimType: fact.kind, sourceFactIds: [fact.factId],
+    }] }];
+  }));
+  const events = [];
+  let storedInput;
+  const repository = {
+    async reserveContentPlan(input) {
+      events.push("reserve");
+      assert.equal(input.skeletonHash, skeleton.skeletonHash);
+      return reserved(input, {
+        planningContract: "FIXED_SKELETON_V1",
+        skeletonHash: skeleton.skeletonHash,
+        plannerStage: "BUILDING_SKELETON",
+      });
+    },
+    async advanceContentPlanStage(input) {
+      events.push(`stage:${input.fromStage}->${input.toStage}`);
+      return { attemptId: input.attemptId, planningContract: input.planningContract,
+        skeletonHash: input.skeletonHash, plannerStage: input.toStage };
+    },
+    async saveContentPlan(input) { events.push("save"); storedInput = input; return { id: "plan-fixed", ...input }; },
+    async releaseContentPlanReservation() {},
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) {
+      events.push("response");
+      assert.deepEqual(input.response, { version: 1, language: "ru", fills });
+      assert.equal(input.skeletonHash, skeleton.skeletonHash);
+      return { id: "response-fixed", response: structuredClone(input.response), gatewayRequestId: "gateway-fixed" };
+    },
+    async recordValidation(input) { events.push(`validation:${input.status}`); return { id: "validation-fixed", ...input }; },
+  };
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "FIXED_SKELETON_V1", evidenceRepository,
+    ...planningArgs,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse(input) {
+      events.push("gateway");
+      assert.equal(input.jsonSchema.properties.fills.required.length, 8);
+      assert.equal(input.prompt.includes("只填写俄语文案"), true);
+      return { value: { version: 1, language: "ru", fills }, requestId: "gateway-fixed" };
+    } },
+    repository,
+  });
+  assert.equal(result.id, "plan-fixed");
+  assert.equal(result.plan.slots.length, 8);
+  assert.equal(storedInput.skeletonHash, skeleton.skeletonHash);
+  assert.equal(storedInput.promptTemplateVersion, "AUTO_LISTING_CONTENT_PLAN_FILL_V1");
+  assert.deepEqual(events, [
+    "reserve", "stage:BUILDING_SKELETON->FILLING_COPY", "gateway", "response",
+    "stage:FILLING_COPY->VALIDATING_COPY", "validation:ACCEPTED", "save",
+  ]);
+});
+
+test("fixed contract records rejected fill tampering and never saves a plan", async () => {
+  const planningArgs = plannerArgs();
+  const fixedContext = buildPlannerInput({ ...planningArgs, promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1" });
+  const skeleton = buildFixedSkeleton({ plannerContext: fixedContext });
+  const fills = Object.fromEntries(skeleton.plan.slots.map((slot) => [slot.slotKey, { claims: [] }]));
+  fills["forged:ninth:slot"] = { claims: [] };
+  const events = [];
+  let saves = 0;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { planningContract: "FIXED_SKELETON_V1", skeletonHash: skeleton.skeletonHash, plannerStage: "BUILDING_SKELETON" });
+    },
+    async advanceContentPlanStage(input) { events.push(`stage:${input.toStage}`); return advanceStage(input); },
+    async saveContentPlan() { saves += 1; },
+    async releaseContentPlanReservation() { events.push("release"); },
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) { events.push("response"); return { id: "response-fixed-invalid", response: structuredClone(input.response) }; },
+    async recordValidation(input) {
+      events.push(`validation:${input.status}`);
+      assert.ok(input.issues.some((issue) => issue.code === "FIXED_FILL_SLOT_IDENTITY_MISMATCH"));
+      return { id: "validation-fixed-invalid", ...input };
+    },
+  };
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "FIXED_SKELETON_V1", evidenceRepository,
+    ...planningArgs,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { events.push("gateway"); return { value: { version: 1, language: "ru", fills } }; } },
+    repository,
+  }), { code: "AUTO_LISTING_CONTENT_PLAN_INVALID" });
+  assert.deepEqual(events, [
+    "stage:FILLING_COPY", "gateway", "response", "stage:VALIDATING_COPY", "validation:REJECTED", "release",
+  ]);
+  assert.equal(saves, 0);
+});
+
+test("fixed contract keeps the submitted specification count and stops before repository or AI when dimensions are absent", async () => {
+  let repositoryCalls = 0;
+  let gatewayCalls = 0;
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "FIXED_SKELETON_V1", evidenceRepository: passthroughEvidenceRepository,
+    ...plannerArgs({ sourceCapture: sourceCapture({ reliableDimensions: false }) }),
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { gatewayCalls += 1; } },
+    repository: { async reserveContentPlan() { repositoryCalls += 1; } },
+  }), { code: "AUTO_LISTING_FIXED_SKELETON_DIMENSION_REQUIRED" });
+  assert.deepEqual({ repositoryCalls, gatewayCalls }, { repositoryCalls: 0, gatewayCalls: 0 });
 });
 
 test("reused corrupted or cross-scope rows fail closed, and gateway failures persist no half-plan", async () => {
@@ -307,7 +705,8 @@ test("reused corrupted or cross-scope rows fail closed, and gateway failures per
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse() { throw Object.assign(new Error("gateway"), { code: "RETRYABLE_GATEWAY" }); } },
     repository: {
-      async reserveContentPlan() { return { status: "RESERVED", reservationToken: "lease-1" }; },
+      async reserveContentPlan(input) { return reserved(input); },
+      advanceContentPlanStage: advanceStage,
       async saveContentPlan() { saves += 1; },
       async releaseContentPlanReservation() { releases += 1; },
     },
@@ -381,7 +780,8 @@ test("canonical URL media remains plannable and persistable only as hash evidenc
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model" },
     gateway: { async createTextResponse() { return { value: validPlan(built), requestId: "gateway-url-evidence" }; } },
     repository: {
-      async reserveContentPlan() { return { status: "RESERVED", reservationToken: "lease-url-evidence" }; },
+      async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease-url-evidence" }); },
+      advanceContentPlanStage: advanceStage,
       async saveContentPlan(input) { savedInput = structuredClone(input); return { id: "plan-url-evidence", ...input }; },
     },
   });
@@ -407,11 +807,12 @@ test("repository reservation serializes concurrent same-input planning so the ga
   let gatewayCalls = 0;
   const waiters = [];
   const repository = {
-    async reserveContentPlan() {
+    async reserveContentPlan(input) {
       if (record) return { status: "EXISTING", record };
-      if (!ownerIssued) { ownerIssued = true; return { status: "RESERVED", reservationToken: "lease-1" }; }
+      if (!ownerIssued) { ownerIssued = true; return reserved(input); }
       return new Promise((resolve) => waiters.push(resolve));
     },
+    advanceContentPlanStage: advanceStage,
     async saveContentPlan(input) {
       record = { id: "plan-concurrent", ...input };
       waiters.splice(0).forEach((resolve) => resolve({ status: "EXISTING", record }));
@@ -441,7 +842,11 @@ test("production repository port receives frozen snapshot, profile, request, and
   const repository = {
     async reserveContentPlan(input) {
       calls.push(["reserve", input]);
-      return { status: "RESERVED", reservationToken: "lease-1" };
+      return reserved(input);
+    },
+    async advanceContentPlanStage(input) {
+      calls.push(["stage", input]);
+      return advanceStage(input);
     },
     async saveContentPlan(input) {
       calls.push(["save", input]);
@@ -454,24 +859,31 @@ test("production repository port receives frozen snapshot, profile, request, and
   await createContentPlan({
     accountId: "account-a", jobId: "job-1", itemId: "item-1",
     sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "LEGACY_FULL_PLAN_V3",
+    evidenceRepository: passthroughEvidenceRepository,
     ...planningArgs,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse() { return { value: validPlan(built), requestId: "gateway-one" }; } },
     repository,
   });
   assert.deepEqual(Object.keys(calls[0][1]).sort(), [
-    "accountId", "expectedStatusVersion", "inputHash", "itemId", "jobId", "profileId",
-    "profileVersion", "requestKey", "sourceSnapshotId",
+    "accountId", "expectedStatusVersion", "inputHash", "itemId", "jobId", "planningContract",
+    "profileId", "profileVersion", "requestKey", "skeletonHash", "sourceSnapshotId",
   ]);
   assert.equal(calls[0][1].sourceSnapshotId, "snapshot-db-1");
   assert.equal(calls[0][1].expectedStatusVersion, 7);
   assert.equal(calls[0][1].profileId, "profile-1");
-  assert.equal(calls[1][1].sourceSnapshotId, "snapshot-db-1");
-  assert.equal(calls[1][1].expectedStatusVersion, 7);
-  assert.equal(calls[1][1].requestKey, calls[0][1].requestKey);
-  assert.equal(calls[1][1].strategyVersionId, "strategy-v1");
-  assert.deepEqual(calls[1][1].factRegistry, built.plannerInput.factRegistry);
-  assert.equal(calls[1][1].factRegistryHash, hash(built.plannerInput.factRegistry));
+  const stage = calls.find(([name]) => name === "stage")[1];
+  const save = calls.find(([name]) => name === "save")[1];
+  assert.equal(stage.attemptId, "attempt-test");
+  assert.equal(stage.fromStage, "FILLING_COPY");
+  assert.equal(stage.toStage, "VALIDATING_COPY");
+  assert.equal(save.sourceSnapshotId, "snapshot-db-1");
+  assert.equal(save.expectedStatusVersion, 7);
+  assert.equal(save.requestKey, calls[0][1].requestKey);
+  assert.equal(save.strategyVersionId, "strategy-v1");
+  assert.deepEqual(save.factRegistry, built.plannerInput.factRegistry);
+  assert.equal(save.factRegistryHash, hash(built.plannerInput.factRegistry));
 });
 
 test("source text that resembles a prompt remains delimited as untrusted data and cannot add writable planner fields", async () => {
@@ -485,7 +897,8 @@ test("source text that resembles a prompt remains delimited as untrusted data an
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse(input) { capturedPrompt = input.prompt; throw Object.assign(new Error("stop"), { code: "RETRYABLE_GATEWAY" }); } },
     repository: {
-      async reserveContentPlan() { return { status: "RESERVED", reservationToken: "lease" }; },
+      async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease" }); },
+      advanceContentPlanStage: advanceStage,
       async releaseContentPlanReservation() {},
     },
   }), (error) => error?.code === "RETRYABLE_GATEWAY");
@@ -706,7 +1119,8 @@ test("claims are field-bound and stored plans retain visual evidence plus a safe
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model" },
     gateway: { async createTextResponse() { return { value: output, requestId: "gateway-1" }; } },
     repository: {
-      async reserveContentPlan() { return { status: "RESERVED", reservationToken: "lease" }; },
+      async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease" }); },
+      advanceContentPlanStage: advanceStage,
       async saveContentPlan(row) { stored = { id: "plan", ...row }; return stored; },
       async releaseContentPlanReservation() {},
     },

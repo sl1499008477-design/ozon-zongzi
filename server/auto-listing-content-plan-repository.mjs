@@ -5,7 +5,7 @@ const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
 const REQUEST_KEY = /^auto-listing-plan-[a-f0-9]{64}$/u;
 const RESERVE_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "profileId", "profileVersion",
-  "inputHash", "expectedStatusVersion", "requestKey",
+  "inputHash", "expectedStatusVersion", "requestKey", "planningContract", "skeletonHash",
 ]);
 const SAVE_KEYS = new Set([
   ...RESERVE_KEYS,
@@ -17,6 +17,14 @@ const SAVE_KEYS = new Set([
 const RELEASE_KEYS = new Set([
   "accountId", "jobId", "itemId", "inputHash", "expectedStatusVersion", "reservationToken", "errorCode",
 ]);
+const ADVANCE_STAGE_KEYS = new Set([
+  "accountId", "jobId", "itemId", "sourceSnapshotId", "attemptId", "inputHash",
+  "expectedStatusVersion", "reservationToken", "planningContract", "skeletonHash",
+  "fromStage", "toStage",
+]);
+const PLANNER_STAGES = new Set([
+  "BUILDING_SKELETON", "FILLING_COPY", "VALIDATING_COPY", "COMPLETED", "FAILED",
+]);
 const LOAD_KEYS = new Set(["accountId", "jobId", "itemId", "expectedStatusVersion"]);
 const DERIVED_COMMAND_KEYS = new Set(["scope", "derivedPlan"]);
 const DERIVED_SCOPE_KEYS = new Set(["accountId", "jobId", "itemId", "parentPlanId", "expectedStatusVersion"]);
@@ -25,6 +33,7 @@ const DERIVED_PLAN_KEYS = new Set([
   "strategyHash", "configHash", "sourceHash", "inputHash", "plannerModel", "profileVersion",
   "promptTemplateVersion", "plan", "planHash", "visualGroupsHash", "visualGroups", "factRegistry",
   "regeneration", "gatewayRequestId", "parentPlanId", "derivationKind", "materializationSetHash",
+  "planningContract", "skeletonHash",
 ]);
 const VISUAL_GROUPS_KEYS = new Set(["sourceHash", "groups", "reasonCodes", "visualGroupsHash"]);
 const VISUAL_GROUP_KEYS = new Set([
@@ -149,6 +158,9 @@ function validateReserve(input) {
   if (!exactObject(input, RESERVE_KEYS)) throw invalid();
   assertScope(input);
   if (!safeIdentifier(input.sourceSnapshotId) || !safeIdentifier(input.profileId)
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(input.planningContract)
+    || (input.planningContract === "LEGACY_FULL_PLAN_V3" && input.skeletonHash !== null)
+    || (input.planningContract === "FIXED_SKELETON_V1" && !HASH.test(input.skeletonHash || ""))
     || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
     || !HASH.test(input.inputHash || "") || !REQUEST_KEY.test(input.requestKey || "")) throw invalid();
   return input;
@@ -211,6 +223,18 @@ function validateRelease(input) {
   return input;
 }
 
+function validateAdvanceStage(input) {
+  if (!exactObject(input, ADVANCE_STAGE_KEYS)) throw invalid();
+  assertScope(input);
+  if (!safeIdentifier(input.sourceSnapshotId) || !safeIdentifier(input.attemptId)
+    || !safeIdentifier(input.reservationToken) || !HASH.test(input.inputHash || "")
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(input.planningContract)
+    || !PLANNER_STAGES.has(input.fromStage) || !PLANNER_STAGES.has(input.toStage)
+    || (input.planningContract === "LEGACY_FULL_PLAN_V3" && input.skeletonHash !== null)
+    || (input.planningContract === "FIXED_SKELETON_V1" && !HASH.test(input.skeletonHash || ""))) throw invalid();
+  return input;
+}
+
 function validateLoad(input) {
   if (!exactObject(input, LOAD_KEYS)) throw invalid();
   assertScope(input);
@@ -229,6 +253,9 @@ function validateDerivedCommand(input) {
     || derivedPlan.sourceAccountId !== scope.accountId || derivedPlan.jobId !== scope.jobId
     || derivedPlan.itemId !== scope.itemId || derivedPlan.parentPlanId !== scope.parentPlanId
     || derivedPlan.id === derivedPlan.parentPlanId || derivedPlan.derivationKind !== "SOURCE_MATERIALIZATION"
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(derivedPlan.planningContract)
+    || (derivedPlan.planningContract === "LEGACY_FULL_PLAN_V3" && derivedPlan.skeletonHash !== null)
+    || (derivedPlan.planningContract === "FIXED_SKELETON_V1" && !HASH.test(derivedPlan.skeletonHash || ""))
     || !Number.isInteger(derivedPlan.profileVersion) || derivedPlan.profileVersion < 1
     || !["strategyHash", "configHash", "sourceHash", "inputHash", "planHash", "visualGroupsHash", "materializationSetHash"]
       .every((key) => HASH.test(derivedPlan[key] || ""))
@@ -258,6 +285,8 @@ function assertParentMatchesDerived(row, scope, derived) {
     || parent.profileVersion !== derived.profileVersion || parent.strategyHash !== derived.strategyHash
     || parent.configHash !== derived.configHash || parent.sourceHash !== derived.sourceHash
     || parent.plannerModel !== derived.plannerModel || parent.promptTemplateVersion !== derived.promptTemplateVersion
+    || parent.planningContract !== derived.planningContract
+    || (parent.skeletonHash ?? null) !== derived.skeletonHash
     || parent.planHash !== derived.planHash
     || JSON.stringify(canonical(parent.plan)) !== JSON.stringify(canonical(derived.plan))
     || JSON.stringify(canonical(parent.factRegistry)) !== JSON.stringify(canonical(derived.factRegistry))
@@ -280,6 +309,8 @@ function assertDerivedStoredRow(row, scope, derived) {
     || stored.configHash !== derived.configHash || stored.sourceHash !== derived.sourceHash
     || stored.inputHash !== derived.inputHash || stored.plannerModel !== derived.plannerModel
     || stored.promptTemplateVersion !== derived.promptTemplateVersion || stored.planHash !== derived.planHash
+    || stored.planningContract !== derived.planningContract
+    || (stored.skeletonHash ?? null) !== derived.skeletonHash
     || stored.visualGroupsHash !== derived.visualGroupsHash
     || stored.factRegistryHash !== sha256(derived.factRegistry)
     || stored.gatewayRequestId !== derived.gatewayRequestId || stored.parentPlanId !== derived.parentPlanId
@@ -319,6 +350,7 @@ function release(client) {
 
 function assertItemBoundary(row, input) {
   if (!row || row.id !== input.itemId || row.snapshot_id !== input.sourceSnapshotId) throw scopeConflict();
+  if (row.planning_contract !== input.planningContract) throw scopeConflict();
   if (row.status !== "PLANNING" || row.status_version !== input.expectedStatusVersion) throw versionConflict();
 }
 
@@ -326,6 +358,8 @@ function assertStoredRow(row, input) {
   const mapped = mapRow(row);
   if (!mapped || mapped.accountId !== input.accountId || mapped.jobId !== input.jobId
     || mapped.itemId !== input.itemId || mapped.sourceSnapshotId !== input.sourceSnapshotId
+    || mapped.planningContract !== input.planningContract
+    || (mapped.skeletonHash ?? null) !== input.skeletonHash
     || mapped.strategyVersionId !== input.strategyVersionId || mapped.profileId !== input.profileId
     || mapped.profileVersion !== input.profileVersion || mapped.inputHash !== input.inputHash
     || mapped.sourceHash !== input.sourceHash || mapped.strategyHash !== input.strategyHash
@@ -369,7 +403,7 @@ export function createPostgresContentPlanRepository({
       client = await pool.connect();
       await client.query("BEGIN");
       const boundary = await client.query(
-        `SELECT id,snapshot_id,status,status_version,active_content_plan_id
+        `SELECT id,snapshot_id,status,status_version,active_content_plan_id,planning_contract
            FROM auto_listing_job_items
           WHERE account_id=$1 AND job_id=$2 AND id=$3
           FOR UPDATE`,
@@ -390,6 +424,48 @@ export function createPostgresContentPlanRepository({
         }
       }
 
+      const resumable = await client.query(
+        `SELECT id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage
+           FROM auto_listing_content_plan_attempts
+          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4
+            AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
+            AND expected_status_version=$8 AND request_key=$9 AND planning_contract=$10
+            AND skeleton_hash IS NOT DISTINCT FROM $11
+            AND status='PLANNING' AND lease_expires_at <= NOW()
+          FOR UPDATE`,
+        [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
+          input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
+          input.planningContract, input.skeletonHash],
+      );
+      if (resumable.rowCount > 1) throw evidenceConflict();
+      if (resumable.rowCount === 1) {
+        const resumed = await client.query(
+          `UPDATE auto_listing_content_plan_attempts
+              SET lease_owner=$2,lease_token=$3,
+                  lease_expires_at=NOW() + ($4 * INTERVAL '1 millisecond'),updated_at=NOW()
+            WHERE account_id=$1 AND id=$5 AND status='PLANNING' AND lease_expires_at <= NOW()
+            RETURNING id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage`,
+          [input.accountId, leaseOwner, leaseToken, leaseMs, resumable.rows[0].id],
+        );
+        const row = resumed.rows[0];
+        if (resumed.rowCount !== 1 || row.id !== resumable.rows[0].id
+          || row.input_hash !== input.inputHash || row.planning_contract !== input.planningContract
+          || (row.skeleton_hash ?? null) !== (resumable.rows[0].skeleton_hash ?? null)
+          || (row.skeleton_hash ?? null) !== input.skeletonHash
+          || !PLANNER_STAGES.has(row.planner_stage)) throw evidenceConflict();
+        await client.query("COMMIT");
+        return {
+          status: "RESERVED",
+          attemptId: row.id,
+          attemptNo: Number(row.attempt_no),
+          reservationToken: leaseToken,
+          inputHash: row.input_hash,
+          planningContract: row.planning_contract,
+          skeletonHash: row.skeleton_hash ?? null,
+          plannerStage: row.planner_stage,
+        };
+      }
+
       await client.query(
         `UPDATE auto_listing_content_plan_attempts
             SET status='FAILED',error_code='LEASE_EXPIRED',error_retryable=TRUE,
@@ -405,8 +481,9 @@ export function createPostgresContentPlanRepository({
              ON p.account_id=a.account_id AND p.job_id=a.job_id AND p.item_id=a.item_id
             AND p.id=a.accepted_plan_id
           WHERE a.account_id=$1 AND a.job_id=$2 AND a.item_id=$3 AND a.input_hash=$4
+            AND a.planning_contract=$5 AND a.skeleton_hash IS NOT DISTINCT FROM $6
             AND a.status='ACCEPTED'`,
-        [input.accountId, input.jobId, input.itemId, input.inputHash],
+        [input.accountId, input.jobId, input.itemId, input.inputHash, input.planningContract, input.skeletonHash],
       );
       if (accepted.rows[0]) {
         if (boundary.rows[0].active_content_plan_id !== accepted.rows[0].accepted_plan_id) throw evidenceConflict();
@@ -416,8 +493,8 @@ export function createPostgresContentPlanRepository({
       const active = await client.query(
         `SELECT id,input_hash FROM auto_listing_content_plan_attempts
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3
-            AND status='PLANNING' AND lease_expires_at > NOW()`,
-        [input.accountId, input.jobId, input.itemId],
+            AND planning_contract=$4 AND status='PLANNING' AND lease_expires_at > NOW()`,
+        [input.accountId, input.jobId, input.itemId, input.planningContract],
       );
       if (active.rowCount > 0) {
         await client.query("COMMIT");
@@ -436,15 +513,26 @@ export function createPostgresContentPlanRepository({
       await client.query(
         `INSERT INTO auto_listing_content_plan_attempts (
            id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,input_hash,
-           expected_status_version,request_key,attempt_no,status,lease_owner,lease_token,lease_expires_at
+           expected_status_version,request_key,attempt_no,status,lease_owner,lease_token,lease_expires_at,
+           planning_contract,skeleton_hash,planner_stage
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PLANNING',$12,$13,
-           NOW() + ($14 * INTERVAL '1 millisecond'))`,
+           NOW() + ($14 * INTERVAL '1 millisecond'),$15,$16,$17)`,
         [attemptId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
           input.profileId, input.profileVersion, input.inputHash, input.expectedStatusVersion,
-          input.requestKey, attemptNo, leaseOwner, leaseToken, leaseMs],
+          input.requestKey, attemptNo, leaseOwner, leaseToken, leaseMs, input.planningContract, input.skeletonHash,
+          input.planningContract === "LEGACY_FULL_PLAN_V3" ? "FILLING_COPY" : "BUILDING_SKELETON"],
       );
       await client.query("COMMIT");
-      return { status: "RESERVED", attemptNo, reservationToken: leaseToken, inputHash: input.inputHash };
+      return {
+        status: "RESERVED",
+        attemptId,
+        attemptNo,
+        reservationToken: leaseToken,
+        inputHash: input.inputHash,
+        planningContract: input.planningContract,
+        skeletonHash: input.skeletonHash,
+        plannerStage: input.planningContract === "LEGACY_FULL_PLAN_V3" ? "FILLING_COPY" : "BUILDING_SKELETON",
+      };
     } catch (error) {
       await rollback(client);
       if (isKnown(error) || error?.code === "AUTO_LISTING_CONTENT_PLAN_ATTEMPTS_EXHAUSTED") throw error;
@@ -463,7 +551,7 @@ export function createPostgresContentPlanRepository({
       client = await pool.connect();
       await client.query("BEGIN");
       const boundary = await client.query(
-        `SELECT id,snapshot_id,status,status_version,active_content_plan_id
+        `SELECT id,snapshot_id,status,status_version,active_content_plan_id,planning_contract
            FROM auto_listing_job_items
           WHERE account_id=$1 AND job_id=$2 AND id=$3
           FOR UPDATE`,
@@ -471,16 +559,35 @@ export function createPostgresContentPlanRepository({
       );
       assertItemBoundary(boundary.rows[0], input);
       const attempt = await client.query(
-        `SELECT id,attempt_no,status,lease_token,lease_expires_at,expected_status_version,request_key
-           FROM auto_listing_content_plan_attempts
-          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4
-            AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
-            AND expected_status_version=$8 AND request_key=$9
-            AND status='PLANNING' AND lease_token=$10 AND lease_expires_at > NOW()
+        `SELECT attempt.id,attempt.attempt_no,attempt.status,attempt.lease_token,
+                attempt.lease_expires_at,attempt.expected_status_version,
+                attempt.request_key,attempt.planning_contract,attempt.skeleton_hash
+           FROM auto_listing_content_plan_attempts AS attempt
+          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+            AND attempt.source_snapshot_id=$4 AND attempt.profile_id=$5
+            AND attempt.profile_version=$6 AND attempt.input_hash=$7
+            AND attempt.expected_status_version=$8 AND attempt.request_key=$9
+            AND attempt.planning_contract=$11 AND attempt.status='PLANNING'
+            AND attempt.skeleton_hash IS NOT DISTINCT FROM $12
+            AND attempt.planner_stage='VALIDATING_COPY'
+            AND attempt.lease_token=$10 AND attempt.lease_expires_at > NOW()
+            AND EXISTS (
+              SELECT 1
+                FROM auto_listing_content_plan_responses AS response
+                JOIN auto_listing_content_plan_validation_results AS validation
+                  ON validation.account_id=response.account_id AND validation.response_id=response.id
+               WHERE response.account_id=attempt.account_id AND response.attempt_id=attempt.id
+                 AND response.job_id=attempt.job_id AND response.item_id=attempt.item_id
+                 AND response.source_snapshot_id=attempt.source_snapshot_id
+                 AND response.planning_contract=attempt.planning_contract
+                 AND response.input_hash=attempt.input_hash
+                 AND response.skeleton_hash IS NOT DISTINCT FROM attempt.skeleton_hash
+                 AND validation.status='ACCEPTED'
+            )
           FOR UPDATE`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.reservationToken],
+          input.reservationToken, input.planningContract, input.skeletonHash],
       );
       if (attempt.rowCount !== 1) throw leaseConflict();
       const inserted = await client.query(
@@ -488,8 +595,8 @@ export function createPostgresContentPlanRepository({
            id,account_id,job_id,item_id,source_snapshot_id,strategy_version_id,profile_id,
            strategy_hash,config_hash,source_hash,input_hash,planner_model,profile_version,
            prompt_template_version,plan,plan_hash,visual_groups_hash,visual_groups,fact_registry_hash,fact_registry,regeneration,
-           gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,NULL,NULL,NULL)
+           gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash,planning_contract,skeleton_hash
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,NULL,NULL,NULL,$23,$24)
          RETURNING *`,
         [nextPlanId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
           input.strategyVersionId, input.profileId, input.strategyHash, input.configHash,
@@ -497,21 +604,24 @@ export function createPostgresContentPlanRepository({
           input.promptTemplateVersion, JSON.stringify(input.plan), input.planHash,
           input.visualGroupsHash, JSON.stringify(input.visualGroups),
           input.factRegistryHash, JSON.stringify(input.factRegistry),
-          input.regeneration === null ? null : JSON.stringify(input.regeneration), input.gatewayRequestId],
+          input.regeneration === null ? null : JSON.stringify(input.regeneration), input.gatewayRequestId,
+          input.planningContract, input.skeletonHash],
       );
       if (inserted.rowCount !== 1) throw evidenceConflict();
       const accepted = await client.query(
         `UPDATE auto_listing_content_plan_attempts
-            SET status='ACCEPTED',accepted_plan_id=$11,accepted_at=NOW(),
+            SET status='ACCEPTED',accepted_plan_id=$11,accepted_at=NOW(),planner_stage='COMPLETED',
                 lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4
             AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
-            AND expected_status_version=$8 AND request_key=$9
-            AND status='PLANNING' AND lease_token=$10 AND lease_expires_at > NOW()
+            AND expected_status_version=$8 AND request_key=$9 AND planning_contract=$12
+            AND skeleton_hash IS NOT DISTINCT FROM $13
+            AND status='PLANNING' AND planner_stage='VALIDATING_COPY'
+            AND lease_token=$10 AND lease_expires_at > NOW()
           RETURNING id`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.reservationToken, nextPlanId],
+          input.reservationToken, nextPlanId, input.planningContract, input.skeletonHash],
       );
       if (accepted.rowCount !== 1) throw leaseConflict();
       const switched = await client.query(
@@ -543,7 +653,7 @@ export function createPostgresContentPlanRepository({
       try {
         const released = await result.query(
           `UPDATE auto_listing_content_plan_attempts a
-              SET status='FAILED',error_code=$7,error_retryable=TRUE,
+              SET status='FAILED',planner_stage='FAILED',error_code=$7,error_retryable=TRUE,
                   lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
             WHERE a.account_id=$1 AND a.job_id=$2 AND a.item_id=$3 AND a.input_hash=$4
               AND a.expected_status_version=$5 AND a.status='PLANNING' AND a.lease_token=$6
@@ -563,6 +673,52 @@ export function createPostgresContentPlanRepository({
     } catch (error) {
       if (isKnown(error)) throw error;
       throw unavailable();
+    }
+  }
+
+  async function advanceContentPlanStage(rawInput) {
+    const input = validateAdvanceStage(rawInput);
+    let client;
+    try {
+      client = await pool.connect();
+      const advanced = await client.query(
+        `UPDATE auto_listing_content_plan_attempts AS attempt
+            SET planner_stage=$12,updated_at=NOW()
+          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+            AND attempt.source_snapshot_id=$4 AND attempt.id=$5 AND attempt.input_hash=$6
+            AND attempt.expected_status_version=$7 AND attempt.lease_token=$8
+            AND attempt.planning_contract=$9 AND attempt.skeleton_hash IS NOT DISTINCT FROM $10
+            AND attempt.planner_stage=$11 AND attempt.status='PLANNING'
+            AND attempt.lease_expires_at > NOW()
+            AND EXISTS (
+              SELECT 1 FROM auto_listing_job_items AS item
+               WHERE item.account_id=attempt.account_id AND item.job_id=attempt.job_id
+                 AND item.id=attempt.item_id AND item.snapshot_id=attempt.source_snapshot_id
+                 AND item.status='PLANNING' AND item.status_version=$7
+                 AND item.planning_contract=attempt.planning_contract
+            )
+          RETURNING attempt.id,attempt.planning_contract,attempt.skeleton_hash,attempt.planner_stage`,
+        [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.attemptId,
+          input.inputHash, input.expectedStatusVersion, input.reservationToken,
+          input.planningContract, input.skeletonHash, input.fromStage, input.toStage],
+      );
+      if (advanced.rowCount !== 1) throw leaseConflict();
+      const row = advanced.rows[0];
+      if (row.id !== input.attemptId || row.planning_contract !== input.planningContract
+        || (row.skeleton_hash ?? null) !== input.skeletonHash || row.planner_stage !== input.toStage) {
+        throw evidenceConflict();
+      }
+      return Object.freeze({
+        attemptId: row.id,
+        planningContract: row.planning_contract,
+        skeletonHash: row.skeleton_hash ?? null,
+        plannerStage: row.planner_stage,
+      });
+    } catch (error) {
+      if (isKnown(error)) throw error;
+      throw unavailable();
+    } finally {
+      release(client);
     }
   }
 
@@ -597,7 +753,7 @@ export function createPostgresContentPlanRepository({
       client = await pool.connect();
       await client.query("BEGIN");
       const boundary = await client.query(
-        `SELECT id,snapshot_id,status,status_version,active_content_plan_id
+        `SELECT id,snapshot_id,status,status_version,active_content_plan_id,planning_contract
            FROM auto_listing_job_items
           WHERE account_id=$1 AND job_id=$2 AND id=$3
           FOR UPDATE`,
@@ -606,6 +762,7 @@ export function createPostgresContentPlanRepository({
       const item = boundary.rows[0];
       if (!item || item.id !== scope.itemId) throw scopeConflict();
       if (item.status !== "PLANNING" || item.status_version !== scope.expectedStatusVersion) throw versionConflict();
+      if (item.planning_contract !== derivedPlan.planningContract) throw scopeConflict();
 
       const existing = await client.query(
         `SELECT d.derived_plan_id,p.*
@@ -638,8 +795,9 @@ export function createPostgresContentPlanRepository({
            id,account_id,job_id,item_id,source_snapshot_id,strategy_version_id,profile_id,
            strategy_hash,config_hash,source_hash,input_hash,planner_model,profile_version,
            prompt_template_version,plan,plan_hash,visual_groups_hash,visual_groups,fact_registry_hash,fact_registry,
-           regeneration,gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,$23,$24,$25)
+           regeneration,gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash,
+           planning_contract,skeleton_hash
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,$23,$24,$25,$26,$27)
          RETURNING id`,
         [derivedPlan.id, scope.accountId, scope.jobId, scope.itemId, derivedPlan.sourceSnapshotId,
           derivedPlan.strategyVersionId, derivedPlan.profileId, derivedPlan.strategyHash,
@@ -649,7 +807,7 @@ export function createPostgresContentPlanRepository({
           factRegistryHash, JSON.stringify(derivedPlan.factRegistry),
           derivedPlan.regeneration === null ? null : JSON.stringify(derivedPlan.regeneration),
           derivedPlan.gatewayRequestId, scope.parentPlanId, derivedPlan.derivationKind,
-          derivedPlan.materializationSetHash],
+          derivedPlan.materializationSetHash, derivedPlan.planningContract, derivedPlan.skeletonHash],
       );
       if (inserted.rowCount !== 1 || inserted.rows[0]?.id !== derivedPlan.id) throw evidenceConflict();
       const relation = await client.query(
@@ -684,6 +842,7 @@ export function createPostgresContentPlanRepository({
 
   return Object.freeze({
     reserveContentPlan,
+    advanceContentPlanStage,
     saveContentPlan,
     releaseContentPlanReservation,
     loadActiveContentPlan,

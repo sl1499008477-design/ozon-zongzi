@@ -1,11 +1,24 @@
 import crypto from "node:crypto";
+import { types } from "node:util";
+
+import { projectCategoryStrategyGuidanceV2 } from "./auto-listing-category-strategy-contract.mjs";
 
 const FACTORY_KEYS = new Set(["pool"]);
+const CATEGORY_STRATEGY_PUBLISH_KEYS = new Set([
+  "accountId", "actorId", "draftId", "expectedDraftVersion",
+  "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId",
+]);
+const CATEGORY_STRATEGY_ROLLBACK_KEYS = new Set([
+  "accountId", "actorId", "targetStrategyVersionId",
+  "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId",
+]);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const CAPABILITY_AUTHORIZATION_SCHEMA = "AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1";
 const CAPABILITY_AUTHORIZATION_ACTION = "AUTO_LISTING_AI_PROFILE_CAPABILITY_AUTHORIZED";
 const CAPABILITY_SUBCALL_TERMINAL_ACTION = "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_TERMINATED";
+const CATEGORY_STRATEGY_PUBLISH_ACTION = "AUTO_LISTING_CATEGORY_STRATEGY_PUBLISH";
+const CATEGORY_STRATEGY_ROLLBACK_ACTION = "AUTO_LISTING_CATEGORY_STRATEGY_ROLLBACK";
 const CAPABILITY_SUBCALL_COMPLETION_REASONS = new Map([
   ["PRE_SEND_ABORTED", "FAILED"],
   ["PRE_SEND_FAILED", "FAILED"],
@@ -53,6 +66,21 @@ function closedFactory(raw) {
     if (keys.length !== FACTORY_KEYS.size || keys.some((key) => typeof key !== "string" || !FACTORY_KEYS.has(key)
       || descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) throw invalid();
     return { pool: descriptors.pool.value };
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_AI_ADMIN_REPOSITORY_INVALID") throw error;
+    throw invalid();
+  }
+}
+
+function closedCategoryStrategyCommand(raw, keys) {
+  try {
+    if (!raw || typeof raw !== "object" || types.isProxy(raw) || Array.isArray(raw)
+      || Object.getPrototypeOf(raw) !== Object.prototype) throw invalid();
+    const ownKeys = Reflect.ownKeys(raw);
+    const descriptors = Object.getOwnPropertyDescriptors(raw);
+    if (ownKeys.length !== keys.size || ownKeys.some((key) => typeof key !== "string" || !keys.has(key)
+      || descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) throw invalid();
+    return Object.fromEntries(ownKeys.map((key) => [key, descriptors[key].value]));
   } catch (error) {
     if (error?.code === "AUTO_LISTING_AI_ADMIN_REPOSITORY_INVALID") throw error;
     throw invalid();
@@ -224,6 +252,16 @@ async function lockAccount(client, accountId) {
   if (!result?.rows?.[0]) throw repositoryError("AUTO_LISTING_AI_ADMIN_SCOPE_NOT_FOUND", 404);
 }
 
+async function requireCategoryStrategyMutationEnabled(client, accountId) {
+  const result = await query(client,
+    `SELECT mode FROM auto_listing_category_strategy_account_settings
+      WHERE account_id=$1 FOR UPDATE`,
+    [accountId]);
+  if (result.rows[0]?.mode !== "REQUIRE_EXACT_STRATEGY") {
+    throw repositoryError("AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", 409);
+  }
+}
+
 function auditIdentity(action, accountId, idempotencyKey) {
   return deterministicId("audit_ai_admin", action, accountId, idempotencyKey);
 }
@@ -240,6 +278,36 @@ async function loadAudit(client, { action, accountId, idempotencyKey, requestHas
   if (!metadata) return { eventId, metadata: null, activation: null };
   if (metadata.requestHash !== requestHash) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
   return { eventId, metadata, activation: activationFromAuditRow(result.rows[0]) };
+}
+
+async function requireCategoryStrategyCommandLedger(client, {
+  action, accountId, idempotencyKey, requestHash,
+}) {
+  const categoryEvents = await query(client,
+    `SELECT CASE
+       WHEN event_type='PUBLISHED' THEN '${CATEGORY_STRATEGY_PUBLISH_ACTION}'
+       WHEN event_type='ACCOUNT_SETTINGS_CHANGED' THEN 'TRANSITION_ACCOUNT_POLICY'
+       WHEN event_payload->>'event'='DRAFT_CREATED' THEN 'CREATE_DRAFT'
+       WHEN event_payload->>'event'='SAMPLING_SESSION_STARTED' THEN 'START_SAMPLING_SESSION'
+       WHEN event_payload->>'event'='SAMPLE_SET_COMMITTED' THEN 'COMMIT_SAMPLE_SET'
+       ELSE 'UNKNOWN'
+     END AS action,request_hash
+       FROM auto_listing_category_strategy_events
+      WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+    [accountId, idempotencyKey]);
+  const auditIds = [
+    auditIdentity(CATEGORY_STRATEGY_PUBLISH_ACTION, accountId, idempotencyKey),
+    auditIdentity(CATEGORY_STRATEGY_ROLLBACK_ACTION, accountId, idempotencyKey),
+  ];
+  const adminAudits = await query(client,
+    `SELECT action,metadata->>'requestHash' AS request_hash
+       FROM audit_events
+      WHERE account_id=$1 AND event_id=ANY($2::TEXT[]) FOR UPDATE`,
+    [accountId, auditIds]);
+  const entries = [...categoryEvents.rows, ...adminAudits.rows];
+  if (entries.some((entry) => entry.action !== action || entry.request_hash !== requestHash)) {
+    throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+  }
 }
 
 async function insertAudit(client, {
@@ -968,6 +1036,82 @@ function strategyPublishRequest(input) {
     idempotencyKey: id(input.idempotencyKey),
     correlationId: id(input.correlationId),
   };
+}
+
+function categoryStrategyPublishRequest(rawInput) {
+  const input = closedCategoryStrategyCommand(rawInput, CATEGORY_STRATEGY_PUBLISH_KEYS);
+  const accountId = sameActor(input);
+  return {
+    accountId,
+    actorId: accountId,
+    draftId: id(input.draftId),
+    expectedDraftVersion: version(input.expectedDraftVersion),
+    expectedPublishedStrategyVersionId: id(input.expectedPublishedStrategyVersionId),
+    idempotencyKey: id(input.idempotencyKey),
+    correlationId: id(input.correlationId),
+  };
+}
+
+function categoryStrategyRollbackRequest(rawInput) {
+  const input = closedCategoryStrategyCommand(rawInput, CATEGORY_STRATEGY_ROLLBACK_KEYS);
+  const accountId = sameActor(input);
+  return {
+    accountId,
+    actorId: accountId,
+    targetStrategyVersionId: id(input.targetStrategyVersionId),
+    expectedPublishedStrategyVersionId: id(input.expectedPublishedStrategyVersionId),
+    idempotencyKey: id(input.idempotencyKey),
+    correlationId: id(input.correlationId),
+  };
+}
+
+function hydrateStoredStrategyRule(row) {
+  const stored = canonical(row.rule || {});
+  if (stored.matchType === "EXACT_CATEGORY_TYPE_V2") {
+    return canonical({ ...stored, ruleId: stored.ruleId || row.id, ruleOrder: Number(row.rule_order) });
+  }
+  const rule = {
+    ruleId: stored.ruleId || row.id,
+    ruleOrder: Number(row.rule_order),
+    matchType: row.rule_kind,
+    style: stored.style,
+    textDensityByRole: stored.textDensityByRole,
+  };
+  if (row.rule_kind === "PRODUCT_STYLE") rule.productStyle = row.product_style;
+  else rule.categoryId = row.category_id ?? row.ancestor_category_id;
+  return canonical(rule);
+}
+
+async function loadStrategyBundle(target, { accountId, strategyVersionId, strategyKey = "default", lock = false }) {
+  const versionResult = await query(target,
+    `SELECT id,account_id,strategy_key,version,status,content,content_hash,published_at,created_at
+       FROM ai_content_strategy_versions
+      WHERE account_id=$1 AND id=$2 AND strategy_key=$3${lock ? " FOR UPDATE" : ""}`,
+    [accountId, strategyVersionId, strategyKey]);
+  if (!versionResult.rows[0]) return null;
+  const rulesResult = await query(target,
+    `SELECT id,rule_kind,rule_order,category_id,ancestor_category_id,product_style,rule
+       FROM ai_content_strategy_rules
+      WHERE account_id=$1 AND strategy_version_id=$2
+      ORDER BY rule_order,id${lock ? " FOR UPDATE" : ""}`,
+    [accountId, strategyVersionId]);
+  return { ...strategyRow(versionResult.rows[0]), rules: rulesResult.rows.map(hydrateStoredStrategyRule),
+    storedRules: rulesResult.rows };
+}
+
+async function requireStrategyVersionAvailable(client, { accountId, strategyKey, version: nextVersion }) {
+  const result = await query(client,
+    `SELECT id FROM ai_content_strategy_versions
+      WHERE account_id=$1 AND strategy_key=$2 AND version=$3 FOR UPDATE`,
+    [accountId, strategyKey, nextVersion]);
+  if (result.rows[0]) throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+}
+
+function exactCategoryScope(rule, draft) {
+  return rule?.matchType === "EXACT_CATEGORY_TYPE_V2"
+    && rule.scope?.taxonomyScope === draft.taxonomy_scope
+    && rule.scope?.descriptionCategoryId === Number(draft.description_category_id)
+    && rule.scope?.typeId === Number(draft.type_id);
 }
 
 export function createAutoListingAiAdminPostgres(rawOptions = {}) {
@@ -1894,12 +2038,17 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
       const result = await query(pool,
         `SELECT v.id,v.account_id,v.strategy_key,v.version,v.status,v.content,v.content_hash,v.published_at,v.created_at,
                 COALESCE((
-                  SELECT jsonb_agg((jsonb_build_object(
-                    'ruleId',COALESCE(r.rule->>'ruleId',r.id),'ruleOrder',r.rule_order,'matchType',r.rule_kind,
-                    'style',r.rule->>'style','textDensityByRole',r.rule->'textDensityByRole'
-                  ) || CASE WHEN r.rule_kind='PRODUCT_STYLE'
-                    THEN jsonb_build_object('productStyle',r.product_style)
-                    ELSE jsonb_build_object('categoryId',COALESCE(r.category_id,r.ancestor_category_id)) END)
+                  SELECT jsonb_agg((CASE WHEN r.rule->>'matchType'='EXACT_CATEGORY_TYPE_V2'
+                    THEN r.rule || jsonb_build_object(
+                      'ruleId',COALESCE(r.rule->>'ruleId',r.id),'ruleOrder',r.rule_order
+                    )
+                    ELSE jsonb_build_object(
+                      'ruleId',COALESCE(r.rule->>'ruleId',r.id),'ruleOrder',r.rule_order,'matchType',r.rule_kind,
+                      'style',r.rule->>'style','textDensityByRole',r.rule->'textDensityByRole'
+                    ) || CASE WHEN r.rule_kind='PRODUCT_STYLE'
+                      THEN jsonb_build_object('productStyle',r.product_style)
+                      ELSE jsonb_build_object('categoryId',COALESCE(r.category_id,r.ancestor_category_id)) END
+                    END)
                     ORDER BY r.rule_order,r.id)
                   FROM ai_content_strategy_rules r
                   WHERE r.account_id=v.account_id AND r.strategy_version_id=v.id
@@ -1909,6 +2058,328 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           ORDER BY version ASC,id ASC`,
         [accountId, strategyKey]);
       return result.rows.map((row) => strategyRow(row));
+    },
+
+    async publishCategoryStrategyDraft(rawInput = {}) {
+      const input = categoryStrategyPublishRequest(rawInput);
+      const action = CATEGORY_STRATEGY_PUBLISH_ACTION;
+      const commandHash = hash({ action, ...input });
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        await requireCategoryStrategyCommandLedger(client, {
+          ...input, action, requestHash: commandHash,
+        });
+        const audit = await loadAudit(client, { ...input, action, requestHash: commandHash });
+        if (audit.metadata) {
+          const replay = await loadStrategyBundle(client, {
+            accountId: input.accountId,
+            strategyVersionId: audit.metadata.entityId,
+            lock: true,
+          });
+          if (!replay || !["PUBLISHED", "RETIRED"].includes(replay.status)) {
+            throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+          }
+          delete replay.storedRules;
+          return { ...replay, status: "PUBLISHED", idempotencyKey: input.idempotencyKey, duplicate: true };
+        }
+        await requireCategoryStrategyMutationEnabled(client, input.accountId);
+        const draftResult = await query(client,
+          `SELECT * FROM auto_listing_category_strategy_drafts
+            WHERE account_id=$1 AND id=$2 FOR UPDATE`,
+          [input.accountId, input.draftId]);
+        const draft = draftResult.rows[0];
+        if (!draft) throw repositoryError("AUTO_LISTING_AI_STRATEGY_NOT_FOUND", 404);
+        if (Number(draft.draft_version) !== input.expectedDraftVersion || draft.status !== "DRAFT_READY") {
+          throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        }
+        const source = await query(client,
+          `SELECT item.id
+             FROM collect_items item
+             JOIN product_drafts product_draft
+               ON product_draft.collect_item_id=item.id AND product_draft.id=item.current_draft_id
+             JOIN collect_ozon_category_current_sources pointer
+               ON pointer.account_id=item.account_id AND pointer.collect_item_id=item.id
+              AND pointer.source_kind='PRODUCT_DRAFT' AND pointer.source_record_id=product_draft.id
+              AND pointer.source_version IN (product_draft.version::TEXT,'draft:' || product_draft.version::TEXT)
+             JOIN collect_ozon_category_source_evidence evidence
+               ON evidence.account_id=pointer.account_id AND evidence.id=pointer.source_evidence_id
+              AND evidence.collect_item_id=pointer.collect_item_id
+              AND evidence.source_kind=pointer.source_kind
+              AND evidence.source_record_id=pointer.source_record_id
+              AND evidence.source_version=pointer.source_version
+             JOIN account_ozon_shared_categories shared
+               ON shared.account_id=evidence.account_id
+              AND shared.source_description_category_id=evidence.source_description_category_id
+              AND shared.source_type_id=evidence.source_type_id
+              AND shared.taxonomy_scope=evidence.taxonomy_scope
+              AND shared.current_description_category_id=evidence.source_description_category_id
+              AND shared.current_type_id=evidence.source_type_id
+              AND shared.status='ACTIVE'
+            WHERE item.account_id=$1 AND item.id=$2
+              AND product_draft.id=$3 AND product_draft.version=$4
+              AND $5='draft:' || product_draft.version::TEXT
+              AND evidence.taxonomy_scope=$6
+              AND evidence.source_description_category_id=$7
+              AND evidence.source_type_id=$8
+            FOR UPDATE OF item,product_draft,pointer,shared`,
+          [input.accountId, draft.source_collect_item_id, draft.source_product_draft_id,
+            draft.source_product_draft_version, draft.expected_source_version, draft.taxonomy_scope,
+            draft.description_category_id, draft.type_id]);
+        if (!source.rows[0]) throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        const analysis = await query(client,
+          `SELECT result.id,result.guidance,result.guidance_hash,result.sample_set_hash,
+                  result.attempt_id,result.sample_set_id
+             FROM auto_listing_category_strategy_analysis_results result
+             JOIN auto_listing_category_strategy_analysis_attempts attempt
+               ON attempt.account_id=result.account_id AND attempt.id=result.attempt_id
+              AND attempt.draft_id=result.draft_id AND attempt.sample_set_id=result.sample_set_id
+              AND attempt.sample_set_hash=result.sample_set_hash
+             JOIN auto_listing_category_strategy_sample_sets sample_set
+               ON sample_set.account_id=result.account_id AND sample_set.id=result.sample_set_id
+              AND sample_set.draft_id=result.draft_id AND sample_set.status='SEALED'
+              AND sample_set.sample_set_hash=result.sample_set_hash
+             JOIN auto_listing_category_strategy_events final_event
+               ON final_event.account_id=result.account_id AND final_event.draft_id=result.draft_id
+              AND final_event.taxonomy_scope=result.taxonomy_scope
+              AND final_event.description_category_id=result.description_category_id
+              AND final_event.type_id=result.type_id AND final_event.event_type='DRAFT_EVENT'
+              AND final_event.event_payload->>'resultId'=result.id
+              AND final_event.event_payload->>'draftVersion'=$6::TEXT
+              AND final_event.event_payload->>'status'='DRAFT_READY'
+              AND final_event.event_payload->>'event' IN ('ANALYSIS_RESULT_RECORDED','ANALYSIS_MANUAL_EDITED')
+            WHERE result.account_id=$1 AND result.draft_id=$2
+              AND result.taxonomy_scope=$3 AND result.description_category_id=$4 AND result.type_id=$5
+            FOR UPDATE OF result,attempt,sample_set,final_event`,
+          [input.accountId, input.draftId, draft.taxonomy_scope,
+            draft.description_category_id, draft.type_id, input.expectedDraftVersion]);
+        if (analysis.rows.length !== 1) throw repositoryError("AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", 409);
+        let guidance;
+        try {
+          guidance = projectCategoryStrategyGuidanceV2(analysis.rows[0].guidance);
+        } catch {
+          throw repositoryError("AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", 409);
+        }
+        const currentResult = await query(client,
+          `SELECT id FROM ai_content_strategy_versions
+            WHERE account_id=$1 AND strategy_key='default' AND status='PUBLISHED' FOR UPDATE`,
+          [input.accountId]);
+        if (currentResult.rows.length !== 1
+          || currentResult.rows[0].id !== input.expectedPublishedStrategyVersionId) {
+          throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        }
+        const current = await loadStrategyBundle(client, {
+          accountId: input.accountId,
+          strategyVersionId: input.expectedPublishedStrategyVersionId,
+          lock: true,
+        });
+        if (!current || current.status !== "PUBLISHED") {
+          throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        }
+        const matching = current.rules.filter((rule) => exactCategoryScope(rule, draft));
+        if (matching.length > 1) throw repositoryError("AUTO_LISTING_AI_STRATEGY_PUBLISHED_AMBIGUOUS", 409);
+        const preservedRows = current.storedRules.filter((_, index) => !exactCategoryScope(current.rules[index], draft));
+        const replacementOrder = matching[0]?.ruleOrder
+          ?? (current.rules.reduce((maximum, rule) => Math.max(maximum, Number(rule.ruleOrder) || 0), 0) + 1);
+        const nextVersion = Number(current.version) + 1;
+        await requireStrategyVersionAvailable(client, {
+          accountId: input.accountId, strategyKey: "default", version: nextVersion,
+        });
+        const strategyVersionId = deterministicId("ai_strategy", input.accountId, "default", String(nextVersion));
+        const replacementRule = canonical({
+          ruleId: deterministicId("category_rule", input.accountId, draft.taxonomy_scope,
+            String(draft.description_category_id), String(draft.type_id), strategyVersionId),
+          ruleOrder: replacementOrder,
+          matchType: "EXACT_CATEGORY_TYPE_V2",
+          scope: {
+            taxonomyScope: draft.taxonomy_scope,
+            descriptionCategoryId: Number(draft.description_category_id),
+            typeId: Number(draft.type_id),
+          },
+          overallStyle: guidance.overallStyle,
+          prohibitedPatterns: guidance.prohibitedPatterns,
+          roleGuidance: guidance.roles,
+          sampleSetHash: analysis.rows[0].sample_set_hash,
+          analysisAttemptId: analysis.rows[0].attempt_id,
+          analysisResultId: analysis.rows[0].id,
+        });
+        const preservedRules = preservedRows.map(hydrateStoredStrategyRule);
+        const compiledRules = [...preservedRules, replacementRule]
+          .sort((left, right) => left.ruleOrder - right.ruleOrder || left.ruleId.localeCompare(right.ruleId));
+        const content = canonical({
+          schemaVersion: "V2",
+          previousStrategyVersionId: current.id,
+          sourceCategoryStrategyDraftId: input.draftId,
+        });
+        const contentHash = hash({ content, rules: compiledRules });
+        await query(client,
+          `INSERT INTO ai_content_strategy_versions
+             (id,account_id,strategy_key,version,status,content,content_hash,created_by)
+           VALUES ($1,$2,'default',$3,'DRAFT',$4::JSONB,$5,$2)`,
+          [strategyVersionId, input.accountId, nextVersion, JSON.stringify(content), contentHash]);
+        for (const row of preservedRows) {
+          const logicalId = row.rule?.ruleId || row.id;
+          await query(client,
+            `INSERT INTO ai_content_strategy_rules
+               (id,account_id,strategy_version_id,rule_kind,rule_order,category_id,
+                ancestor_category_id,product_style,rule)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::JSONB)`,
+            [deterministicId("ai_rule", input.accountId, strategyVersionId, logicalId), input.accountId,
+              strategyVersionId, row.rule_kind, row.rule_order, row.category_id,
+              row.ancestor_category_id, row.product_style, JSON.stringify(row.rule)]);
+        }
+        await query(client,
+          `INSERT INTO ai_content_strategy_rules
+             (id,account_id,strategy_version_id,rule_kind,rule_order,category_id,rule)
+           VALUES ($1,$2,$3,'EXACT_CATEGORY',$4,$5,$6::JSONB)`,
+          [deterministicId("ai_rule", input.accountId, strategyVersionId, replacementRule.ruleId),
+            input.accountId, strategyVersionId, replacementRule.ruleOrder,
+            String(replacementRule.scope.descriptionCategoryId), JSON.stringify(replacementRule)]);
+        const retired = await query(client,
+          `UPDATE ai_content_strategy_versions SET status='RETIRED'
+            WHERE account_id=$1 AND id=$2 AND strategy_key='default' AND status='PUBLISHED'
+            RETURNING id`,
+          [input.accountId, current.id]);
+        if (retired.rowCount !== 1) throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        const publishedResult = await query(client,
+          `UPDATE ai_content_strategy_versions
+              SET status='PUBLISHED',published_at=STATEMENT_TIMESTAMP(),published_by=$2
+            WHERE account_id=$1 AND id=$3 AND strategy_key='default' AND version=$4 AND status='DRAFT'
+            RETURNING id`,
+          [input.accountId, input.actorId, strategyVersionId, nextVersion]);
+        if (publishedResult.rowCount !== 1) throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        const advanced = await query(client,
+          `UPDATE auto_listing_category_strategy_drafts
+              SET status='PUBLISHED',draft_version=draft_version+1,
+                  updated_at=STATEMENT_TIMESTAMP(),ended_at=STATEMENT_TIMESTAMP()
+            WHERE account_id=$1 AND id=$2 AND draft_version=$3 AND status='DRAFT_READY'
+            RETURNING draft_version`,
+          [input.accountId, input.draftId, input.expectedDraftVersion]);
+        if (advanced.rowCount !== 1) throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        await query(client,
+          `INSERT INTO auto_listing_category_strategy_events
+             (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,
+              analysis_result_id,published_strategy_version_id,event_payload,idempotency_key,
+              correlation_id,request_hash,actor_account_id)
+           VALUES ($1,$2,$3,$4,$5,$6,'PUBLISHED',$7,$8,$9::JSONB,$10,$11,$12,$2)`,
+          [deterministicId("category_strategy_publish_event", input.accountId, input.idempotencyKey),
+            input.accountId, input.draftId, draft.taxonomy_scope, draft.description_category_id,
+            draft.type_id, analysis.rows[0].id, strategyVersionId,
+            JSON.stringify({ previousStrategyVersionId: current.id, version: nextVersion }),
+            input.idempotencyKey, input.correlationId, commandHash]);
+        await insertAudit(client, {
+          ...input, ...audit, action, entityType: "ai_content_strategy_version", entityId: strategyVersionId,
+          metadata: { requestHash: commandHash, entityId: strategyVersionId,
+            previousStrategyVersionId: current.id, version: nextVersion, draftId: input.draftId },
+        });
+        const published = await loadStrategyBundle(client, {
+          accountId: input.accountId,
+          strategyVersionId,
+        });
+        delete published.storedRules;
+        return { ...published, idempotencyKey: input.idempotencyKey, duplicate: false };
+      });
+    },
+
+    async rollbackCategoryStrategyVersion(rawInput = {}) {
+      const input = categoryStrategyRollbackRequest(rawInput);
+      const action = CATEGORY_STRATEGY_ROLLBACK_ACTION;
+      const commandHash = hash({ action, ...input });
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        await requireCategoryStrategyCommandLedger(client, {
+          ...input, action, requestHash: commandHash,
+        });
+        const audit = await loadAudit(client, { ...input, action, requestHash: commandHash });
+        if (audit.metadata) {
+          const replay = await loadStrategyBundle(client, {
+            accountId: input.accountId,
+            strategyVersionId: audit.metadata.entityId,
+            lock: true,
+          });
+          if (!replay || !["PUBLISHED", "RETIRED"].includes(replay.status)) {
+            throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+          }
+          delete replay.storedRules;
+          return { ...replay, status: "PUBLISHED", idempotencyKey: input.idempotencyKey, duplicate: true };
+        }
+        await requireCategoryStrategyMutationEnabled(client, input.accountId);
+        const currentResult = await query(client,
+          `SELECT id FROM ai_content_strategy_versions
+            WHERE account_id=$1 AND strategy_key='default' AND status='PUBLISHED' FOR UPDATE`,
+          [input.accountId]);
+        if (currentResult.rows.length !== 1
+          || currentResult.rows[0].id !== input.expectedPublishedStrategyVersionId) {
+          throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        }
+        const current = await loadStrategyBundle(client, {
+          accountId: input.accountId,
+          strategyVersionId: input.expectedPublishedStrategyVersionId,
+          lock: true,
+        });
+        const target = await loadStrategyBundle(client, {
+          accountId: input.accountId,
+          strategyVersionId: input.targetStrategyVersionId,
+          lock: true,
+        });
+        if (!target || !["PUBLISHED", "RETIRED"].includes(target.status)) {
+          throw repositoryError("AUTO_LISTING_AI_STRATEGY_NOT_FOUND", 404);
+        }
+        if (!current || current.status !== "PUBLISHED") {
+          throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        }
+        const nextVersion = Number(current.version) + 1;
+        await requireStrategyVersionAvailable(client, {
+          accountId: input.accountId, strategyKey: "default", version: nextVersion,
+        });
+        const strategyVersionId = deterministicId("ai_strategy", input.accountId, "default", String(nextVersion));
+        const rules = target.storedRules.map(hydrateStoredStrategyRule);
+        const content = canonical({
+          schemaVersion: target.content?.schemaVersion === "V1" ? "V1" : "V2",
+          previousStrategyVersionId: current.id,
+          rollbackOfStrategyVersionId: target.id,
+        });
+        const contentHash = hash({ content, rules });
+        await query(client,
+          `INSERT INTO ai_content_strategy_versions
+             (id,account_id,strategy_key,version,status,content,content_hash,created_by)
+           VALUES ($1,$2,'default',$3,'DRAFT',$4::JSONB,$5,$2)`,
+          [strategyVersionId, input.accountId, nextVersion, JSON.stringify(content), contentHash]);
+        for (const row of target.storedRules) {
+          const logicalId = row.rule?.ruleId || row.id;
+          await query(client,
+            `INSERT INTO ai_content_strategy_rules
+               (id,account_id,strategy_version_id,rule_kind,rule_order,category_id,
+                ancestor_category_id,product_style,rule)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::JSONB)`,
+            [deterministicId("ai_rule", input.accountId, strategyVersionId, logicalId), input.accountId,
+              strategyVersionId, row.rule_kind, row.rule_order, row.category_id,
+              row.ancestor_category_id, row.product_style, JSON.stringify(row.rule)]);
+        }
+        const retired = await query(client,
+          `UPDATE ai_content_strategy_versions SET status='RETIRED'
+            WHERE account_id=$1 AND id=$2 AND strategy_key='default' AND status='PUBLISHED'
+            RETURNING id`,
+          [input.accountId, current.id]);
+        if (retired.rowCount !== 1) throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        const publishedResult = await query(client,
+          `UPDATE ai_content_strategy_versions
+              SET status='PUBLISHED',published_at=STATEMENT_TIMESTAMP(),published_by=$2
+            WHERE account_id=$1 AND id=$3 AND strategy_key='default' AND version=$4 AND status='DRAFT'
+            RETURNING id`,
+          [input.accountId, input.actorId, strategyVersionId, nextVersion]);
+        if (publishedResult.rowCount !== 1) throw repositoryError("AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", 409);
+        await insertAudit(client, {
+          ...input, ...audit, action, entityType: "ai_content_strategy_version", entityId: strategyVersionId,
+          metadata: { requestHash: commandHash, entityId: strategyVersionId,
+            previousStrategyVersionId: current.id, rollbackOfStrategyVersionId: target.id, version: nextVersion },
+        });
+        const rolledBack = await loadStrategyBundle(client, {
+          accountId: input.accountId,
+          strategyVersionId,
+        });
+        delete rolledBack.storedRules;
+        return { ...rolledBack, idempotencyKey: input.idempotencyKey, duplicate: false };
+      });
     },
 
     async publishStrategyVersion(rawInput = {}) {

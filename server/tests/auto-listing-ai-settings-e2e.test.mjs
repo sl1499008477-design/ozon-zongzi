@@ -515,7 +515,10 @@ function createControlledPersistence() {
 }
 
 function listingBaseTemplate(sourceRecordId) {
-  const price = { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" };
+  const price = {
+    currency: "RUB", currencySource: "SOURCE",
+    blackKopecks: "10000", greenKopecks: "8000",
+  };
   const image = "https://source.example.test/product.jpg";
   return {
     productDraft: { id: `draft-${sourceRecordId}`, version: 1, dataHash: "1".repeat(64) },
@@ -546,11 +549,26 @@ function jobGraph(idempotencyKey) {
     priceAdjustmentKopecks: "0",
   });
   const sourceRecordId = `collect-${idempotencyKey}`;
+  const categoryEvidence = {
+    id: `category-evidence-${idempotencyKey}`, accountId: ADMIN.id,
+    sourceDescriptionCategoryId: 123, sourceTypeId: 456,
+    taxonomyScope: "OZON:DEFAULT",
+  };
   const captured = buildAutoListingSourceSnapshot({
     accountId: ADMIN.id,
     sourceType: "COLLECT_BOX",
     sourceRecordId,
     sourceVersion: "1",
+    targetStoreId: "store-e2e",
+    targetStoreCurrency: "RUB",
+    categoryEvidence,
+    sharedCategory: {
+      id: `shared-category-${idempotencyKey}`, accountId: ADMIN.id, version: 1,
+      evidenceId: categoryEvidence.id, status: "ACTIVE", source: "SOURCE_DIRECT",
+      sourceDescriptionCategoryId: 123, sourceTypeId: 456,
+      currentDescriptionCategoryId: 123, currentTypeId: 456,
+      taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null,
+    },
     rawResponseRef: `raw-${idempotencyKey}`,
     rawResponseHash: hash(`raw-${idempotencyKey}`),
     productDraft: { id: `draft-${sourceRecordId}`, version: 1 },
@@ -565,6 +583,9 @@ function jobGraph(idempotencyKey) {
         currency: "RUB",
         blackKopecks: "10000",
         greenKopecks: "8000",
+        productMeasurements: {
+          reliable: true, length: 28, unit: "cm", source: "manufacturer",
+        },
         images: [],
         variants: [{ sku: "sku-lock-1", offerId: "offer-lock-1" }],
         categoryResolution: {
@@ -578,6 +599,7 @@ function jobGraph(idempotencyKey) {
   return {
     accountId: ADMIN.id,
     actorAccountId: ADMIN.id,
+    categoryPreparationLeaseId: `category-lease-${idempotencyKey}`,
     sourceType: "COLLECT_BOX",
     idempotencyKey,
     correlationId: `corr-${idempotencyKey}`,
@@ -596,6 +618,7 @@ function jobGraph(idempotencyKey) {
       targetWarehouseId: config.targetWarehouseId,
       sourceOrder: 0,
       status: "SOURCE_READY",
+      planningContract: "LEGACY_FULL_PLAN_V3",
       strategyId: "strategy-e2e",
       strategyVersionId: "strategy-version-e2e",
       ruleId: null,
@@ -627,9 +650,21 @@ function createJobPersistence(settingsState) {
         return { rows: row ? [{ id: row.id }] : [] };
       }
       if (/FROM accounts WHERE id=\$1 FOR UPDATE/iu.test(sql)) return { rows: [{ id: ADMIN.id }] };
+      if (/auto-listing-category-graph-lock-keys/u.test(sql)) {
+        return { rows: params[1].map((sharedCategoryId, index) => ({
+          shared_category_id: sharedCategoryId,
+          lock_key: String(index + 1),
+        })) };
+      }
+      if (/pg_try_advisory_xact_lock_shared/iu.test(sql)) return { rows: [{ locked: true }] };
+      if (/auto-listing-category-graph-lease-active/u.test(sql)) {
+        return { rows: [{ id: params[1] }] };
+      }
+      if (/auto-listing-shared-category-fence/u.test(sql)) return { rows: [{ id: params[3] }] };
       if (/FROM stores s/iu.test(sql) && /owner_account_id/iu.test(sql)) return { rows: [{
         id: "store-e2e", owner_account_id: ADMIN.id, label: "Store", company_name: "Store",
-        client_id: "client-e2e", currency_code: "RUB", status: "active",
+        client_id: "client-e2e", currency_code: "RUB", currency_source: "OZON_SELLER_INFO",
+        currency_synced_at: "2026-08-08T08:00:00.000Z", status: "active",
       }] };
       if (/FROM store_credentials/iu.test(sql)) return { rows: [{ store_id: "store-e2e" }] };
       if (/FROM warehouses w/iu.test(sql)) return { rows: [{

@@ -1,6 +1,6 @@
 {
   "name": "sonli-ozon-local-clone",
-  "version": "0.13.46.2-local",
+  "version": "0.13.46.3-local",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,6 +19,8 @@
     "test:pipeline": "node server/tests/listing-pipeline-v3.integration.mjs",
     "test:collection-pipeline": "node server/tests/collection-pipeline-v4.integration.mjs",
     "test:account-shared-category-recovery-e2e": "node --test --test-concurrency=1 server/tests/account-shared-category-recovery-e2e.test.mjs",
+    "test:auto-listing-configurable-skeleton-e2e": "node --test --test-concurrency=1 server/tests/auto-listing-configurable-skeleton-e2e.test.mjs",
+    "test:auto-listing-category-strategy-e2e": "node --test --test-concurrency=1 server/tests/auto-listing-category-strategy-e2e.test.mjs",
     "db:migrate": "node server/db/migrate.mjs",
     "app": "pnpm --dir app dev",
     "build": "pnpm --dir app build",

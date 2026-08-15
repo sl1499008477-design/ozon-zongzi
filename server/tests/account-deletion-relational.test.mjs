@@ -26,6 +26,22 @@ function statefulRelationalClient() {
       { id: "event-target", account_id: "account-target", shared_category_id: "shared-target" },
       { id: "event-other", account_id: "account-other", shared_category_id: "shared-other" },
     ],
+    account_ozon_category_confirmation_audit: [
+      { id: "confirmation-target", account_id: "account-target" },
+      { id: "confirmation-other", account_id: "account-other" },
+    ],
+    collect_ozon_category_lookup_evidence: [
+      { id: "lookup-target", account_id: "account-target" },
+      { id: "lookup-other", account_id: "account-other" },
+    ],
+    collect_ozon_category_current_sources: [
+      { id: "current-target", account_id: "account-target" },
+      { id: "current-other", account_id: "account-other" },
+    ],
+    collect_ozon_category_manual_confirmation_evidence: [
+      { id: "manual-target", account_id: "account-target" },
+      { id: "manual-other", account_id: "account-other" },
+    ],
     collector_auth_tickets: [
       { id: "ticket-target", account_id: "account-target" },
       { id: "ticket-other", account_id: "account-other" },
@@ -56,6 +72,14 @@ function statefulRelationalClient() {
               rows.account_ozon_shared_categories.filter((record) => record.account_id === params[0]).length,
             deleted_collect_ozon_category_source_evidence_count:
               rows.collect_ozon_category_source_evidence.filter((record) => record.account_id === params[0]).length,
+            deleted_account_ozon_category_confirmation_count:
+              rows.account_ozon_category_confirmation_audit.filter((record) => record.account_id === params[0]).length,
+            deleted_collect_ozon_category_lookup_evidence_count:
+              rows.collect_ozon_category_lookup_evidence.filter((record) => record.account_id === params[0]).length,
+            deleted_collect_ozon_category_current_source_count:
+              rows.collect_ozon_category_current_sources.filter((record) => record.account_id === params[0]).length,
+            deleted_collect_ozon_manual_confirmation_evidence_count:
+              rows.collect_ozon_category_manual_confirmation_evidence.filter((record) => record.account_id === params[0]).length,
           }],
           rowCount: 1,
         };
@@ -74,6 +98,10 @@ function statefulRelationalClient() {
           "account_ozon_shared_category_events",
           "account_ozon_shared_categories",
           "collect_ozon_category_source_evidence",
+          "account_ozon_category_confirmation_audit",
+          "collect_ozon_category_lookup_evidence",
+          "collect_ozon_category_current_sources",
+          "collect_ozon_category_manual_confirmation_evidence",
         ]) {
           rows[table] = rows[table].filter((record) => record.account_id !== params[0]);
         }
@@ -97,6 +125,10 @@ function deletionState() {
         deletedAccountOzonSharedCategoryEventCount: 5,
         deletedAccountOzonSharedCategoryCount: 4,
         deletedCollectOzonCategorySourceEvidenceCount: 3,
+        deletedAccountOzonCategoryConfirmationCount: 9,
+        deletedCollectOzonCategoryLookupEvidenceCount: 9,
+        deletedCollectOzonCategoryCurrentSourceCount: 9,
+        deletedCollectOzonCategoryManualConfirmationEvidenceCount: 9,
       },
     }],
   };
@@ -162,6 +194,10 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
     deletedAccountOzonSharedCategoryEventCount: 1,
     deletedAccountOzonSharedCategoryCount: 1,
     deletedCollectOzonCategorySourceEvidenceCount: 1,
+    deletedAccountOzonCategoryConfirmationCount: 1,
+    deletedCollectOzonCategoryLookupEvidenceCount: 1,
+    deletedCollectOzonCategoryCurrentSourceCount: 1,
+    deletedCollectOzonCategoryManualConfirmationEvidenceCount: 1,
   });
   assert.deepEqual(client.rows.accounts, [{ id: "account-other" }]);
   assert.deepEqual(client.rows.collector_ozon_enrichment_cache, [
@@ -178,6 +214,18 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
   ]);
   assert.deepEqual(client.rows.account_ozon_shared_category_events, [
     { id: "event-other", account_id: "account-other", shared_category_id: "shared-other" },
+  ]);
+  assert.deepEqual(client.rows.account_ozon_category_confirmation_audit, [
+    { id: "confirmation-other", account_id: "account-other" },
+  ]);
+  assert.deepEqual(client.rows.collect_ozon_category_lookup_evidence, [
+    { id: "lookup-other", account_id: "account-other" },
+  ]);
+  assert.deepEqual(client.rows.collect_ozon_category_current_sources, [
+    { id: "current-other", account_id: "account-other" },
+  ]);
+  assert.deepEqual(client.rows.collect_ozon_category_manual_confirmation_evidence, [
+    { id: "manual-other", account_id: "account-other" },
   ]);
   assert.deepEqual(client.rows.collector_auth_tickets, [
     { id: "ticket-other", account_id: "account-other" },
@@ -201,6 +249,10 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
     deletedAccountOzonSharedCategoryEventCount: 1,
     deletedAccountOzonSharedCategoryCount: 1,
     deletedCollectOzonCategorySourceEvidenceCount: 1,
+    deletedAccountOzonCategoryConfirmationCount: 1,
+    deletedCollectOzonCategoryLookupEvidenceCount: 1,
+    deletedCollectOzonCategoryCurrentSourceCount: 1,
+    deletedCollectOzonCategoryManualConfirmationEvidenceCount: 1,
   });
 });
 

@@ -71,6 +71,15 @@ function scopedFixture() {
       collectItemId: "collect-other",
       taxonomyScope: "OZON:DEFAULT",
     }],
+    collectOzonCategoryManualConfirmationEvidence: [{
+      id: "manual-confirmation-target",
+      accountId: "account-target",
+      collectItemId: "collect-target",
+    }, {
+      id: "manual-confirmation-other",
+      accountId: "account-other",
+      collectItemId: "collect-other",
+    }],
     accounts: [
       { id: "account-target", role: "user" },
       { id: "account-other", role: "admin" },
@@ -136,6 +145,7 @@ test("removeAccountScope removes only the deleted account business scope and kee
   assert.equal(result.deletedCollectorOzonEnrichmentCacheCount, 1);
   assert.equal(result.deletedCollectorOzonEnrichmentJobCount, 1);
   assert.equal(result.deletedAccountSharedCategoryRecordCounts.collectOzonCategorySourceEvidence, 1);
+  assert.equal(result.deletedAccountSharedCategoryRecordCounts.collectOzonCategoryManualConfirmationEvidence, 1);
   assert.deepEqual(state.accounts.map((item) => item.id), ["account-other"]);
   assert.deepEqual(state.stores.map((item) => item.id), ["store-other"]);
   assert.deepEqual(Object.keys(state.sessions), ["other-token"]);
@@ -152,6 +162,10 @@ test("removeAccountScope removes only the deleted account business scope and kee
   assert.deepEqual(
     state.collectOzonCategorySourceEvidence.map((item) => item.id),
     ["resolution-other"],
+  );
+  assert.deepEqual(
+    state.collectOzonCategoryManualConfirmationEvidence.map((item) => item.id),
+    ["manual-confirmation-other"],
   );
   assert.deepEqual(state.caches.products.map((item) => item.id), ["product-other"]);
   assert.deepEqual(state.caches.postings, []);

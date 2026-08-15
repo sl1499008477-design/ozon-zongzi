@@ -17,6 +17,7 @@ const requiredRuntimeFiles = [
   "content/seller-company-context-hook.js",
   "lib/collector-auth-flow.js",
   "lib/collector-session.js",
+  "lib/category-strategy-sampling.js",
   "lib/ozon-collect-coordinator.js",
   "lib/ozon-enrichment-contract.js",
   "lib/seller-company-context.js",

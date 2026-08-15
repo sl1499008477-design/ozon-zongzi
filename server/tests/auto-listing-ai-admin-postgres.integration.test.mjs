@@ -6,13 +6,17 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createAutoListingAiAdminPostgres } from "../auto-listing-ai-admin-postgres.mjs";
+import { createAutoListingAiAdminService } from "../auto-listing-ai-admin-service.mjs";
+import { createAutoListingCategoryStrategyPostgres } from "../auto-listing-category-strategy-postgres.mjs";
+import { createAutoListingCategoryStrategyService } from "../auto-listing-category-strategy-service.mjs";
 import { createAiGatewayProfileService } from "../ai-gateway-profile-service.mjs";
 import { createAutoListingAiCapabilityCredentialResolver } from "../auto-listing-ai-credential-resolver.mjs";
 import { createAutoListingAiSettingsPostgres } from "../auto-listing-ai-settings-postgres.mjs";
 import { createSub2ApiAdapter } from "../sub2api-ai-adapter.mjs";
 
-const connectionString = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
-const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(connectionString);
+const connectionString = process.env.TEST_DATABASE_URL || process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
+const enabled = (process.env.AUTO_LISTING_POSTGRES_TESTS === "1"
+  || process.env.AUTO_LISTING_CATEGORY_STRATEGY_POSTGRES_TESTS === "1") && Boolean(connectionString);
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
 const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const requestKeyFor = (attemptId) => crypto.createHash("sha256")
@@ -38,6 +42,136 @@ const strategyRules = (ruleId) => [{
   textDensityByRole: { MAIN: "NONE", SELLING_POINT: "LIGHT" },
 }];
 
+const categoryGuidance = (label) => ({
+  overallStyle: `${label} overall`,
+  prohibitedPatterns: [`${label} prohibited`],
+  roles: Object.fromEntries([
+    "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+  ].map((role) => [role, {
+    composition: `${label} ${role} composition`,
+    background: `${label} ${role} background`,
+    textDensity: role === "MAIN" ? "NONE" : "LIGHT",
+    layout: `${label} ${role} layout`,
+  }])),
+});
+
+async function seedPublishableCategoryDraft(client, { accountId, suffix, descriptionCategoryId, typeId }) {
+  const collectItemId = `category-source-${suffix}`;
+  const productDraftId = `category-product-draft-${suffix}`;
+  const rawId = `category-raw-${suffix}`;
+  const evidenceId = `category-evidence-${suffix}`;
+  const draftId = `category-strategy-draft-${suffix}`;
+  const sessionId = `category-session-${suffix}`;
+  const sampleSetId = `category-sample-set-${suffix}`;
+  const attemptId = `category-attempt-${suffix}`;
+  const resultId = `category-result-${suffix}`;
+  const sampleSetHash = crypto.createHash("sha256").update(`sample-set-${suffix}`).digest("hex");
+  const h = (value) => crypto.createHash("sha256").update(value).digest("hex");
+  await client.query(
+    "INSERT INTO collect_items (id,account_id,status,source_sku,source_url) VALUES ($1,$2,'COLLECTED',$3,$4)",
+    [collectItemId, accountId, `category-sku-${suffix}`, `https://www.ozon.ru/product/${suffix}`],
+  );
+  await client.query(
+    `INSERT INTO collect_raw_payloads
+       (id,collect_item_id,account_id,source_sku,source_url,payload_hash,collector_version,payload,collected_at)
+     VALUES ($1,$2,$3,$4,$5,$6,'test','{}'::JSONB,NOW())`,
+    [rawId, collectItemId, accountId, `category-sku-${suffix}`,
+      `https://www.ozon.ru/product/${suffix}`, h(rawId)],
+  );
+  await client.query(
+    "INSERT INTO product_drafts (id,collect_item_id,version,data_hash,data) VALUES ($1,$2,7,$3,'{}'::JSONB)",
+    [productDraftId, collectItemId, h(productDraftId)],
+  );
+  await client.query("UPDATE collect_items SET current_draft_id=$2 WHERE account_id=$1 AND id=$3", [
+    accountId, productDraftId, collectItemId,
+  ]);
+  await client.query(
+    `INSERT INTO collect_ozon_category_source_evidence
+       (id,account_id,source_kind,source_record_id,source_version,collect_item_id,product_draft_id,
+        source_description_category_id,source_type_id,taxonomy_scope,captured_at,raw_response_hash,
+        raw_response_ref,product_raw_response_ref,provenance)
+     VALUES ($1,$2,'PRODUCT_DRAFT',$3,'7',$4,$3,$5,$6,'OZON:DEFAULT',NOW(),$7,$8,$8,'{}'::JSONB)`,
+    [evidenceId, accountId, productDraftId, collectItemId, descriptionCategoryId, typeId, h(rawId), rawId],
+  );
+  await client.query(
+    `INSERT INTO collect_ozon_category_current_sources
+       (account_id,collect_item_id,source_evidence_id,source_kind,source_record_id,source_version)
+     VALUES ($1,$2,$3,'PRODUCT_DRAFT',$4,'7')`,
+    [accountId, collectItemId, evidenceId, productDraftId],
+  );
+  await client.query(
+    `INSERT INTO account_ozon_shared_categories
+       (id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
+        current_description_category_id,current_type_id,status,source,version,source_evidence_id,validated_at)
+     VALUES ($1,$2,$3,$4,'OZON:DEFAULT',$3,$4,'ACTIVE','SOURCE_DIRECT',1,$5,NOW())`,
+    [`category-shared-${suffix}`, accountId, descriptionCategoryId, typeId, evidenceId],
+  );
+  await client.query(
+    `INSERT INTO auto_listing_category_strategy_drafts
+       (id,account_id,taxonomy_scope,description_category_id,type_id,draft_version,status,
+        source_collect_item_id,source_product_draft_id,source_product_draft_version,expected_source_version,
+        idempotency_key,correlation_id,request_hash,actor_account_id)
+     VALUES ($1,$2,'OZON:DEFAULT',$3,$4,4,'DRAFT_READY',$5,$6,7,'draft:7',$7,$8,$9,$2)`,
+    [draftId, accountId, descriptionCategoryId, typeId, collectItemId, productDraftId,
+      `seed-draft-${suffix}`, `seed-draft-corr-${suffix}`, h(`seed-draft-${suffix}`)],
+  );
+  await client.query(
+    `INSERT INTO auto_listing_category_strategy_sampling_sessions
+       (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,session_secret_hash,
+        idempotency_key,correlation_id,request_hash,actor_account_id)
+     VALUES ($1,$2,$3,'OZON:DEFAULT',$4,$5,$6,$7,$8,$9,$2)`,
+    [sessionId, accountId, draftId, descriptionCategoryId, typeId, h(`secret-${suffix}`),
+      `seed-session-${suffix}`, `seed-session-corr-${suffix}`, h(`seed-session-${suffix}`)],
+  );
+  await client.query(
+    "ALTER TABLE auto_listing_category_strategy_sample_sets DISABLE TRIGGER auto_listing_category_strategy_sample_set_integrity",
+  );
+  await client.query(
+    `INSERT INTO auto_listing_category_strategy_sample_sets
+       (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,session_id,status,
+        sample_set_hash,sample_count,sealed_at,idempotency_key,correlation_id,request_hash,actor_account_id)
+     VALUES ($1,$2,$3,'OZON:DEFAULT',$4,$5,$6,'SEALED',$7,5,NOW(),$8,$9,$10,$2)`,
+    [sampleSetId, accountId, draftId, descriptionCategoryId, typeId, sessionId, sampleSetHash,
+      `seed-set-${suffix}`, `seed-set-corr-${suffix}`, h(`seed-set-${suffix}`)],
+  );
+  await client.query(
+    "ALTER TABLE auto_listing_category_strategy_sample_sets ENABLE TRIGGER auto_listing_category_strategy_sample_set_integrity",
+  );
+  await client.query(
+    `INSERT INTO auto_listing_category_strategy_analysis_attempts
+       (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,sample_set_id,sample_set_hash,
+        analysis_input_hash,model_config_snapshot,model_config_hash,cost_confirmed,
+        idempotency_key,correlation_id,request_hash,actor_account_id)
+     VALUES ($1,$2,$3,'OZON:DEFAULT',$4,$5,$6,$7,$8,'{"model":"test"}'::JSONB,$9,TRUE,$10,$11,$12,$2)`,
+    [attemptId, accountId, draftId, descriptionCategoryId, typeId, sampleSetId, sampleSetHash,
+      h(`analysis-input-${suffix}`), h(`model-${suffix}`), `seed-attempt-${suffix}`,
+      `seed-attempt-corr-${suffix}`, h(`seed-attempt-${suffix}`)],
+  );
+  const guidance = categoryGuidance(suffix);
+  await client.query(
+    `INSERT INTO auto_listing_category_strategy_analysis_results
+       (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+        sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+        idempotency_key,correlation_id,request_hash,actor_account_id)
+     VALUES ($1,$2,$3,'OZON:DEFAULT',$4,$5,$6,$7,$8,$9,'{"outcome":"accepted"}'::JSONB,$10,
+       $11::JSONB,$12,$13,$14,$15,$2)`,
+    [resultId, accountId, draftId, descriptionCategoryId, typeId, attemptId, sampleSetId, sampleSetHash,
+      h(`analysis-input-${suffix}`), h(`raw-${suffix}`), JSON.stringify(guidance), h(JSON.stringify(guidance)),
+      `seed-result-${suffix}`, `seed-result-corr-${suffix}`, h(`seed-result-${suffix}`)],
+  );
+  await client.query(
+    `INSERT INTO auto_listing_category_strategy_events
+       (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,event_payload,
+        idempotency_key,correlation_id,request_hash,actor_account_id)
+     VALUES ($1,$2,$3,'OZON:DEFAULT',$4,$5,'DRAFT_EVENT',$6::JSONB,$7,$8,$9,$2)`,
+    [`seed-result-event-${suffix}`, accountId, draftId, descriptionCategoryId, typeId,
+      JSON.stringify({ event: "ANALYSIS_RESULT_RECORDED", draftVersion: 4, status: "DRAFT_READY",
+        attemptId, resultId }), `seed-result-event-key-${suffix}`, `seed-result-event-corr-${suffix}`,
+      h(`seed-result-event-${suffix}`)],
+  );
+  return { draftId, sampleSetHash, attemptId, resultId, guidance };
+}
+
 async function rawRejectsCode(operation, expectedCode) {
   try {
     await operation();
@@ -49,7 +183,7 @@ async function rawRejectsCode(operation, expectedCode) {
 
 if (!enabled) {
   test("AI admin PostgreSQL integration requires explicit opt-in and a dedicated disposable database", {
-    skip: "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
+    skip: "requires PostgreSQL opt-in and a dedicated disposable database URL",
   }, () => {});
 } else {
   test("AI admin repository serializes publication, preserves immutable history, and enforces account boundaries", { timeout: 60_000 }, async () => {
@@ -1838,6 +1972,565 @@ if (!enabled) {
         admin.release();
         await adminPool.end();
       }
+    }
+  });
+
+  test("category publication replaces one exact scope while preserving the immutable account bundle", {
+    timeout: 90_000,
+  }, async () => {
+    const { Pool } = await import("pg");
+    const adminPool = new Pool({ connectionString, max: 1 });
+    const admin = await adminPool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schema = `category_publish_${suffix}`;
+    const schemaSql = quote(schema);
+    const accountA = `account-a-${suffix}`;
+    const accountB = `account-b-${suffix}`;
+    let pool;
+    try {
+      await admin.query(`CREATE SCHEMA ${schemaSql}`);
+      await admin.query(`SET search_path TO ${schemaSql}, public`);
+      const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
+      for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      for (const accountId of [accountA, accountB]) {
+        await admin.query(
+          "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
+          [accountId, `user-${accountId}`],
+        );
+      }
+      const draft = await seedPublishableCategoryDraft(admin, {
+        accountId: accountA, suffix, descriptionCategoryId: 170, typeId: 99,
+      });
+      const manualResultId = `zz-manual-result-${suffix}`;
+      const manualGuidance = { ...draft.guidance, overallStyle: "manually reviewed category style" };
+      await admin.query(
+        `INSERT INTO auto_listing_category_strategy_analysis_results
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+            sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+            source_kind,edited_by,edited_at,base_analysis_attempt_id,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         SELECT $1,account_id,draft_id,taxonomy_scope,description_category_id,type_id,id,sample_set_id,
+           sample_set_hash,analysis_input_hash,jsonb_build_object('sourceKind','MANUAL','baseAnalysisAttemptId',id),
+           $2,$3::JSONB,$4,'MANUAL',account_id,NOW(),id,$5,$6,$7,account_id
+           FROM auto_listing_category_strategy_analysis_attempts WHERE account_id=$8 AND id=$9`,
+        [manualResultId, crypto.createHash("sha256").update(`manual-raw-${suffix}`).digest("hex"),
+          JSON.stringify(manualGuidance), crypto.createHash("sha256")
+            .update(JSON.stringify(manualGuidance)).digest("hex"), `manual-result-key-${suffix}`,
+          `manual-result-correlation-${suffix}`, crypto.createHash("sha256")
+            .update(`manual-result-request-${suffix}`).digest("hex"),
+          accountA, draft.attemptId],
+      );
+      await admin.query(
+        `UPDATE auto_listing_category_strategy_drafts
+            SET draft_version=5,status='DRAFT_READY',updated_at=NOW()
+          WHERE account_id=$1 AND id=$2 AND draft_version=4`,
+        [accountA, draft.draftId],
+      );
+      await admin.query(
+        `INSERT INTO auto_listing_category_strategy_events
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,event_payload,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         VALUES ($1,$2,$3,'OZON:DEFAULT',170,99,'DRAFT_EVENT',$4::JSONB,$5,$6,$7,$2)`,
+        [`manual-result-event-${suffix}`, accountA, draft.draftId,
+          JSON.stringify({ event: "ANALYSIS_MANUAL_EDITED", draftVersion: 5, status: "DRAFT_READY",
+            attemptId: draft.attemptId, resultId: manualResultId }), `manual-result-event-key-${suffix}`,
+          `manual-result-event-correlation-${suffix}`, crypto.createHash("sha256")
+            .update(`manual-result-event-${suffix}`).digest("hex")],
+      );
+      const unselectedGuidance = { ...manualGuidance, overallStyle: "unselected later row" };
+      await admin.query(
+        `INSERT INTO auto_listing_category_strategy_analysis_results
+           (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
+            sample_set_hash,analysis_input_hash,raw_response,raw_response_hash,guidance,guidance_hash,
+            source_kind,edited_by,edited_at,base_analysis_attempt_id,
+            idempotency_key,correlation_id,request_hash,actor_account_id)
+         SELECT $1,account_id,draft_id,taxonomy_scope,description_category_id,type_id,id,sample_set_id,
+           sample_set_hash,analysis_input_hash,jsonb_build_object('sourceKind','MANUAL','baseAnalysisAttemptId',id),
+           $2,$3::JSONB,$4,'MANUAL',account_id,NOW()+INTERVAL '1 second',id,$5,$6,$7,account_id
+           FROM auto_listing_category_strategy_analysis_attempts WHERE account_id=$8 AND id=$9`,
+        [`zzz-unselected-result-${suffix}`, crypto.createHash("sha256").update(`unselected-raw-${suffix}`).digest("hex"),
+          JSON.stringify(unselectedGuidance), crypto.createHash("sha256")
+            .update(JSON.stringify(unselectedGuidance)).digest("hex"), `unselected-result-key-${suffix}`,
+          `unselected-result-correlation-${suffix}`, crypto.createHash("sha256")
+            .update(`unselected-result-request-${suffix}`).digest("hex"), accountA, draft.attemptId],
+      );
+      const reverseDraft = await seedPublishableCategoryDraft(admin, {
+        accountId: accountA, suffix: `reverse-${suffix}`, descriptionCategoryId: 172, typeId: 101,
+      });
+      const currentId = `current-account-strategy-${suffix}`;
+      const currentContent = { schemaVersion: "V2" };
+      await admin.query(
+        `INSERT INTO ai_content_strategy_versions
+           (id,account_id,strategy_key,version,status,content,content_hash,published_at,published_by,created_by)
+         VALUES ($1,$2,'default',7,'DRAFT',$3::JSONB,$4,NULL,NULL,$2)`,
+        [currentId, accountA, JSON.stringify(currentContent), crypto.createHash("sha256").update("current").digest("hex")],
+      );
+      const oldARule = {
+        ruleId: `old-a-${suffix}`, matchType: "EXACT_CATEGORY_TYPE_V2",
+        scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 },
+        overallStyle: "old A", prohibitedPatterns: [], roleGuidance: categoryGuidance("old-a").roles,
+        sampleSetHash: "a".repeat(64), analysisAttemptId: `old-attempt-a-${suffix}`,
+        analysisResultId: `old-result-a-${suffix}`,
+      };
+      const bRule = {
+        ruleId: `rule-b-${suffix}`, matchType: "EXACT_CATEGORY_TYPE_V2",
+        scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 171, typeId: 100 },
+        overallStyle: "B remains", prohibitedPatterns: [], roleGuidance: categoryGuidance("b").roles,
+        sampleSetHash: "b".repeat(64), analysisAttemptId: `attempt-b-${suffix}`,
+        analysisResultId: `result-b-${suffix}`,
+      };
+      for (const [index, rule] of [oldARule, bRule].entries()) {
+        await admin.query(
+          `INSERT INTO ai_content_strategy_rules
+             (id,account_id,strategy_version_id,rule_kind,rule_order,category_id,rule)
+           VALUES ($1,$2,$3,'EXACT_CATEGORY',$4,$5,$6::JSONB)`,
+          [`db-rule-${index}-${suffix}`, accountA, currentId, index + 1,
+            String(rule.scope.descriptionCategoryId), JSON.stringify(rule)],
+        );
+      }
+      const legacyRule = {
+        ruleId: `legacy-rule-${suffix}`, ruleOrder: 3, matchType: "PRODUCT_STYLE",
+        productStyle: "GENERAL", style: "BALANCED_DEFAULT",
+        textDensityByRole: { MAIN: "NONE", SELLING_POINT: "LIGHT" },
+      };
+      await admin.query(
+        `INSERT INTO ai_content_strategy_rules
+           (id,account_id,strategy_version_id,rule_kind,rule_order,product_style,rule)
+         VALUES ($1,$2,$3,'PRODUCT_STYLE',3,'GENERAL',$4::JSONB)`,
+        [`db-legacy-rule-${suffix}`, accountA, currentId, JSON.stringify({
+          ruleId: legacyRule.ruleId, style: legacyRule.style,
+          textDensityByRole: legacyRule.textDensityByRole,
+        })],
+      );
+      await admin.query(
+        `UPDATE ai_content_strategy_versions
+            SET status='PUBLISHED',published_at=NOW(),published_by=$2
+          WHERE account_id=$2 AND id=$1`,
+        [currentId, accountA],
+      );
+      pool = new Pool({ connectionString, max: 8, options: `-c search_path=${schema},public` });
+      const repository = createAutoListingAiAdminPostgres({ pool });
+      const base = {
+        accountId: accountA, actorId: accountA, draftId: draft.draftId, expectedDraftVersion: 5,
+        expectedPublishedStrategyVersionId: currentId,
+      };
+      const categoryLedgerKeys = [
+        ["create", "DRAFT_CREATED"],
+        ["session", "SAMPLING_SESSION_STARTED"],
+        ["commit", "SAMPLE_SET_COMMITTED"],
+      ].map(([label, event]) => ({
+        label, event, idempotencyKey: `category-ledger-${label}-${suffix}`,
+      }));
+      for (const command of categoryLedgerKeys) {
+        await pool.query(
+          `INSERT INTO auto_listing_category_strategy_events
+             (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,event_payload,
+              idempotency_key,correlation_id,request_hash,actor_account_id)
+           VALUES ($1,$2,$3,'OZON:DEFAULT',170,99,'DRAFT_EVENT',$4::JSONB,$5,$6,$7,$2)`,
+          [`category-ledger-${command.label}-event-${suffix}`, accountA, draft.draftId,
+            JSON.stringify({ event: command.event }), command.idempotencyKey,
+            `category-ledger-${command.label}-corr-${suffix}`, crypto.createHash("sha256")
+              .update(`category-ledger-${command.label}`).digest("hex")],
+        );
+      }
+      const policyLedgerKey = `category-ledger-policy-${suffix}`;
+      await pool.query(
+        `UPDATE auto_listing_category_strategy_account_settings
+            SET mode='REQUIRE_EXACT_STRATEGY',version=version+1,idempotency_key=$2,
+                correlation_id=$3,request_hash=$4,actor_account_id=$1
+          WHERE account_id=$1 AND version=1`,
+        [accountA, policyLedgerKey, `category-ledger-policy-corr-${suffix}`,
+          crypto.createHash("sha256").update("category-ledger-policy").digest("hex")],
+      );
+      categoryLedgerKeys.push({ label: "policy", idempotencyKey: policyLedgerKey });
+      const categoryLedgerState = async () => ({
+        versions: (await pool.query(
+          `SELECT id,version,status FROM ai_content_strategy_versions
+            WHERE account_id=$1 ORDER BY version,id`, [accountA],
+        )).rows,
+        drafts: (await pool.query(
+          `SELECT id,draft_version,status FROM auto_listing_category_strategy_drafts
+            WHERE account_id=$1 ORDER BY id`, [accountA],
+        )).rows,
+        audits: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM audit_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        events: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+      });
+      for (const command of categoryLedgerKeys) {
+        const beforeConflict = await categoryLedgerState();
+        await assert.rejects(repository.publishCategoryStrategyDraft({
+          ...base, idempotencyKey: command.idempotencyKey,
+          correlationId: `publish-with-${command.label}-key-${suffix}`,
+        }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+        await assert.rejects(repository.rollbackCategoryStrategyVersion({
+          accountId: accountA, actorId: accountA, targetStrategyVersionId: currentId,
+          expectedPublishedStrategyVersionId: currentId, idempotencyKey: command.idempotencyKey,
+          correlationId: `rollback-with-${command.label}-key-${suffix}`,
+        }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+        assert.deepEqual(await categoryLedgerState(), beforeConflict);
+      }
+      const before = await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_content_strategy_versions WHERE account_id=$1",
+        [accountA],
+      );
+      await pool.query(
+        `UPDATE account_ozon_shared_categories
+            SET status='NEEDS_REVIEW',safe_failure_code='TEST_REVALIDATION',version=version+1,updated_at=NOW()
+          WHERE account_id=$1 AND source_description_category_id=170 AND source_type_id=99`,
+        [accountA],
+      );
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        ...base, idempotencyKey: `stale-source-${suffix}`, correlationId: `stale-source-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", status: 409 });
+      await pool.query(
+        `UPDATE account_ozon_shared_categories
+            SET status='ACTIVE',safe_failure_code='',version=version+1,updated_at=NOW()
+          WHERE account_id=$1 AND source_description_category_id=170 AND source_type_id=99`,
+        [accountA],
+      );
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        ...base, expectedPublishedStrategyVersionId: `wrong-${suffix}`,
+        idempotencyKey: `wrong-current-${suffix}`, correlationId: `wrong-current-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", status: 409 });
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        ...base, accountId: accountB, actorId: accountB,
+        idempotencyKey: `wrong-account-${suffix}`, correlationId: `wrong-account-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", status: 409 });
+      assert.equal((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_content_strategy_versions WHERE account_id=$1",
+        [accountA],
+      )).rows[0].count, before.rows[0].count);
+
+      const publishCollisionId = `publish-collision-${suffix}`;
+      await pool.query(
+        `INSERT INTO ai_content_strategy_versions
+           (id,account_id,strategy_key,version,status,content,content_hash,created_by)
+         VALUES ($1,$2,'default',8,'DRAFT','{}'::JSONB,$3,$2)`,
+        [publishCollisionId, accountA, "c".repeat(64)],
+      );
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        ...base, idempotencyKey: `publish-collision-${suffix}`,
+        correlationId: `publish-collision-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", status: 409 });
+      assert.equal((await pool.query(
+        "SELECT status FROM ai_content_strategy_versions WHERE account_id=$1 AND id=$2",
+        [accountA, currentId],
+      )).rows[0].status, "PUBLISHED");
+      assert.equal((await pool.query(
+        "SELECT status FROM auto_listing_category_strategy_drafts WHERE account_id=$1 AND id=$2",
+        [accountA, draft.draftId],
+      )).rows[0].status, "DRAFT_READY");
+      await pool.query(
+        "DELETE FROM ai_content_strategy_versions WHERE account_id=$1 AND id=$2 AND status='DRAFT'",
+        [accountA, publishCollisionId],
+      );
+
+      const publications = ["one", "two"].map((label) => ({
+        ...base, idempotencyKey: `publish-category-${label}-${suffix}`,
+        correlationId: `publish-category-${label}-corr-${suffix}`,
+      }));
+      const outcomes = await Promise.allSettled(publications.map((input) => repository.publishCategoryStrategyDraft(input)));
+      assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
+      assert.equal(outcomes.filter((outcome) => outcome.status === "rejected"
+        && outcome.reason?.code === "AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT").length, 1);
+      const published = outcomes.find((outcome) => outcome.status === "fulfilled").value;
+      assert.equal(published.version, 8);
+      assert.equal(published.status, "PUBLISHED");
+      assert.equal(published.rules.length, 3);
+      assert.equal(published.rules.filter((rule) => rule.scope?.descriptionCategoryId === 170).length, 1);
+      assert.equal(published.rules.find((rule) => rule.scope?.descriptionCategoryId === 170).analysisResultId,
+        manualResultId);
+      assert.equal(published.rules.find((rule) => rule.scope?.descriptionCategoryId === 170).overallStyle,
+        manualGuidance.overallStyle);
+      assert.equal(published.rules.find((rule) => rule.scope?.descriptionCategoryId === 170).sampleSetHash,
+        draft.sampleSetHash);
+      assert.equal(published.rules.find((rule) => rule.scope?.descriptionCategoryId === 171).ruleId, bRule.ruleId);
+      assert.equal(published.rules.find((rule) => rule.matchType === "PRODUCT_STYLE").ruleId, legacyRule.ruleId);
+      const winningInput = publications.find((input) => input.idempotencyKey === published.idempotencyKey);
+      const replay = await repository.publishCategoryStrategyDraft(winningInput);
+      assert.equal(replay.id, published.id);
+      assert.equal(replay.duplicate, true);
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        ...winningInput, correlationId: `publish-category-changed-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+      const history = await repository.listStrategyVersions({ accountId: accountA, strategyKey: "default" });
+      assert.deepEqual(history.map((row) => row.status), ["RETIRED", "PUBLISHED"]);
+      assert.equal(history[0].rules.find((rule) => rule.scope?.descriptionCategoryId === 170).overallStyle, "old A");
+      assert.deepEqual(await repository.listStrategyVersions({ accountId: accountB, strategyKey: "default" }), []);
+      const immutable = await rawRejectsCode(() => pool.query(
+        "UPDATE ai_content_strategy_rules SET rule='{}'::JSONB WHERE account_id=$1 AND strategy_version_id=$2",
+        [accountA, published.id],
+      ), "23514");
+      assert.equal(immutable, true);
+      const rollbackInput = {
+        accountId: accountA,
+        actorId: accountA,
+        targetStrategyVersionId: currentId,
+        expectedPublishedStrategyVersionId: published.id,
+        idempotencyKey: `rollback-category-${suffix}`,
+        correlationId: `rollback-category-corr-${suffix}`,
+      };
+      const beforePublishKeyRollback = await repository.listStrategyVersions({
+        accountId: accountA, strategyKey: "default",
+      });
+      await assert.rejects(repository.rollbackCategoryStrategyVersion({
+        ...rollbackInput, idempotencyKey: winningInput.idempotencyKey,
+        correlationId: `rollback-with-publish-key-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+      assert.deepEqual(await repository.listStrategyVersions({ accountId: accountA, strategyKey: "default" }),
+        beforePublishKeyRollback);
+      const rolledBack = await repository.rollbackCategoryStrategyVersion(rollbackInput);
+      assert.equal(rolledBack.version, 9);
+      assert.equal(rolledBack.status, "PUBLISHED");
+      assert.equal(rolledBack.id === currentId, false);
+      assert.equal(rolledBack.id === published.id, false);
+      assert.equal(rolledBack.rules.find((rule) => rule.scope?.descriptionCategoryId === 170).overallStyle, "old A");
+      assert.equal((await repository.rollbackCategoryStrategyVersion(rollbackInput)).duplicate, true);
+      await assert.rejects(repository.rollbackCategoryStrategyVersion({
+        ...rollbackInput, correlationId: `rollback-category-changed-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+      const afterRollback = await repository.listStrategyVersions({ accountId: accountA, strategyKey: "default" });
+      assert.deepEqual(afterRollback.map((row) => row.status), ["RETIRED", "RETIRED", "PUBLISHED"]);
+      assert.equal(afterRollback[0].rules.find((rule) => rule.scope?.descriptionCategoryId === 170).overallStyle, "old A");
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        accountId: accountA, actorId: accountA, draftId: reverseDraft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: rolledBack.id, idempotencyKey: rollbackInput.idempotencyKey,
+        correlationId: `publish-with-rollback-key-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+      assert.equal((await pool.query(
+        "SELECT status FROM auto_listing_category_strategy_drafts WHERE account_id=$1 AND id=$2",
+        [accountA, reverseDraft.draftId],
+      )).rows[0].status, "DRAFT_READY");
+      assert.equal((await repository.listStrategyVersions({ accountId: accountA, strategyKey: "default" })).length,
+        afterRollback.length);
+      const retiredPublishReplay = await repository.publishCategoryStrategyDraft(winningInput);
+      assert.deepEqual({ id: retiredPublishReplay.id, status: retiredPublishReplay.status,
+        duplicate: retiredPublishReplay.duplicate }, {
+        id: published.id, status: "PUBLISHED", duplicate: true,
+      });
+      const rollbackCollisionId = `rollback-collision-${suffix}`;
+      await pool.query(
+        `INSERT INTO ai_content_strategy_versions
+           (id,account_id,strategy_key,version,status,content,content_hash,created_by)
+         VALUES ($1,$2,'default',10,'DRAFT','{}'::JSONB,$3,$2)`,
+        [rollbackCollisionId, accountA, "d".repeat(64)],
+      );
+      await assert.rejects(repository.rollbackCategoryStrategyVersion({
+        accountId: accountA, actorId: accountA, targetStrategyVersionId: published.id,
+        expectedPublishedStrategyVersionId: rolledBack.id,
+        idempotencyKey: `rollback-collision-${suffix}`,
+        correlationId: `rollback-collision-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", status: 409 });
+      assert.equal((await pool.query(
+        "SELECT status FROM ai_content_strategy_versions WHERE account_id=$1 AND id=$2",
+        [accountA, rolledBack.id],
+      )).rows[0].status, "PUBLISHED");
+      await pool.query(
+        "DELETE FROM ai_content_strategy_versions WHERE account_id=$1 AND id=$2 AND status='DRAFT'",
+        [accountA, rollbackCollisionId],
+      );
+      const laterRollback = await repository.rollbackCategoryStrategyVersion({
+        accountId: accountA,
+        actorId: accountA,
+        targetStrategyVersionId: published.id,
+        expectedPublishedStrategyVersionId: rolledBack.id,
+        idempotencyKey: `rollback-category-later-${suffix}`,
+        correlationId: `rollback-category-later-corr-${suffix}`,
+      });
+      assert.equal(laterRollback.version, 10);
+      const retiredRollbackReplay = await repository.rollbackCategoryStrategyVersion(rollbackInput);
+      assert.deepEqual({ id: retiredRollbackReplay.id, status: retiredRollbackReplay.status,
+        duplicate: retiredRollbackReplay.duplicate }, {
+        id: rolledBack.id, status: "PUBLISHED", duplicate: true,
+      });
+      const categoryRepository = createAutoListingCategoryStrategyPostgres({ pool });
+      await categoryRepository.transitionAccountPolicy({
+        accountId: accountA, actorId: accountA, expectedVersion: 2, mode: "LEGACY_FALLBACK",
+        idempotencyKey: `disable-after-publication-${suffix}`,
+        correlationId: `disable-after-publication-corr-${suffix}`,
+      });
+      const disabledSnapshot = {
+        versions: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        audits: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM audit_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        events: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+      };
+      assert.equal((await repository.publishCategoryStrategyDraft(winningInput)).id, published.id);
+      assert.equal((await repository.rollbackCategoryStrategyVersion(rollbackInput)).id, rolledBack.id);
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        accountId: accountA, actorId: accountA, draftId: reverseDraft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: laterRollback.id,
+        idempotencyKey: `disabled-publish-${suffix}`, correlationId: `disabled-publish-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", status: 409 });
+      await assert.rejects(repository.rollbackCategoryStrategyVersion({
+        accountId: accountA, actorId: accountA, targetStrategyVersionId: published.id,
+        expectedPublishedStrategyVersionId: laterRollback.id,
+        idempotencyKey: `disabled-rollback-${suffix}`, correlationId: `disabled-rollback-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY", status: 409 });
+      assert.deepEqual({
+        versions: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        audits: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM audit_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+        events: Number((await pool.query(
+          "SELECT COUNT(*) AS count FROM auto_listing_category_strategy_events WHERE account_id=$1", [accountA],
+        )).rows[0].count),
+      }, disabledSnapshot);
+
+      await categoryRepository.transitionAccountPolicy({
+        accountId: accountA, actorId: accountA, expectedVersion: 3, mode: "REQUIRE_EXACT_STRATEGY",
+        idempotencyKey: `enable-before-race-${suffix}`, correlationId: `enable-before-race-corr-${suffix}`,
+      });
+      const racePublishInput = {
+        accountId: accountA, actorId: accountA, draftId: reverseDraft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: laterRollback.id,
+        idempotencyKey: `race-publish-${suffix}`, correlationId: `race-publish-corr-${suffix}`,
+      };
+      const versionsBeforeRace = Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountA],
+      )).rows[0].count);
+      const [disableOutcome, publishOutcome] = await Promise.allSettled([
+        categoryRepository.transitionAccountPolicy({
+          accountId: accountA, actorId: accountA, expectedVersion: 4, mode: "LEGACY_FALLBACK",
+          idempotencyKey: `race-disable-${suffix}`, correlationId: `race-disable-corr-${suffix}`,
+        }),
+        repository.publishCategoryStrategyDraft(racePublishInput),
+      ]);
+      assert.equal(disableOutcome.status, "fulfilled");
+      assert.equal(publishOutcome.status === "fulfilled"
+        || (publishOutcome.status === "rejected"
+          && publishOutcome.reason?.code === "AUTO_LISTING_CATEGORY_STRATEGY_READ_ONLY"), true);
+      const versionsAfterRace = Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountA],
+      )).rows[0].count);
+      assert.equal(versionsAfterRace, versionsBeforeRace + (publishOutcome.status === "fulfilled" ? 1 : 0));
+      assert.equal((await categoryRepository.getAccountPolicy({ accountId: accountA })).mode, "LEGACY_FALLBACK");
+    } finally {
+      await pool?.end().catch(() => {});
+      await admin.query("SET search_path TO public").catch(() => {});
+      await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
+      admin.release();
+      await adminPool.end();
+    }
+  });
+
+  test("real category service composition returns safe publish and rollback summaries on first call and replay", {
+    timeout: 60_000,
+  }, async () => {
+    const { Pool } = await import("pg");
+    const adminPool = new Pool({ connectionString, max: 1 });
+    const admin = await adminPool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schema = `category_composition_${suffix}`;
+    const schemaSql = quote(schema);
+    const accountId = `account-composition-${suffix}`;
+    let pool;
+    try {
+      await admin.query(`CREATE SCHEMA ${schemaSql}`);
+      await admin.query(`SET search_path TO ${schemaSql}, public`);
+      const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
+      for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      await admin.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$1,$1,'admin','active')",
+        [accountId],
+      );
+      const draft = await seedPublishableCategoryDraft(admin, {
+        accountId, suffix, descriptionCategoryId: 270, typeId: 199,
+      });
+      const currentId = `composition-current-${suffix}`;
+      await admin.query(
+        `INSERT INTO ai_content_strategy_versions
+           (id,account_id,strategy_key,version,status,content,content_hash,published_at,published_by,created_by)
+         VALUES ($1,$2,'default',1,'PUBLISHED','{"schemaVersion":"V2"}'::JSONB,$3,NOW(),$2,$2)`,
+        [currentId, accountId, crypto.createHash("sha256").update(`current-${suffix}`).digest("hex")],
+      );
+      pool = new Pool({ connectionString, max: 4, options: `-c search_path=${schema},public` });
+      const categoryRepository = createAutoListingCategoryStrategyPostgres({ pool });
+      await categoryRepository.transitionAccountPolicy({
+        accountId, actorId: accountId, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+        idempotencyKey: `enable-composition-${suffix}`,
+        correlationId: `enable-composition-correlation-${suffix}`,
+      });
+      const publicationRepository = createAutoListingAiAdminPostgres({ pool });
+      const publicationService = createAutoListingAiAdminService({
+        repository: publicationRepository,
+        capabilityService: { async testGatewayCapabilities() { throw new Error("not used"); } },
+      });
+      const service = createAutoListingCategoryStrategyService({
+        repository: categoryRepository,
+        readModel: {
+          async listStrategies() { return []; },
+          async getDraft() { return {
+            draftId: draft.draftId, accountId,
+            scope: { accountId, taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 270, typeId: 199 },
+            draftVersion: 4, status: "DRAFT_READY", sampleCount: 5,
+            sourceCollectItemId: `source-${suffix}`, expectedSourceVersion: "draft:7",
+            browserUrl: "https://www.ozon.ru/category/270/",
+          }; },
+          async getDraftDetail() { throw new Error("not used"); },
+          async getThumbnailEvidence() { return null; },
+        },
+        sampleStore: { async persistSampleImages() { throw new Error("not used"); } },
+        exactProductFacts: { async verify() { throw new Error("not used"); } },
+        extensionSessionChannel: {
+          async assertReady() { throw new Error("not used"); },
+          async putSession() { throw new Error("not used"); },
+        },
+        publicationService,
+        objectStorage: { async readObjectExpected() { throw new Error("not used"); } },
+        now: () => new Date("2026-08-15T00:00:00.000Z"),
+        async deriveSessionIdentity() { throw new Error("not used"); },
+      });
+      const actor = { id: accountId, role: "admin" };
+      const publishInput = {
+        actor, draftId: draft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: currentId,
+        idempotencyKey: `composition-publish-${suffix}`,
+        correlationId: `composition-publish-correlation-${suffix}`,
+      };
+      const published = await service.publishDraft(publishInput);
+      assert.deepEqual(Reflect.ownKeys(published), ["id", "strategyKey", "version", "status", "duplicate"]);
+      assert.deepEqual({ strategyKey: published.strategyKey, version: published.version,
+        status: published.status, duplicate: published.duplicate }, {
+        strategyKey: "default", version: 2, status: "PUBLISHED", duplicate: false,
+      });
+      assert.deepEqual(await service.publishDraft(publishInput), { ...published, duplicate: true });
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountId],
+      )).rows[0].count), 2);
+
+      const rollbackInput = {
+        actor, draftId: draft.draftId, targetStrategyVersionId: currentId,
+        expectedPublishedStrategyVersionId: published.id,
+        idempotencyKey: `composition-rollback-${suffix}`,
+        correlationId: `composition-rollback-correlation-${suffix}`,
+      };
+      const rolledBack = await service.rollbackDraft(rollbackInput);
+      assert.deepEqual(Reflect.ownKeys(rolledBack), ["id", "strategyKey", "version", "status", "duplicate"]);
+      assert.deepEqual({ strategyKey: rolledBack.strategyKey, version: rolledBack.version,
+        status: rolledBack.status, duplicate: rolledBack.duplicate }, {
+        strategyKey: "default", version: 3, status: "PUBLISHED", duplicate: false,
+      });
+      assert.deepEqual(await service.rollbackDraft(rollbackInput), { ...rolledBack, duplicate: true });
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*) AS count FROM ai_content_strategy_versions WHERE account_id=$1", [accountId],
+      )).rows[0].count), 3);
+    } finally {
+      await pool?.end().catch(() => {});
+      await admin.query("SET search_path TO public").catch(() => {});
+      await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
+      admin.release();
+      await adminPool.end();
     }
   });
 

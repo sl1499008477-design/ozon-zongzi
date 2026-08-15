@@ -30,6 +30,30 @@ const verifiedSnapshot = (productMeasurements, logistics = {}) => buildAutoListi
   sourceRecordId: "collect-1",
   sourceVersion: "1",
   rawResponseRef: "raw-1",
+  targetStoreId: "store-1",
+  targetStoreCurrency: "RUB",
+  productDraft: { id: "draft-1", version: 1 },
+  categoryEvidence: {
+    id: "category-evidence-1",
+    accountId: "account-1",
+    sourceDescriptionCategoryId: 123,
+    sourceTypeId: 456,
+    taxonomyScope: "OZON:DEFAULT",
+  },
+  sharedCategory: {
+    id: "shared-category-1",
+    accountId: "account-1",
+    version: 1,
+    evidenceId: "category-evidence-1",
+    status: "ACTIVE",
+    source: "SOURCE_DIRECT",
+    sourceDescriptionCategoryId: 123,
+    sourceTypeId: 456,
+    currentDescriptionCategoryId: 123,
+    currentTypeId: 456,
+    taxonomyScope: "OZON:DEFAULT",
+    taxonomyFingerprint: null,
+  },
   collectItem: {
     id: "collect-1",
     accountId: "account-1",
@@ -106,7 +130,7 @@ test("allows the declared image option values and derives total from role counts
   assert.equal(normalized.image.total, 13);
 });
 
-test("removes specification images when reliable product dimensions are absent", () => {
+test("preserves the requested count or rejects missing reliable product dimensions", () => {
   const frozen = normalizeAndHashAutoListingConfig(baseConfig());
   const effective = (productMeasurements, logistics = {}) => deriveEffectiveAutoListingImageConfig({
     configSnapshot: frozen.config,
@@ -137,14 +161,15 @@ test("removes specification images when reliable product dimensions are absent",
     { reliable: true, length: 28, unit: "", source: "manufacturer" },
     { reliable: true, length: 28, unit: "cm", source: "" },
   ]) {
-    assert.deepEqual(effective(measurements).roles.specification, 0);
-    assert.deepEqual(effective(measurements).total, 7);
-    assert.deepEqual(effective(measurements).reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
+    assert.throws(() => effective(measurements),
+      (error) => error?.code === "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED");
   }
-  assert.equal(effective({}, { length: 999, unit: "cm", source: "warehouse" }).roles.specification, 0);
+  assert.throws(() => effective({}, { length: 999, unit: "cm", source: "warehouse" }),
+    (error) => error?.code === "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED");
   assert.equal(effective({ reliable: true, lengthMm: 280, unit: "mm", source: "manufacturer" }).roles.specification, 1);
   assert.equal(effective({ reliable: true, productDiameter: 28, unit: "cm", source: "manufacturer" }).roles.specification, 1);
-  assert.equal(effective({ reliable: true, foo: 28, confidence: 0.99, sampleCount: 1, unit: "cm", source: "manufacturer" }).roles.specification, 0);
+  assert.throws(() => effective({ reliable: true, foo: 28, confidence: 0.99, sampleCount: 1, unit: "cm", source: "manufacturer" }),
+    (error) => error?.code === "AUTO_LISTING_PRODUCT_DIMENSIONS_REQUIRED");
   expectConfigError(baseConfig({ image: { total: 7 } }), "AUTO_LISTING_CONFIG_INVALID");
   assert.throws(
     () => deriveEffectiveAutoListingImageConfig({

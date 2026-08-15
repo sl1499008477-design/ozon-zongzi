@@ -45,7 +45,7 @@ import {
   todayDateOnly,
   verifyPassword,
 } from "./account-context.mjs";
-import { PERMISSIONS } from "./permissions.mjs";
+import { assertPermission, PERMISSIONS } from "./permissions.mjs";
 import {
   cacheItemMatchesStore,
   cacheItemsForStore,
@@ -378,6 +378,12 @@ const handleAutoListingRoute = createAutoListingHttpHandler({
 });
 const autoListingWebRuntime = createAutoListingWebRuntime({
   authenticate: authenticateAutoListingRequest,
+  authenticateCollector: async (req, permission) => {
+    const collectorAccount = await collectorAuthRuntime.authenticateRequest(req, permission);
+    const current = activeAccount(await loadState(), collectorAccount.id);
+    assertPermission(current, PERMISSIONS.AI_CONTENT_MANAGE);
+    return current;
+  },
   getAutoListingService: autoListingRuntime.getService,
   collectSku: (input) => autoListingSkuCollectionService.collectOzonSkuForAccount(input),
   readJson: readBody,
@@ -2621,6 +2627,8 @@ export function createHttpHandler({
   if (await autoListingWebRuntime.handleItemRoute(req, res, url)) return;
   if (await handleAutoListingRoute(req, res, url)) return;
   if (await autoListingWebRuntime.handleUserWorkflowRoute(req, res, url)) return;
+  if (await autoListingWebRuntime.handleCategoryStrategyExtensionRoute(req, res, url)) return;
+  if (await autoListingWebRuntime.handleCategoryStrategyAdminRoute(req, res, url)) return;
   if (await autoListingWebRuntime.handleAiAdminRoute(req, res, url)) return;
   if (await autoListingWebRuntime.handleAdminRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
@@ -2651,7 +2659,7 @@ export function createHttpHandler({
     sendJson(res, 200, {
       ok: true,
       service: "qh-local-api",
-      version: "0.13.46.2-local",
+      version: "0.13.46.3-local",
       persistence: persistenceMode(),
     });
     return;
@@ -3002,8 +3010,27 @@ export function createHttpHandler({
           deletion.deletedCollectorOzonEnrichmentCacheCount,
         deletedCollectorOzonEnrichmentJobCount:
           deletion.deletedCollectorOzonEnrichmentJobCount,
-        deletedCollectCategoryResolutionCount:
-          deletion.deletedCollectCategoryResolutionCount,
+        deletedCollectOzonCategorySourceEvidenceCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.collectOzonCategorySourceEvidence || 0,
+        deletedAccountOzonSharedCategoryCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.accountOzonSharedCategories || 0,
+        deletedAccountOzonSharedCategoryEventCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.accountOzonSharedCategoryEvents || 0,
+        deletedAccountOzonCategoryConfirmationCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.accountOzonCategoryConfirmations || 0,
+        deletedCollectOzonCategoryLookupEvidenceCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.collectOzonCategoryLookupEvidence || 0,
+        deletedCollectOzonCategoryCurrentSourceCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.collectOzonCategoryCurrentSources || 0,
+        deletedCollectOzonCategoryManualConfirmationEvidenceCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.collectOzonCategoryManualConfirmationEvidence || 0,
       },
     });
     enqueueObjectDeletions(state, deletion.fileObjectKeys);
@@ -5041,7 +5068,7 @@ export function createHttpHandler({
   }
 
   if (req.method === "GET" && url.pathname === "/extension/latest") {
-    sendJson(res, 200, { version: "0.13.46.2", latestVersion: "0.13.46.2", downloadUrl: "/sonli-extension-0.13.46.2.zip" });
+    sendJson(res, 200, { version: "0.13.46.3", latestVersion: "0.13.46.3", downloadUrl: "/sonli-extension-0.13.46.3.zip" });
     return;
   }
 

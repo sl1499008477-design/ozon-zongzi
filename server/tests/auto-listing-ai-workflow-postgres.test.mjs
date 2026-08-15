@@ -367,6 +367,27 @@ test("a frozen DIRECT policy enters UPLOAD_QUEUED only while the server kill swi
   assert.equal(blocked.calls[4].values[6], "AUTO_LISTING_DIRECT_UPLOAD_DISABLED");
 });
 
+test("a fixed-skeleton item always stops at review even when DIRECT upload is enabled", async () => {
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived",
+      planning_contract: "FIXED_SKELETON_V1",
+    }] },
+    { rowCount: 1, rows: [imagePlan()] },
+    { rowCount: 1, rows: [{ planned_group_count: "1", accepted_group_count: "1", invalid_result_count: "0", duplicate_group_count: "0" }] },
+    { rowCount: 1, rows: [{ mode: "DIRECT", enabled: true }] },
+    { rowCount: 1, rows: [{ status: "READY_FOR_REVIEW", status_version: 4 }] },
+    { rowCount: 1, rows: [{ id: "fixed-review-event" }] },
+  ]);
+  assert.deepEqual(await applyAutoListingAiPhaseOutcome(applyInput(client,
+    "GENERATE_RICH_CONTENT", "CONTENT_READY_FOR_REVIEW", { expectedStatusVersion: 3 }),
+  { directUploadAllowed: true }), {
+    disposition: "APPLIED", status: "READY_FOR_REVIEW", statusVersion: 4, enqueued: 0,
+  });
+  assert.equal(client.calls.some(({ sql }) => /INSERT INTO auto_listing_upload_tasks/iu.test(sql)), false);
+  assert.equal(client.calls[5].values[7], "CONTENT_READY_FOR_REVIEW");
+});
+
 test("accepted rich content requires exactly one independently scoped result for every planned visual group", async () => {
   for (const coverage of [
     { planned_group_count: "2", accepted_group_count: "1", invalid_result_count: "0", duplicate_group_count: "0" },

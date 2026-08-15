@@ -15,7 +15,7 @@ const PARENT_KEYS = new Set([
   "id", "sourceAccountId", "jobId", "itemId", "sourceSnapshotId", "strategyVersionId", "profileId",
   "strategyHash", "configHash", "sourceHash", "inputHash", "plannerModel", "profileVersion",
   "promptTemplateVersion", "plan", "planHash", "visualGroupsHash", "visualGroups", "factRegistry", "regeneration",
-  "gatewayRequestId",
+  "gatewayRequestId", "planningContract", "skeletonHash",
 ]);
 const MATERIALIZATION_KEYS = new Set([
   "accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId", "sourceRefHash", "inputHash",
@@ -135,6 +135,9 @@ function validateParentPlan(value, scope) {
       || value.id !== scope.parentPlanId || value.sourceAccountId !== scope.accountId
       || value.jobId !== scope.jobId || value.itemId !== scope.itemId
       || !["strategyHash", "configHash", "sourceHash", "inputHash", "planHash", "visualGroupsHash"].every((key) => HASH.test(value[key] || ""))
+      || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(value.planningContract)
+      || (value.planningContract === "LEGACY_FULL_PLAN_V3" && value.skeletonHash !== null)
+      || (value.planningContract === "FIXED_SKELETON_V1" && !HASH.test(value.skeletonHash || ""))
       || !Number.isInteger(value.profileVersion) || value.profileVersion < 1
       || !exactObject(value.plan, PLAN_KEYS) || value.plan.version !== 1 || value.plan.language !== "ru"
       || sha256(value.plan) !== value.planHash

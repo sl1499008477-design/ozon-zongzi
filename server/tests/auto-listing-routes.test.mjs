@@ -344,6 +344,88 @@ test("known service failures preserve only safe codes and messages", async () =>
   });
 });
 
+test("missing exact category strategy returns only the closed configuration details", async () => {
+  const { handler, replies } = harness({ runtime: { getService: async () => ({
+    createAutoListingJob: async () => {
+      throw Object.assign(new Error("account-a raw https://secret.invalid object-key"), {
+        code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED",
+        status: 500,
+        details: {
+          scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 123, typeId: 456 },
+          status: "SAMPLES_READY",
+          canManage: true,
+          draftId: "same-account-draft",
+        },
+        accountId: "account-a",
+        sampleUrl: "https://secret.invalid/sample.jpg",
+        objectKey: "category-strategy/account-a/raw.webp",
+        actor: { id: "admin-a" },
+      });
+    },
+  }) } });
+
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {},
+    new URL("http://local/auto-listing/jobs/from-collect-box"));
+
+  assert.deepEqual(replies[0], {
+    status: 409,
+    payload: {
+      ok: false,
+      code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED",
+      message: "当前商品类目需要先配置并发布图片策略",
+      correlationId: "corr_1",
+      details: {
+        scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 123, typeId: 456 },
+        status: "SAMPLES_READY",
+        canManage: true,
+        draftId: "same-account-draft",
+      },
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(replies[0]), /account-a|secret\.invalid|object-key|admin-a|sampleUrl|objectKey/iu);
+});
+
+test("an atomic category-strategy race returns a fixed safe retry response", async () => {
+  const { handler, replies } = harness({ runtime: { getService: async () => ({
+    createAutoListingJob: async () => {
+      throw Object.assign(new Error("account-a rule raw changed"), {
+        code: "AUTO_LISTING_CATEGORY_STRATEGY_CHANGED", status: 500,
+        details: { ruleId: "secret-rule", accountId: "account-a" },
+      });
+    },
+  }) } });
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {},
+    new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.deepEqual(replies[0], { status: 409, payload: { ok: false,
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_CHANGED", message: "类目策略已变化，请重新提交创建任务",
+    correlationId: "corr_1" } });
+});
+
+test("strategy-required route projection never executes hostile details accessors or proxy traps", async () => {
+  for (const [label, details, counter] of [
+    ["accessor", (() => {
+      const value = { scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 123, typeId: 456 }, status: "COLLECTING", canManage: false };
+      const counter = { reads: 0 };
+      Object.defineProperty(value, "draftId", { enumerable: true, get() { counter.reads += 1; return "secret-draft"; } });
+      return [value, counter];
+    })(), null],
+    ["proxy", new Proxy({}, { get() { throw new Error("must not trap"); } }), { reads: 0 }],
+  ].map(([label, carrier, counter]) => Array.isArray(carrier) ? [label, carrier[0], carrier[1]] : [label, carrier, counter])) {
+    const local = harness({ runtime: { getService: async () => ({
+      createAutoListingJob: async () => {
+        throw Object.assign(new Error("unsafe"), {
+          code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", details,
+        });
+      },
+    }) } });
+    await local.handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {},
+      new URL("http://local/auto-listing/jobs/from-collect-box"));
+    assert.equal(local.replies[0].status, 409, label);
+    assert.equal("details" in local.replies[0].payload, false, label);
+    assert.equal(counter.reads, 0, label);
+  }
+});
+
 test("unsupported target-store currency has a stable safe 422 response", async () => {
   const { handler, replies } = harness({ runtime: { getService: async () => ({
     createAutoListingJob: async () => {
