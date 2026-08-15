@@ -417,10 +417,9 @@ Reload `http://127.0.0.1:3000/ozon/tools/auto-listing/` in the in-app browser.
 
 Expected:
 
-- The target row is labelled cancelled and no longer says “正在规划图片内容”.
-- Its creation time is `2026-08-15 19:13:23`.
-- There is no new replacement task.
-- The page remains functional and the “类目图片策略” navigation entry is present.
+- The authenticated exact job-detail GET confirms the target is `CANCELLED` at version `3` and its `createdAt` maps to `2026-08-15 19:13:23` in China time. The ranked latest-50 UI window is not required to include this aged target.
+- At least one currently visible task row's displayed time matches the China-time projection of its authenticated list DTO.
+- There is no new replacement task, and the page remains functional with the “类目图片策略” navigation entry present.
 
 - [ ] **Step 5: Re-read the strict settings contract for final acceptance**
 
