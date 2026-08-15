@@ -125,6 +125,30 @@ await writeFile(dataFile, JSON.stringify({
     collectItemId: "collect-b",
     taxonomyScope: "OZON:DEFAULT",
   }],
+  accountOzonSharedCategories: [
+    { id: "shared-category-a", accountId: "account-a" },
+    { id: "shared-category-b", accountId: "account-b" },
+  ],
+  accountOzonSharedCategoryEvents: [
+    { id: "shared-event-a", accountId: "account-a" },
+    { id: "shared-event-b", accountId: "account-b" },
+  ],
+  accountOzonCategoryConfirmations: [
+    { id: "confirmation-a", accountId: "account-a" },
+    { id: "confirmation-b", accountId: "account-b" },
+  ],
+  collectOzonCategoryLookupEvidence: [
+    { id: "lookup-a", accountId: "account-a" },
+    { id: "lookup-b", accountId: "account-b" },
+  ],
+  collectOzonCategoryCurrentSources: [
+    { id: "current-source-a", accountId: "account-a" },
+    { id: "current-source-b", accountId: "account-b" },
+  ],
+  collectOzonCategoryManualConfirmationEvidence: [
+    { id: "manual-confirmation-a", accountId: "account-a" },
+    { id: "manual-confirmation-b", accountId: "account-b" },
+  ],
   accounts: [{
     id: "account-admin",
     username: "admin",
@@ -248,6 +272,12 @@ test("real JSON account deletion persists no A archive or Collector auth artifac
     saved.collectOzonCategorySourceEvidence.map((record) => record.id),
     ["category-resolution-b"],
   );
+  assert.deepEqual(saved.accountOzonSharedCategories.map((record) => record.id), ["shared-category-b"]);
+  assert.deepEqual(saved.accountOzonSharedCategoryEvents.map((record) => record.id), ["shared-event-b"]);
+  assert.deepEqual(saved.accountOzonCategoryConfirmations.map((record) => record.id), ["confirmation-b"]);
+  assert.deepEqual(saved.collectOzonCategoryLookupEvidence.map((record) => record.id), ["lookup-b"]);
+  assert.deepEqual(saved.collectOzonCategoryCurrentSources.map((record) => record.id), ["current-source-b"]);
+  assert.deepEqual(saved.collectOzonCategoryManualConfirmationEvidence.map((record) => record.id), ["manual-confirmation-b"]);
   assert.doesNotMatch(
     JSON.stringify({
       tickets: saved.collectorAuthTickets,
@@ -269,7 +299,14 @@ test("real JSON account deletion persists no A archive or Collector auth artifac
   assert.equal(deletionAudit?.metadata?.deletedCollectorSessionCount, 1);
   assert.equal(deletionAudit?.metadata?.deletedCollectorOzonEnrichmentCacheCount, 1);
   assert.equal(deletionAudit?.metadata?.deletedCollectorOzonEnrichmentJobCount, 1);
-  assert.equal(deletionAudit?.metadata?.deletedCollectCategoryResolutionCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedCollectOzonCategorySourceEvidenceCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedAccountOzonSharedCategoryCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedAccountOzonSharedCategoryEventCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedAccountOzonCategoryConfirmationCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedCollectOzonCategoryLookupEvidenceCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedCollectOzonCategoryCurrentSourceCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedCollectOzonCategoryManualConfirmationEvidenceCount, 1);
+  assert.equal(Object.hasOwn(deletionAudit?.metadata || {}, "deletedCollectCategoryResolutionCount"), false);
 
   const reloaded = testExports.ensureAccountState(structuredClone(saved));
   assert.deepEqual(

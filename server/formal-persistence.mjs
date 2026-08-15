@@ -602,6 +602,10 @@ function overwriteAccountDeletionCollectorCounts(
     deletedAccountOzonSharedCategoryEventCount,
     deletedAccountOzonSharedCategoryCount,
     deletedCollectOzonCategorySourceEvidenceCount,
+    deletedAccountOzonCategoryConfirmationCount,
+    deletedCollectOzonCategoryLookupEvidenceCount,
+    deletedCollectOzonCategoryCurrentSourceCount,
+    deletedCollectOzonCategoryManualConfirmationEvidenceCount,
   },
 ) {
   const auditEvent = (Array.isArray(state.auditEvents) ? state.auditEvents : []).find((event) =>
@@ -625,6 +629,14 @@ function overwriteAccountDeletionCollectorCounts(
     Math.max(0, Number(deletedAccountOzonSharedCategoryCount) || 0);
   auditEvent.metadata.deletedCollectOzonCategorySourceEvidenceCount =
     Math.max(0, Number(deletedCollectOzonCategorySourceEvidenceCount) || 0);
+  auditEvent.metadata.deletedAccountOzonCategoryConfirmationCount =
+    Math.max(0, Number(deletedAccountOzonCategoryConfirmationCount) || 0);
+  auditEvent.metadata.deletedCollectOzonCategoryLookupEvidenceCount =
+    Math.max(0, Number(deletedCollectOzonCategoryLookupEvidenceCount) || 0);
+  auditEvent.metadata.deletedCollectOzonCategoryCurrentSourceCount =
+    Math.max(0, Number(deletedCollectOzonCategoryCurrentSourceCount) || 0);
+  auditEvent.metadata.deletedCollectOzonCategoryManualConfirmationEvidenceCount =
+    Math.max(0, Number(deletedCollectOzonCategoryManualConfirmationEvidenceCount) || 0);
   delete auditEvent.metadata.deletedCollectCategoryResolutionCount;
   return true;
 }
@@ -659,7 +671,19 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
            WHERE account_id=$1) AS deleted_account_ozon_shared_category_count,
          (SELECT COUNT(*)::INT
             FROM collect_ozon_category_source_evidence
-           WHERE account_id=$1) AS deleted_collect_ozon_category_source_evidence_count`,
+           WHERE account_id=$1) AS deleted_collect_ozon_category_source_evidence_count,
+         (SELECT COUNT(*)::INT
+            FROM account_ozon_category_confirmation_audit
+           WHERE account_id=$1) AS deleted_account_ozon_category_confirmation_count,
+         (SELECT COUNT(*)::INT
+            FROM collect_ozon_category_lookup_evidence
+           WHERE account_id=$1) AS deleted_collect_ozon_category_lookup_evidence_count,
+         (SELECT COUNT(*)::INT
+            FROM collect_ozon_category_current_sources
+           WHERE account_id=$1) AS deleted_collect_ozon_category_current_source_count,
+         (SELECT COUNT(*)::INT
+            FROM collect_ozon_category_manual_confirmation_evidence
+           WHERE account_id=$1) AS deleted_collect_ozon_manual_confirmation_evidence_count`,
       [accountId],
     );
     const categoryCount = categoryCounts.rows?.[0] || {};
@@ -695,6 +719,14 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
           categoryCount.deleted_account_ozon_shared_category_count,
         deletedCollectOzonCategorySourceEvidenceCount:
           categoryCount.deleted_collect_ozon_category_source_evidence_count,
+        deletedAccountOzonCategoryConfirmationCount:
+          categoryCount.deleted_account_ozon_category_confirmation_count,
+        deletedCollectOzonCategoryLookupEvidenceCount:
+          categoryCount.deleted_collect_ozon_category_lookup_evidence_count,
+        deletedCollectOzonCategoryCurrentSourceCount:
+          categoryCount.deleted_collect_ozon_category_current_source_count,
+        deletedCollectOzonCategoryManualConfirmationEvidenceCount:
+          categoryCount.deleted_collect_ozon_manual_confirmation_evidence_count,
       },
     ) || persistedStateChanged;
 

@@ -117,8 +117,8 @@ function assertAutoListingRouteBoundary(source) {
   });
   assert.deepEqual(
     imports,
-    ["./runtime-config.mjs", "./auto-listing-currency.mjs"],
-    "auto-listing routes may import only feature configuration and pure currency policy",
+    ["./runtime-config.mjs", "./auto-listing-currency.mjs", "node:util"],
+    "auto-listing routes may import only feature configuration, pure currency policy, and proxy inspection",
   );
   assert.equal(hasQueryCall, false, "auto-listing routes must not execute SQL query calls");
 }
@@ -139,7 +139,8 @@ for (const source of [
   "const rows = await executor['query']('DELETE FROM auto_listing_jobs');",
 ]) {
   const fixture = `import { autoListingEnabled } from "./runtime-config.mjs";
-import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";\n${source}`;
+import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
+import { types as utilTypes } from "node:util";\n${source}`;
   assert.throws(() => assertAutoListingRouteBoundary(fixture), /must not execute SQL query calls/);
 }
 assert.match(

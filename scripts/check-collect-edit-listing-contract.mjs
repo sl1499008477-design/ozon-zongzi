@@ -45,17 +45,17 @@ requirePattern(
 );
 
 requirePattern(
-  /const categoryResolutionViewState = categoryResolutionView\(item\.categoryResolution\);[\s\S]*_categoryResolutionView: categoryResolutionViewState,[\s\S]*title: "类目匹配"[\s\S]*row\._categoryResolutionView/,
+  /const categoryResolutionViewState = categoryResolutionView\(item\.categoryResolution\);[\s\S]*_categoryResolutionView: categoryResolutionViewState,[\s\S]*title: "账号共享类目"[\s\S]*dataIndex: "类目匹配"[\s\S]*row\._categoryResolutionView/,
   "collect box must render the saved category summary separately from collection enrichment",
 );
 
 requirePattern(
-  /categoryResolutionView\(categoryResolution\)[\s\S]*SELECT_MANUALLY[\s\S]*manualCategoryResolution\(/,
+  /categoryResolutionView\(categoryResolution\)[\s\S]*action === "ADMIN_CONFIRM"[\s\S]*const handleCategoryChange = async function[\s\S]*account\?\.role !== "admin"[\s\S]*collectCategoryConfirmationIntent\([\s\S]*apiRequest\("\/ozon\/category-confirmations"/,
   "review and invalidated category summaries must keep the existing manual category save path",
 );
 
 requirePattern(
-  /const handleCategoryPreview = collectEditCategoryPreviewAction\(runCollectPreview\);[\s\S]*disabled=\{categoryAutoLoading\}[\s\S]*aria-label="手动匹配类目"[\s\S]*onClick=\{handleCategoryPreview\}/,
+  /const handleCategoryPreview = function\(\) \{[\s\S]*account\?\.role !== "admin"[\s\S]*请在类目树中选择最末级商品类型并完成管理员确认[\s\S]*disabled=\{categoryAutoLoading\}[\s\S]*aria-label="管理员确认类目"[\s\S]*onClick=\{handleCategoryPreview\}/,
   "category matching must be available only through a visible, duplicate-safe user action",
 );
 

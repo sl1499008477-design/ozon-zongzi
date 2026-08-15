@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { createPostgresCollectorAuthRepository } from "../collector-auth-repository.mjs";
+import { createPostgresAccountSharedOzonCategoryRepository } from "../account-shared-ozon-category-repository.mjs";
 import { closePostgresPool, getPostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
 import { readLegacyDataCollectionStoresForAudit } from "../legacy-data-collection-store.mjs";
@@ -18,11 +19,16 @@ const adminSessionToken = `delete_admin_session_${suffix}`;
 const accountId = `delete_account_${suffix}`;
 const accountSessionToken = `delete_account_session_${suffix}`;
 const storeId = `delete_store_${suffix}`;
+const accountBStoreId = `delete_store_b_${suffix}`;
 const snapshotId = `delete_snapshot_${suffix}`;
 const jobId = `delete_job_${suffix}`;
 const auditEntityId = `delete_audit_${suffix}`;
 const collectItemId = `delete_collect_item_${suffix}`;
+const accountBCollectItemId = `delete_collect_item_b_${suffix}`;
 const rawPayloadId = `delete_raw_payload_${suffix}`;
+const accountBRawPayloadId = `delete_raw_payload_b_${suffix}`;
+const productDraftId = `delete_product_draft_${suffix}`;
+const accountBProductDraftId = `delete_product_draft_b_${suffix}`;
 const collectRequestId = `delete_collect_request_${suffix}`;
 const legacyDataStoreId = `delete_legacy_data_store_${suffix}`;
 const legacyVerificationRequestId = `delete_legacy_verification_${suffix}`;
@@ -194,6 +200,10 @@ try {
     [storeId, accountId, `delete-client-${suffix}`],
   );
   await pool.query(
+    "INSERT INTO stores (id,owner_account_id,label,client_id,status) VALUES ($1,$2,'Keep B Store',$3,'active')",
+    [accountBStoreId, accountBId, `keep-b-client-${suffix}`],
+  );
+  await pool.query(
     "INSERT INTO data_collection_stores (id,seller_company_id) VALUES ($1,$2)",
     [legacyDataStoreId, `delete-seller-${suffix}`],
   );
@@ -254,6 +264,59 @@ try {
      ) VALUES ($1, $2, $3, $4, $5, '{}'::jsonb)`,
     [rawPayloadId, collectItemId, accountId, storeId, `delete-payload-${suffix}`],
   );
+  await pool.query(
+    `INSERT INTO product_drafts (
+       id,collect_item_id,source_payload_id,version,data_hash,data,updated_by
+     ) VALUES ($1,$2,$3,1,$4,'{}'::jsonb,$5)`,
+    [productDraftId, collectItemId, rawPayloadId,
+      crypto.createHash("sha256").update(`delete-draft-${suffix}`).digest("hex"), accountId],
+  );
+  await pool.query(
+    "UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3",
+    [productDraftId, accountId, collectItemId],
+  );
+  await pool.query(
+    `INSERT INTO collect_items (id,account_id,store_id,source,identity_key,source_sku,summary)
+     VALUES ($1,$2,$3,'ozon',$4,'keep-b-sku','{}'::jsonb)`,
+    [accountBCollectItemId, accountBId, accountBStoreId, `keep-b-identity-${suffix}`],
+  );
+  await pool.query(
+    `INSERT INTO collect_raw_payloads (
+       id,collect_item_id,account_id,store_id,payload_hash,payload
+     ) VALUES ($1,$2,$3,$4,$5,'{}'::jsonb)`,
+    [accountBRawPayloadId, accountBCollectItemId, accountBId, accountBStoreId,
+      `keep-b-payload-${suffix}`],
+  );
+  await pool.query(
+    `INSERT INTO product_drafts (
+       id,collect_item_id,source_payload_id,version,data_hash,data,updated_by
+     ) VALUES ($1,$2,$3,1,$4,'{}'::jsonb,$5)`,
+    [accountBProductDraftId, accountBCollectItemId, accountBRawPayloadId,
+      crypto.createHash("sha256").update(`keep-b-draft-${suffix}`).digest("hex"), accountBId],
+  );
+  await pool.query(
+    "UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3",
+    [accountBProductDraftId, accountBId, accountBCollectItemId],
+  );
+  const categoryRepository = createPostgresAccountSharedOzonCategoryRepository({ pool });
+  for (const [ownerAccountId, ownerCollectItemId, requestSuffix] of [
+    [accountId, collectItemId, "delete"],
+    [accountBId, accountBCollectItemId, "keep-b"],
+  ]) {
+    await categoryRepository.confirmManualCategory({
+      accountId: ownerAccountId,
+      collectItemId: ownerCollectItemId,
+      expectedSourceVersion: "draft:1",
+      currentDescriptionCategoryId: 17028788,
+      currentTypeId: 95555,
+      taxonomyFingerprint: crypto.createHash("sha256").update(`taxonomy-${requestSuffix}-${suffix}`).digest("hex"),
+      validatedAt: "2026-07-30T08:00:00.000Z",
+      actorId: ownerAccountId,
+      correlationId: `${requestSuffix}-manual-correlation-${suffix}`,
+      idempotencyKey: `${requestSuffix}-manual-idempotency-${suffix}`,
+      requestHash: crypto.createHash("sha256").update(`manual-request-${requestSuffix}-${suffix}`).digest("hex"),
+    });
+  }
   await pool.query(
     `INSERT INTO collect_requests (
        id, idempotency_key, account_id, store_id, source, source_sku, request_hash, content_hash, collect_item_id
@@ -496,6 +559,10 @@ try {
        (SELECT COUNT(*)::int FROM collector_sessions WHERE account_id=$1) collector_session_count,
        (SELECT COUNT(*)::int FROM collector_auth_tickets WHERE account_id=$12) account_b_collector_ticket_count,
        (SELECT COUNT(*)::int FROM collector_sessions WHERE account_id=$12) account_b_collector_session_count,
+       (SELECT COUNT(*)::int FROM collect_ozon_category_manual_confirmation_evidence
+        WHERE account_id=$1) manual_confirmation_count,
+       (SELECT COUNT(*)::int FROM collect_ozon_category_manual_confirmation_evidence
+        WHERE account_id=$12) account_b_manual_confirmation_count,
        (SELECT metadata FROM audit_events
         WHERE action='ACCOUNT_DELETED' AND entity_id=$1) account_deleted_metadata,
        (SELECT state->'legacyDataCollectionStoreAuditArchive'
@@ -558,6 +625,8 @@ try {
     collector_session_count: 0,
     account_b_collector_ticket_count: 1,
     account_b_collector_session_count: 1,
+    manual_confirmation_count: 0,
+    account_b_manual_confirmation_count: 1,
     account_deleted_metadata: {
       deletedFileCount: 0,
       deletedStoreIds: [storeId],
@@ -565,6 +634,15 @@ try {
       legacyArchivePurgedCount: 1,
       deletedCollectorAuthTicketCount: 2,
       deletedCollectorSessionCount: 2,
+      deletedCollectorOzonEnrichmentCacheCount: 0,
+      deletedCollectorOzonEnrichmentJobCount: 0,
+      deletedCollectOzonCategorySourceEvidenceCount: 1,
+      deletedAccountOzonSharedCategoryCount: 1,
+      deletedAccountOzonSharedCategoryEventCount: 1,
+      deletedAccountOzonCategoryConfirmationCount: 0,
+      deletedCollectOzonCategoryLookupEvidenceCount: 0,
+      deletedCollectOzonCategoryCurrentSourceCount: 1,
+      deletedCollectOzonCategoryManualConfirmationEvidenceCount: 1,
     },
     local_state_legacy_archive: {
       schemaVersion: 1,
@@ -581,6 +659,15 @@ try {
       legacyArchivePurgedCount: 1,
       deletedCollectorAuthTicketCount: 2,
       deletedCollectorSessionCount: 2,
+      deletedCollectorOzonEnrichmentCacheCount: 0,
+      deletedCollectorOzonEnrichmentJobCount: 0,
+      deletedCollectOzonCategorySourceEvidenceCount: 1,
+      deletedAccountOzonSharedCategoryCount: 1,
+      deletedAccountOzonSharedCategoryEventCount: 1,
+      deletedAccountOzonCategoryConfirmationCount: 0,
+      deletedCollectOzonCategoryLookupEvidenceCount: 0,
+      deletedCollectOzonCategoryCurrentSourceCount: 1,
+      deletedCollectOzonCategoryManualConfirmationEvidenceCount: 1,
     },
   });
   assert.doesNotMatch(

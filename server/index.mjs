@@ -3010,8 +3010,27 @@ export function createHttpHandler({
           deletion.deletedCollectorOzonEnrichmentCacheCount,
         deletedCollectorOzonEnrichmentJobCount:
           deletion.deletedCollectorOzonEnrichmentJobCount,
-        deletedCollectCategoryResolutionCount:
-          deletion.deletedCollectCategoryResolutionCount,
+        deletedCollectOzonCategorySourceEvidenceCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.collectOzonCategorySourceEvidence || 0,
+        deletedAccountOzonSharedCategoryCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.accountOzonSharedCategories || 0,
+        deletedAccountOzonSharedCategoryEventCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.accountOzonSharedCategoryEvents || 0,
+        deletedAccountOzonCategoryConfirmationCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.accountOzonCategoryConfirmations || 0,
+        deletedCollectOzonCategoryLookupEvidenceCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.collectOzonCategoryLookupEvidence || 0,
+        deletedCollectOzonCategoryCurrentSourceCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.collectOzonCategoryCurrentSources || 0,
+        deletedCollectOzonCategoryManualConfirmationEvidenceCount:
+          deletion.deletedAccountSharedCategoryRecordCounts
+            ?.collectOzonCategoryManualConfirmationEvidence || 0,
       },
     });
     enqueueObjectDeletions(state, deletion.fileObjectKeys);

@@ -10,8 +10,22 @@ const H = (char) => char.repeat(64);
 const SOURCE_URL = "https://cdn.example.test/image.png?token=do-not-persist";
 const SOURCE_REF_HASH = crypto.createHash("sha256").update(SOURCE_URL).digest("hex");
 const SOURCE_ASSET_ID = `source-url-${SOURCE_REF_HASH.slice(0, 24)}`;
+const CATEGORY_EVIDENCE = Object.freeze({
+  id: "category-evidence-a", accountId: "account-a",
+  sourceDescriptionCategoryId: 170, sourceTypeId: 99,
+  taxonomyScope: "OZON:DEFAULT",
+});
+const SHARED_CATEGORY = Object.freeze({
+  id: "shared-category-a", accountId: "account-a", version: 1,
+  evidenceId: CATEGORY_EVIDENCE.id, status: "ACTIVE", source: "SOURCE_DIRECT",
+  sourceDescriptionCategoryId: 170, sourceTypeId: 99,
+  currentDescriptionCategoryId: 170, currentTypeId: 99,
+  taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null,
+});
 const SOURCE_CAPTURE = buildAutoListingSourceSnapshot({
   accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-a", sourceVersion: "1",
+  targetStoreId: "store-a", targetStoreCurrency: "RUB",
+  categoryEvidence: CATEGORY_EVIDENCE, sharedCategory: SHARED_CATEGORY,
   collectItem: {
     id: "collect-a", accountId: "account-a",
     listingDraft: {
