@@ -84,14 +84,6 @@ const STYLE_DENSITIES = {
   BALANCED_DEFAULT: { MAIN: "NONE", SELLING_POINT: "MEDIUM", DETAIL: "LIGHT", SCENE: "LIGHT", SPECIFICATION: "HEAVY", INFOGRAPHIC: "MEDIUM" },
 };
 
-const REALLOCATION_ORDER = {
-  VISUAL_FIRST: ["DETAIL", "SCENE", "SELLING_POINT", "INFOGRAPHIC"],
-  PARAMETER_FIRST: ["INFOGRAPHIC", "SELLING_POINT", "DETAIL", "SCENE"],
-  DEMONSTRATION_FIRST: ["SCENE", "SELLING_POINT", "DETAIL", "INFOGRAPHIC"],
-  SPECIFICATION_FIRST: ["INFOGRAPHIC", "DETAIL", "SELLING_POINT", "SCENE"],
-  BALANCED_DEFAULT: ["SELLING_POINT", "DETAIL", "SCENE", "INFOGRAPHIC"],
-};
-
 function plannerError(code = "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID", safeMessage = "自动上架图片规划输入无效") {
   const error = new Error(safeMessage);
   error.code = code;
@@ -310,22 +302,13 @@ function dimensionKind(key) {
   throw plannerError();
 }
 
-function effectiveRoleCounts(config, style, hasDimensions) {
+function effectiveRoleCounts(config, hasDimensions) {
   const counts = Object.fromEntries(ROLE_ORDER.map((role) => [role, config.image.roles[ROLE_LOWER[role]]]));
   const requestedTotal = Object.values(counts).reduce((sum, value) => sum + value, 0);
   const reasonCodes = [];
   if (!hasDimensions && counts.SPECIFICATION > 0) {
-    let toAllocate = counts.SPECIFICATION;
     counts.SPECIFICATION = 0;
     reasonCodes.push("PRODUCT_DIMENSIONS_UNAVAILABLE");
-    for (const role of REALLOCATION_ORDER[style]) {
-      const capacity = ROLE_LIMITS[role][1] - counts[role];
-      const allocated = Math.min(capacity, toAllocate);
-      counts[role] += allocated;
-      toAllocate -= allocated;
-      if (!toAllocate) break;
-    }
-    if (toAllocate) reasonCodes.push("SPECIFICATION_REALLOCATION_CAPACITY_EXHAUSTED");
   }
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
   if (total < 6 || total > 13 || total > requestedTotal) throw plannerError();
@@ -508,7 +491,7 @@ export function buildPlannerInput(input = {}) {
   const regeneration = verifyRegeneration(input.regeneration);
   if (!visual.groups.length) throw plannerError();
   const dimensions = trustedProductDimensions(source.snapshot.productMeasurements);
-  const roles = effectiveRoleCounts(config.config, strategy.snapshot.style, dimensions.length > 0);
+  const roles = effectiveRoleCounts(config.config, dimensions.length > 0);
   const registry = factRegistry(source.snapshot, visual.groups, dimensions);
   if (visual.groups.some((group) => group.referenceImages.length === 0)) {
     throw plannerError("AUTO_LISTING_REFERENCE_IMAGE_REQUIRED", "商品缺少可追溯的来源图片");
@@ -864,10 +847,6 @@ export async function createContentPlan(input = {}) {
   });
   if (plannerContext.sourceAccountId !== scope.accountId || plannerContext.sourceAccountId !== gatewayProfile.accountId) throw plannerError();
   validatePlannerPreflight(plannerContext);
-  if (planningContract === "FIXED_SKELETON_V1"
-    && plannerContext.reasonCodes.includes("PRODUCT_DIMENSIONS_UNAVAILABLE")) {
-    throw plannerError("AUTO_LISTING_FIXED_SKELETON_DIMENSION_REQUIRED", "尺寸图缺少可靠的商品尺寸依据");
-  }
   const fixedSkeleton = planningContract === "FIXED_SKELETON_V1"
     ? buildFixedSkeleton({ plannerContext }) : null;
   const skeletonHash = fixedSkeleton?.skeletonHash ?? null;

@@ -324,11 +324,11 @@ test("planner structured-output schema only uses array keywords accepted by the 
   assert.equal(JSON.stringify(CONTENT_PLAN_JSON_SCHEMA).includes('"uniqueItems"'), false);
 });
 
-test("missing trusted product dimensions removes specification, reallocates by frozen style, and never uses logistics", () => {
+test("missing trusted product dimensions removes specification without reallocating and never uses logistics", () => {
   const built = planner({ sourceCapture: sourceCapture({ reliableDimensions: false }) });
   assert.equal(built.plannerInput.requestedRoleCounts.SPECIFICATION, 0);
-  assert.equal(built.plannerInput.imagesPerVisualGroup, 8);
-  assert.equal(built.plannerInput.requestedRoleCounts.SELLING_POINT, 4);
+  assert.equal(built.plannerInput.requestedRoleCounts.SELLING_POINT, 3);
+  assert.equal(built.plannerInput.imagesPerVisualGroup, 7);
   assert.ok(built.reasonCodes.includes("PRODUCT_DIMENSIONS_UNAVAILABLE"));
   assert.doesNotMatch(JSON.stringify(built.plannerInput), /999|888|777/);
   assert.doesNotThrow(() => validateContentPlan({ plan: validPlan(built), plannerContext: built }));
@@ -338,7 +338,7 @@ test("missing trusted product dimensions removes specification, reallocates by f
     configCapture: configCapture(roleSets.thirteen),
   });
   assert.equal(saturated.plannerInput.imagesPerVisualGroup, 12);
-  assert.ok(saturated.reasonCodes.includes("SPECIFICATION_REALLOCATION_CAPACITY_EXHAUSTED"));
+  assert.ok(!saturated.reasonCodes.includes("SPECIFICATION_REALLOCATION_CAPACITY_EXHAUSTED"));
 });
 
 test("closed ContentPlan validation rejects unknown keys, broken slots/counts/groups/assets and unsupported claims", () => {
@@ -660,19 +660,38 @@ test("fixed contract records rejected fill tampering and never saves a plan", as
   assert.equal(saves, 0);
 });
 
-test("fixed contract keeps the submitted specification count and stops before repository or AI when dimensions are absent", async () => {
+test("fixed contract uses the reduced skeleton before repository reservation and AI when dimensions are absent", async () => {
   let repositoryCalls = 0;
   let gatewayCalls = 0;
+  let context;
   await assert.rejects(createContentPlan({
     accountId: "account-a", jobId: "job-1", itemId: "item-1",
     sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
     planningContract: "FIXED_SKELETON_V1", evidenceRepository: passthroughEvidenceRepository,
     ...plannerArgs({ sourceCapture: sourceCapture({ reliableDimensions: false }) }),
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
-    gateway: { async createTextResponse() { gatewayCalls += 1; } },
-    repository: { async reserveContentPlan() { repositoryCalls += 1; } },
-  }), { code: "AUTO_LISTING_FIXED_SKELETON_DIMENSION_REQUIRED" });
-  assert.deepEqual({ repositoryCalls, gatewayCalls }, { repositoryCalls: 0, gatewayCalls: 0 });
+    gateway: { async createTextResponse(input) {
+      gatewayCalls += 1;
+      assert.equal(input.jsonSchema.properties.fills.required.length, 7);
+      throw Object.assign(new Error("stop after reduced skeleton"), { code: "RETRYABLE_GATEWAY" });
+    } },
+    repository: { async reserveContentPlan(input) {
+      repositoryCalls += 1;
+      context = buildPlannerInput({
+        ...plannerArgs({ sourceCapture: sourceCapture({ reliableDimensions: false }) }),
+        promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1",
+      });
+      const skeleton = buildFixedSkeleton({ plannerContext: context });
+      return reserved(input, {
+        planningContract: "FIXED_SKELETON_V1",
+        skeletonHash: skeleton.skeletonHash,
+        plannerStage: "BUILDING_SKELETON",
+      });
+    }, advanceContentPlanStage: advanceStage, async releaseContentPlanReservation() {} },
+  }), { code: "RETRYABLE_GATEWAY" });
+  assert.equal(context.plannerInput.requestedRoleCounts.SPECIFICATION, 0);
+  assert.equal(context.plannerInput.imagesPerVisualGroup, 7);
+  assert.deepEqual({ repositoryCalls, gatewayCalls }, { repositoryCalls: 1, gatewayCalls: 1 });
 });
 
 test("reused corrupted or cross-scope rows fail closed, and gateway failures persist no half-plan", async () => {
