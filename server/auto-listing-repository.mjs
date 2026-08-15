@@ -14,6 +14,8 @@ import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
 import {
+  AUTO_LISTING_IMAGE_ROLES,
+  normalizeAutoListingConfig,
   verifyAutoListingFrozenConfig,
 } from "./auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
@@ -34,6 +36,8 @@ const BLOCKED_SOURCE_FAILURE_CODES = new Set([
 ]);
 const SOURCE_SNAPSHOT_CONTRACT_VERSION = "AUTO_LISTING_SOURCE_SNAPSHOT_V2";
 const CATEGORY_STRATEGY_MODES = new Set(["LEGACY_FALLBACK", "REQUIRE_EXACT_STRATEGY"]);
+const EFFECTIVE_IMAGE_AUDIT_KEYS = new Set(["roles", "total", "reasonCodes"]);
+const EFFECTIVE_IMAGE_ROLE_KEYS = new Set(AUTO_LISTING_IMAGE_ROLES);
 
 function repositoryError(code, status = 422) {
   const error = new Error(code);
@@ -138,6 +142,34 @@ function closedRepositoryArray(value, maximum) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
     return descriptor.value;
+  });
+}
+
+function effectiveImageAuditDetails(value) {
+  const audit = closedRepositoryObject(value, EFFECTIVE_IMAGE_AUDIT_KEYS);
+  const rawRoles = closedRepositoryObject(audit.roles, EFFECTIVE_IMAGE_ROLE_KEYS);
+  let roles;
+  let total;
+  try {
+    ({ image: { roles, total } } = normalizeAutoListingConfig({
+      targetStoreId: "effective-image-audit",
+      targetWarehouseId: "effective-image-audit",
+      stock: 1,
+      image: { roles: rawRoles, total: audit.total },
+    }));
+  } catch {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  const reasonCodes = closedRepositoryArray(audit.reasonCodes, 1);
+  if (reasonCodes.some((code) => code !== "PRODUCT_DIMENSIONS_UNAVAILABLE")
+    || reasonCodes.length !== new Set(reasonCodes).size
+    || (reasonCodes.length > 0 && roles.specification !== 0)) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return Object.freeze({
+    roles: Object.freeze(roles),
+    total,
+    reasonCodes: Object.freeze(reasonCodes),
   });
 }
 
@@ -380,6 +412,11 @@ function eventDetails(item, categoryStrategyGate) {
       descriptionCategoryId: targetCategory.descriptionCategoryId,
       typeId: targetCategory.typeId,
     } : null,
+    ...(item.effectiveImageConfig ? { effectiveImageConfig: effectiveImageAuditDetails({
+      roles: item.effectiveImageConfig.roles,
+      total: item.effectiveImageConfig.total,
+      reasonCodes: item.effectiveImageConfig.reasonCodes,
+    }) } : {}),
     ...(item.price ? { price: item.price } : {}),
     ...(item.failureCode ? { failureCode: item.failureCode } : {}),
   };
@@ -405,8 +442,20 @@ function itemWorkflowProgress(item) {
 }
 
 function mapJob(row, items, events) {
+  const validatedEvents = events.map((event) => {
+    if (event.event_type !== "SOURCE_CAPTURED") return event;
+    if (!plainJsonObject(event.details)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    if (!Object.hasOwn(event.details, "effectiveImageConfig")) return event;
+    return {
+      ...event,
+      details: {
+        ...event.details,
+        effectiveImageConfig: effectiveImageAuditDetails(event.details.effectiveImageConfig),
+      },
+    };
+  });
   const eventsByItem = new Map();
-  for (const event of events) {
+  for (const event of validatedEvents) {
     if (!event.item_id) continue;
     const list = eventsByItem.get(event.item_id) || [];
     list.push(event);
@@ -451,7 +500,7 @@ function mapJob(row, items, events) {
         ...(workflowProgress ? { workflowProgress } : {}),
       };
     }),
-    events: events.map((event) => ({
+    events: validatedEvents.map((event) => ({
       id: event.id,
       itemId: event.item_id,
       fromStatus: event.from_status,

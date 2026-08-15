@@ -1,22 +1,6 @@
 import { verifyAutoListingFrozenConfig } from "./auto-listing-contract.mjs";
+import { normalizeReliableAutoListingProductDimensions } from "./auto-listing-product-dimensions.mjs";
 import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
-
-function hasReliableProductDimensions(productMeasurements) {
-  if (!productMeasurements || typeof productMeasurements !== "object" || Array.isArray(productMeasurements)
-    || productMeasurements.reliable !== true
-    || typeof productMeasurements.unit !== "string" || !productMeasurements.unit.trim()
-    || typeof productMeasurements.source !== "string" || !productMeasurements.source.trim()) return false;
-  return Object.entries(productMeasurements).some(([key, value]) => (
-    PRODUCT_MEASUREMENT_FIELDS.has(key) && typeof value === "number" && Number.isFinite(value) && value > 0
-  ));
-}
-
-const PRODUCT_MEASUREMENT_FIELDS = new Set([
-  "length", "width", "height", "depth", "diameter",
-  "lengthMm", "widthMm", "heightMm", "depthMm", "diameterMm",
-  "lengthCm", "widthCm", "heightCm", "depthCm", "diameterCm",
-  "productLength", "productWidth", "productHeight", "productDepth", "productDiameter",
-]);
 const INPUT_KEYS = new Set(["configSnapshot", "configHash", "sourceCapture"]);
 
 function inputError() {
@@ -33,7 +17,7 @@ export function deriveEffectiveAutoListingImageConfig(input = {}) {
   const { configSnapshot, configHash, sourceCapture } = input;
   const { config } = verifyAutoListingFrozenConfig(configSnapshot, configHash);
   const { snapshot } = verifyAutoListingSourceSnapshot(sourceCapture);
-  const reliable = hasReliableProductDimensions(snapshot.productMeasurements);
+  const reliable = normalizeReliableAutoListingProductDimensions(snapshot.productMeasurements) !== null;
   const roles = Object.freeze({
     ...config.image.roles,
     specification: reliable ? config.image.roles.specification : 0,

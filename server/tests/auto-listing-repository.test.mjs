@@ -4,7 +4,11 @@ import test from "node:test";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
-import { buildAutoListingBlockedSourceEvidence, buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
+import {
+  buildAutoListingBlockedSourceEvidence,
+  buildAutoListingSourceSnapshot,
+  canonicalAutoListingSourceSnapshot,
+} from "../auto-listing-source-snapshot.mjs";
 
 const canonical = (value) => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === "object"
@@ -1223,7 +1227,7 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
     return outcome;
   };
   const repository = createAutoListingRepository({
-    pool: { connect: async () => client, query: async () => ({ rows: [] }) },
+    pool: { connect: async () => client, query: (...args) => client.query(...args) },
     idFactory(prefix) {
       const count = (counters.get(prefix) || 0) + 1;
       counters.set(prefix, count);
@@ -1231,7 +1235,7 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
     },
     stageInitialPlanWork,
   });
-  return { repository, calls, stageCalls, client };
+  return { repository, calls, stageCalls, client, events };
 }
 
 test("successful creation without the AI workflow keeps ready statuses and stages no outbox work", async () => {
@@ -1257,6 +1261,61 @@ test("job graph persists and returns each server-selected planning contract", as
   assert.match(itemInsert.sql, /planning_contract/u);
   assert.equal(itemInsert.params.at(-1), "FIXED_SKELETON_V1");
   assert.equal(created.items[0].planningContract, "FIXED_SKELETON_V1");
+});
+
+test("SOURCE_CAPTURED audit round-trips the reduced effective image configuration", async () => {
+  const { repository } = successfulCreationFixture();
+  const graph = warehouseGraph();
+  graph.items[0].snapshot.productMeasurements = {};
+  graph.items[0].snapshotHash = crypto.createHash("sha256")
+    .update(canonicalAutoListingSourceSnapshot(graph.items[0].snapshot)).digest("hex");
+  graph.items[0].effectiveImageConfig = deriveEffectiveAutoListingImageConfig({
+    configSnapshot: graph.configSnapshot,
+    configHash: graph.configHash,
+    sourceCapture: {
+      snapshot: graph.items[0].snapshot,
+      snapshotHash: graph.items[0].snapshotHash,
+    },
+  });
+
+  const created = await repository.createJobGraph(graph);
+  const reloaded = await repository.getJob({ accountId: "account-a", jobId: created.id });
+  const audit = reloaded.events.find((event) => event.eventType === "SOURCE_CAPTURED").details;
+  assert.deepEqual(audit.effectiveImageConfig, {
+    roles: {
+      main: 1,
+      sellingPoint: 3,
+      detail: 1,
+      scene: 1,
+      specification: 0,
+      infographic: 1,
+    },
+    total: 7,
+    reasonCodes: ["PRODUCT_DIMENSIONS_UNAVAILABLE"],
+  });
+});
+
+test("repository reads reject internally inconsistent effective image audit details", async () => {
+  const { repository, events } = successfulCreationFixture();
+  const created = await repository.createJobGraph(warehouseGraph());
+  const sourceEvent = events.find((event) => event.event_type === "SOURCE_CAPTURED");
+  sourceEvent.details.effectiveImageConfig = {
+    roles: {
+      main: 1,
+      sellingPoint: 3,
+      detail: 1,
+      scene: 1,
+      specification: 1,
+      infographic: 1,
+    },
+    total: 99,
+    reasonCodes: [],
+  };
+
+  await assert.rejects(
+    repository.getJob({ accountId: "account-a", jobId: created.id }),
+    (error) => error?.code === "AUTO_LISTING_REPOSITORY_INVALID",
+  );
 });
 
 test("job graph rejects a missing or unknown planning contract before PostgreSQL", async () => {

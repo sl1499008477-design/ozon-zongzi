@@ -111,3 +111,28 @@ test("valid effective image configuration preserves exact counts in a recursivel
   assert.equal(Object.isFrozen(result.roles), true);
   assert.equal(Object.isFrozen(result.reasonCodes), true);
 });
+
+test("recognized dimensions with unknown measurement fields are conservatively unavailable", () => {
+  const frozen = frozenConfig();
+  const result = deriveEffectiveAutoListingImageConfig({
+    configSnapshot: frozen.config,
+    configHash: frozen.configHash,
+    sourceCapture: sourceCapture({
+      reliable: true,
+      length: 28,
+      confidence: 0.99,
+      unit: "cm",
+      source: "manufacturer",
+    }),
+  });
+  assert.deepEqual(result.roles, {
+    main: 1,
+    sellingPoint: 3,
+    detail: 1,
+    scene: 1,
+    specification: 0,
+    infographic: 1,
+  });
+  assert.equal(result.total, 7);
+  assert.deepEqual(result.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
+});

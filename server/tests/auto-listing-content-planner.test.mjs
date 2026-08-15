@@ -22,7 +22,7 @@ const visualEvidence = (variantId) => ({
   sizeFacts: [{ factId: `fact.size.${variantId}`, kind: "SIZE", value: "M" }],
 });
 
-function sourceCapture({ reliableDimensions = true, accountId = "account-a" } = {}) {
+function sourceCapture({ reliableDimensions = true, productMeasurements, accountId = "account-a" } = {}) {
   return buildAutoListingSourceSnapshot({
     accountId,
     sourceType: "COLLECT_BOX",
@@ -35,7 +35,9 @@ function sourceCapture({ reliableDimensions = true, accountId = "account-a" } = 
       currency: "RUB", blackKopecks: "10000", greenKopecks: "8000",
       attributes: [{ attributeId: "material", dictionaryValueId: "steel", values: ["сталь"], multiple: false }],
       logistics: { length: 999, width: 888, height: 777, dimensionUnit: "mm" },
-      productMeasurements: reliableDimensions ? { reliable: true, heightCm: 22, unit: "cm", source: "manufacturer" } : {},
+      productMeasurements: productMeasurements ?? (reliableDimensions
+        ? { reliable: true, heightCm: 22, unit: "cm", source: "manufacturer" }
+        : {}),
       images: [image("source-image-1")],
       variants: [{ sku: "sku-1", offerId: "offer-1", name: "Термокружка", images: [image("source-image-1")], evidence: visualEvidence("variant-1") }],
     } },
@@ -326,8 +328,14 @@ test("planner structured-output schema only uses array keywords accepted by the 
 
 test("missing trusted product dimensions removes specification without reallocating and never uses logistics", () => {
   const built = planner({ sourceCapture: sourceCapture({ reliableDimensions: false }) });
-  assert.equal(built.plannerInput.requestedRoleCounts.SPECIFICATION, 0);
-  assert.equal(built.plannerInput.requestedRoleCounts.SELLING_POINT, 3);
+  assert.deepEqual(built.plannerInput.requestedRoleCounts, {
+    MAIN: 1,
+    SELLING_POINT: 3,
+    DETAIL: 1,
+    SCENE: 1,
+    SPECIFICATION: 0,
+    INFOGRAPHIC: 1,
+  });
   assert.equal(built.plannerInput.imagesPerVisualGroup, 7);
   assert.ok(built.reasonCodes.includes("PRODUCT_DIMENSIONS_UNAVAILABLE"));
   assert.doesNotMatch(JSON.stringify(built.plannerInput), /999|888|777/);
@@ -337,8 +345,39 @@ test("missing trusted product dimensions removes specification without reallocat
     sourceCapture: sourceCapture({ reliableDimensions: false }),
     configCapture: configCapture(roleSets.thirteen),
   });
+  assert.deepEqual(saturated.plannerInput.requestedRoleCounts, {
+    MAIN: 1,
+    SELLING_POINT: 5,
+    DETAIL: 2,
+    SCENE: 2,
+    SPECIFICATION: 0,
+    INFOGRAPHIC: 2,
+  });
   assert.equal(saturated.plannerInput.imagesPerVisualGroup, 12);
   assert.ok(!saturated.reasonCodes.includes("SPECIFICATION_REALLOCATION_CAPACITY_EXHAUSTED"));
+});
+
+test("recognized dimensions with unknown measurement fields follow the same conservative decision", () => {
+  const built = planner({ sourceCapture: sourceCapture({
+    productMeasurements: {
+      reliable: true,
+      heightCm: 22,
+      confidence: 0.99,
+      unit: "cm",
+      source: "manufacturer",
+    },
+  }) });
+  assert.deepEqual(built.plannerInput.requestedRoleCounts, {
+    MAIN: 1,
+    SELLING_POINT: 3,
+    DETAIL: 1,
+    SCENE: 1,
+    SPECIFICATION: 0,
+    INFOGRAPHIC: 1,
+  });
+  assert.equal(built.plannerInput.imagesPerVisualGroup, 7);
+  assert.equal(built.plannerInput.factRegistry.some((fact) => fact.factId === "fact.product.heightCm"), false);
+  assert.ok(built.reasonCodes.includes("PRODUCT_DIMENSIONS_UNAVAILABLE"));
 });
 
 test("closed ContentPlan validation rejects unknown keys, broken slots/counts/groups/assets and unsupported claims", () => {

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { types } from "node:util";
 import { verifyAutoListingFrozenConfig } from "./auto-listing-contract.mjs";
+import { normalizeReliableAutoListingProductDimensions } from "./auto-listing-product-dimensions.mjs";
 import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
 import { buildVisualGroups, verifyVisualGroupsCapture } from "./auto-listing-visual-groups.mjs";
 import { normalizeAutoListingTextDensityByRole } from "./auto-listing-text-density-contract.mjs";
@@ -49,13 +50,6 @@ const DENSITIES = new Set(["NONE", "LIGHT", "MEDIUM", "HEAVY"]);
 const REGENERATION_REASONS = new Set(["USER_REQUESTED", "QUALITY_RETRY", "ADMIN_RETRY"]);
 const PROHIBITED_CLAIMS = new Set(["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"]);
 const HASH = /^[a-f0-9]{64}$/;
-const PRODUCT_MEASUREMENT_FIELDS = new Set([
-  "length", "width", "height", "depth", "diameter",
-  "lengthMm", "widthMm", "heightMm", "depthMm", "diameterMm",
-  "lengthCm", "widthCm", "heightCm", "depthCm", "diameterCm",
-  "productLength", "productWidth", "productHeight", "productDepth", "productDiameter",
-]);
-const DIMENSION_META_FIELDS = new Set(["reliable", "unit", "source"]);
 const ATTRIBUTE_KEYS = new Set(["attributeId", "dictionaryValueId", "values", "multiple"]);
 const ATTRIBUTE_B_KEYS = new Set(["key", "value", "dictionary_value_id"]);
 const ATTRIBUTE_C_KEYS = new Set(["id", "name", "values", "is_required"]);
@@ -281,17 +275,6 @@ function verifyRegeneration(value) {
   return { requestId: requiredText(value.requestId, 240), reason: value.reason };
 }
 
-function trustedProductDimensions(productMeasurements) {
-  if (!isPlainObject(productMeasurements) || productMeasurements.reliable !== true
-    || typeof productMeasurements.unit !== "string" || !productMeasurements.unit.trim()
-    || typeof productMeasurements.source !== "string" || !productMeasurements.source.trim()) return [];
-  const unknown = Object.keys(productMeasurements).filter((key) => !DIMENSION_META_FIELDS.has(key) && !PRODUCT_MEASUREMENT_FIELDS.has(key));
-  if (unknown.length) return [];
-  return Object.entries(productMeasurements)
-    .filter(([key, value]) => PRODUCT_MEASUREMENT_FIELDS.has(key) && typeof value === "number" && Number.isFinite(value) && value > 0)
-    .sort(([left], [right]) => compareText(left, right));
-}
-
 function dimensionKind(key) {
   const field = key.toLocaleLowerCase("en-US");
   if (field.includes("height")) return "DIMENSION_HEIGHT";
@@ -416,7 +399,7 @@ function attributeProjection(attribute, attributeIndex) {
   return null;
 }
 
-function factRegistry(snapshot, groups, dimensions) {
+function factRegistry(snapshot, groups, productDimensions) {
   const registry = new Map();
   const reasonCodes = [];
   if (snapshot.identity.primaryName) addFact(registry, {
@@ -427,8 +410,8 @@ function factRegistry(snapshot, groups, dimensions) {
     factId: "fact.identity.brand", kind: "IDENTITY_BRAND", value: snapshot.identity.brand,
     sourcePath: "identity.brand", visualGroupKeys: [],
   });
-  for (const [key, value] of dimensions) addFact(registry, {
-    factId: `fact.product.${key}`, kind: dimensionKind(key), value: `${value} ${snapshot.productMeasurements.unit}`,
+  for (const [key, value] of productDimensions?.entries || []) addFact(registry, {
+    factId: `fact.product.${key}`, kind: dimensionKind(key), value: `${value} ${productDimensions.unit}`,
     sourcePath: `productMeasurements.${key}`, visualGroupKeys: [],
   });
   snapshot.attributes.forEach((attribute, attributeIndex) => {
@@ -490,9 +473,9 @@ export function buildPlannerInput(input = {}) {
   const prohibitedClaims = verifyProhibitedClaims(input.prohibitedClaims);
   const regeneration = verifyRegeneration(input.regeneration);
   if (!visual.groups.length) throw plannerError();
-  const dimensions = trustedProductDimensions(source.snapshot.productMeasurements);
-  const roles = effectiveRoleCounts(config.config, dimensions.length > 0);
-  const registry = factRegistry(source.snapshot, visual.groups, dimensions);
+  const productDimensions = normalizeReliableAutoListingProductDimensions(source.snapshot.productMeasurements);
+  const roles = effectiveRoleCounts(config.config, productDimensions !== null);
+  const registry = factRegistry(source.snapshot, visual.groups, productDimensions);
   if (visual.groups.some((group) => group.referenceImages.length === 0)) {
     throw plannerError("AUTO_LISTING_REFERENCE_IMAGE_REQUIRED", "商品缺少可追溯的来源图片");
   }
