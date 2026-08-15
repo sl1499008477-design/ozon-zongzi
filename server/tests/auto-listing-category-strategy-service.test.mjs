@@ -74,7 +74,7 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   draftReplay = null, sessionReplay = null, committedReplay = null,
   policyMode = "REQUIRE_EXACT_STRATEGY",
   publicationFailure = null,
-  publicationOverrides = {},
+  publicationOverrides = {}, detailRead = null, thumbnailBytes = Buffer.from("thumbnail-webp"),
   now = new Date("2026-08-15T00:00:00.000Z") } = {}) {
   const calls = { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
     handoff: 0, publish: 0, rollback: 0 };
@@ -139,9 +139,21 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
         { accountId, mode: currentPolicyMode, version: 1, duplicate: false });
     },
   };
+  const defaultSamples = currentDraft ? Array.from({ length: currentDraft.sampleCount || 0 }, (_, index) => ({
+    sampleId: `sample-${index + 1}`, sku: `sku-${index + 1}`, title: null, imageCount: 1,
+    status: "READY", excludedReasons: [], thumbnailImageId: `image-${index + 1}`,
+  })) : [];
+  const durableDetail = detailRead ?? (currentDraft ? { draft: currentDraft, session: null,
+    samples: defaultSamples, analysis: null, published: null, versions: [] } : null);
   const readModel = {
     async listStrategies({ accountId }) { calls.read += 1; return [currentDraft && { ...currentDraft, accountId }].filter(Boolean); },
     async getDraft() { calls.read += 1; return currentDraft; },
+    async getDraftDetail() { calls.read += 1; return durableDetail; },
+    async getThumbnailEvidence() {
+      return { accountId: "account-a", draftId: "draft-a", sampleId: "sample-a", imageId: "image-a",
+        objectKey: "category-strategy/account-a/draft-a/set-a/sample-a/input/generation/source/thumbnail-a.webp",
+        contentHash: crypto.createHash("sha256").update(thumbnailBytes).digest("hex") };
+    },
   };
   const sampleStore = {
     async persistSampleImages(input) {
@@ -200,7 +212,9 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   };
   const service = createAutoListingCategoryStrategyService({
     repository, readModel, sampleStore, exactProductFacts, extensionSessionChannel,
-    publicationService, analyzer,
+    publicationService, analyzer, objectStorage: {
+      async readObjectExpected() { return thumbnailBytes; },
+    },
     now: () => new Date(now),
     async deriveSessionIdentity(input) {
       records.identity.push(input);
@@ -214,6 +228,54 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   });
   return { service, calls, records };
 }
+
+test("durable detail read returns only the closed reloadable Web evidence bundle", async () => {
+  const analysis = {
+    attemptId: "attempt-a", resultId: "result-a", status: "DRAFT_READY", draftVersion: 4,
+    duplicate: false, safeCode: null, guidance: guidance(),
+    evidenceSummary: {
+      roleEvidence: Object.fromEntries(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]
+        .map((role) => [role, { evidenceIds: ["image-a"], confidence: 0.8 }])),
+      commonPatterns: [], differences: [], cautions: [],
+    },
+    provenance: "MANUAL", editedAt: "2026-08-15T01:00:00.000Z", baseAnalysisAttemptId: "attempt-a",
+  };
+  const detailRead = {
+    draft: draft({ draftVersion: 4, status: "DRAFT_READY", sampleCount: 5 }),
+    session: { sessionId: "session-a", state: "ACTIVE", expiresAt: "2026-08-15T02:00:00.000Z" },
+    samples: Array.from({ length: 5 }, (_, index) => ({
+      sampleId: index === 0 ? "sample-a" : `sample-${index}`, sku: String(4_862_904_234 + index),
+      title: null, imageCount: 1, status: "READY", excludedReasons: [],
+      thumbnailImageId: index === 0 ? "image-a" : `image-${index}`,
+    })),
+    analysis,
+    published: { id: "strategy-v2", strategyKey: "default", version: 2, status: "PUBLISHED" },
+    versions: [
+      { id: "strategy-v1", strategyKey: "default", version: 1, status: "RETIRED" },
+      { id: "strategy-v2", strategyKey: "default", version: 2, status: "PUBLISHED" },
+    ],
+  };
+  const h = harness({ currentDraft: detailRead.draft, detailRead });
+  const result = await h.service.getDraft({ actor: ACTOR, draftId: "draft-a" });
+  assert.deepEqual(Object.keys(result), ["draft", "session", "samples", "analysis", "published", "versions"]);
+  assert.equal(result.draft.sourceCollectItemId, "collect-a");
+  assert.equal(result.draft.expectedSourceVersion, "draft:1");
+  assert.equal(result.samples[0].thumbnailUrl,
+    "/api/admin/auto-listing/category-strategies/draft-a/samples/sample-a/images/image-a/thumbnail");
+  assert.equal(result.analysis.provenance, "MANUAL");
+  assert.equal(JSON.stringify(result).includes("account-a"), false);
+  assert.doesNotMatch(JSON.stringify(result), /objectKey|rawResponse|editedBy|sourceUrl/u);
+});
+
+test("authenticated thumbnail read resolves same-account evidence and verifies its expected hash", async () => {
+  const h = harness();
+  assert.deepEqual(await h.service.readSampleThumbnail({ actor: ACTOR, draftId: "draft-a",
+    sampleId: "sample-a", imageId: "image-a" }), Buffer.from("thumbnail-webp"));
+  await assert.rejects(h.service.readSampleThumbnail({ actor: { id: "account-b", role: "admin" },
+    draftId: "draft-a", sampleId: "sample-a", imageId: "image-a" }), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_NOT_FOUND", status: 404,
+  });
+});
 
 test("administrator settings are account-scoped and store identity is not accepted", async () => {
   const h = harness({ policyMode: "LEGACY_FALLBACK" });
@@ -234,7 +296,7 @@ test("administrator settings are account-scoped and store identity is not accept
 test("LEGACY_FALLBACK is account read-only until an administrator explicitly enables strategy mutations", async () => {
   const h = harness({ policyMode: "LEGACY_FALLBACK" });
   assert.equal((await h.service.listStrategies({ actor: ACTOR })).length, 1);
-  assert.equal((await h.service.getDraft({ actor: ACTOR, draftId: "draft-a" })).draftId, "draft-a");
+  assert.equal((await h.service.getDraft({ actor: ACTOR, draftId: "draft-a" })).draft.draftId, "draft-a");
   await assert.rejects(h.service.createDraft({
     actor: ACTOR, scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 17028922, typeId: 91542 },
     sourceCollectItemId: "collect-a", expectedSourceVersion: "draft:1",
@@ -276,9 +338,11 @@ test("administrator can list, read, and create exact account-scoped drafts", asy
     }, draftVersion: 1, status: "COLLECTING", sampleCount: 0,
   }]);
   assert.deepEqual(await h.service.getDraft({ actor: ACTOR, draftId: "draft-a" }), {
-    draftId: "draft-a", scope: {
+    draft: { draftId: "draft-a", scope: {
       taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 17028922, typeId: 91542,
     }, draftVersion: 1, status: "COLLECTING", sampleCount: 0,
+    sourceCollectItemId: "collect-a", expectedSourceVersion: "draft:1" },
+    session: null, samples: [], analysis: null, published: null, versions: [],
   });
   assert.deepEqual(await h.service.createDraft({
     actor: ACTOR, scope: {

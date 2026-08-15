@@ -14,7 +14,7 @@ const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const REPLAY_CACHE_TTL_MS = 30 * 60 * 1000;
 const FACTORY_KEYS = new Set([
   "repository", "readModel", "sampleStore", "exactProductFacts", "extensionSessionChannel",
-  "publicationService", "analyzer", "now", "deriveSessionIdentity",
+  "publicationService", "analyzer", "objectStorage", "now", "deriveSessionIdentity",
 ]);
 const FACTORY_KEYS_WITHOUT_ANALYZER = new Set([...FACTORY_KEYS].filter((key) => key !== "analyzer"));
 
@@ -271,9 +271,141 @@ function readDraftRow(raw, accountId) {
   }
 }
 
-function publicDraft(row) {
+function publicDraft(row, { includeSource = false } = {}) {
   return Object.freeze({ draftId: row.draftId, scope: publicScope(row.scope),
-    draftVersion: row.draftVersion, status: row.status, sampleCount: row.sampleCount });
+    draftVersion: row.draftVersion, status: row.status, sampleCount: row.sampleCount,
+    ...(includeSource ? { sourceCollectItemId: row.sourceCollectItemId,
+      expectedSourceVersion: row.expectedSourceVersion } : {}),
+  });
+}
+
+function safeText(value, maximum = 4_000, nullable = false) {
+  if (nullable && value === null) return null;
+  if (typeof value !== "string" || value.length > maximum || /[\u0000-\u001f\u007f]/u.test(value)) throw invalid();
+  const normalized = value.trim();
+  if (!normalized && !nullable) throw invalid();
+  return normalized;
+}
+
+function publicEvidenceSummary(raw) {
+  if (raw === null) return null;
+  const value = closed(raw, new Set(["roleEvidence", "commonPatterns", "differences", "cautions"]));
+  const roles = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
+  const roleInput = closed(value.roleEvidence, new Set(roles));
+  const evidenceIds = (items, minimum = 0) => closedArray(items, minimum, 100).map(identifier);
+  const roleEvidence = Object.fromEntries(roles.map((role) => {
+    const item = closed(roleInput[role], new Set(["evidenceIds", "confidence"]));
+    if (typeof item.confidence !== "number" || !Number.isFinite(item.confidence)
+      || item.confidence < 0 || item.confidence > 1) throw invalid();
+    return [role, { evidenceIds: evidenceIds(item.evidenceIds), confidence: item.confidence }];
+  }));
+  const commonPatterns = closedArray(value.commonPatterns, 0, 50).map((entry) => {
+    const item = closed(entry, new Set(["pattern", "evidenceIds", "confidence"]));
+    if (typeof item.confidence !== "number" || !Number.isFinite(item.confidence)
+      || item.confidence < 0 || item.confidence > 1) throw invalid();
+    return { pattern: safeText(item.pattern), evidenceIds: evidenceIds(item.evidenceIds, 2), confidence: item.confidence };
+  });
+  const differences = closedArray(value.differences, 0, 50).map((entry) => {
+    const item = closed(entry, new Set(["pattern", "evidenceIds"]));
+    return { pattern: safeText(item.pattern), evidenceIds: evidenceIds(item.evidenceIds, 1) };
+  });
+  const cautions = closedArray(value.cautions, 0, 50).map((entry) => safeText(entry));
+  return freeze({ roleEvidence, commonPatterns, differences, cautions });
+}
+
+function publicReadAnalysis(raw) {
+  if (raw === null) return null;
+  return dependencyDto(() => {
+    const value = closed(raw, new Set([
+      "attemptId", "resultId", "status", "draftVersion", "duplicate", "safeCode", "guidance",
+      "evidenceSummary", "provenance", "editedAt", "baseAnalysisAttemptId",
+    ]));
+    if (!new Set(["DRAFT_READY", "NEEDS_REVIEW"]).has(value.status)
+      || value.duplicate !== false || !new Set(["AI", "MANUAL"]).has(value.provenance)
+      || !(value.safeCode === null || (typeof value.safeCode === "string"
+        && /^AUTO_LISTING_CATEGORY_STRATEGY_[A-Z0-9_:-]+$/u.test(value.safeCode)))) throw invalid();
+    const manual = value.provenance === "MANUAL";
+    if (manual !== (value.editedAt !== null && value.baseAnalysisAttemptId !== null)) throw invalid();
+    return freeze({ attemptId: identifier(value.attemptId), resultId: identifier(value.resultId),
+      status: value.status, draftVersion: positive(value.draftVersion), duplicate: false,
+      safeCode: value.safeCode, guidance: projectCategoryStrategyGuidanceV2(value.guidance),
+      evidenceSummary: publicEvidenceSummary(value.evidenceSummary), provenance: value.provenance,
+      editedAt: value.editedAt === null ? null : exactIsoDate(value.editedAt),
+      baseAnalysisAttemptId: value.baseAnalysisAttemptId === null ? null : identifier(value.baseAnalysisAttemptId) });
+  });
+}
+
+function publicVersion(raw, { publishedOnly = false } = {}) {
+  const value = closed(raw, new Set(["id", "strategyKey", "version", "status"]));
+  if (!(publishedOnly ? value.status === "PUBLISHED" : ["DRAFT", "PUBLISHED", "RETIRED"].includes(value.status))) {
+    throw invalid();
+  }
+  return Object.freeze({ id: identifier(value.id), strategyKey: identifier(value.strategyKey),
+    version: positive(value.version), status: value.status });
+}
+
+function publicDraftDetail(raw, accountId) {
+  try {
+    const value = closed(raw, new Set(["draft", "session", "samples", "analysis", "published", "versions"]));
+    const draft = readDraftRow(value.draft, accountId);
+    const session = value.session === null ? null : (() => {
+      const item = closed(value.session, new Set(["sessionId", "state", "expiresAt"]));
+      if (item.state !== "ACTIVE") throw invalid();
+      return Object.freeze({ sessionId: identifier(item.sessionId), expiresAt: exactIsoDate(item.expiresAt),
+        browserUrl: samplingBrowserUrl(draft.browserUrl, item.sessionId),
+        extensionMode: "CATEGORY_STRATEGY_SAMPLING", scope: publicScope(draft.scope), duplicate: false });
+    })();
+    const samples = closedArray(value.samples, 0, 20).map((entry) => {
+      const item = closed(entry, new Set([
+        "sampleId", "sku", "title", "imageCount", "status", "excludedReasons", "thumbnailImageId",
+      ]));
+      if (!["READY", "EXCLUDED", "PENDING"].includes(item.status)
+        || !Number.isSafeInteger(item.imageCount) || item.imageCount < 1 || item.imageCount > 6) throw invalid();
+      const sampleId = identifier(item.sampleId);
+      const imageId = identifier(item.thumbnailImageId);
+      return Object.freeze({ sampleId, sku: identifier(item.sku), title: safeText(item.title, 500, true),
+        thumbnailUrl: `/api/admin/auto-listing/category-strategies/${encodeURIComponent(draft.draftId)}`
+          + `/samples/${encodeURIComponent(sampleId)}/images/${encodeURIComponent(imageId)}/thumbnail`,
+        imageCount: item.imageCount, status: item.status,
+        excludedReasons: Object.freeze(closedArray(item.excludedReasons, 0, 20).map((reason) => {
+          const safe = safeText(reason, 160);
+          if (!/^AUTO_LISTING_CATEGORY_STRATEGY_[A-Z0-9_:-]+$/u.test(safe)) throw invalid();
+          return safe;
+        })) });
+    });
+    if (samples.length !== draft.sampleCount || new Set(samples.map((sample) => sample.sampleId)).size !== samples.length
+      || new Set(samples.map((sample) => sample.sku)).size !== samples.length) throw invalid();
+    const versions = Object.freeze(closedArray(value.versions, 0, 1_000).map((item) => publicVersion(item)));
+    const published = value.published === null ? null : publicVersion(value.published, { publishedOnly: true });
+    if ((published === null) !== !versions.some((item) => item.status === "PUBLISHED")
+      || (published && !versions.some((item) => item.id === published.id && item.status === "PUBLISHED"))) throw invalid();
+    return freeze({ draft: publicDraft(draft, { includeSource: true }), session, samples,
+      analysis: publicReadAnalysis(value.analysis), published, versions });
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND") throw error;
+    throw dataBoundary();
+  }
+}
+
+function thumbnailEvidence(raw, expected) {
+  if (raw === null) throw failure("AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_NOT_FOUND", 404);
+  try {
+    const value = closed(raw, new Set([
+      "accountId", "draftId", "sampleId", "imageId", "objectKey", "contentHash",
+    ]));
+    if (identifier(value.accountId) !== expected.accountId || identifier(value.draftId) !== expected.draftId
+      || identifier(value.sampleId) !== expected.sampleId || identifier(value.imageId) !== expected.imageId) {
+      throw failure("AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_NOT_FOUND", 404);
+    }
+    const prefix = `category-strategy/${expected.accountId}/${expected.draftId}/`;
+    if (typeof value.objectKey !== "string" || value.objectKey.length > 1_024
+      || value.objectKey.includes("..") || !value.objectKey.startsWith(prefix)
+      || typeof value.contentHash !== "string" || !SHA256.test(value.contentHash)) throw invalid();
+    return Object.freeze({ objectKey: value.objectKey, contentHash: value.contentHash });
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_NOT_FOUND") throw error;
+    throw dataBoundary();
+  }
 }
 
 function sourceReference(raw) {
@@ -404,7 +536,7 @@ function publicationDto(raw) {
   }
 }
 
-function analysisDto(raw) {
+function analysisDto(raw, accountId) {
   return dependencyDto(() => {
     const value = closed(raw, new Set([
       "attemptId", "resultId", "status", "draftVersion", "duplicate", "safeCode", "guidance",
@@ -425,13 +557,14 @@ function analysisDto(raw) {
     const editedAt = value.editedAt === null ? null : exactIsoDate(value.editedAt);
     const baseAnalysisAttemptId = value.baseAnalysisAttemptId === null
       ? null : identifier(value.baseAnalysisAttemptId);
-    if ((editedBy === null) !== (editedAt === null) || (editedBy === null) !== (baseAnalysisAttemptId === null)) {
+    if ((editedBy === null) !== (editedAt === null) || (editedBy === null) !== (baseAnalysisAttemptId === null)
+      || (editedBy !== null && editedBy !== accountId)) {
       throw invalid();
     }
     return freeze({ attemptId: identifier(value.attemptId), resultId: identifier(value.resultId),
       status: value.status, draftVersion: positive(value.draftVersion), duplicate: value.duplicate,
       safeCode: value.safeCode, guidance, evidenceSummary,
-      editedBy, editedAt, baseAnalysisAttemptId });
+      provenance: editedBy === null ? "AI" : "MANUAL", editedAt, baseAnalysisAttemptId });
   });
 }
 
@@ -445,17 +578,19 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
     ? Object.getOwnPropertyDescriptor(rawOptions, "analyzer") : null;
   const options = closed(rawOptions, analyzerDescriptor ? FACTORY_KEYS : FACTORY_KEYS_WITHOUT_ANALYZER);
   const { repository, readModel, sampleStore, exactProductFacts, extensionSessionChannel,
-    publicationService, analyzer, now, deriveSessionIdentity } = options;
+    publicationService, analyzer, objectStorage, now, deriveSessionIdentity } = options;
   const analysisPort = analyzer ?? absentAnalyzer();
   if (!["getDraftReplay", "createDraft", "startSamplingSession", "getSamplingSessionReplay", "validateSamplingSession",
     "getCommittedSampleSetReplay", "commitSampleSetCanonical", "transitionAccountPolicy",
     "getAccountPolicy"].every((method) => typeof repository?.[method] === "function")
     || typeof readModel?.listStrategies !== "function" || typeof readModel?.getDraft !== "function"
+    || typeof readModel?.getDraftDetail !== "function" || typeof readModel?.getThumbnailEvidence !== "function"
     || typeof sampleStore?.persistSampleImages !== "function" || typeof exactProductFacts?.verify !== "function"
     || typeof extensionSessionChannel?.assertReady !== "function"
     || typeof extensionSessionChannel?.putSession !== "function"
     || typeof publicationService?.publishCategoryStrategyDraft !== "function"
     || typeof publicationService?.rollbackCategoryStrategyVersion !== "function"
+    || typeof objectStorage?.readObjectExpected !== "function"
     || typeof analysisPort?.analyze !== "function" || typeof analysisPort?.editGuidance !== "function"
     || typeof now !== "function" || typeof deriveSessionIdentity !== "function") {
     throw new TypeError("Auto-listing category strategy service dependencies are required");
@@ -538,7 +673,35 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
     async getDraft(raw = {}) {
       const input = closed(raw, new Set(["actor", "draftId"]));
       const accountId = actorAccount(input.actor);
-      return publicDraft(await ownDraft(accountId, identifier(input.draftId)));
+      const draftId = identifier(input.draftId);
+      let detail;
+      try { detail = await readModel.getDraftDetail({ accountId, draftId }); } catch (error) { dependencyError(error); }
+      if (!detail) throw failure("AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND", 404);
+      return publicDraftDetail(detail, accountId);
+    },
+
+    async readSampleThumbnail(raw = {}) {
+      const input = closed(raw, new Set(["actor", "draftId", "sampleId", "imageId"]));
+      const expected = { accountId: actorAccount(input.actor), draftId: identifier(input.draftId),
+        sampleId: identifier(input.sampleId), imageId: identifier(input.imageId) };
+      let evidence;
+      try { evidence = thumbnailEvidence(await readModel.getThumbnailEvidence(expected), expected); } catch (error) {
+        if (error?.code === "AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_NOT_FOUND") throw error;
+        dependencyError(error);
+      }
+      try {
+        const bytes = await objectStorage.readObjectExpected({ accountId: expected.accountId,
+          key: evidence.objectKey, expectedSha256: evidence.contentHash, maxBytes: 16 * 1024 * 1024 });
+        if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > 16 * 1024 * 1024) {
+          throw new Error("invalid thumbnail bytes");
+        }
+        return Buffer.from(bytes);
+      } catch (error) {
+        if (error?.code === "EXPECTED_HASH_OBJECT_STORAGE_NOT_FOUND") {
+          throw failure("AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_NOT_FOUND", 404);
+        }
+        throw failure("AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_HASH_MISMATCH", 409);
+      }
     },
 
     async createDraft(raw = {}) {
@@ -774,7 +937,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
       try {
         return analysisDto(await analysisPort.analyze({ accountId, actorId: accountId,
           draftId: identifier(input.draftId), costConfirmed: true,
-          idempotencyKey: identifier(input.idempotencyKey), correlationId: identifier(input.correlationId) }));
+          idempotencyKey: identifier(input.idempotencyKey), correlationId: identifier(input.correlationId) }), accountId);
       } catch (error) { dependencyError(error); }
     },
 
@@ -787,7 +950,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
         return analysisDto(await analysisPort.editGuidance({ accountId, actorId: accountId,
           draftId: identifier(input.draftId), expectedDraftVersion: positive(input.expectedDraftVersion),
           baseAnalysisAttemptId: identifier(patch.baseAnalysisAttemptId), guidance: patch.guidance,
-          idempotencyKey: identifier(input.idempotencyKey), correlationId: identifier(input.correlationId) }));
+          idempotencyKey: identifier(input.idempotencyKey), correlationId: identifier(input.correlationId) }), accountId);
       } catch (error) { dependencyError(error); }
     },
 

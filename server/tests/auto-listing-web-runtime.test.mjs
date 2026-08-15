@@ -254,6 +254,8 @@ test("default category runtime session route returns NOT_READY before a database
         sourceCollectItemId: "collect-a", expectedSourceVersion: "draft:1",
         browserUrl: "https://www.ozon.ru/category/170/",
       }; },
+      async getDraftDetail() { throw new Error("not used"); },
+      async getThumbnailEvidence() { return null; },
     }; },
     createSampleStore() { return { async persistSampleImages() { throw new Error("not used"); } }; },
     createObjectStorage() { return { async readObjectExpected() { throw new Error("not used"); } }; },

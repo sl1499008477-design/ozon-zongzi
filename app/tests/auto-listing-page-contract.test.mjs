@@ -217,3 +217,21 @@ test("administrators can inspect planning failures without exposing a retry acti
   const drawer = page.slice(page.indexOf('<Drawer title="图片规划问题"'));
   assert.doesNotMatch(drawer.slice(0, drawer.indexOf("</Drawer>") + 9), /重试|重新生成/u);
 });
+
+test("missing exact strategy preserves the closed form draft and returns with an explicit new create intent", () => {
+  assert.match(page, /AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED/u);
+  assert.match(page, /projectStrategyRequired/u);
+  assert.match(page, /projectStrategyResumeDraft/u);
+  assert.match(page, /sessionStorage/u);
+  assert.match(page, /开始配置/u);
+  assert.match(page, /请求管理员处理/u);
+  assert.match(page, /类目策略已准备完成/u);
+  assert.match(page, /继续创建任务/u);
+  assert.match(page, /createIntentRef\.current = null/u);
+  assert.match(page, /sourceVersions/u);
+  assert.match(page, /roles/u);
+  assert.match(page, /targetStoreId/u);
+  assert.match(page, /targetWarehouseId/u);
+  assert.match(page, /currency/u);
+  assert.doesNotMatch(page, /自动继续创建|自动恢复任务/u);
+});

@@ -1,5 +1,12 @@
 const localApiBase = String(import.meta.env?.VITE_LOCAL_API_BASE || "/api").replace(/\/$/, "");
 
+export function localApiAssetUrl(path) {
+  if (typeof path !== "string" || !path.startsWith("/api/") || path.includes("?") || path.includes("#")) {
+    throw Object.assign(new Error("CLIENT_REQUEST_INVALID"), { code: "CLIENT_REQUEST_INVALID" });
+  }
+  return `${localApiBase}${path.slice(4)}`;
+}
+
 export function apiResponseError(response = {}, data = null) {
   return Object.assign(
     new Error(data?.message || data?.error || `HTTP ${response.status}`),

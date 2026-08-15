@@ -88,3 +88,23 @@ Task 9: fix-round verification — planned 122/122; disposable PostgreSQL reposi
 Task 9: re-review follow-up found source descriptor-proxy, source-path inference and nested strategy-version carrier gaps; each received a focused RED/GREEN closed projection fix
 Task 9: latest planned verification 124/124, 0 fail/0 skip; awaiting final re-review verdict
 Task 9: final fix-round review C0/I0/M0, Spec PASS, Quality PASS, Ready Yes; reviewer independently verified focused 124/124 and clean syntax/diff
+Task 10: scoped brief complete, then amended with minimum adjacent Task 5 durable detail + hash-verified thumbnail read required for reload/deep-link correctness; no schema or external-call expansion
+Task 10: meaningful UI RED 27 total/20 pass/7 fail; backend durable-read RED proved summary-only detail and missing thumbnail command
+Task 10: implementer GREEN — focused Task 10/Task 5/Task 9 66/66; full relevant 452 total/449 pass/1 environment-only Chrome SIGABRT/2 explicit PG gate skips; Vite production build and syntax/diff checks pass
+Task 10: real ego-browser acceptance against Vite + loopback fake API — initial and reload show 5 persisted sample cards, MANUAL analysis and v2 history, zero visible internal-field leak and no horizontal overflow; screenshot CDP timed out and is recorded honestly
+Task 10: formal review round 1 found C2/I2 — protected image requests lacked Bearer transport; paid/write response loss minted new identities; same-route query selection did not reload; resume had no expiry/current-source-version gate
+Task 10: fix round 1/5 RED/GREEN — authenticated bounded WebP blob/revoke transport; durable account-scoped logical command intents; observed locationSearch; 24-hour resume plus exact current collect draftVersion fail-closed cleanup
+Task 10: disposable tmpfs PostgreSQL 16 applied migrations 001–076 and production read/service integration passed 1/1, 0 skip; real run found/fixed UTC exact-ISO session/edit timestamps; cross-account detail/thumbnail and object hash identity verified
+Task 10: latest focused 117/117; full relevant 458 total/454 pass/1 existing Chrome SIGABRT/3 explicit PG gates; Vite 4,848-module production build pass
+Task 10: Browser plugin acceptance after reload — 5 sample cards and 5 authenticated blob thumbnails loaded, MANUAL/history visible, zero raw-key leak; two screenshot files saved after ego CDP screenshot timeout
+Task 10: formal review round 2 verified all round-1 fixes and found two state-closure issues: immutable PUBLISHED draft had no successor action, and durable detail could pair current samples with stale analysis
+Task 10: fix round 2/5 RED/GREEN — published detail creates a same-scope successor with source/version authority and durable identity; read analysis binds latest sealed sample set and UI publish requires exact DRAFT_READY/current draft version
+Task 10: latest focused 119/119; full relevant 460 total/456 pass/1 existing Chrome SIGABRT/3 explicit PG gates; fresh tmpfs PostgreSQL 16 read path 1/1, 0 skip; Vite 4,848-module build pass
+Task 10: formal review round 3 verified round-2 state fixes and found created-draft response was incorrectly passed through the new source-bearing detail projector after the backend write
+Task 10: fix round 3/5 RED/GREEN — executable client create-response test plus dedicated closed five-field projection; latest focused 120/120, full relevant 461 total/457 pass/1 existing Chrome SIGABRT/3 PG gates, Vite build pass
+Task 10: formal review round 4 verified created-draft fix and found browser Back/menu to the list URL retained the old detail bundle
+Task 10: fix round 4/5 RED/GREEN — empty authoritative draft clears detail state/form and request generation prevents stale async loads restoring it; focused 121/121 and Vite build pass
+Task 10: final full relevant verification after round-4 fix — 462 total/458 pass/1 existing Chrome SIGABRT/3 explicit PG gates
+Task 10: round-5 checkpoint hardened fail-closed navigation — clear before failed list reads, generation-guard successor follow-up, and account-switch render gate/cleanup; focused remains 121/121
+Task 10: round-5 complete action hardening — sampling/create/analysis/edit/publish/rollback settle confirmed intents but suppress every stale UI/open/load/navigation/error follow-up after route/account change; focused 122/122
+Task 10: final formal review round 5 READY with C0/I0; reviewer independently verified 116 pass/0 fail/1 explicit PG gate skip and clean diff

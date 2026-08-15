@@ -12,7 +12,7 @@ function harness({ authenticated = actor, body = {}, serviceError = null } = {})
   const service = Object.freeze(Object.fromEntries([
     "listStrategies", "getSettings", "updateSettings", "getDraft", "createDraft",
     "startSamplingSession", "confirmSampleSet", "removeSample", "createAnalysisAttempt",
-    "updateDraft", "publishDraft", "rollbackDraft",
+    "updateDraft", "publishDraft", "rollbackDraft", "readSampleThumbnail",
   ].map((method) => [method, async (input) => {
     calls.push({ method, input });
     const failure = typeof serviceError === "function" ? serviceError(method) : serviceError;
@@ -91,6 +91,39 @@ test("the fixed administrator route table maps only closed methods and path IDs"
     if (path.includes("draft-a") && !path.endsWith("/drafts")) assert.equal(result.call.input.draftId, "draft-a");
     if (path.includes("sample-a")) assert.equal(result.call.input.sampleId, "sample-a");
   }
+});
+
+test("authenticated sample thumbnail route streams only bounded WebP and maps integrity failures safely", async () => {
+  const bytes = Buffer.from("verified-thumbnail");
+  const writes = []; const responses = [];
+  const handler = createAutoListingCategoryStrategyHttpHandler({
+    authenticate: async () => actor,
+    getService: async () => ({ async readSampleThumbnail(input) {
+      assert.deepEqual(input, { actor, draftId: "draft-a", sampleId: "sample-a", imageId: "image-a" });
+      return bytes;
+    } }),
+    readJson: async () => { throw new Error("GET must not read a body"); },
+    sendJson: (_res, status, payload) => responses.push({ status, payload }),
+  });
+  const response = { writeHead: (status, headers) => writes.push({ status, headers }),
+    end: (body) => writes.push({ body }) };
+  assert.equal(await handler({ method: "GET" }, response, new URL(
+    "https://example.test/admin/auto-listing/category-strategies/draft-a/samples/sample-a/images/image-a/thumbnail",
+  )), true);
+  assert.equal(writes[0].status, 200);
+  assert.equal(writes[0].headers["Content-Type"], "image/webp");
+  assert.deepEqual(writes[1].body, bytes);
+  assert.deepEqual(responses, []);
+
+  const failed = harness({ serviceError: Object.assign(new Error("private key"), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_HASH_MISMATCH", status: 409,
+  }) });
+  const result = await request(failed, "GET",
+    "/admin/auto-listing/category-strategies/draft-a/samples/sample-a/images/image-a/thumbnail");
+  assert.deepEqual(result.response, { status: 409, payload: { ok: false,
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_HASH_MISMATCH",
+    message: "样本缩略图校验失败，请重新采样" } });
+  assert.doesNotMatch(JSON.stringify(result.response), /private|objectKey|hash mismatch/iu);
 });
 
 test("unknown paths are ignored while wrong methods, queries, IDs, and extra body fields are rejected", async () => {

@@ -7,6 +7,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const DETAIL = /^\/admin\/auto-listing\/category-strategies\/([^/]+)$/u;
 const ACTION = /^\/admin\/auto-listing\/category-strategies\/([^/]+)\/(sampling-sessions|sample-sets|analysis-attempts|publish|rollback)$/u;
 const SAMPLE = /^\/admin\/auto-listing\/category-strategies\/([^/]+)\/samples\/([^/]+)$/u;
+const THUMBNAIL = /^\/admin\/auto-listing\/category-strategies\/([^/]+)\/samples\/([^/]+)\/images\/([^/]+)\/thumbnail$/u;
 const EXTENSION_BASE = "/extension/auto-listing/category-strategy";
 const EXTENSION_ACTION = /^\/extension\/auto-listing\/category-strategy\/sampling-sessions\/([^/]+)\/(confirm|cancel)$/u;
 const EXTENSION_SESSION = /^\/extension\/auto-listing\/category-strategy\/sampling-sessions\/([^/]+)$/u;
@@ -41,6 +42,9 @@ function classify(pathname) {
   if (pathname === BASE) return { kind: "list" };
   if (pathname === `${BASE}/settings`) return { kind: "settings" };
   if (pathname === `${BASE}/drafts`) return { kind: "drafts" };
+  const thumbnail = THUMBNAIL.exec(pathname);
+  if (thumbnail) return { kind: "thumbnail", draftId: decodeId(thumbnail[1]),
+    sampleId: decodeId(thumbnail[2]), imageId: decodeId(thumbnail[3]) };
   const sample = SAMPLE.exec(pathname);
   if (sample) return { kind: "remove", draftId: decodeId(sample[1]), sampleId: decodeId(sample[2]) };
   const action = ACTION.exec(pathname);
@@ -57,7 +61,7 @@ function methodAllowed(route, method) {
   const methods = {
     list: ["GET"], settings: ["GET", "PATCH"], drafts: ["POST"], detail: ["GET", "PATCH"],
     session: ["POST"], samples: ["POST"], remove: ["DELETE"], analysis: ["POST"],
-    publish: ["POST"], rollback: ["POST"],
+    publish: ["POST"], rollback: ["POST"], thumbnail: ["GET"],
   };
   return methods[route.kind].includes(method);
 }
@@ -83,6 +87,12 @@ function safeResponse(error) {
   }
   if (Number(error?.status) === 403 || error?.code === "PERMISSION_FORBIDDEN") {
     return { status: 403, payload: { ok: false, code: "PERMISSION_FORBIDDEN", message: "没有类目策略管理权限" } };
+  }
+  if (error?.code === "AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_NOT_FOUND") {
+    return { status: 404, payload: { ok: false, code: error.code, message: "样本缩略图不存在" } };
+  }
+  if (error?.code === "AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_HASH_MISMATCH") {
+    return { status: 409, payload: { ok: false, code: error.code, message: "样本缩略图校验失败，请重新采样" } };
   }
   const safe = typeof error?.code === "string"
     && /^AUTO_LISTING_CATEGORY_STRATEGY_[A-Z0-9_:-]{1,140}$/u.test(error.code);
@@ -128,6 +138,17 @@ export function createAutoListingCategoryStrategyHttpHandler({
       else if (route.kind === "settings" && req.method === "GET") data = await service.getSettings({ actor });
       else if (route.kind === "detail" && req.method === "GET") {
         data = await service.getDraft({ actor, draftId: route.draftId });
+      } else if (route.kind === "thumbnail") {
+        const bytes = await service.readSampleThumbnail({ actor, draftId: route.draftId,
+          sampleId: route.sampleId, imageId: route.imageId });
+        if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > 16 * 1024 * 1024
+          || typeof res?.writeHead !== "function" || typeof res?.end !== "function") {
+          throw routeError("AUTO_LISTING_CATEGORY_STRATEGY_THUMBNAIL_HASH_MISMATCH", 409);
+        }
+        res.writeHead(200, { "Content-Type": "image/webp", "Content-Length": String(bytes.length),
+          "Cache-Control": "private, max-age=60", "X-Content-Type-Options": "nosniff" });
+        res.end(bytes);
+        return true;
       } else {
         let body;
         try { body = closedBody(await readJson(req), BODY_KEYS[route.kind]); } catch (error) {

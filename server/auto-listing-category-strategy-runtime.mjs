@@ -334,15 +334,16 @@ export function createCategoryStrategyExtensionChannel({
   return Object.freeze(channel);
 }
 
-function createReadModel({ pool }) {
+export function createCategoryStrategyReadModel({ pool }) {
   const select = `SELECT draft.id AS draft_id,draft.account_id,draft.taxonomy_scope,
       draft.description_category_id,draft.type_id,draft.draft_version,draft.status,
       draft.source_collect_item_id,draft.expected_source_version,item.source_url AS browser_url,
+      sample_set.id AS sample_set_id,
       COALESCE(sample_set.sample_count,0)::INTEGER AS sample_count
     FROM auto_listing_category_strategy_drafts draft
     JOIN collect_items item ON item.account_id=draft.account_id AND item.id=draft.source_collect_item_id
     LEFT JOIN LATERAL (
-      SELECT sealed.sample_count
+      SELECT sealed.id,sealed.sample_count
       FROM auto_listing_category_strategy_sample_sets sealed
       WHERE sealed.account_id=draft.account_id AND sealed.draft_id=draft.id AND sealed.status='SEALED'
       ORDER BY sealed.created_at DESC,sealed.id DESC LIMIT 1
@@ -374,6 +375,99 @@ function createReadModel({ pool }) {
       const result = await pool.query(`${select}
         WHERE draft.account_id=$1 AND draft.id=$2`, [accountId, draftId]);
       return row(result.rows[0]);
+    },
+    async getDraftDetail({ accountId, draftId }) {
+      const result = await pool.query(`WITH target AS (
+        ${select}
+        WHERE draft.account_id=$1 AND draft.id=$2
+      )
+      SELECT target.*,
+        CASE WHEN session.id IS NULL THEN NULL ELSE jsonb_build_object(
+          'sessionId',session.id,'state',session.state,
+          'expiresAt',TO_CHAR(session.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) END AS session,
+        COALESCE(sample_cards.samples,'[]'::JSONB) AS samples,
+        CASE WHEN analysis.id IS NULL THEN NULL ELSE jsonb_build_object(
+          'attemptId',analysis.attempt_id,'resultId',analysis.id,
+          'status',CASE WHEN analysis.source_kind='MANUAL'
+            OR analysis.raw_response->>'validationStatus'='ACCEPTED' THEN 'DRAFT_READY' ELSE 'NEEDS_REVIEW' END,
+          'draftVersion',target.draft_version,'duplicate',FALSE,
+          'safeCode',analysis.raw_response->>'safeCode','guidance',analysis.guidance,
+          'evidenceSummary',analysis.evidence_summary,
+          'provenance',analysis.source_kind,
+          'editedAt',CASE WHEN analysis.edited_at IS NULL THEN NULL ELSE
+            TO_CHAR(analysis.edited_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END,
+          'baseAnalysisAttemptId',analysis.base_analysis_attempt_id
+        ) END AS analysis,
+        versions.published,COALESCE(versions.items,'[]'::JSONB) AS versions
+      FROM target
+      LEFT JOIN LATERAL (
+        SELECT id,state,expires_at
+        FROM auto_listing_category_strategy_sampling_sessions
+        WHERE account_id=target.account_id AND draft_id=target.draft_id AND state='ACTIVE'
+        ORDER BY created_at DESC,id DESC LIMIT 1
+      ) session ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(jsonb_build_object(
+          'sampleId',sample.id,'sku',sample.sku,'title',NULL,'imageCount',image.count,
+          'status','READY','excludedReasons','[]'::JSONB,'thumbnailImageId',image.thumbnail_image_id
+        ) ORDER BY sample.ordinal,sample.id) AS samples
+        FROM auto_listing_category_strategy_samples sample
+        JOIN LATERAL (
+          SELECT COUNT(*)::INTEGER AS count,
+                 (ARRAY_AGG(sample_image.image_id ORDER BY sample_image.ordinal,sample_image.id))[1]
+                   AS thumbnail_image_id
+          FROM auto_listing_category_strategy_sample_images sample_image
+          WHERE sample_image.account_id=sample.account_id AND sample_image.draft_id=sample.draft_id
+            AND sample_image.sample_set_id=sample.sample_set_id AND sample_image.sample_id=sample.id
+        ) image ON image.count BETWEEN 1 AND 6
+        WHERE sample.account_id=target.account_id AND sample.draft_id=target.draft_id
+          AND sample.sample_set_id=(
+            SELECT sealed.id FROM auto_listing_category_strategy_sample_sets sealed
+            WHERE sealed.account_id=target.account_id AND sealed.draft_id=target.draft_id
+              AND sealed.status='SEALED' ORDER BY sealed.created_at DESC,sealed.id DESC LIMIT 1
+          )
+      ) sample_cards ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT result.*,COALESCE(result.raw_response->'evidenceSummary',
+          base.raw_response->'evidenceSummary') AS evidence_summary
+        FROM auto_listing_category_strategy_analysis_results result
+        LEFT JOIN auto_listing_category_strategy_analysis_results base
+          ON base.account_id=result.account_id AND base.draft_id=result.draft_id
+         AND base.attempt_id=result.base_analysis_attempt_id AND base.source_kind='AI'
+        WHERE result.account_id=target.account_id AND result.draft_id=target.draft_id
+          AND result.sample_set_id=target.sample_set_id
+        ORDER BY result.created_at DESC,result.id DESC LIMIT 1
+      ) analysis ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(jsonb_build_object(
+          'id',version.id,'strategyKey',version.strategy_key,'version',version.version,'status',version.status
+        ) ORDER BY version.version DESC,version.id DESC) AS items,
+        (jsonb_agg(jsonb_build_object(
+          'id',version.id,'strategyKey',version.strategy_key,'version',version.version,'status',version.status
+        ) ORDER BY version.version DESC,version.id DESC) FILTER (WHERE version.status='PUBLISHED'))->0 AS published
+        FROM ai_content_strategy_versions version
+        WHERE version.account_id=target.account_id AND version.strategy_key='default'
+      ) versions ON TRUE`, [accountId, draftId]);
+      const value = result.rows[0];
+      return value ? { draft: row(value), session: value.session, samples: value.samples,
+        analysis: value.analysis, published: value.published, versions: value.versions } : null;
+    },
+    async getThumbnailEvidence({ accountId, draftId, sampleId, imageId }) {
+      const result = await pool.query(
+        `SELECT image.account_id,image.draft_id,image.sample_id,image.image_id,
+                image.thumbnail_object_key,image.thumbnail_content_hash
+           FROM auto_listing_category_strategy_sample_images image
+           JOIN auto_listing_category_strategy_sample_sets sample_set
+             ON sample_set.account_id=image.account_id AND sample_set.id=image.sample_set_id
+            AND sample_set.draft_id=image.draft_id AND sample_set.status='SEALED'
+          WHERE image.account_id=$1 AND image.draft_id=$2 AND image.sample_id=$3 AND image.image_id=$4`,
+        [accountId, draftId, sampleId, imageId],
+      );
+      const value = result.rows[0];
+      return value ? { accountId: value.account_id, draftId: value.draft_id,
+        sampleId: value.sample_id, imageId: value.image_id, objectKey: value.thumbnail_object_key,
+        contentHash: value.thumbnail_content_hash } : null;
     },
   });
 }
@@ -477,7 +571,7 @@ export function createAutoListingCategoryStrategyRuntime({
   env = process.env,
   getPostgresPool: resolvePool = getPostgresPool,
   createRepository = createAutoListingCategoryStrategyPostgres,
-  createStrategyReadModel = createReadModel,
+  createStrategyReadModel = createCategoryStrategyReadModel,
   createSampleStore = createCategoryStrategySampleStore,
   createObjectStorage = createExpectedHashObjectStorage,
   createAnalyzer = createCategoryStrategyAnalyzer,
@@ -542,7 +636,7 @@ export function createAutoListingCategoryStrategyRuntime({
             configurationResolver: createCategoryStrategyAnalysisConfigurationResolver({ pool }) });
           const publicationService = createPublicationService({ pool,
             createRepository: createPublicationRepository, createService: createAdminService });
-          return createService({ repository, readModel, sampleStore, analyzer,
+          return createService({ repository, readModel, sampleStore, analyzer, objectStorage,
             exactProductFacts: factsPort,
             extensionSessionChannel: sessionChannel, publicationService, now,
             deriveSessionIdentity: deriveSessionIdentity ?? createSessionIdentityDeriver(env) });

@@ -45,6 +45,13 @@ import {
 } from "./auto-listing-view.js";
 import { autoListingPlanDiagnosticDetail } from "./auto-listing-plan-diagnostics.js";
 import { apiRequest } from "./client-transport.js";
+import {
+  clearStrategyResumeDraft,
+  projectStrategyRequired,
+  projectStrategyResumeDraft,
+  readStrategyResumeDraft,
+  writeStrategyResumeDraft,
+} from "./category-strategy-model.js";
 import "./auto-listing-page.css";
 
 const ROLE_FIELDS = Object.freeze([
@@ -110,10 +117,44 @@ function safeStoreLabel(store) {
   return "未命名店铺";
 }
 
+function errorBody(error) {
+  try {
+    const descriptor = error && typeof error === "object"
+      ? Object.getOwnPropertyDescriptor(error, "body") : null;
+    return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : null;
+  } catch {
+    return null;
+  }
+}
+
+function sourceVersions(localData, collectIds) {
+  const rows = localData?.caches?.collectBox || localData?.collectBox || [];
+  const byId = new Map((Array.isArray(rows) ? rows : []).map((row) => [String(row?.id || ""), row]));
+  return collectIds.map((collectItemId) => {
+    const draftVersion = Number(byId.get(collectItemId)?.draftVersion);
+    if (!Number.isSafeInteger(draftVersion) || draftVersion < 1) throw new Error("来源版本不可用，请刷新采集箱后重试");
+    return { collectItemId, expectedSourceVersion: `draft:${draftVersion}` };
+  });
+}
+
+function currentCollectSourceVersion(localData, collectItemId) {
+  const rows = localData?.caches?.collectBox || localData?.collectBox || [];
+  const row = (Array.isArray(rows) ? rows : []).find((entry) => String(entry?.id || "") === collectItemId);
+  const draftVersion = Number(row?.draftVersion);
+  return Number.isSafeInteger(draftVersion) && draftVersion >= 1 ? `draft:${draftVersion}` : null;
+}
+
 export default function AutoListingPage({ localData = {}, onRefresh, account = null, navigate = () => {} } = {}) {
+  const accountId = String(account?.id || "").trim();
+  const initialResume = readStrategyResumeDraft(globalThis.sessionStorage, accountId, {
+    sourceVersionOf: (collectItemId) => currentCollectSourceVersion(localData, collectItemId),
+  });
   const [form] = Form.useForm();
-  const [source, setSource] = useState("collect");
-  const [collectIds] = useState(() => visibleCollectIds(localData, collectIdsFromLocation()));
+  const [resumeDraft, setResumeDraft] = useState(initialResume);
+  const [strategyRequired, setStrategyRequired] = useState(null);
+  const [source, setSource] = useState(initialResume?.source || "collect");
+  const [collectIds] = useState(() => initialResume?.collectIds
+    || visibleCollectIds(localData, collectIdsFromLocation()));
   const [workbook, setWorkbook] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [imports, setImports] = useState([]);
@@ -144,7 +185,6 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   const createInFlightRef = useRef(false);
 
   const stores = useMemo(() => (localData?.stores || []).filter((store) => !store?.disabled), [localData]);
-  const accountId = String(account?.id || "").trim();
   const defaultStoreId = stores[0]?.id || "";
   const warehouses = localData?.caches?.warehouses || localData?.warehouses || [];
   const selectedStoreId = Form.useWatch("targetStoreId", form) || "";
@@ -200,7 +240,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       const preference = preferenceResult?.data || {};
       setPreferenceVersion(Number.isInteger(preference.configVersion) ? preference.configVersion : 0);
       if (hydratedAccountRef.current !== accountId) {
-        form.setFieldsValue({
+        form.setFieldsValue(resumeDraft?.form || {
           ...DEFAULT_FORM,
           targetStoreId: preference.targetStoreId || defaultStoreId,
           targetWarehouseId: preference.targetWarehouseId || "",
@@ -234,9 +274,14 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     } finally {
       if (requestVersion === loadRequestRef.current) setLoading(false);
     }
-  }, [accountId, defaultStoreId, form]);
+  }, [accountId, defaultStoreId, form, resumeDraft]);
 
   useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    if (resumeDraft?.state !== "READY_TO_CONTINUE") return;
+    createIntentRef.current = null;
+    setNotice("类目策略已准备完成，请检查原配置后继续创建任务");
+  }, [resumeDraft]);
   useEffect(() => () => { importDetailRequestRef.current += 1; }, []);
   useEffect(() => () => { planDiagnosticRequestRef.current += 1; }, []);
 
@@ -260,8 +305,10 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     setError("");
     setNotice("");
     setSubmitting(true);
+    let pendingValues = null;
     try {
       const values = await form.validateFields();
+      pendingValues = values;
       if (!currencyPresentation) throw new Error("当前店铺币种不支持自动上架，请检查店铺设置");
       const config = normalizedConfig(values);
       if (source === "collect" && !collectIds.length) throw new Error("请先从采集箱选择商品");
@@ -316,6 +363,9 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         setWorkbook(null);
       }
       createIntentRef.current = null;
+      clearStrategyResumeDraft(globalThis.sessionStorage, accountId);
+      setResumeDraft(null);
+      setStrategyRequired(null);
       setNotice("任务已创建");
       let refreshed = await loadData();
       try {
@@ -325,7 +375,35 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       }
       if (!refreshed) setError("任务已创建，但列表刷新失败，请手动刷新");
     } catch (caught) {
-      setError(autoListingTaskErrorMessage(caught));
+      if (caught?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED" && pendingValues && currencyPresentation) {
+        try {
+          const required = projectStrategyRequired(errorBody(caught));
+          const createdAt = new Date().toISOString();
+          const draft = projectStrategyResumeDraft({
+            schemaVersion: 1,
+            createdAt,
+            expiresAt: new Date(new Date(createdAt).getTime() + 24 * 60 * 60 * 1_000).toISOString(),
+            accountId,
+            source,
+            collectIds,
+            sourceVersions: sourceVersions(localData, collectIds),
+            form: pendingValues,
+            currency: currencyPresentation.currency,
+            required,
+            state: "CONFIGURING",
+          });
+          writeStrategyResumeDraft(globalThis.sessionStorage, draft);
+          createIntentRef.current = null;
+          setResumeDraft(draft);
+          setStrategyRequired(required);
+          setError("");
+        } catch (boundaryError) {
+          setError(boundaryError?.message === "来源版本不可用，请刷新采集箱后重试"
+            ? boundaryError.message : "类目策略配置资料无效，请刷新后重试");
+        }
+      } else {
+        setError(autoListingTaskErrorMessage(caught));
+      }
     } finally {
       createInFlightRef.current = false;
       setSubmitting(false);
@@ -596,7 +674,9 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
           </div>
           <div className="auto-listing-total">图片数量：<strong>{imageTotal}</strong> 张（允许 6～13 张）</div>
         </Form>
-        <Button type="primary" size="large" icon={<ThunderboltOutlined />} loading={submitting} onClick={createTask}>创建生成任务</Button>
+        <Button type="primary" size="large" icon={<ThunderboltOutlined />} loading={submitting} onClick={createTask}>
+          {resumeDraft?.state === "READY_TO_CONTINUE" ? "继续创建任务" : "创建生成任务"}
+        </Button>
       </Card>
 
       <Card title="3. 导入与任务进度" extra={<Button onClick={loadData}>刷新</Button>}>
@@ -610,6 +690,25 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         <Table rowKey="itemId" dataSource={taskRows} columns={taskColumns} pagination={{ pageSize: 10 }} locale={{ emptyText: "暂无自动上架任务" }} />
       </Card>
     </Spin>
+
+    <Modal title="需要先配置类目图片策略" open={Boolean(strategyRequired)}
+      onCancel={() => setStrategyRequired(null)} footer={strategyRequired ? <Space wrap>
+        <Button onClick={() => setStrategyRequired(null)}>暂不处理</Button>
+        {strategyRequired.canManage ? <Button type="primary" onClick={() => {
+          const draftQuery = strategyRequired.draftId
+            ? `?draftId=${encodeURIComponent(strategyRequired.draftId)}` : "?from=auto-listing";
+          navigate(`/ozon/tools/category-strategies${draftQuery}`);
+        }}>开始配置</Button> : <Button type="primary" onClick={() => setStrategyRequired(null)}>请求管理员处理</Button>}
+      </Space> : null}>
+      {strategyRequired ? <Space direction="vertical" size={8}>
+        <Alert type="warning" showIcon title="当前精确类目尚未发布图片策略"
+          description="系统没有创建任务，也没有调用付费 AI。原店铺、仓库、币种、库存和图片数量配置已保留。" />
+        <span>类目：{strategyRequired.scope.descriptionCategoryId}</span>
+        <span>商品类型：{strategyRequired.scope.typeId}</span>
+        <span>当前状态：{strategyRequired.status}</span>
+        {!strategyRequired.canManage ? <span role="status">你没有管理权限，请请求管理员处理。</span> : null}
+      </Space> : null}
+    </Modal>
 
     <Drawer title="生成结果审核" open={reviewOpen} onClose={closeReview} size="large">
       <Spin spinning={reviewLoading}>

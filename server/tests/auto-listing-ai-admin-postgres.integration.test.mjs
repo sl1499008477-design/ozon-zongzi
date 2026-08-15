@@ -2477,6 +2477,8 @@ if (!enabled) {
             sourceCollectItemId: `source-${suffix}`, expectedSourceVersion: "draft:7",
             browserUrl: "https://www.ozon.ru/category/270/",
           }; },
+          async getDraftDetail() { throw new Error("not used"); },
+          async getThumbnailEvidence() { return null; },
         },
         sampleStore: { async persistSampleImages() { throw new Error("not used"); } },
         exactProductFacts: { async verify() { throw new Error("not used"); } },
@@ -2485,6 +2487,7 @@ if (!enabled) {
           async putSession() { throw new Error("not used"); },
         },
         publicationService,
+        objectStorage: { async readObjectExpected() { throw new Error("not used"); } },
         now: () => new Date("2026-08-15T00:00:00.000Z"),
         async deriveSessionIdentity() { throw new Error("not used"); },
       });
