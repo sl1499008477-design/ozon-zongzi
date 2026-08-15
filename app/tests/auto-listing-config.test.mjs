@@ -230,6 +230,13 @@ test("task creation explains an unresolved Ozon category dictionary without raw 
   }), "商品品牌或类目选项未在 Ozon 当前字典中登记，请先补全资料");
 });
 
+test("task creation explains unresolved missing-brand fallback without raw backend text", () => {
+  assert.equal(autoListingTaskErrorMessage({
+    code: "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED",
+    message: "raw missing-brand dictionary secret",
+  }), "商品缺少品牌，且 Ozon 当前类目未提供唯一的“无品牌”选项，请补全品牌后重试");
+});
+
 test("reads a bounded workbook once and returns only request-safe metadata", async () => {
   const bytes = Uint8Array.from([0, 1, 2, 3]);
   let reads = 0;

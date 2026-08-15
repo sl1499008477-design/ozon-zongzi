@@ -25,6 +25,7 @@ const PUBLIC_ERRORS = Object.freeze({
   AUTO_LISTING_CATEGORY_NEEDS_REVIEW: 409,
   AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE: 422,
   AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED: 422,
+  AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED: 422,
   TARGET_STORE_NOT_FOUND: 404,
   TARGET_STORE_DISABLED: 409,
   TARGET_STORE_CREDENTIALS_REQUIRED: 409,
@@ -222,6 +223,7 @@ function messageFor(code) {
   if (code === "AUTO_LISTING_CATEGORY_NEEDS_REVIEW") return "Ozon 当前类目无法唯一确定，请联系管理员处理";
   if (code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE") return "Ozon 类目属性暂时不可用，请稍后重试";
   if (code === "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED") return "商品品牌或类目选项未在 Ozon 当前字典中登记，请先补全资料";
+  if (code === "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED") return "商品缺少品牌，且 Ozon 当前类目未提供唯一的“无品牌”选项，请补全品牌后重试";
   if (code === "RFBS_WAREHOUSE_NOT_FOUND") return "未找到目标 RFBS 仓库";
   if (code === "RFBS_WAREHOUSE_DISABLED") return "目标 RFBS 仓库不可用";
   if (code === "RFBS_WAREHOUSE_SCOPE_MISMATCH") return "RFBS 仓库不属于当前账号或店铺";
