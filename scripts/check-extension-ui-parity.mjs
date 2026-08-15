@@ -44,8 +44,10 @@ const reviewedUiFingerprints = new Map([
   [
     "content/ozon-search.css",
     {
+      // Task 6 replaces the retired generic selection controls with the
+      // category-strategy-only sampling, validation/error, and action states.
       upstream: "510c3f330ce5c227733cc8da60499b17c766871408e8380af1078d5ef55a5aba",
-      local: "59b4126a06b00ea0b80dfaf250e342baa36828fac651a9b01716e4bd90846faf",
+      local: "7c3de747978c9d72d0651d3bedac3c611ec640fcf2bbe92d4e9473a5ff63b015",
     },
   ],
 ]);
