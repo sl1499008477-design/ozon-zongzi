@@ -795,24 +795,50 @@ test('first real authentication emits exactly one accepted, ticket, and exchange
   assert.equal((await runtime.status()).phase, 'AUTHENTICATED');
 });
 
-test('two real tab bridges accept only their selected worker attempt across watchdog rotation', async (t) => {
+test('two real tab bridges fail over serially after the production HTTP timeout', async (t) => {
   const runtime = createBrowserHarness({ tabIds: [10, 11] });
   t.after(() => runtime.unloadPopup());
   let ticketRequestAttempts = 0;
   let ticketsIssued = 0;
   let concurrentTickets = 0;
   let maxConcurrentTickets = 0;
+  let httpTimeouts = 0;
+  let httpAborts = 0;
+  let httpRejects = 0;
+  let bridgeSignalsObserved = 0;
+  let bridgeSignalAborts = 0;
   const removeFirstBridge = await runtime.installWebBridge({
     tabId: 10,
     requestTicket: ({ signal }) => {
       ticketRequestAttempts += 1;
       concurrentTickets += 1;
       maxConcurrentTickets = Math.max(maxConcurrentTickets, concurrentTickets);
+      bridgeSignalsObserved += 1;
+      assert.ok(signal instanceof AbortSignal);
+      signal.addEventListener('abort', () => { bridgeSignalAborts += 1; }, { once: true });
+      const requestController = new AbortController();
+      const onBridgeAbort = () => requestController.abort(signal.reason);
+      if (signal.aborted) onBridgeAbort();
+      else signal.addEventListener('abort', onBridgeAbort, { once: true });
+      const timeout = runtime.clock.setTimer(() => {
+        httpTimeouts += 1;
+        requestController.abort();
+      }, 28_000);
       return new Promise((_resolve, reject) => {
-        signal.addEventListener('abort', () => {
+        requestController.signal.addEventListener('abort', () => {
+          httpAborts += 1;
           concurrentTickets -= 1;
-          reject(Object.assign(new Error('first tab closed'), { code: 'REQUEST_ABORTED' }));
+          const error = new Error('HTTP request aborted by its 28-second timeout');
+          error.name = 'AbortError';
+          reject(error);
         }, { once: true });
+      }).catch((error) => {
+        assert.equal(error.name, 'AbortError');
+        httpRejects += 1;
+        timeout.cancelled = true;
+        throw Object.assign(new Error('REQUEST_TIMEOUT'), { code: 'REQUEST_TIMEOUT' });
+      }).finally(() => {
+        signal.removeEventListener('abort', onBridgeAbort);
       });
     },
   });
@@ -842,11 +868,27 @@ test('two real tab bridges accept only their selected worker attempt across watc
   assert.equal(ticketsIssued, 0);
   assert.equal(runtime.exchangeCalls.length, 0);
 
-  await runtime.clock.advance(31_000);
-  assert.equal((await runtime.status()).phase, 'RETRY_WAIT');
-  removeFirstBridge();
-  await flush();
-  await runtime.clock.advance(1_000);
+  await runtime.clock.advance(27_999);
+  assert.equal((await runtime.status()).phase, 'REQUESTING_TICKET');
+  await runtime.clock.advance(1);
+  const retryStatus = await runtime.status();
+  assert.equal(retryStatus.phase, 'RETRY_WAIT');
+  assert.equal(retryStatus.publicCode, 'LOCAL_SERVICE_UNAVAILABLE');
+  assert.equal(retryStatus.nextRetryAt, '2030-01-01T00:00:29.000Z');
+  assert.equal(httpTimeouts, 1);
+  assert.equal(httpAborts, 1);
+  assert.equal(httpRejects, 1);
+  assert.equal(bridgeSignalsObserved, 1);
+  assert.equal(bridgeSignalAborts, 0, 'the HTTP timeout must not impersonate bridge uninstall');
+  assert.equal(
+    runtime.workerMessages.filter(({ message }) => message.action === 'collector.auth.failure').length,
+    1,
+  );
+  assert.equal(runtime.exchangeCalls.length, 0);
+
+  await runtime.clock.advance(999);
+  assert.deepEqual(runtime.tabDeliveries.map(({ tabId }) => tabId), [10]);
+  await runtime.clock.advance(1);
   await flush(600);
 
   assert.deepEqual(runtime.tabDeliveries.map(({ tabId }) => tabId), [10, 11]);
@@ -860,6 +902,22 @@ test('two real tab bridges accept only their selected worker attempt across watc
   );
   assert.equal(maxConcurrentTickets, 1);
   assert.equal((await runtime.status()).phase, 'AUTHENTICATED');
+
+  await runtime.clock.advance(3_000);
+  await flush();
+  const [firstRequest, secondRequest] = runtime.tabDeliveries.map(
+    ({ message }) => message.requestId,
+  );
+  assert.notEqual(firstRequest, secondRequest);
+  assert.deepEqual(
+    runtime.workerMessages
+      .filter(({ message }) => message.action === 'collector.auth.exchange')
+      .map(({ message }) => message.requestId),
+    [secondRequest],
+  );
+  assert.equal(httpTimeouts, 1);
+  assert.equal(httpAborts, 1);
+  assert.equal(httpRejects, 1);
 });
 
 test('accepted response timeout retries through the coordinator after 31 seconds plus backoff', async (t) => {

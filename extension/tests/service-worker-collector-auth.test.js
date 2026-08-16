@@ -239,6 +239,7 @@ function loadServiceWorker({
       headers: { 'content-type': 'application/json' },
     }),
     globalThis: null,
+    Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
     navigator: {
       hardwareConcurrency: 8,
       language: 'en-US',
@@ -977,6 +978,10 @@ test('expired worker attempt rejects its late begin before activation and rotate
   });
   assert.equal(harness.activationCalls.length, activationCount);
 
+  const retryTimer = clock.timers.find(
+    ({ cancelled, milliseconds }) => !cancelled && milliseconds >= 900 && milliseconds <= 1_100,
+  );
+  assert.equal(retryTimer?.milliseconds, 1_000);
   await clock.advance(1_000);
   await waitFor(() => harness.tabMessages.length === 2);
   assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10, 11]);

@@ -181,8 +181,8 @@ Generated packages need no Task 2 rollback because they were not changed.
 - The service worker clears only its matching in-memory `{ requestId, tabId }` attempt when the coordinator ends that request. The begin route invokes `activateCollectorGeneration` only when the coordinator returned `accepted: true`; it does not infer acceptance from a public phase.
 - Consequently, the 31-second accepted-response watchdog ends both coordinator and service-worker ownership. A late begin for the expired request/tab is `PORTAL_BRIDGE_FORBIDDEN`, cannot activate a generation, and the existing 1-second bounded retry can select the next tab.
 - Coordinator and service-worker test harnesses no longer generate, add, replace, or normalize a transition's `requestId`. Positive tests explicitly call a real retry, capture its generated ID, and pass it through begin/accepted/failure/exchange/success. Negative missing/noncanonical/stale values are sent literally.
-- The acceptance browser harness now creates independent content-script event registries, VM contexts, page windows, senders, and Web bridges per tab. The real worker selector sends attempt 1 only to tab 10, the actual 31-second watchdog expires it, and the existing backoff sends attempt 2 only to tab 11.
-- In that failover scenario `ticketRequestAttempts=2` (the expired tab's hanging HTTP attempt and the replacement attempt), `ticketsIssued=1`, `exchanges=1`, and `maxConcurrentTickets=1`. Uninstall aborts the expired tab handler before retry; its late path cannot issue or exchange a ticket.
+- The acceptance browser harness now creates independent content-script event registries, VM contexts, page windows, senders, and Web bridges per tab. The real worker selector sends attempt 1 only to tab 10; its production-equivalent 28-second HTTP timeout emits the real failure envelope, and the existing backoff sends attempt 2 only to tab 11. A separate service-worker regression exercises the 31-second response watchdog and late-begin fence.
+- In that failover scenario `ticketRequestAttempts=2` (the timed-out tab's HTTP attempt and the replacement attempt), `ticketsIssued=1`, `exchanges=1`, and `maxConcurrentTickets=1`. The first request's internal HTTP controller aborts at 28 seconds without manually removing its bridge; its late path cannot issue or exchange a ticket.
 
 No public V2/legacy message shape changed. Request IDs, tickets, collector tokens, and raw errors remain absent from status/storage projections.
 
@@ -227,10 +227,10 @@ The negative begin boundary now sends `undefined`, `not canonical!`, and `collec
 Focused command:
 
 ```bash
-/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-name-pattern='two real tab bridges' extension/tests/collector-auth-acceptance.test.js
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-name-pattern='two real tab bridges fail over serially' extension/tests/collector-auth-acceptance.test.js
 ```
 
-Result on first focused run after the lower-layer RED/GREEN fix: 1 passed, 0 failed. This replaced the previous synthetic second-sender assertion with two real content/page contexts and required no additional production change. It verifies real selector delivery, real accepted watchdog/backoff, serial abort before failover, one successful ticket, and one exchange.
+Result after the Round 2 realism correction: 1 passed, 0 failed. This replaced the previous synthetic second-sender assertion with two real content/page contexts and required no production change. It verifies real selector delivery, the Web-side 28-second HTTP abort/failure envelope, coordinator backoff, serial failover, one successful ticket, and one exchange. The 31-second coordinator watchdog remains independently covered by the service-worker test and is not described as unloading a Web page.
 
 ## Final regression
 
@@ -245,7 +245,7 @@ Result on first focused run after the lower-layer RED/GREEN fix: 1 passed, 0 fai
 - Direct sync-auth runtime script: exited 0 with `sync auth runtime tests passed`.
 - `git diff --check`: passed.
 
-The first combined 152-test attempt found one fake-clock harness settling-budget flake: the retry callback completed in the isolated service-worker run but exceeded the helper's 30 microtask polls under multi-file concurrency (151 passed, 1 failed). Raising the test-only bounded poll budget to 300 made the same deterministic fake-clock transition stable; no wall-clock sleep or production timing changed.
+The first combined 152-test attempt exposed a test-harness determinism problem: retry jitter used the VM's native `Math.random`, so advancing exactly 1,000 ms could miss a valid 900–1,100 ms retry (151 passed, 1 failed). Raising the microtask poll budget did not address that timing cause. Round 2 injects `Math.random = () => 0.5` into every retry-owning service-worker/acceptance VM and asserts the exact 1,000 ms schedule; no wall-clock sleep or production timing changed.
 
 ## Review, unverified scope, and risks
 
@@ -265,3 +265,66 @@ git revert <task-2-fix-round-1-commit-hash>
 ```
 
 That restores the prior Task 2 behavior. No generated artifact rollback is needed.
+
+---
+
+# Task 2 Fix Round 2 — deterministic production-timeout failover
+
+## Commit and scope
+
+- Parent fix commit: `52ab5892d74e1af0799f74c89333cb0f2d93d504`.
+- Fix commit subject: `test: make collector auth failover deterministic`.
+- The final fix commit hash is reported in the task handoff because a commit cannot contain its own stable object hash.
+- Changed tests and this report only. No product source, generated package, dependency, manifest, ledger, server, or database changed.
+
+## Test realism corrections
+
+- The two-tab acceptance no longer calls `removeFirstBridge()` to manufacture serialization. Tab 10's `requestTicket` now models the production `apiRequest(..., { signal, timeoutMs: 28_000 })` behavior: it observes the bridge-owned signal, creates an internal HTTP controller, the fake 28,000 ms timer aborts that controller, an `AbortError` is mapped to `REQUEST_TIMEOUT`, and the bridge emits the real `LOCAL_SERVICE_UNAVAILABLE` failure envelope.
+- The exact failure reaches sync-auth, service worker, and coordinator, which enters `RETRY_WAIT` with `nextRetryAt` exactly 29,000 ms. After the real 1,000 ms coordinator retry, the worker selector delivers only to tab 11.
+- Final acceptance counters are `ticketRequestAttempts=2`, `ticketsIssued=1`, `exchanges=1`, `maxConcurrentTickets=1`, `httpTimeouts=1`, `httpAborts=1`, and `httpRejects=1`. The bridge signal is observed but remains un-aborted by the internal HTTP timeout, matching production separation between request timeout and bridge uninstall. Advancing beyond the old 31-second boundary proves tab 10 emits no late response/exchange.
+- The separate service-worker test still exercises the true 31-second response watchdog: the old request/tab late begin is forbidden, activation count is unchanged, and the next coordinator attempt selects tab 11. It makes no claim that a worker watchdog unloads or aborts the page bridge.
+- Both service-worker and acceptance VMs now use deterministic retry jitter (`Math.random() === 0.5`), yielding the exact existing 1,000 ms first retry. No product jitter logic was changed.
+
+## TDD evidence
+
+RED command:
+
+```bash
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-name-pattern='expired worker attempt rejects its late begin' extension/tests/service-worker-collector-auth.test.js
+```
+
+Result: 0 passed, 1 failed. The VM's native random generated a 1,033 ms retry, so the new exact deterministic assertion failed with `1033 !== 1000`. This reproduces the same 900–1,100 ms jitter class that made exact 1,000 ms advances flaky.
+
+GREEN focused commands:
+
+```bash
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-name-pattern='expired worker attempt rejects its late begin' extension/tests/service-worker-collector-auth.test.js
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-name-pattern='two real tab bridges fail over serially' extension/tests/collector-auth-acceptance.test.js
+```
+
+Results: 1 passed, 0 failed each. A no-sleep shell loop then ran both focused tests 20 times; all 20 iterations exited 0.
+
+The combined service-worker and acceptance files passed 44/44 before final regression.
+
+## Final regression, unverified scope, and rollback
+
+```bash
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test app/tests/collector-auth-bridge.test.mjs extension/tests/collector-auth-flow.test.js extension/tests/collector-auth-coordinator.test.js extension/tests/portal-bridge-policy.test.js extension/tests/service-worker-collector-auth.test.js extension/tests/web-bridge-policy.test.js extension/tests/collector-auth-acceptance.test.js extension/tests/sync-capability-removed.test.js
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node extension/tests/web-bridge-policy.test.js
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node extension/tests/sync-auth-runtime.test.js
+```
+
+- Task 2 narrow regression: 152 passed, 0 failed.
+- Web bridge policy direct script: exited 0 with `web bridge policy tests passed`.
+- Sync-auth runtime direct script: exited 0 with `sync auth runtime tests passed`.
+- `git diff --check`: passed before commit.
+
+Unverified scope is unchanged: no live Chrome, real login/ticket endpoint, generated package, or unrelated full repository suite. The fake HTTP adapter intentionally models the already-preserved 28-second `apiRequest` timeout contract rather than invoking a real network.
+
+This round is test/report only. Revert its final commit with:
+
+```bash
+git revert <task-2-fix-round-2-commit-hash>
+```
+
+No data or generated artifact recovery is required.
