@@ -49,6 +49,7 @@ function storageArea(state, calls, name) {
 function createHarness({
   now = Date.parse('2030-01-01T00:00:00.000Z'),
   fetchImpl,
+  createExchangeSignal,
   newGenerationIncarnation,
 } = {}) {
   const calls = [];
@@ -68,6 +69,7 @@ function createHarness({
     chromeApi,
     backendUrl: async () => 'http://127.0.0.1:3000/api',
     fetchImpl: fetchImpl || (async () => jsonResponse(500, { code: 'UNEXPECTED_FETCH' })),
+    createExchangeSignal,
     now: () => now,
     newGenerationIncarnation: newGenerationIncarnation
       || (() => `collector_activation_${++incarnationSequence}_1234`),
@@ -518,6 +520,46 @@ test('ticket exchange requires its generation to be active before the network re
   );
   assert.equal(fetchCalls, 0);
   assert.equal(await harness.manager.getCollectorSession(), null);
+});
+
+test('ticket exchange uses a bounded abort signal and redacts timeout diagnostics', async () => {
+  const ticket = 'ctt_timeout_secret_123456789';
+  const controller = new AbortController();
+  const fetchStarted = deferred();
+  let releaseFetch = () => {};
+  const harness = createHarness({
+    createExchangeSignal: () => controller.signal,
+    fetchImpl: async (_url, options) => {
+      fetchStarted.resolve(options);
+      return new Promise((resolve, reject) => {
+        releaseFetch = () => resolve(jsonResponse(500, { code: 'TEST_RELEASE' }));
+        options.signal?.addEventListener('abort', () => reject(Object.assign(
+          new Error(`timed out while exchanging ${ticket}`),
+          { name: 'AbortError' },
+        )), { once: true });
+      });
+    },
+  });
+  await harness.manager.activateCollectorGeneration('generation_timeout_1234');
+
+  const exchange = harness.manager.exchangeCollectorTicket({
+    ticket,
+    generationId: 'generation_timeout_1234',
+  });
+  const requestOptions = await fetchStarted.promise;
+  try {
+    assert.equal(requestOptions.signal, controller.signal);
+    controller.abort();
+    await assert.rejects(exchange, (error) => {
+      assert.equal(error.code, 'COLLECTOR_EXCHANGE_NETWORK_ERROR');
+      assert.equal(error.message.includes(ticket), false);
+      return true;
+    });
+    assert.equal(JSON.stringify(harness.logs).includes(ticket), false);
+  } finally {
+    releaseFetch();
+    await exchange.catch(() => {});
+  }
 });
 
 test('a stale G1 exchange cannot write after G2 activates or after G2 installs its session', async () => {

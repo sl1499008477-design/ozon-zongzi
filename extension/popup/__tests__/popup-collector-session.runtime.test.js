@@ -174,6 +174,10 @@ const chrome = {
           ok: true,
           data: { hasUpdate: false, currentVersion: "0.13.46.1" },
         },
+        openFrontend: {
+          ok: true,
+          data: { opened: true, reused: true, tabId: 17 },
+        },
       };
       callback(responses[payload.action] || { ok: true, data: {} });
     },
@@ -275,6 +279,12 @@ setTimeout(async () => {
   assert.deepEqual(clearedIntervals, [1], "logout must stop Seller status polling immediately");
   await document.getElementById("collector-auth-recheck-btn").listeners.get("click")();
   assert.equal(intervals.length, 2, "a restored Collector session must restart Seller polling once");
+  await document.getElementById("web-login-btn").listeners.get("click")();
+  assert.equal(
+    document.getElementById("login-tip").textContent,
+    "Web 登录页已打开，请完成登录后重新打开扩展",
+    "opening the Web page must report an honest foreground result without claiming authentication",
+  );
   windowListeners.get("unload")?.();
   assert.deepEqual(clearedIntervals, [1, 2], "popup unload must clear Seller status polling");
   assert.equal(actions.includes("getStores"), false, "popup must not use the Web bearer store API");

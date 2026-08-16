@@ -175,6 +175,7 @@
     chromeApi = root.chrome,
     backendUrl,
     fetchImpl = root.fetch?.bind(root),
+    createExchangeSignal = () => root.AbortSignal.timeout(5_000),
     now = () => Date.now(),
     newGenerationIncarnation = defaultNewGenerationIncarnation,
     logger = root.console || { warn() {}, error() {} },
@@ -183,6 +184,9 @@
       throw new TypeError('collector session requires chrome.storage.session and chrome.storage.local');
     }
     if (typeof fetchImpl !== 'function') throw new TypeError('collector session requires fetch');
+    if (typeof createExchangeSignal !== 'function') {
+      throw new TypeError('collector session requires exchange signal factory');
+    }
     if (typeof newGenerationIncarnation !== 'function') {
       throw new TypeError('collector session requires generation incarnation factory');
     }
@@ -463,11 +467,17 @@
         captureStoredCollectorActivation(generationId, secret)
       ));
       const baseUrl = await resolveBackendUrl();
+      const signal = createExchangeSignal();
+      if (!signal || typeof signal.aborted !== 'boolean'
+        || typeof signal.addEventListener !== 'function') {
+        throw new TypeError('collector exchange signal required');
+      }
       let response;
       try {
         response = await fetchImpl(`${baseUrl}/extension/collector-auth/exchange`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
+          signal,
           body: JSON.stringify({
             ticket: secret,
             deviceFingerprint: String(deviceFingerprint || ''),

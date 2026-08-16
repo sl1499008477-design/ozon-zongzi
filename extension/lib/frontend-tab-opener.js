@@ -33,10 +33,10 @@
       }
     };
 
-    const openedResult = async ({ reused, tabId }) => {
+    const openedResult = ({ reused, tabId }) => {
       const result = { opened: true, reused };
       if (Number.isInteger(tabId)) result.tabId = tabId;
-      await requestAuthBestEffort(tabId, reused);
+      void requestAuthBestEffort(tabId, reused);
       return result;
     };
 

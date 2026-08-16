@@ -801,6 +801,7 @@
     try {
       const response = await sendMessage({ action: "openFrontend", path: "/login" });
       if (response?.data?.opened !== true) throw new Error("frontend-not-opened");
+      showTip("Web 登录页已打开，请完成登录后重新打开扩展", false);
     } catch {
       showTip("无法打开 Web 登录页，请确认本地服务已启动");
     }

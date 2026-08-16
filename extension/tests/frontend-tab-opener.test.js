@@ -10,6 +10,7 @@ const makeHarness = ({
   updateTabError = null,
   requestAuthError = null,
   requestAuthErrors = [],
+  requestAuthImpl = null,
 } = {}) => {
   const updatedTabs = [];
   const updatedWindows = [];
@@ -35,6 +36,7 @@ const makeHarness = ({
     requestCollectorAuth: async (tabId) => {
       requestedAuthTabs.push(tabId);
       authEvents.push({ type: 'request', tabId });
+      if (requestAuthImpl) return requestAuthImpl(tabId);
       const error = requestAuthErrors[requestAuthCall] || requestAuthError;
       requestAuthCall += 1;
       if (error) throw error;
@@ -55,6 +57,39 @@ const makeHarness = ({
     updatedWindows,
   };
 };
+
+test('returns the opened tab before a held authentication recovery completes', async () => {
+  let releaseAuthentication;
+  let markAuthenticationStarted;
+  const authenticationStarted = new Promise((resolve) => {
+    markAuthenticationStarted = resolve;
+  });
+  const heldAuthentication = new Promise((resolve) => {
+    releaseAuthentication = resolve;
+  });
+  const { open } = makeHarness({
+    tabs: [{ id: 17, windowId: 8, url: 'http://127.0.0.1:3000/login' }],
+    requestAuthImpl: async () => {
+      markAuthenticationStarted();
+      await heldAuthentication;
+    },
+  });
+
+  const opening = open({ url: 'http://127.0.0.1:3000/login' });
+  await authenticationStarted;
+  try {
+    const outcome = await Promise.race([
+      opening.then((result) => ({ state: 'opened', result })),
+      new Promise((resolve) => setImmediate(() => resolve({ state: 'blocked' }))),
+    ]);
+    assert.deepEqual(outcome, {
+      state: 'opened',
+      result: { opened: true, reused: true, tabId: 17 },
+    });
+  } finally {
+    releaseAuthentication();
+  }
+});
 
 test('reuses the first trusted tab with an integer id without changing its URL', async () => {
   const {
@@ -155,6 +190,7 @@ test('injects collector auth into a reused tab on no receiver and retries exactl
     reused: true,
     tabId: 17,
   });
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(createdTabs, []);
   assert.deepEqual(injectedAuthTabs, [17]);
   assert.deepEqual(requestedAuthTabs, [17, 17]);
