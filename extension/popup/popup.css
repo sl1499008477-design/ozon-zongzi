@@ -337,9 +337,21 @@ button:disabled {
 .login-tip {
   min-height: 18px;
   margin-top: 8px;
-  color: var(--orange);
+  color: var(--text-secondary);
   font-size: 12px;
   text-align: center;
+}
+
+.login-tip.is-progress {
+  color: var(--accent);
+}
+
+.login-tip.is-warning {
+  color: var(--orange);
+}
+
+.login-tip.is-error {
+  color: var(--red);
 }
 
 .login-tip:empty {

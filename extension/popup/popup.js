@@ -37,8 +37,20 @@
   const loginView = document.getElementById("login-view");
   const mainView = document.getElementById("main-view");
   const loginTip = document.getElementById("login-tip");
+  const webLoginBtn = document.getElementById("web-login-btn");
+  const collectorAuthRecheckBtn = document.getElementById("collector-auth-recheck-btn");
   const logoutBtn = document.getElementById("logout-btn");
   const serverStatus = document.getElementById("server-status");
+  const COLLECTOR_AUTH_STATUS_STORAGE_KEY = "sonliCollectorAuthStatus";
+  let latestCollectorAuthStatus = null;
+  let collectorAuthStatusRevision = 0;
+  let collectorAuthDisplayTimer = null;
+  let collectorAuthStorageListener = null;
+  let collectorAuthenticated = false;
+  let mainViewInitialized = false;
+  let mainViewInitPromise = null;
+  let webLoginOpening = false;
+  let popupDisposed = false;
 
   const connectionStatus = document.getElementById("connection-status");
   const connectionStatusText = document.getElementById(
@@ -125,9 +137,11 @@
     }
   };
 
-  const showTip = (msg, isError = true) => {
+  const showTip = (msg, tone = "warning") => {
+    const normalizedTone = tone === false ? "progress" : tone === true ? "warning" : tone;
     loginTip.textContent = msg || "";
-    loginTip.style.color = isError ? "var(--orange)" : "var(--green)";
+    loginTip.classList.remove("is-progress", "is-warning", "is-error");
+    loginTip.classList.add(`is-${normalizedTone}`);
   };
 
   const updateServerStatus = (connected) => {
@@ -151,6 +165,11 @@
   const fetchAuth = async () => {
     const response = await sendMessage({ action: "getAuth" });
     return response?.data || response || {};
+  };
+
+  const fetchCollectorAuthStatus = async () => {
+    const response = await sendMessage({ action: "getCollectorAuthStatus" });
+    return response?.ok === true ? response.data : null;
   };
 
   const SAFE_SELLER_STATUSES = new Set(["READY", "RECOVERING", "LOGIN_REQUIRED"]);
@@ -610,24 +629,32 @@
   });
 
   // ─── Init / lifecycle ───
-  const initMainView = async (auth) => {
+  const initMainView = async (auth, shouldStartSeller = () => true) => {
     FRONTEND_BASE_URL =
       auth.backendUrl && isLocalBackendUrl(auth.backendUrl)
         ? LOCAL_FRONTEND_BASE_URL
         : "https://" + BRAND_WEB_HOST;
     setConnectionState("ok", "采集会话已连接");
     await Promise.all([buildSignals(), checkUpdateBanner()]);
-    sellerStatusController.start();
+    if (shouldStartSeller()) sellerStatusController.start();
   };
 
   logoutBtn.addEventListener("click", async () => {
     await sendMessage({ action: "logout" });
+    collectorAuthenticated = false;
+    mainViewInitialized = false;
     sellerStatusController.stop();
     setLoginState(false);
-    showTip("采集会话已清除，请在 Web 管理后台保持登录");
+    showTip("采集会话已清除，请在 Web 管理后台保持登录", "warning");
   });
 
   window.addEventListener?.("unload", () => {
+    popupDisposed = true;
+    clearTimeout(collectorAuthDisplayTimer);
+    collectorAuthDisplayTimer = null;
+    if (collectorAuthStorageListener) {
+      chrome.storage.onChanged.removeListener?.(collectorAuthStorageListener);
+    }
     sellerStatusController.stop();
     clearTimeout(sellerSwitchNoticeTimer);
     clearTimeout(sellerLoginFeedbackTimer);
@@ -787,52 +814,184 @@
   syncPremiumBadge().catch(() => {});
   syncDataPanelBadge().catch(() => {});
 
-  // 监听 storage 变化（浮动面板上 toggle 也能反传到 popup）
-  try {
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== "local") return;
-      if (changes.ozon_premium_enabled) syncPremiumBadge();
-      if (changes.ozon_data_panel_enabled) syncDataPanelBadge();
+  const ACTION_REQUIRED_COPY = Object.freeze({
+    ACCOUNT_DISABLED: "当前账号已停用，请联系管理员",
+    ACCOUNT_EXPIRED: "当前账号已过期，请在 Web 管理后台续期或切换账号",
+    PERMISSION_DENIED: "当前账号无采集权限，请联系管理员",
+    TRUST_BOUNDARY_REJECTED: "登录校验未通过，请重新打开 Web 登录页",
+    SERVER_UPGRADE_REQUIRED: "当前版本暂不兼容，请更新本地服务和扩展",
+  });
+  const SAFE_LOCAL_SERVICE_COPY = "本地服务暂时不可用，请稍后重试";
+
+  const clearCollectorAuthDisplayTimer = () => {
+    clearTimeout(collectorAuthDisplayTimer);
+    collectorAuthDisplayTimer = null;
+  };
+
+  const ensureMainView = () => {
+    collectorAuthenticated = true;
+    setLoginState(true);
+    if (mainViewInitialized || mainViewInitPromise) return;
+    mainViewInitPromise = (async () => {
+      const auth = await fetchAuth();
+      if (!collectorAuthenticated || popupDisposed || !auth.authenticated) return;
+      await initMainView(
+        auth,
+        () => collectorAuthenticated && !popupDisposed,
+      );
+      if (collectorAuthenticated && !popupDisposed) mainViewInitialized = true;
+    })().catch(() => {
+      if (!collectorAuthenticated || popupDisposed) return;
+      collectorAuthenticated = false;
+      setLoginState(false);
+      showTip(SAFE_LOCAL_SERVICE_COPY, "error");
+    }).finally(() => {
+      mainViewInitPromise = null;
     });
+  };
+
+  const renderCollectorAuthStatus = (status) => {
+    if (popupDisposed) return;
+    clearCollectorAuthDisplayTimer();
+    latestCollectorAuthStatus = status && typeof status === "object" ? status : null;
+    const phase = latestCollectorAuthStatus?.phase;
+    const publicCode = latestCollectorAuthStatus?.publicCode;
+    const now = Date.now();
+    let copy = SAFE_LOCAL_SERVICE_COPY;
+    let tone = "error";
+    let disableWebLogin = false;
+    let disableRetry = false;
+    let retryLabel = "重新检查";
+    let refreshDisplay = false;
+
+    if (phase === "WAITING_FOR_WEB") {
+      if (publicCode === "WEB_TAB_UNAVAILABLE") {
+        copy = "未检测到 Web 管理后台，请先打开登录页";
+      } else if (publicCode === "" || publicCode === "WEB_LOGIN_REQUIRED") {
+        copy = "等待 Web 端登录";
+      }
+      tone = "warning";
+    } else if (phase === "DISCOVERING_WEB") {
+      copy = "正在检测 Web 登录状态";
+      tone = "progress";
+      disableWebLogin = true;
+      disableRetry = true;
+      retryLabel = "正在检查…";
+    } else if (phase === "REQUESTING_TICKET") {
+      copy = "正在获取登录授权";
+      tone = "progress";
+      disableWebLogin = true;
+      disableRetry = true;
+      retryLabel = "正在检查…";
+    } else if (phase === "EXCHANGING") {
+      const startedAt = Date.parse(latestCollectorAuthStatus.startedAt);
+      const elapsedSeconds = Number.isFinite(startedAt)
+        ? Math.max(0, Math.floor((now - startedAt) / 1_000))
+        : 0;
+      copy = `正在连接采集服务 · 已等待 ${elapsedSeconds} 秒`;
+      tone = "progress";
+      disableWebLogin = true;
+      disableRetry = true;
+      retryLabel = "正在检查…";
+      refreshDisplay = true;
+    } else if (
+      phase === "RETRY_WAIT"
+      && publicCode === "LOCAL_SERVICE_UNAVAILABLE"
+    ) {
+      const nextRetryAt = Date.parse(latestCollectorAuthStatus.nextRetryAt);
+      const seconds = Number.isFinite(nextRetryAt)
+        ? Math.max(0, Math.ceil((nextRetryAt - now) / 1_000))
+        : 0;
+      copy = `连接暂时不稳定，将在 ${seconds} 秒后自动重试`;
+      tone = "warning";
+      disableWebLogin = true;
+      retryLabel = "立即重试";
+      refreshDisplay = Number.isFinite(nextRetryAt) && nextRetryAt > now;
+    } else if (phase === "ACTION_REQUIRED" && ACTION_REQUIRED_COPY[publicCode]) {
+      copy = ACTION_REQUIRED_COPY[publicCode];
+      tone = "error";
+    } else if (phase === "AUTHENTICATED") {
+      showTip("采集会话已连接", "progress");
+      ensureMainView();
+      return;
+    }
+
+    collectorAuthenticated = false;
+    mainViewInitialized = false;
+    sellerStatusController.stop();
+    setLoginState(false);
+    showTip(copy, tone);
+    webLoginBtn.disabled = webLoginOpening || disableWebLogin;
+    webLoginBtn.textContent = webLoginOpening ? "正在打开 Web 登录页…" : "前往登录";
+    collectorAuthRecheckBtn.disabled = disableRetry;
+    collectorAuthRecheckBtn.textContent = retryLabel;
+
+    if (refreshDisplay) {
+      collectorAuthDisplayTimer = setTimeout(() => {
+        if (!popupDisposed && latestCollectorAuthStatus === status) {
+          renderCollectorAuthStatus(status);
+        }
+      }, 1_000);
+    }
+  };
+
+  const refreshCollectorAuthStatus = async () => {
+    const expectedRevision = collectorAuthStatusRevision;
+    const status = await fetchCollectorAuthStatus();
+    if (expectedRevision === collectorAuthStatusRevision) {
+      renderCollectorAuthStatus(status);
+    }
+  };
+
+  // One storage listener owns both local preference updates and session auth progress.
+  try {
+    collectorAuthStorageListener = (changes, area) => {
+      if (area === "local") {
+        if (changes.ozon_premium_enabled) syncPremiumBadge();
+        if (changes.ozon_data_panel_enabled) syncDataPanelBadge();
+        return;
+      }
+      if (area !== "session") return;
+      const statusChange = changes[COLLECTOR_AUTH_STATUS_STORAGE_KEY];
+      if (statusChange && Object.hasOwn(statusChange, "newValue")) {
+        collectorAuthStatusRevision += 1;
+        renderCollectorAuthStatus(statusChange.newValue);
+      }
+    };
+    chrome.storage.onChanged.addListener(collectorAuthStorageListener);
   } catch {}
 
-  document.getElementById("web-login-btn").addEventListener("click", async () => {
+  webLoginBtn.addEventListener("click", async () => {
+    if (webLoginOpening) return;
+    webLoginOpening = true;
+    clearCollectorAuthDisplayTimer();
+    webLoginBtn.disabled = true;
+    webLoginBtn.textContent = "正在打开 Web 登录页…";
     showTip("正在打开 Web 登录页…", false);
     try {
       const response = await sendMessage({ action: "openFrontend", path: "/login" });
       if (response?.data?.opened !== true) throw new Error("frontend-not-opened");
-      showTip("Web 登录页已打开，请完成登录后重新打开扩展", false);
+      webLoginOpening = false;
+      renderCollectorAuthStatus(latestCollectorAuthStatus);
     } catch {
-      showTip("无法打开 Web 登录页，请确认本地服务已启动");
+      webLoginOpening = false;
+      renderCollectorAuthStatus(latestCollectorAuthStatus);
+      showTip("无法打开 Web 登录页，请确认本地服务已启动", "error");
     }
   });
 
   // ─── Boot ───
   const init = async () => {
-    const auth = await fetchAuth();
-    if (auth.authenticated) {
-      setLoginState(true);
-      await initMainView(auth);
-    } else {
-      sellerStatusController.stop();
-      setLoginState(false);
-    }
+    await refreshCollectorAuthStatus();
   };
 
-  document.getElementById("collector-auth-recheck-btn").addEventListener("click", async () => {
-    showTip("正在检查 Web 登录状态…", false);
-    await sendMessage({ action: "requestCollectorAuth" });
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    const auth = await fetchAuth();
-    if (!auth.authenticated) {
-      sellerStatusController.stop();
-      setLoginState(false);
-      showTip("尚未取得采集会话，请确认已在同一浏览器用户配置中登录");
-      return;
-    }
-    showTip("采集会话已连接", false);
-    setLoginState(true);
-    await initMainView(auth);
+  collectorAuthRecheckBtn.addEventListener("click", async () => {
+    if (collectorAuthRecheckBtn.disabled) return;
+    collectorAuthRecheckBtn.disabled = true;
+    collectorAuthRecheckBtn.textContent = "正在检查…";
+    showTip("正在检测 Web 登录状态", "progress");
+    await sendMessage({ action: "retryCollectorAuth" });
+    await refreshCollectorAuthStatus();
   });
 
   init();
