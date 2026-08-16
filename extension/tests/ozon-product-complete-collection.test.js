@@ -344,10 +344,12 @@ function closeServer(server) {
 
 test('product page delegates public-first single and multivariant collection without synchronous enrichment', async () => {
   const server = await startServer();
-  const browser = await chromium.launch({ executablePath: browserPath(), headless: true });
-  const address = server.address();
-  const context = await browser.newContext();
+  let browser;
+  let context;
   try {
+    browser = await chromium.launch({ executablePath: browserPath(), headless: true });
+    context = await browser.newContext();
+    const address = server.address();
     const openFixture = async (mode) => {
       const page = await context.newPage();
       page.setDefaultTimeout(3_000);
@@ -516,8 +518,8 @@ test('product page delegates public-first single and multivariant collection wit
     assert.deepEqual(state.prefetchBatchNetworkCalls, []);
     assert.equal(state.collectCalls.length, 1);
   } finally {
-    await context.close();
-    await browser.close();
+    await context?.close();
+    await browser?.close();
     await closeServer(server);
   }
 });
