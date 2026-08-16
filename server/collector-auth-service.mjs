@@ -19,6 +19,7 @@ export const COLLECTOR_REVOKE_REASONS = Object.freeze([
   "ACCOUNT_DELETED",
   "ACCOUNT_EXPIRED",
   "SECURITY_RESET",
+  "SESSION_SUPERSEDED",
 ]);
 
 const collectorRevokeReasonSet = new Set(COLLECTOR_REVOKE_REASONS);
@@ -249,7 +250,13 @@ export function createCollectorAuthService({
       createdAt: at.toISOString(),
     };
     const created = await repository.createSession(sessionRecord);
-    if (!created) {
+    const wrappedResult = Boolean(
+      created
+      && typeof created === "object"
+      && Object.hasOwn(created, "session"),
+    );
+    const createdSession = wrappedResult ? created.session : created;
+    if (!createdSession) {
       await writeAudit({
         action: "collector.ticket.exchange",
         accountId: ticketRecord.accountId,
@@ -258,19 +265,21 @@ export function createCollectorAuthService({
       });
       throw serviceError("采集会话创建失败", 401, "COLLECTOR_SESSION_CREATE_FAILED");
     }
+    const superseded = wrappedResult ? Number(created.supersededCount || 0) : 0;
 
     await writeAudit({
       action: "collector.ticket.exchange",
-      accountId: sessionRecord.accountId,
+      accountId: createdSession.accountId,
       ticketId: ticketRecord.id,
-      collectorSessionId: sessionRecord.id,
+      collectorSessionId: createdSession.id,
       outcome: "exchanged",
-      expiresAt: sessionRecord.expiresAt,
+      expiresAt: createdSession.expiresAt,
+      superseded,
     });
     return {
       collectorToken,
-      ...publicSession(sessionRecord),
-      account: publicAccount(ticketRecord.account, sessionRecord.accountId),
+      ...publicSession(createdSession),
+      account: publicAccount(ticketRecord.account, createdSession.accountId),
     };
   }
 

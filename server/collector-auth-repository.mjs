@@ -246,7 +246,25 @@ export function createJsonCollectorAuthRepository({
           ? state.collectorSessions
           : [];
         state.collectorSessions.push(record);
-        return jsonContext(state, record);
+        let supersededCount = 0;
+        if (record.deviceFingerprint) {
+          for (const previous of state.collectorSessions) {
+            if (
+              previous?.id !== record.id
+              && previous?.accountId === record.accountId
+              && previous?.deviceFingerprint === record.deviceFingerprint
+              && !previous.revokedAt
+            ) {
+              previous.revokedAt = record.createdAt;
+              previous.revokedReason = normalizeCollectorRevokeReason("SESSION_SUPERSEDED");
+              supersededCount += 1;
+            }
+          }
+        }
+        return {
+          session: jsonContext(state, record),
+          supersededCount,
+        };
       });
     });
   }
@@ -433,21 +451,36 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
     record.tokenHash = requireSecretHash(record.tokenHash);
     const result = await query(
       `
-        INSERT INTO collector_sessions (
-          id, token_hash, account_id, parent_session_token,
-          device_fingerprint, extension_version, permissions, expires_at,
-          revoked_at, revoked_reason, last_seen_at, created_at
+        WITH inserted AS (
+          INSERT INTO collector_sessions (
+            id, token_hash, account_id, parent_session_token,
+            device_fingerprint, extension_version, permissions, expires_at,
+            revoked_at, revoked_reason, last_seen_at, created_at
+          )
+          SELECT $1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12
+          FROM accounts AS account
+          JOIN sessions AS parent
+            ON parent.account_id=account.id AND parent.token=$4
+          WHERE account.id=$3
+            AND account.status='active'
+            AND (account.expires_at IS NULL OR account.expires_at>$12)
+            AND parent.revoked_at IS NULL
+            AND (parent.expires_at IS NULL OR parent.expires_at>$12)
+          RETURNING *
+        ), superseded AS (
+          UPDATE collector_sessions AS previous
+          SET revoked_at=$12, revoked_reason=$13
+          FROM inserted
+          WHERE previous.account_id=$3
+            AND previous.device_fingerprint=$5
+            AND $5<>''
+            AND previous.id<>$1
+            AND previous.revoked_at IS NULL
+          RETURNING previous.id
         )
-        SELECT $1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12
-        FROM accounts AS account
-        JOIN sessions AS parent
-          ON parent.account_id=account.id AND parent.token=$4
-        WHERE account.id=$3
-          AND account.status='active'
-          AND (account.expires_at IS NULL OR account.expires_at>$12)
-          AND parent.revoked_at IS NULL
-          AND (parent.expires_at IS NULL OR parent.expires_at>$12)
-        RETURNING *
+        SELECT inserted.*,
+               (SELECT COUNT(*) FROM superseded) AS superseded_count
+        FROM inserted
       `,
       [
         record.id,
@@ -462,9 +495,15 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
         record.revokedReason,
         record.lastSeenAt,
         record.createdAt,
+        normalizeCollectorRevokeReason("SESSION_SUPERSEDED"),
       ],
     );
-    return result.rows[0] ? sessionRecord(result.rows[0]) : null;
+    return result.rows[0]
+      ? {
+          session: sessionRecord(result.rows[0]),
+          supersededCount: Number(result.rows[0].superseded_count || 0),
+        }
+      : null;
   }
 
   async function findActiveSession({ tokenHash }) {

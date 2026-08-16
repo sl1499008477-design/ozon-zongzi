@@ -551,6 +551,29 @@ test("audits record identifiers and outcomes without ticket or collector-token p
   assert.equal(serialized.includes(PARENT_TOKEN), false);
 });
 
+test("successful exchange audits the repository supersession count without device or secret metadata", async () => {
+  const repository = createFakeRepository();
+  const createLegacySession = repository.createSession.bind(repository);
+  repository.createSession = async (record) => ({
+    session: await createLegacySession(record),
+    supersededCount: 2,
+  });
+  const harness = createHarness({ repository });
+
+  const { issued, exchanged } = await issueAndExchange(harness, {
+    deviceFingerprint: "private-device-fingerprint",
+  });
+
+  const exchangeAudit = harness.audits.find((event) => event.outcome === "exchanged");
+  assert.equal(exchangeAudit.superseded, 2);
+  assert.equal(exchangeAudit.collectorSessionId, exchanged.collectorSessionId);
+  const serialized = JSON.stringify(exchangeAudit);
+  assert.equal(serialized.includes("private-device-fingerprint"), false);
+  assert.equal(serialized.includes(issued.ticket), false);
+  assert.equal(serialized.includes(exchanged.collectorToken), false);
+  assert.equal(serialized.includes(PARENT_TOKEN), false);
+});
+
 test("JSON repository serializes same-process ticket consumption and stores hashes only", async () => {
   const ticket = "ctt_json-plaintext-ticket";
   const collectorToken = "cst_json-plaintext-token";
@@ -625,6 +648,133 @@ test("JSON repository serializes same-process ticket consumption and stores hash
   assert.equal(state.collectorSessions[0].extensionVersion.includes(PARENT_TOKEN), false);
   assert.equal(state.collectorSessions[0].revokedReason, "PARENT_SESSION_REVOKED");
   assert.ok(persistenceCalls >= 3);
+});
+
+test("JSON session creation supersedes only active same-account sessions with the exact non-empty device in one commit", async () => {
+  const deviceFingerprint = "device-exact";
+  const oldSameDevice = {
+    id: "session_old_same_device",
+    tokenHash: hashCollectorSecret("cst_old-same-device"),
+    accountId: ACTIVE_ACCOUNT.id,
+    parentSessionToken: PARENT_TOKEN,
+    deviceFingerprint,
+    permissions: [...COLLECTOR_PERMISSIONS],
+    expiresAt: "2026-07-29T08:00:00.000Z",
+    revokedAt: null,
+    revokedReason: "",
+    lastSeenAt: "2026-07-28T23:59:00.000Z",
+    createdAt: "2026-07-28T23:59:00.000Z",
+  };
+  const state = {
+    accounts: [structuredClone(ACTIVE_ACCOUNT)],
+    sessions: {
+      [PARENT_TOKEN]: {
+        accountId: ACTIVE_ACCOUNT.id,
+        expiresAt: "2026-07-30T00:00:00.000Z",
+        revokedAt: null,
+      },
+    },
+    collectorSessions: [
+      oldSameDevice,
+      { ...oldSameDevice, id: "session_other_device", deviceFingerprint: "device-other" },
+      { ...oldSameDevice, id: "session_other_account", accountId: "account_2" },
+      {
+        ...oldSameDevice,
+        id: "session_already_revoked",
+        revokedAt: "2026-07-28T23:58:00.000Z",
+        revokedReason: "WEB_LOGOUT",
+      },
+    ].map((record) => structuredClone(record)),
+  };
+  const persistedSnapshots = [];
+  const repository = createJsonCollectorAuthRepository({
+    state,
+    persist: async (persistedState) => {
+      persistedSnapshots.push(structuredClone(persistedState.collectorSessions));
+    },
+  });
+
+  const result = await repository.createSession({
+    id: "session_new_same_device",
+    tokenHash: hashCollectorSecret("cst_new-same-device"),
+    accountId: ACTIVE_ACCOUNT.id,
+    parentSessionToken: PARENT_TOKEN,
+    deviceFingerprint,
+    extensionVersion: "3.0.0",
+    permissions: [...COLLECTOR_PERMISSIONS],
+    expiresAt: "2026-07-29T08:00:00.000Z",
+    revokedAt: null,
+    revokedReason: "",
+    lastSeenAt: START.toISOString(),
+    createdAt: START.toISOString(),
+  });
+
+  assert.equal(result.supersededCount, 1);
+  assert.equal(result.session.id, "session_new_same_device");
+  assert.equal(persistedSnapshots.length, 1);
+  const committed = persistedSnapshots[0];
+  assert.equal(committed.length, 5);
+  assert.deepEqual(
+    committed.map(({ id, revokedAt, revokedReason }) => ({ id, revokedAt, revokedReason })),
+    [
+      {
+        id: "session_old_same_device",
+        revokedAt: START.toISOString(),
+        revokedReason: "SESSION_SUPERSEDED",
+      },
+      { id: "session_other_device", revokedAt: null, revokedReason: "" },
+      { id: "session_other_account", revokedAt: null, revokedReason: "" },
+      {
+        id: "session_already_revoked",
+        revokedAt: "2026-07-28T23:58:00.000Z",
+        revokedReason: "WEB_LOGOUT",
+      },
+      { id: "session_new_same_device", revokedAt: null, revokedReason: "" },
+    ],
+  );
+});
+
+test("JSON session creation does not supersede sessions when the exact device fingerprint is empty", async () => {
+  const state = {
+    accounts: [structuredClone(ACTIVE_ACCOUNT)],
+    sessions: {
+      [PARENT_TOKEN]: {
+        accountId: ACTIVE_ACCOUNT.id,
+        expiresAt: "2026-07-30T00:00:00.000Z",
+        revokedAt: null,
+      },
+    },
+    collectorSessions: [{
+      id: "session_old_empty_device",
+      tokenHash: hashCollectorSecret("cst_old-empty-device"),
+      accountId: ACTIVE_ACCOUNT.id,
+      parentSessionToken: PARENT_TOKEN,
+      deviceFingerprint: "",
+      permissions: [...COLLECTOR_PERMISSIONS],
+      expiresAt: "2026-07-29T08:00:00.000Z",
+      revokedAt: null,
+      revokedReason: "",
+      lastSeenAt: "2026-07-28T23:59:00.000Z",
+      createdAt: "2026-07-28T23:59:00.000Z",
+    }],
+  };
+  const repository = createJsonCollectorAuthRepository({ state });
+
+  const result = await repository.createSession({
+    id: "session_new_empty_device",
+    tokenHash: hashCollectorSecret("cst_new-empty-device"),
+    accountId: ACTIVE_ACCOUNT.id,
+    parentSessionToken: PARENT_TOKEN,
+    deviceFingerprint: "",
+    permissions: [...COLLECTOR_PERMISSIONS],
+    expiresAt: "2026-07-29T08:00:00.000Z",
+    lastSeenAt: START.toISOString(),
+    createdAt: START.toISOString(),
+  });
+
+  assert.equal(result.supersededCount, 0);
+  assert.equal(state.collectorSessions[0].revokedAt, null);
+  assert.equal(state.collectorSessions[1].revokedAt, null);
 });
 
 test("JSON repository rolls back an in-memory ticket consumption when persistence fails", async () => {
@@ -824,6 +974,63 @@ test("PostgreSQL repository lets the conditional UPDATE decide ticket consumptio
   assert.match(operations[0].sql, /consumed_at\s+IS\s+NULL/i);
   assert.match(operations[0].sql, /expires_at\s*>\s*\$2/i);
   assert.equal(operations[0].values[0], ticketHash);
+});
+
+test("PostgreSQL session creation atomically inserts and supersedes only an exact active account device", async () => {
+  const calls = [];
+  const row = {
+    id: "session_pg_new",
+    token_hash: hashCollectorSecret("cst_postgres-new-session"),
+    account_id: ACTIVE_ACCOUNT.id,
+    parent_session_token: PARENT_TOKEN,
+    device_fingerprint: "device-pg-exact",
+    extension_version: "3.0.0",
+    permissions: [...COLLECTOR_PERMISSIONS],
+    expires_at: "2026-07-29T08:00:00.000Z",
+    revoked_at: null,
+    revoked_reason: "",
+    last_seen_at: START.toISOString(),
+    created_at: START.toISOString(),
+    superseded_count: "1",
+  };
+  const pool = {
+    async query(sql, values) {
+      calls.push({ sql, values });
+      return { rows: [{ ...row }], rowCount: 1 };
+    },
+  };
+  const repository = createPostgresCollectorAuthRepository({ pool });
+
+  const result = await repository.createSession({
+    id: row.id,
+    tokenHash: row.token_hash,
+    accountId: row.account_id,
+    parentSessionToken: row.parent_session_token,
+    deviceFingerprint: row.device_fingerprint,
+    extensionVersion: row.extension_version,
+    permissions: [...row.permissions],
+    expiresAt: row.expires_at,
+    revokedAt: null,
+    revokedReason: "",
+    lastSeenAt: row.last_seen_at,
+    createdAt: row.created_at,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /WITH\s+inserted\s+AS\s*\([\s\S]*INSERT\s+INTO\s+collector_sessions/i);
+  assert.match(calls[0].sql, /superseded\s+AS\s*\([\s\S]*UPDATE\s+collector_sessions/i);
+  assert.match(calls[0].sql, /account_id\s*=\s*\$3/i);
+  assert.match(calls[0].sql, /device_fingerprint\s*=\s*\$5/i);
+  assert.match(calls[0].sql, /\$5\s*<>\s*''/i);
+  assert.match(calls[0].sql, /id\s*<>\s*\$1/i);
+  assert.match(calls[0].sql, /revoked_at\s+IS\s+NULL/i);
+  assert.doesNotMatch(calls[0].sql, /\bI?LIKE\b/i);
+  assert.equal(calls[0].values[0], row.id);
+  assert.equal(calls[0].values[2], ACTIVE_ACCOUNT.id);
+  assert.equal(calls[0].values[4], row.device_fingerprint);
+  assert.equal(calls[0].values[12], "SESSION_SUPERSEDED");
+  assert.equal(result.session.id, row.id);
+  assert.equal(result.supersededCount, 1);
 });
 
 test("formal state mirroring ignores plaintext collector secret fields", async () => {
