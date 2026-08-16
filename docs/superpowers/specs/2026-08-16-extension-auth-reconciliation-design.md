@@ -1,62 +1,96 @@
-# Extension Authentication Reconciliation Design
+# Fast Observable Extension Authentication Design
 
 ## Goal
 
-Make Web-to-extension authentication automatic, observable, and recoverable. Once the user is logged into the trusted Web application in the same browser profile, the extension must establish its Collector session without another click. Closing the popup, restarting the Manifest V3 service worker, losing an HTTP response, or receiving a slow response must not leave the Web server and extension disagreeing about whether authentication succeeded.
+When the trusted Web application is already logged in, make the extension show an existing valid Collector session in under 0.5 seconds and complete a first authentication in approximately 1–3 seconds under the normal local baseline. The extension must visibly distinguish detection, ticket request, exchange, retry, authenticated, and action-required states.
 
-The popup must show the current authentication phase instead of presenting every non-authenticated condition as “未登录”.
+The design fixes the observed latency without adding an authentication-attempt table, deterministic credentials, WebSocket transport, or a new secret-management contract.
+
+## Evidence and root causes
+
+Read-only production-shaped local evidence collected on 2026-08-16 showed:
+
+- Collector ticket issue-to-exchange intervals between 5.937 and 18.909 seconds.
+- The blocking audit persistence after ticket creation alone varied from 0.179 to 10.456 seconds.
+- The Web bridge retried once per second while the ticket request was still running, creating multiple unused tickets.
+- A Web page reload generated a new authentication generation. `activateCollectorGeneration` cleared the existing Collector session whenever that generation changed, even when the Web account was unchanged and the Collector session remained valid.
+- The popup read authentication only on initialization and after manual recheck, so it could not display intermediate progress.
+
+The five-second exchange timeout exposed these delays but was not their primary cause. Reducing the timeout further would make authentication less reliable.
 
 ## Confirmed user experience
 
-- Web login automatically starts or resumes extension authentication.
-- The popup immediately changes from “未登录” to a truthful progress state.
-- Closing the popup does not cancel authentication.
-- Reopening the popup restores the latest phase and progress.
-- A transient timeout never becomes a false logged-out result.
-- Temporary failures retry automatically.
-- Only deterministic conditions such as Web logout, disabled account, invalid permission, or an unavailable trusted Web page require user action.
-- A normally slow local exchange should finish within 30 seconds. If it takes longer, the popup remains in a visible recovery state and continues bounded background retries rather than reverting to “未登录”.
+- An existing valid session for the same Web account is reused without another ticket exchange.
+- Opening the popup immediately shows the current authentication phase.
+- Web login automatically starts authentication; the user does not need to click “重新检查”.
+- Closing the popup does not cancel an in-flight exchange.
+- Reopening the popup restores the latest phase.
+- Temporary network or service failures display “自动重试中” instead of the generic “未登录”.
+- Only deterministic conditions such as Web logout, account disablement, permission rejection, invalid trusted origin, or unsupported server contract require action.
+- The manual recheck action remains available as an immediate retry but joins the existing single-flight operation.
 
-## Current failure
+## Selected architecture
 
-The extension currently treats a five-second transport timeout as an authentication failure. Real local exchanges observed on 2026-08-16 took between 5.937 and 18.909 seconds. The server can consume the ticket and create a Collector session after the extension has already aborted its fetch. Because the extension writes its local session only after receiving the response, the server then has a valid session while the extension has none.
+Authentication remains split across three existing owners:
 
-The popup also reads authentication once during initialization and after the manual “重新检查” action. It has no authoritative progress projection for ticket discovery, exchange, reconciliation, or retry.
+1. **Trusted Web bridge** confirms the logged-in account, acknowledges extension requests immediately, and requests a one-time ticket exactly once per active request.
+2. **Extension authentication coordinator** owns the progress state, single-flight operation, retry schedule, generation binding, and Collector session.
+3. **Collector authentication service** issues and exchanges tickets, writes a focused audit event, and keeps only the newest active session for the same account and extension device.
 
-## Considered approaches
+The popup is only a live projection. It does not own authentication truth, network requests, or retry timers.
 
-### 1. Longer timeout plus popup polling
+## Fast path: reuse a valid session
 
-Increase the timeout to 30 seconds and periodically call `getAuth` from the popup.
+The existing `collector.auth.ready` message keeps its exact legacy shape. During the compatibility window, the Web bridge first posts a new versioned ready message and then the existing legacy message:
 
-This reduces failures but does not close the lost-response window. The server can still commit immediately before the client times out, producing an orphan server session and a logged-out extension. Popup polling also stops when the popup closes.
+```js
+{
+  protocol: "SONLI_COLLECTOR_AUTH",
+  action: "collector.auth.ready.v2",
+  generationId: "<generation>",
+  accountId: "<logged-in account>"
+}
+```
 
-### 2. Durable background state machine plus idempotent exchange
+The new extension accepts the closed V2 shape and ignores the following legacy duplicate for the same generation. Extension `0.13.46.3` ignores the unknown V2 action and continues to consume the unchanged legacy ready message. The service worker continues to enforce the trusted sender URL and exact message shape. `accountId` is a reuse hint, not an authorization credential.
 
-Keep the authentication workflow in the service worker, persist a sanitized progress record in `chrome.storage.session`, and make exchange retries return the same logical Collector session. This is the selected approach because it handles slow responses, response loss, popup closure, service-worker restart, and duplicate requests without adding a persistent connection.
+When a new Web generation arrives, the session manager atomically compares it with the stored Collector session:
 
-### 3. WebSocket push
+- If the stored session is valid and its account ID matches, preserve the session and bind the new generation to it.
+- If the account differs, the session is invalid, or the session is expired, clear it and start authentication.
+- Web logout, account change, parent-session rejection, or a later Collector 401 clears the matching generation and session.
+- A late message from an older generation cannot replace or clear a newer binding.
 
-Push authentication progress from the Web server to the extension. This adds connection lifecycle, reconnection, and local-development complexity while still requiring idempotent server reconciliation. It is not needed.
+This removes unnecessary ticket issuance after a same-account page refresh or popup reopen. It does not weaken backend authorization: every Collector API call still validates the Collector token, account, parent Web session, expiry, and required permission.
 
-## Architecture
+## Single ticket request with immediate acknowledgement
 
-Authentication has three owners with explicit responsibilities:
+The Web bridge adds an acknowledgement message:
 
-1. **Trusted Web bridge** proves that the Web account is logged in and issues a one-time Collector ticket. It never sends the Web bearer credential to the extension.
-2. **Extension authentication coordinator** owns the state machine, retry schedule, local Collector credential, and the popup-safe status projection.
-3. **Collector authentication service** consumes tickets, binds an idempotency attempt, creates exactly one logical Collector session, and replays the same logical result for a valid retry.
+```js
+{
+  protocol: "SONLI_COLLECTOR_AUTH",
+  action: "collector.auth.accepted",
+  requestId: "<active request>",
+  generationId: "<current generation>"
+}
+```
 
-The popup is only a projection and action surface. It must not own timers, retries, or authentication truth.
+After validating the request, logged-in state, generation, and trusted origin, the Web bridge posts `accepted` before awaiting `/extension/collector-auth/ticket`. The extension cancels its one-second discovery retry for that request and starts a 30-second ticket-response watchdog.
 
-## Authentication state machine
+Only one Web ticket promise may exist for the active request. Duplicate request messages with the same request ID join that promise. A different request ID is ignored while the accepted request remains inside its 30-second lease. When that lease expires, a newer request supersedes it; the late result from the older request is discarded by request and generation identity. This permits recovery from a truly hung Web request without recreating the current one-second ticket storm. On deterministic Web-auth failure the bridge does not acknowledge; the coordinator returns to `WAITING_FOR_WEB` with a public reason.
 
-The coordinator exposes a closed versioned status contract:
+The ticket response retains its current one-time-ticket contract. No Web bearer credential enters the extension.
+
+## Authentication status contract
+
+Create a focused extension authentication coordinator that stores a sanitized status projection in `chrome.storage.session` under a separate key from credentials:
 
 ```js
 {
   version: 1,
   phase,
+  generationId,
   startedAt,
   updatedAt,
   attemptNumber,
@@ -67,191 +101,150 @@ The coordinator exposes a closed versioned status contract:
 }
 ```
 
-`publicCode` is either empty or one of the closed values `WEB_LOGIN_REQUIRED`, `WEB_TAB_UNAVAILABLE`, `LOCAL_SERVICE_UNAVAILABLE`, `SERVER_UPGRADE_REQUIRED`, `ACCOUNT_DISABLED`, `ACCOUNT_EXPIRED`, `PERMISSION_DENIED`, `TRUST_BOUNDARY_REJECTED`, or `ATTEMPT_CONFLICT`. The first three are recoverable and remain in discovery or retry phases. The remaining codes enter `ACTION_REQUIRED` with fixed user-facing copy.
+Allowed phases and popup copy are:
 
-Allowed phases are:
+| Phase | Popup copy |
+| --- | --- |
+| `WAITING_FOR_WEB` | 等待 Web 端登录 |
+| `DISCOVERING_WEB` | 正在检测 Web 登录状态 |
+| `REQUESTING_TICKET` | 正在获取登录授权 |
+| `EXCHANGING` | 正在连接采集服务 · 已等待 N 秒 |
+| `RETRY_WAIT` | 连接暂时不稳定，将在 N 秒后自动重试 |
+| `AUTHENTICATED` | 已登录 · account.displayName |
+| `ACTION_REQUIRED` | 固定、可执行的恢复说明 |
 
-| Phase | Popup copy | Meaning |
-| --- | --- | --- |
-| `WAITING_FOR_WEB` | 等待 Web 端登录 | No trusted logged-in Web bridge is available. |
-| `DISCOVERING_WEB` | 正在检测 Web 登录状态 | The extension is locating and querying the authoritative trusted tab. |
-| `REQUESTING_TICKET` | 正在获取登录授权 | A Web-authenticated ticket request is in progress. |
-| `EXCHANGING` | 正在连接采集服务 · 已等待 N 秒 | The first idempotent exchange request is running. |
-| `RECONCILING` | 服务器处理较慢，正在确认登录结果 | The transport result was lost or timed out; the same attempt is being reconciled. |
-| `RETRY_WAIT` | 连接暂时不稳定，将在 N 秒后自动重试 | A transient error is waiting for its bounded retry time. |
-| `AUTHENTICATED` | 已登录 · account.displayName | A valid local Collector session exists. |
-| `ACTION_REQUIRED` | A public, specific recovery instruction | A deterministic error requires user action. |
+`publicCode` is empty or one of `WEB_LOGIN_REQUIRED`, `WEB_TAB_UNAVAILABLE`, `LOCAL_SERVICE_UNAVAILABLE`, `ACCOUNT_DISABLED`, `ACCOUNT_EXPIRED`, `PERMISSION_DENIED`, `TRUST_BOUNDARY_REJECTED`, or `SERVER_UPGRADE_REQUIRED`.
 
-`publicCode` uses a closed, non-sensitive vocabulary. Raw server messages, tickets, tokens, attempt secrets, hashes, stack traces, and request bodies are never exposed to the popup.
+Tickets, Collector tokens, authorization headers, hashes, raw server messages, and stack traces are excluded from the status contract. The popup requests one snapshot on open and subscribes through `chrome.storage.onChanged` for the `session` area. It never reads the credential key.
 
-The coordinator persists the sanitized status separately from secrets. The Collector token and idempotency secret remain only in `chrome.storage.session`. The status projection may include the public account identity and expiry already returned by `getAuth`, but no credential.
+## Exchange and retry behavior
 
-## Idempotent exchange contract
+- The exchange transport deadline becomes 60 seconds. This is a safety boundary, not expected user-visible latency.
+- Ticket acknowledgement has a 30-second response watchdog aligned with the Web bridge's accepted-request lease.
+- The coordinator keeps one authentication operation per active generation.
+- A transient timeout or network error changes the phase to `RETRY_WAIT`; it does not render “未登录”.
+- Retry delays are approximately 1, 2, 5, 10, and then at most 30 seconds with jitter.
+- A retry requests a fresh one-time ticket for the same current generation.
+- Repeated popup actions, ready messages, and timers join the same single-flight operation.
+- Closing the popup has no effect on the coordinator. Service-worker work is kept alive by the active message promise, and scheduled retries use the existing `alarms` permission.
+- On service-worker startup the coordinator reads the sanitized state and credential state. It resumes a due retry or projects the valid stored session immediately.
 
-The new extension creates an authentication attempt before exchanging a ticket:
+If an exchange response is lost after the server creates a session, the next fresh-ticket exchange creates the reachable session. On that successful exchange, the server revokes older active Collector sessions for the same account and device fingerprint with a stable superseded reason. Other devices and browser profiles are not affected.
 
-- `attemptId`: a cryptographically random UUID public correlation identifier.
-- `attemptSecret`: at least 256 random bits encoded as a bounded URL-safe value and held only in `chrome.storage.session` and request memory.
-- `generationId`: the existing Web account generation boundary.
+This provides practical recovery and bounded cleanup without promising exactly-once delivery under arbitrary permanent response loss.
 
-The exchange request extends the existing request body with a versioned optional object:
+## Fast audit persistence
 
-```json
-{
-  "ticket": "<one-time secret>",
-  "deviceFingerprint": "<existing value>",
-  "extensionVersion": "<manifest version>",
-  "attempt": {
-    "version": 1,
-    "id": "<random id>",
-    "secret": "<random secret>"
-  }
-}
-```
+Collector ticket and session rows already use focused PostgreSQL tables, but their audit callback currently loads, protects, mirrors, and saves the entire legacy state before returning the HTTP response.
 
-Existing clients without `attempt` continue through the legacy exchange path during the compatibility window. The response remains backward compatible and may add only a public attempt identifier and replay marker.
+In PostgreSQL mode, Collector authentication audits must use the existing `insertPostgresAuditEvent` focused insert. The request awaits that single durable insert, preserving traceability without rewriting the full state document. A compatibility mirror into legacy in-memory/JSON state may run after the response as best-effort projection, but the relational audit row is authoritative.
 
-The server persists only a cryptographic hash of `attemptSecret`. The Collector token is derived deterministically with HKDF/HMAC-SHA-256 material derived from the existing `APP_ENCRYPTION_KEY` under the fixed domain `collector-auth-attempt-v1`, plus the attempt ID and validated attempt secret. The database continues to store only the Collector token hash. A valid retry can therefore reproduce the same token without storing token plaintext. If the application key changes during the 10-minute reconciliation lifetime, the server returns a stable key-version conflict; the coordinator starts a fresh attempt and the new attempt supersedes any unreachable session from the old key version.
+In JSON-only mode, the existing serialized state audit remains the compatible fallback. No audit is dropped silently: focused audit failure remains observable through a sanitized server error metric, while authentication business behavior retains the current policy that an unavailable audit sink does not expose secrets or corrupt the session transaction.
 
-The first request and every retry use the same `attemptId`, `attemptSecret`, ticket, device fingerprint, and extension version. In one database transaction the server:
+Audit events continue to record account boundary, public entity ID, action, outcome, timestamp, extension version, and duration. They never contain ticket, Collector token, parent-session token, authorization header, or device fingerprint plaintext.
 
-1. Locks and validates the ticket and parent Web session.
-2. Creates or verifies the attempt binding.
-3. Creates exactly one Collector session for the attempt.
-4. Marks the attempt completed.
-5. Returns the same logical session for every valid replay.
+## Server session cleanup
 
-The backward-compatible response keeps the existing session fields and may add:
+No new table or migration is required. The existing `collector_sessions.device_fingerprint`, `account_id`, `revoked_at`, and `revoked_reason` columns are sufficient.
 
-```json
-{
-  "attempt": {
-    "id": "<public correlation id>",
-    "replayed": false
-  }
-}
-```
+When a new Collector session is created, the PostgreSQL repository transaction revokes older active sessions with the same account ID and device fingerprint before returning the new session. The new session itself is excluded by ID. The update is account-scoped and cannot affect another device.
 
-Conflicting reuse of an attempt ID, attempt secret, ticket, device fingerprint, account, or extension version fails closed with a stable public code. A ticket can bind to at most one attempt, and an attempt can bind to at most one Collector session.
+JSON fallback applies the same rule to its in-memory session collection before persistence. Repeated cleanup is idempotent.
 
-This contract closes the commit/response gap: if the first response is lost after the server commits, retrying the same request returns the same credential and lets the extension finish its local write.
+## Security and account boundaries
 
-## Persistence and migration
+- The service worker continues to validate the trusted frontend origin and portal route.
+- Public account ID is used only to decide whether an existing local session may be reused; it never grants access.
+- Collector API authorization remains backend-enforced on every request.
+- Web logout, account switch, account disablement, expiry, permission failure, and parent-session revocation invalidate reuse.
+- Credentials stay in `chrome.storage.session`; ordinary local storage contains no Web or Collector credential.
+- Retry is single-flight and account-scoped.
+- All UI and audit diagnostics use closed sanitized codes.
 
-Add an append-only-compatible `collector_auth_attempts` table with these logical fields:
-
-- attempt ID and attempt-secret hash;
-- ticket ID and account boundary;
-- parent Web session reference;
-- generation ID;
-- device fingerprint and extension version binding;
-- Collector session ID;
-- status, creation, completion, expiry, and last-replayed timestamps.
-
-The migration only adds the new table, indexes, and foreign keys. It does not rewrite existing tickets or sessions. Old rows and legacy clients remain valid.
-
-Attempt rows have a 10-minute reconciliation lifetime. A bounded collector-auth cleanup operation removes expired attempts during scheduled maintenance or later issue/exchange traffic. Collector sessions keep their existing expiry and revocation behavior. Web logout, account disablement, password/security reset, or generation change revokes the Collector session and terminates the attempt according to the existing account boundary. When a fresh attempt completes for the same account and device fingerprint, any older active session owned by a superseded or unrecoverable attempt for that account and device is revoked. Sessions belonging to other browser profiles or devices are not affected.
-
-## Retry and recovery behavior
-
-- The initial transport deadline is 30 seconds, which covers the observed local latency without defining login truth.
-- A timeout changes the phase to `RECONCILING`; it does not clear the attempt and does not report “未登录”.
-- Retries use the same attempt with bounded exponential delays and jitter: approximately 1, 2, 5, 10, then at most 30 seconds.
-- After two minutes of continuous transient failure, the coordinator remains automatic but moves to a degraded retry cadence. The popup continues to show the next retry instead of a terminal failure.
-- If the 10-minute attempt lifetime expires, the coordinator requests a new ticket and starts a fresh attempt. Completion of that attempt revokes any unreachable older session for the same account and device.
-- `ACTION_REQUIRED` is reserved for closed deterministic codes such as Web logout, account disabled/expired, permission denied, invalid trusted origin, attempt binding conflict, or a server that does not support the required idempotent contract. Local service and network outages remain recoverable retry states.
-- The coordinator stores `nextRetryAt` and resumes after service-worker startup. A Chrome alarm wakes a suspended worker when necessary.
-- Repeated clicks and duplicate ready messages join the current single-flight attempt. They do not start parallel exchanges.
-- A newer Web generation supersedes the older attempt atomically. Late responses from the older generation cannot overwrite the current session.
-
-## Popup behavior
-
-On open, the popup requests one status snapshot and subscribes to the sanitized status key through `chrome.storage.onChanged` for the `session` area. It renders elapsed time from trusted timestamps and never controls retry scheduling. Secret keys are separate and are never read by the popup.
-
-The “前往登录” action starts discovery and opens or focuses the trusted Web page immediately. While the popup remains open, every coordinator transition updates the copy and actions. If it closes, the coordinator continues. Reopening the popup displays the persisted phase without restarting the attempt.
-
-The manual “重新检查” button is retained only as a user-triggered immediate retry. It joins the current attempt and cannot create a second attempt.
-
-## Security and data boundaries
-
-- Trusted frontend origin checks and portal routing remain enforced in the service worker.
-- Web bearer credentials never enter extension storage or runtime messages.
-- Collector tokens and attempt secrets stay in `chrome.storage.session`; neither is written to `chrome.storage.local`.
-- The backend validates account, parent session, generation, ticket, device, extension version, and attempt binding.
-- Retry and duplicate handling are idempotent and account-scoped.
-- Logs and audit events contain only public attempt IDs, phases, durations, extension version, account boundary, and stable outcome codes.
-- Tickets, attempt secrets, Collector tokens, their plaintext derivatives, authorization headers, and request bodies are redacted.
-- No popup-only check is treated as an authorization boundary.
-
-## Observability
-
-Add sanitized audit events for attempt started, completed, replayed, superseded, action-required, and revoked. Record duration and retry count without secrets. A single correlation identifier connects ticket issue, attempt, session creation, and popup-safe error reporting.
-
-The popup may show a copyable diagnostic ID, but not raw error details. This makes support investigation possible without exposing authentication material.
-
-## Affected components and contracts
+## Affected files and contracts
 
 Expected implementation scope:
 
-- `extension/lib/collector-auth-flow.js`: attempt-aware state transitions and single-flight behavior.
-- A focused extension authentication coordinator module rather than adding more responsibilities to the service worker.
-- `extension/lib/collector-session.js`: idempotent attempt persistence, exchange retry, and local session commit.
-- `extension/background/service-worker.js`: message contracts, startup resume, alarm wakeup, and popup-safe projection.
-- `extension/content/sync-auth.js`: forward attempt/generation requests without owning state.
-- `extension/popup/popup.js` and popup markup/styles: live progress rendering and immediate retry action.
-- `extension/manifest.json`: increment the extension release version; the expected next version is `0.13.46.4` so users and audits can distinguish this contract from `0.13.46.3`.
-- `server/collector-auth-routes.mjs`, service, and PostgreSQL repository: backward-compatible attempt contract and atomic replay.
-- A new additive PostgreSQL migration for authentication attempts.
-- Packaged `app/public/sonli-extension-0.13.46.4` directory and ZIP regenerated from `extension`.
+- `app/src/collector-auth-bridge.js` and tests: versioned account-aware ready contract, unchanged legacy ready emission, accepted-request lease, and immediate acknowledgement.
+- `app/src/App.jsx`: supply the authenticated account ID to the bridge lifecycle.
+- `extension/lib/web-bridge-policy.js` and tests: separate closed normalization for legacy ready, V2 account-aware ready, and accepted messages.
+- `extension/content/sync-auth.js`: forward accepted messages and preserve the existing trusted-window boundary.
+- `extension/lib/collector-auth-flow.js` and tests: acknowledgement-aware single-flight transitions and retry watchdogs.
+- A new focused extension authentication coordinator module and tests.
+- `extension/lib/collector-session.js` and tests: same-account generation rebinding and 60-second exchange deadline.
+- `extension/background/service-worker.js` and runtime tests: coordinator composition, popup-safe status messages, startup/alarm resume.
+- `extension/popup/popup.js`, markup, styles, and runtime tests: live phase rendering.
+- `server/collector-auth-runtime.mjs` and tests: focused PostgreSQL audit adapter.
+- `server/collector-auth-repository.mjs`, service tests, and PostgreSQL-style repository tests: same-account/device supersession.
+- `extension/manifest.json`: increment the release to `0.13.46.4`.
+- Regenerate `app/public/sonli-extension-0.13.46.4` and its ZIP from `extension`.
 
-No store, order, inventory, listing, pricing, or Ozon Seller authorization contract changes are in scope.
+No store, order, inventory, listing, pricing, Ozon Seller permission, database schema, or credential format changes are in scope.
 
-## Test and verification design
+## Test design
 
-### Extension unit and runtime tests
+### Session reuse
 
-- A 20-second exchange remains `EXCHANGING` and eventually becomes `AUTHENTICATED`.
-- A response lost after server commit enters `RECONCILING`, replays the attempt, and saves the session.
-- Closing and reopening the popup restores the exact progress phase.
-- Service-worker restart resumes the stored attempt and next retry.
-- Duplicate clicks, ready messages, and popup retries remain single-flight.
-- A stale generation response cannot overwrite a newer session.
-- Transient failures never render the generic logged-out state.
-- Deterministic failures render only approved public messages.
-- Status projections contain no ticket, attempt secret, token, hash, or authorization value.
+- A valid stored session plus a new generation for the same account preserves the token and returns authenticated immediately.
+- A different account, expired session, logout, parent-session rejection, or Collector 401 clears the session.
+- Stale generation messages cannot clear or overwrite the current session.
 
-### Server and repository tests
+### Bridge and single-flight behavior
 
-- Concurrent identical exchanges create exactly one attempt and one Collector session.
-- A valid replay returns the same logical session and does not duplicate side effects.
-- Conflicting attempt reuse fails closed.
-- Parent session revocation, account disablement, and expiry revoke or reject attempts.
-- PostgreSQL transactions preserve account boundaries under concurrency.
-- Legacy exchange requests remain compatible.
-- Audit rows are traceable and secret-free.
+- Web bridge posts `accepted` before the ticket promise resolves.
+- Acknowledgement cancels one-second discovery retries.
+- Duplicate requests create one ticket request.
+- A missing acknowledgement remains recoverable through discovery retry.
+- A 20-second ticket request remains `REQUESTING_TICKET` with visible elapsed state and produces no ticket storm.
 
-### Integrated acceptance
+### Popup and coordinator
 
-1. Log into the Web application in the same Chrome profile.
-2. Open the extension and observe progress without clicking “重新检查”.
-3. Simulate an exchange slower than five seconds and confirm success.
-4. Simulate a committed response being lost and confirm reconciliation succeeds.
-5. Close the popup during exchange, reopen it, and confirm the phase and eventual session are preserved.
-6. Restart the service worker during retry and confirm it resumes.
-7. Repeat the flow and confirm only one logical attempt and one session are active.
-8. Log out or switch Web accounts and confirm the old extension session cannot survive the generation boundary.
+- Every phase maps to exact approved Chinese copy.
+- Closing and reopening the popup restores the same phase.
+- Storage change events update the open popup without manual recheck.
+- Popup snapshots and logs contain no credentials or secret-derived values.
+- Service-worker startup and alarms resume retry safely.
+
+### Server and audit
+
+- PostgreSQL mode writes one focused audit row and never calls the full-state save path for Collector authentication.
+- JSON mode retains the legacy audit fallback.
+- New same-account/device session creation revokes older active sessions exactly once.
+- Other accounts and devices remain active.
+- Audit failure does not leak secrets or partially mutate the session contract.
+
+### Packaging and regression
+
+- Collector authentication, popup runtime, Web bridge, portal policy, manifest security, removed-sync, and packaged service-worker suites pass.
+- Source-to-public directory and ZIP parity pass.
+- Packaged service-worker startup and popup smoke pass.
+- Vite production build and JavaScript syntax checks pass.
+
+## Acceptance targets
+
+Measure from the extension authentication action to popup state using the same Chrome profile and local server:
+
+- Existing valid same-account session: `AUTHENTICATED` projected within 500 ms.
+- First authentication under an idle healthy local server: target 1–3 seconds and no artificial one-second ticket duplication.
+- A simulated 20-second ticket response: truthful progress throughout and exactly one ticket request.
+- Temporary network failure: visible retry state within one second and eventual automatic recovery.
+- Popup closure and service-worker restart: no false logged-out state and no duplicate concurrent flow.
+
+The 1–3 second first-authentication value is a measured rollout target, not a security timeout. If it is missed, stage timing must identify Web ticket, focused audit, exchange, or local storage as the slow boundary before release.
 
 ## Rollout and rollback
 
-Deploy the additive migration and backward-compatible server support before distributing extension `0.13.46.4`. Keep the legacy request path while the previous extension version may still be installed. The new extension must detect unsupported attempt responses and show an explicit server-upgrade-required state rather than silently falling back to the non-idempotent path.
+Deploy the server fast-audit and session-supersession behavior before distributing extension `0.13.46.4`. Verify focused audit durability and account/device isolation against local PostgreSQL before packaging.
 
-Rollback the extension independently to the previous package if necessary. The added table and optional server fields can remain unused without affecting legacy traffic. Server rollback must retain migration compatibility; removing the table is not required for functional rollback.
+The old extension remains compatible because ticket and exchange response shapes and the legacy ready message are unchanged. It ignores the new V2 ready and accepted actions. The new extension consumes V2, suppresses the same-generation legacy duplicate, and keeps legacy parsing for rollback compatibility.
+
+Rollback the extension independently to `0.13.46.3` if necessary. Server rollback restores the previous audit path and session cleanup behavior without a schema rollback. No database migration is created or removed.
 
 ## Success criteria
 
-- Web login in the same profile automatically leads to extension authentication.
-- Every non-authenticated interval has an accurate visible phase.
-- Slow transport, response loss, popup closure, and service-worker restart recover without another login or manual recheck.
-- A logical authentication attempt creates at most one active Collector session.
-- Temporary failures never appear as a false logged-out state.
-- Credentials remain session-scoped and all diagnostics remain secret-free.
+- Reopening the extension with a valid same-account session is effectively immediate.
+- First authentication no longer waits for full-state audit persistence or creates a ticket storm.
+- The popup always shows an accurate authentication phase.
+- Transient failures retry without presenting a false logged-out state.
+- Same-account/device orphan sessions are removed on successful recovery.
+- Security, account isolation, audit traceability, and credential storage boundaries remain intact.
