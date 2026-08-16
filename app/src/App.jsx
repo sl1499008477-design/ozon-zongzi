@@ -791,8 +791,6 @@ export function AppShell({ initialState = null }) {
 
   useEffect(() => {
     refreshLocalState({ source: "initial-load" });
-    const timer = window.setInterval(() => refreshLocalState({ source: "background-poll" }), 15000);
-    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {

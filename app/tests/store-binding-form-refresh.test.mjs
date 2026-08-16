@@ -51,7 +51,7 @@ async function settleReact(page) {
   }));
 }
 
-test("background refresh never replaces values in an open add or edit store form", async () => {
+test("local state loads once and does not poll over an open store form", async () => {
   const initialStore = {
     id: "store-current",
     clientId: "2141679",
@@ -59,12 +59,6 @@ test("background refresh never replaces values in an open add or edit store form
     companyName: "Current Store",
     apiKeyMasked: "已保存",
     apiKeyCreatedAt: "2026-07-29",
-  };
-  const refreshedStore = {
-    ...initialStore,
-    clientId: "2141680",
-    label: "刷新后的当前店铺",
-    apiKeyCreatedAt: "2026-07-30",
   };
   let stateRequests = 0;
   let bindingSubmissions = 0;
@@ -122,8 +116,7 @@ test("background refresh never replaces values in an open add or edit store form
       const pathname = new URL(request.url()).pathname;
       if (pathname === "/api/local/state" && request.method() === "GET") {
         stateRequests += 1;
-        const store = stateRequests === 1 ? initialStore : refreshedStore;
-        await route.fulfill({ status: 200, json: localState(store) });
+        await route.fulfill({ status: 200, json: localState(initialStore) });
         return;
       }
       if (pathname === "/api/local/binding") bindingSubmissions += 1;
@@ -154,9 +147,11 @@ test("background refresh never replaces values in an open add or edit store form
     await apiKey.fill("temporary-not-submitted-key");
     await label.fill("临时复现-不提交");
     await createdAt.fill("2026-08-01");
+    const requestsBeforeIdleTimers = stateRequests;
     await page.evaluate(() => window.__runIntervalsForTest(15_000));
 
-    assert.ok(stateRequests >= 2, "the test must execute a fresh local-state refresh");
+    assert.ok(requestsBeforeIdleTimers >= 1, "the application must load its initial local state");
+    assert.equal(stateRequests, requestsBeforeIdleTimers, "idle pages must not reload the complete local state every 15 seconds");
     assert.equal(await clientId.inputValue(), "999999999");
     assert.equal(await apiKey.inputValue(), "temporary-not-submitted-key");
     assert.equal(await label.inputValue(), "临时复现-不提交");
@@ -173,13 +168,15 @@ test("background refresh never replaces values in an open add or edit store form
 
     await page.getByRole("button", { name: "修改", exact: true }).click();
     await settleReact(page);
-    assert.equal(await clientId.inputValue(), refreshedStore.clientId);
+    assert.equal(await clientId.inputValue(), initialStore.clientId);
     assert.equal(await apiKey.inputValue(), "");
-    assert.equal(await label.inputValue(), refreshedStore.label);
-    assert.equal(await createdAt.inputValue(), refreshedStore.apiKeyCreatedAt);
+    assert.equal(await label.inputValue(), initialStore.label);
+    assert.equal(await createdAt.inputValue(), initialStore.apiKeyCreatedAt);
 
     await label.fill("编辑未提交");
+    const requestsBeforeSecondIdleTimer = stateRequests;
     await page.evaluate(() => window.__runIntervalsForTest(15_000));
+    assert.equal(stateRequests, requestsBeforeSecondIdleTimer);
     assert.equal(await label.inputValue(), "编辑未提交");
     assert.equal(bindingSubmissions, 0, "the regression must never submit store credentials");
     assert.deepEqual(pageErrors, []);

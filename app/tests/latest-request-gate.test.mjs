@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 
 import {
   createLatestLocalStateRefresh,
@@ -10,6 +11,12 @@ import {
   collectEnrichmentNeedsPolling,
   runCollectEnrichmentRetry,
 } from "../src/collect-enrichment-view.js";
+
+test("the application does not poll the complete local state while idle", async () => {
+  const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+  assert.doesNotMatch(appSource, /background-poll/);
+  assert.doesNotMatch(appSource, /setInterval\(\(\) => refreshLocalState/);
+});
 
 test("a newer local-state refresh wins when responses resolve in reverse order", async () => {
   let resolveOlder;
