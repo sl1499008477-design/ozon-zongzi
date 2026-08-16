@@ -970,7 +970,7 @@ test("JSON repository classifies missing, invalid, and boundary ticket expiry as
   }
 });
 
-test("JSON repository rejects missing or invalid mandatory expiry during create and read", async () => {
+test("JSON repository rejects invalid creates but returns read context for account-first validation", async () => {
   const tokenHash = hashCollectorSecret("cst_invalid-json-expiry");
   const state = {
     accounts: [structuredClone(ACTIVE_ACCOUNT)],
@@ -1018,10 +1018,10 @@ test("JSON repository rejects missing or invalid mandatory expiry during create 
     }),
     (error) => error?.status === 401 && error?.code === "COLLECTOR_SESSION_EXPIRED",
   );
-  await assert.rejects(
-    repository.findActiveSession({ tokenHash, now: START }),
-    (error) => error?.status === 401 && error?.code === "COLLECTOR_SESSION_EXPIRED",
-  );
+  const found = await repository.findActiveSession({ tokenHash, now: START });
+  assert.equal(found.id, "session_invalid_read_expiry");
+  assert.equal(found.expiresAt, null);
+  assert.equal(found.account.id, ACTIVE_ACCOUNT.id);
 });
 
 test("PostgreSQL repository lets the conditional UPDATE decide ticket consumption before classifying failures", async () => {

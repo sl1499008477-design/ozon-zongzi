@@ -387,6 +387,49 @@ test("required account revocation save failure is surfaced and can be retried be
   );
 });
 
+test("expired presented Collector token still revokes every account token before recovery", async () => {
+  const state = initialState();
+  const runtime = jsonRuntime(state);
+  const issueAndExchangeForDevice = async (deviceFingerprint) => {
+    const issued = await request(runtime, "POST", "/extension/collector-auth/ticket", {
+      authorization: `Bearer ${WEB_TOKEN}`,
+    });
+    const exchanged = await request(runtime, "POST", "/extension/collector-auth/exchange", {
+      body: { ticket: issued.body.ticket, deviceFingerprint },
+    });
+    return exchanged.body.collectorToken;
+  };
+  const expiredToken = await issueAndExchangeForDevice("expired-presented-device");
+  const liveToken = await issueAndExchangeForDevice("other-live-device");
+  const expiredHash = hashCollectorSecret(expiredToken);
+  state.collectorSessions.find(({ tokenHash }) => tokenHash === expiredHash).expiresAt = (
+    "2000-01-01T00:00:00.000Z"
+  );
+  state.accounts[0].expiresAt = "2000-01-01T00:00:00.000Z";
+
+  await assert.rejects(
+    runtime.authenticateSessionRequest(
+      collectorRequest(expiredToken),
+      "collector.config.read",
+    ),
+    (error) => error?.code === "COLLECTOR_ACCOUNT_EXPIRED",
+  );
+  assert.equal(state.collectorSessions.every(({ revokedReason }) => (
+    revokedReason === "ACCOUNT_EXPIRED"
+  )), true);
+
+  state.accounts[0].expiresAt = "2099-01-01T00:00:00.000Z";
+  for (const token of [expiredToken, liveToken]) {
+    await assert.rejects(
+      runtime.authenticateSessionRequest(
+        collectorRequest(token),
+        "collector.config.read",
+      ),
+      (error) => error?.code === "COLLECTOR_SESSION_REVOKED",
+    );
+  }
+});
+
 test("authenticateSessionRequest returns the safe full session for Ozon reads without Collector or Web secrets", async () => {
   const state = initialState();
   const runtime = jsonRuntime(state);

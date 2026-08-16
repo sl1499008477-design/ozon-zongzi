@@ -524,8 +524,12 @@ try {
       ? ordered
       : [...ordered.slice(previous + 1), ...ordered.slice(0, previous + 1)];
   };
-  const requestCollectorAuthFromWeb = async (requestId = newCollectorAuthRequestId()) => {
+  const requestCollectorAuthFromWeb = async (
+    requestId = newCollectorAuthRequestId(),
+    { awaitAcknowledgement } = {},
+  ) => {
     if (!isCanonicalCollectorAuthRequestId(requestId)) return collectorAuthUnavailable();
+    if (typeof awaitAcknowledgement !== 'function') return collectorAuthUnavailable(requestId);
     const tabs = await chrome.tabs.query({ url: TRUSTED_FRONTEND_TAB_URLS });
     for (const tab of orderedCollectorAuthTabs(tabs)) {
       const attempt = Object.freeze({ requestId, tabId: tab.id });
@@ -534,12 +538,33 @@ try {
         action: 'collector.auth.request',
         requestId,
       });
+      const sendWithDeadline = async () => {
+        const outcome = await awaitAcknowledgement(sendRequest());
+        if (outcome?.type === 'result') return outcome.result;
+        if (outcome?.type === 'timeout') return null;
+        if (outcome?.type === 'cancelled') return undefined;
+        throw outcome?.error || new Error('COLLECTOR_AUTH_TAB_TRANSPORT_FAILED');
+      };
       let response;
       try {
-        response = await sendRequest();
+        response = await sendWithDeadline();
+        if (response === null) {
+          if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
+          continue;
+        }
+        if (response === undefined) return collectorAuthUnavailable(requestId);
       } catch (error) {
         if (!collectorAuthNoReceiverError(error)) {
-          if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
+          const began = activeCollectorAuthAttempt?.requestId === requestId
+            && activeCollectorAuthAttempt?.tabId === tab.id
+            && Boolean(activeCollectorAuthAttempt?.generationId);
+          if (activeCollectorAuthAttempt?.requestId === requestId
+            && activeCollectorAuthAttempt?.tabId === tab.id) activeCollectorAuthAttempt = null;
+          if (began) {
+            throw Object.assign(new Error('Collector auth tab transport failed'), {
+              code: 'LOCAL_SERVICE_UNAVAILABLE',
+            });
+          }
           return collectorAuthUnavailable(requestId);
         }
         try {
@@ -549,13 +574,27 @@ try {
           return collectorAuthUnavailable(requestId);
         }
         try {
-          response = await sendRequest();
+          response = await sendWithDeadline();
+          if (response === null) {
+            if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
+            continue;
+          }
+          if (response === undefined) return collectorAuthUnavailable(requestId);
         } catch (retryError) {
           if (collectorAuthNoReceiverError(retryError)) {
             if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
             continue;
           }
-          if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
+          const began = activeCollectorAuthAttempt?.requestId === requestId
+            && activeCollectorAuthAttempt?.tabId === tab.id
+            && Boolean(activeCollectorAuthAttempt?.generationId);
+          if (activeCollectorAuthAttempt?.requestId === requestId
+            && activeCollectorAuthAttempt?.tabId === tab.id) activeCollectorAuthAttempt = null;
+          if (began) {
+            throw Object.assign(new Error('Collector auth tab transport failed'), {
+              code: 'LOCAL_SERVICE_UNAVAILABLE',
+            });
+          }
           return collectorAuthUnavailable(requestId);
         }
       }
@@ -579,7 +618,9 @@ try {
       alarms: chrome.alarms,
       getSession: () => collectorSessionManager.getCollectorAuthSnapshot(),
       newRequestId: newCollectorAuthRequestId,
-      requestAuth: (requestId) => requestCollectorAuthFromWeb(requestId),
+      requestAuth: (requestId, acknowledgement) => (
+        requestCollectorAuthFromWeb(requestId, acknowledgement)
+      ),
       onRequestEnd: (requestId) => {
         if (activeCollectorAuthAttempt?.requestId === requestId) {
           activeCollectorAuthAttempt = null;
@@ -4474,6 +4515,13 @@ try {
           });
           if (beginResult?.accepted !== true) {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          if (collectorAuthAttemptMatches(message, sender)) {
+            activeCollectorAuthAttempt = Object.freeze({
+              requestId: message.requestId,
+              tabId: sender.tab.id,
+              generationId: message.generationId,
+            });
           }
           let result;
           try {

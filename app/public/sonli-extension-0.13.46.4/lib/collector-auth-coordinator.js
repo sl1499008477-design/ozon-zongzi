@@ -326,14 +326,14 @@
       }
       await clearRetryAlarm();
     };
-    const clearNoAckWatchdog = () => {
+    const clearNoAckWatchdog = ({ settleWaiter = true } = {}) => {
       if (noAckTimer !== null) {
         try { clearTimer(noAckTimer); } catch {}
         noAckTimer = null;
       }
       const cancelWaiter = cancelNoAckWaiter;
       cancelNoAckWaiter = null;
-      if (cancelWaiter) cancelWaiter();
+      if (settleWaiter && cancelWaiter) cancelWaiter();
     };
     const clearResponseWatchdog = (requestId = '') => {
       if (requestId && responseWatchdog?.requestId !== requestId) return false;
@@ -483,8 +483,9 @@
           expiresAt: '',
         });
         transitionVersion += 1;
-        clearNoAckWatchdog();
+        clearNoAckWatchdog({ settleWaiter: false });
         replaceRequestLease(normalizedRequestId, normalizedGenerationId);
+        armResponseWatchdog(normalizedRequestId);
         return { accepted: true, status };
       });
     };
@@ -702,24 +703,32 @@
         ) {
           return { requested: false, status: authorized.status };
         }
-        const requestOutcome = await new Promise((resolve) => {
+        const awaitAcknowledgement = (operation) => new Promise((resolve) => {
           let settled = false;
           const settle = (value) => {
             if (settled) return;
             settled = true;
+            clearNoAckWatchdog({ settleWaiter: false });
             resolve(value);
           };
           armNoAckWatchdog(start.requestLease, {
             onTimeout: () => settle({ type: 'timeout' }),
             onCancel: () => settle({ type: 'cancelled' }),
           });
-          Promise.resolve()
-            .then(() => requestAuth(start.requestLease.requestId))
-            .then(
-              (result) => settle({ type: 'result', result }),
-              (error) => settle({ type: 'error', error }),
-            );
+          Promise.resolve(operation).then(
+            (result) => settle({ type: 'result', result }),
+            (error) => settle({ type: 'error', error }),
+          );
         });
+        let requestOutcome;
+        try {
+          requestOutcome = {
+            type: 'result',
+            result: await requestAuth(start.requestLease.requestId, { awaitAcknowledgement }),
+          };
+        } catch (error) {
+          requestOutcome = { type: 'error', error };
+        }
         if (requestOutcome.type === 'cancelled') {
           return { requested: false, status: discovering };
         }
@@ -739,22 +748,28 @@
         }
         clearNoAckWatchdog();
         if (requestOutcome.type === 'error') {
+          const failureLease = activeRequestLease?.requestId === start.requestLease.requestId
+            ? activeRequestLease
+            : start.requestLease;
           let status = discovering;
           try {
             status = await applyFailure({
-              requestId: start.requestLease.requestId,
-              generationId: discovering.generationId,
+              requestId: failureLease.requestId,
+              generationId: failureLease.generationId,
               error: requestOutcome.error,
-            }, start.requestLease);
+            }, failureLease);
           } catch {}
           finally {
-            releaseRequestLease(start.requestLease);
+            releaseRequestLease(failureLease);
           }
           return { requested: false, status };
         }
         const result = requestOutcome.result;
         const requested = result?.requested === true || result?.requested === 1;
         if (!requested) {
+          if (activeRequestLease !== start.requestLease) {
+            return { requested: false, status: discovering };
+          }
           let status = discovering;
           try {
             status = await applyFailure({

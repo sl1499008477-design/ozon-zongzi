@@ -987,6 +987,74 @@ test('expired worker attempt rejects its late begin before activation and rotate
   assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10, 11]);
 });
 
+test('selected-tab transport failure after begin fails the exact lease and schedules retry', async () => {
+  const clock = createFakeClock();
+  let harness;
+  harness = loadServiceWorker({
+    activationResult: { changed: true, reused: false, authenticated: false },
+    clock,
+    tabs: [{ id: 10, active: true, lastAccessed: 20, url: trustedSender.url }],
+    tabMessage: async (tabId, message) => {
+      const sender = { ...trustedSender, tab: { ...trustedSender.tab, id: tabId } };
+      const begin = await sendRuntime(harness, {
+        portalProtocol: 'SONLI_COLLECTOR_AUTH',
+        action: 'collector.auth.begin',
+        requestId: message.requestId,
+        generationId: 'generation_transport_1234',
+      }, sender);
+      assert.equal(begin.ok, true);
+      throw new Error('selected tab closed before acknowledgement');
+    },
+  });
+
+  const response = await sendRuntime(harness, { action: 'retryCollectorAuth' });
+  assert.deepEqual(JSON.parse(JSON.stringify(response.data)), { requested: 0 });
+
+  const status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
+  assert.equal(status.data.phase, 'RETRY_WAIT');
+  assert.equal(status.data.publicCode, 'LOCAL_SERVICE_UNAVAILABLE');
+  assert.ok(harness.alarmCreates.some(({ name }) => name === 'collectorAuthRetry'));
+
+  const lateAccepted = await sendRuntime(harness, {
+    protocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.accepted',
+    requestId: harness.tabMessages[0].message.requestId,
+    generationId: 'generation_transport_1234',
+  }, { ...trustedSender, tab: { ...trustedSender.tab, id: 10 } });
+  assert.deepEqual(JSON.parse(JSON.stringify(lateAccepted)), {
+    ok: false,
+    error: 'PORTAL_BRIDGE_FORBIDDEN',
+  });
+});
+
+test('unresponsive first trusted tab times out once and the second tab succeeds', async () => {
+  const clock = createFakeClock();
+  const firstTab = new Promise(() => {});
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    clock,
+    tabs: [
+      { id: 10, active: true, lastAccessed: 20, url: trustedSender.url },
+      { id: 11, active: false, lastAccessed: 10, url: trustedSender.url },
+    ],
+    tabMessage: async (tabId, message) => (
+      tabId === 10
+        ? firstTab
+        : { ok: true, requested: true, requestId: message.requestId }
+    ),
+  });
+
+  const pending = sendRuntime(harness, { action: 'retryCollectorAuth' });
+  await waitFor(() => harness.tabMessages.length === 1);
+  await clock.advance(2_500);
+  await waitFor(() => harness.tabMessages.length === 2);
+
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10, 11]);
+  assert.deepEqual(JSON.parse(JSON.stringify((await pending).data)), { requested: 1 });
+  const status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
+  assert.equal(status.data.phase, 'DISCOVERING_WEB');
+});
+
 test('transient exchange failure schedules retry and duplicate alarm resumes are single-flight', async () => {
   let resolveTabMessage;
   const tabMessagePromise = new Promise((resolve) => { resolveTabMessage = resolve; });

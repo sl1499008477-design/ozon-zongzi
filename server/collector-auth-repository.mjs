@@ -276,9 +276,6 @@ export function createJsonCollectorAuthRepository({
       : [];
     const record = collectorSessions.find((item) => item?.tokenHash === normalizedHash);
     if (!record) return null;
-    if (mandatoryExpiryMillis(record.expiresAt, "session") <= now.getTime()) {
-      throw expiredStateError("session");
-    }
     const normalizedRecord = sessionRecord(record);
     return jsonContext(state, normalizedRecord);
   }

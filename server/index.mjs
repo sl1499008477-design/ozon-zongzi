@@ -2645,7 +2645,7 @@ export function createHttpHandler({
     categoryEvidencePort: composition.accountSharedOzonCategoryRuntime,
   })) return;
   return jsonStateTransaction.run(async () => {
-  const state = await loadState();
+  let state = await loadState();
   if (await handleCollectorPricingRoute(req, res, url, {
     requireAuth,
     readBody,
@@ -2928,26 +2928,53 @@ export function createHttpHandler({
   if (accountMatch && req.method === "PATCH") {
     const admin = requireAdmin(req, state);
     const accountId = decodeURIComponent(accountMatch[1]);
-    const account = state.accounts.find((item) => item.id === accountId);
+    let account = state.accounts.find((item) => item.id === accountId);
     if (!account) {
       sendError(res, 404, "账号不存在");
       return;
     }
     const body = await readBody(req);
-    if (body.displayName !== undefined) account.displayName = String(body.displayName || account.username).trim();
-    if (body.role !== undefined) account.role = body.role === "admin" ? "admin" : "user";
-    if (body.status !== undefined) account.status = body.status === "disabled" ? "disabled" : "active";
-    if (body.expiresAt !== undefined) account.expiresAt = normalizeAccountExpiresAt(body.expiresAt);
+    const previousAccount = structuredClone(account);
+    const nextAccount = structuredClone(account);
+    if (body.displayName !== undefined) nextAccount.displayName = String(body.displayName || nextAccount.username).trim();
+    if (body.role !== undefined) nextAccount.role = body.role === "admin" ? "admin" : "user";
+    if (body.status !== undefined) nextAccount.status = body.status === "disabled" ? "disabled" : "active";
+    if (body.expiresAt !== undefined) nextAccount.expiresAt = normalizeAccountExpiresAt(body.expiresAt);
     const passwordChanged = Boolean(body.password);
-    if (passwordChanged) Object.assign(account, createPasswordHash(body.password));
-    if (account.id === admin.id && account.status === "disabled") {
+    if (passwordChanged) Object.assign(nextAccount, createPasswordHash(body.password));
+    if (nextAccount.id === admin.id && nextAccount.status === "disabled") {
       sendError(res, 400, "不能停用当前登录的管理员账号");
       return;
     }
-    if (account.id === admin.id && account.role !== "admin") {
+    if (nextAccount.id === admin.id && nextAccount.role !== "admin") {
       sendError(res, 400, "不能取消当前登录账号的管理员权限");
       return;
     }
+    const accountRecovered = (
+      (previousAccount.status === "disabled" || isAccountExpired(previousAccount))
+      && nextAccount.status === "active"
+      && !isAccountExpired(nextAccount)
+    );
+    if (accountRecovered) {
+      const recoveryReason = collectorAccountChangeReason({
+        passwordChanged,
+        accountExpired: isAccountExpired(previousAccount),
+      });
+      await collectorAuthRuntime.revokeAccountSessions({
+        parentSessionTokens: collectorParentSessionTokens(state, accountId),
+        accountId,
+        reason: recoveryReason,
+        state,
+      });
+      state = await loadState();
+      account = state.accounts.find((item) => item.id === accountId);
+      if (!account) {
+        sendError(res, 404, "账号不存在");
+        return;
+      }
+      revokeAccountSessions(state, accountId);
+    }
+    Object.assign(account, nextAccount);
     const sessionsMustBeRevoked = passwordChanged || account.status === "disabled" || isAccountExpired(account);
     const accountSessionTokens = sessionsMustBeRevoked ? collectorParentSessionTokens(state, account.id) : [];
     if (sessionsMustBeRevoked) {
@@ -2963,7 +2990,7 @@ export function createHttpHandler({
         status: account.status,
         expiresAt: account.expiresAt,
         passwordChanged,
-        sessionsRevoked: sessionsMustBeRevoked,
+        sessionsRevoked: sessionsMustBeRevoked || accountRecovered,
       },
     });
     await saveState(state);

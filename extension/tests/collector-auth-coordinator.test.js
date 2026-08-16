@@ -77,9 +77,14 @@ function createHarness({
       return requestId;
     },
     random: () => randomValues[Math.min(randomIndex++, randomValues.length - 1)],
-    requestAuth: async (input) => {
+    requestAuth: async (input, { awaitAcknowledgement }) => {
       authRequests.push(input);
-      return requestAuth ? requestAuth(input) : { requested: true };
+      const outcome = await awaitAcknowledgement(
+        requestAuth ? requestAuth(input) : { requested: true },
+      );
+      if (outcome.type === 'result') return outcome.result;
+      if (outcome.type === 'error') throw outcome.error;
+      return { requested: false, publicCode: 'WEB_LOGIN_REQUIRED' };
     },
     setTimer(callback, milliseconds) {
       const timer = { callback, milliseconds, cancelled: false, fired: false };

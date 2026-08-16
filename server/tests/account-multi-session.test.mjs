@@ -170,6 +170,7 @@ try {
     assert.equal(login.status, 200);
     return {
       accountId: created.body.account.id,
+      webToken: login.body.token,
       collectorToken: await exchangeFor(login.body.token, `device-${username}`),
     };
   }
@@ -239,6 +240,44 @@ try {
     `Collector ${naturallyExpiredUser.collectorToken}`,
   )).status, 403);
   await assertCollectorRevoked(naturallyExpiredUser.collectorToken, "ACCOUNT_EXPIRED");
+
+  const recoveredWithoutAuth = await createUserWithCollector("recovered-without-auth-user");
+  const recoveryState = JSON.parse(await readFile(dataFile, "utf8"));
+  recoveryState.accounts.find(
+    (account) => account.id === recoveredWithoutAuth.accountId,
+  ).expiresAt = "2020-01-01T00:00:00.000Z";
+  await writeFile(dataFile, JSON.stringify(recoveryState), "utf8");
+
+  const recovered = await requestJson(
+    handle,
+    "PATCH",
+    `/local/accounts/${recoveredWithoutAuth.accountId}`,
+    { expiresAt: "2099-01-01T00:00:00.000Z" },
+    secondLogin.body.token,
+  );
+  assert.equal(recovered.status, 200);
+  assert.equal((await requestJson(
+    handle,
+    "GET",
+    "/extension/collector-auth/status",
+    null,
+    `Collector ${recoveredWithoutAuth.collectorToken}`,
+  )).status, 401);
+  assert.equal((await requestJson(
+    handle,
+    "POST",
+    "/extension/collector-auth/ticket",
+    {},
+    recoveredWithoutAuth.webToken,
+  )).status, 401);
+  await assertCollectorRevoked(recoveredWithoutAuth.collectorToken, "ACCOUNT_EXPIRED");
+  assert.equal((await requestJson(
+    handle,
+    "GET",
+    "/extension/collector-auth/status",
+    null,
+    `Collector ${secondCollectorToken}`,
+  )).status, 200);
 
   assert.equal((await requestJson(
     handle,
