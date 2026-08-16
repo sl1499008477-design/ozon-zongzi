@@ -8,22 +8,25 @@ const fs = require('node:fs');
 const senderUrl = 'https://qh.jizhangerp.com/app';
 const collectorMessages = [
   {
-    input: { action: 'collector.auth.begin', generationId: 'generation_A_1234' },
+    input: { action: 'collector.auth.begin', requestId: 'collector-attempt-1', generationId: 'generation_A_1234' },
     expected: {
       protocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.begin',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
     },
   },
   {
     input: {
       action: 'collector.auth.begin',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       accountIdHint: 'account-a',
     },
     expected: {
       protocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.begin',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       accountIdHint: 'account-a',
     },
@@ -39,12 +42,14 @@ const collectorMessages = [
   {
     input: {
       action: 'collector.auth.failure',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       publicCode: 'WEB_LOGIN_REQUIRED',
     },
     expected: {
       protocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.failure',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       publicCode: 'WEB_LOGIN_REQUIRED',
     },
@@ -52,7 +57,7 @@ const collectorMessages = [
   {
     input: {
       action: 'collector.auth.exchange',
-      requestId: 'request-1',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       ticket: 'ctt_ticket_secret_123456789',
       expiresAt: '2030-01-01T00:01:00.000Z',
@@ -60,7 +65,7 @@ const collectorMessages = [
     expected: {
       protocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.exchange',
-      requestId: 'request-1',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       ticket: 'ctt_ticket_secret_123456789',
       expiresAt: '2030-01-01T00:01:00.000Z',
@@ -92,12 +97,14 @@ assert.deepEqual(normalizePortalBridgeMessage({
   senderUrl,
   message: {
     action: 'collector.auth.begin',
+    requestId: 'collector-attempt-1',
     generationId: 'generation_A_1234',
     accountIdHint: 'a'.repeat(128),
   },
 }), {
   protocol: 'SONLI_COLLECTOR_AUTH',
   action: 'collector.auth.begin',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
   accountIdHint: 'a'.repeat(128),
 });
@@ -145,6 +152,9 @@ for (const message of [
 assert.deepEqual(normalizePortalBridgeMessage({ protocol: 'JZ_ERP', senderUrl, message: { action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true, type: 'x' } }), { protocol: 'JZ_ERP', action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true });
 for (const bad of [
   { protocol: 'SONLI_WEB_CONTROL', message: { action: 'syncAuthFromWeb', token: 't' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.failure', generationId: 'generation_A_1234', publicCode: 'WEB_LOGIN_REQUIRED' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', requestId: 'request-without-prefix', generationId: 'generation_A_1234' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', token: 'web-bearer' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: '' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: ' account-a ' } },
@@ -153,7 +163,7 @@ for (const bad of [
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: 'account-a', token: 'web-bearer' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: 'account-a', ticket: 'unexpected' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.logout', generationId: 'generation_A_1234', storeId: 'store-1' } },
-  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.exchange', requestId: 'request-1', generationId: 'generation_A_1234', ticket: 'ctt_ticket_secret_123456789', expiresAt: '2030-01-01T00:01:00.000Z', accountId: 'account-attacker' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.exchange', requestId: 'collector-attempt-1', generationId: 'generation_A_1234', ticket: 'ctt_ticket_secret_123456789', expiresAt: '2030-01-01T00:01:00.000Z', accountId: 'account-attacker' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: '123456789012345' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'a'.repeat(129) } },
@@ -177,6 +187,7 @@ assert.deepEqual(
     message: {
       portalProtocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.begin',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       accountIdHint: 'account-a',
     },
@@ -187,6 +198,7 @@ assert.deepEqual(
     message: {
       protocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.begin',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       accountIdHint: 'account-a',
     },
@@ -199,7 +211,7 @@ assert.deepEqual(
     message: {
       portalProtocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.exchange',
-      requestId: 'request-1',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       ticket: 'ctt_ticket_secret_123456789',
       expiresAt: '2030-01-01T00:01:00.000Z',
@@ -211,7 +223,7 @@ assert.deepEqual(
     message: {
       protocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.exchange',
-      requestId: 'request-1',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       ticket: 'ctt_ticket_secret_123456789',
       expiresAt: '2030-01-01T00:01:00.000Z',
@@ -271,6 +283,7 @@ assert.throws(
     message: {
       portalProtocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.begin',
+      requestId: 'collector-attempt-1',
       generationId: 'generation_A_1234',
       token: 'web-bearer',
     },

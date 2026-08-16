@@ -262,18 +262,30 @@ function loadServiceWorker({
     tabMessages,
     tabGets,
     tabQueries,
+    availableTabs: tabs,
   };
 }
 
+let collectorAttemptSequence = 0;
 async function sendCollectorBegin(harness, accountIdHint = 'account-a') {
-  return new Promise((resolve) => {
-    harness.runtimeOnMessage.listeners[0]({
-      portalProtocol: 'SONLI_COLLECTOR_AUTH',
-      action: 'collector.auth.begin',
-      generationId: 'generation_A_1234',
-      accountIdHint,
-    }, trustedSender, resolve);
-  });
+  if (!harness.availableTabs.some(({ id }) => id === trustedSender.tab.id)) {
+    harness.availableTabs.push({
+      id: trustedSender.tab.id,
+      active: true,
+      lastAccessed: 10,
+      url: trustedSender.url,
+    });
+  }
+  collectorAttemptSequence += 1;
+  await sendRuntime(harness, { action: 'retryCollectorAuth' });
+  harness.activeTestRequestId = harness.tabMessages.at(-1).message.requestId;
+  return sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    requestId: harness.activeTestRequestId,
+    generationId: 'generation_A_1234',
+    accountIdHint,
+  }, trustedSender);
 }
 
 const extensionSender = {
@@ -282,8 +294,19 @@ const extensionSender = {
 };
 
 async function sendRuntime(harness, message, sender = extensionSender) {
+  const attemptActions = new Set([
+    'collector.auth.begin',
+    'collector.auth.accepted',
+    'collector.auth.failure',
+    'collector.auth.exchange',
+  ]);
+  const routedMessage = harness.activeTestRequestId
+    && attemptActions.has(message?.action)
+    && (!message.requestId || String(message.requestId).startsWith('request-'))
+    ? { ...message, requestId: harness.activeTestRequestId }
+    : message;
   return new Promise((resolve) => {
-    harness.runtimeOnMessage.listeners[0](message, sender, resolve);
+    harness.runtimeOnMessage.listeners[0](routedMessage, sender, resolve);
   });
 }
 
@@ -441,6 +464,32 @@ test('one retry selects only one trusted Web tab', async () => {
   assert.match(harness.tabMessages[0].message.requestId, /^collector-/);
 });
 
+test('worker attempt rejects a mismatched sender tab or request ID before activation', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: true, reused: false, authenticated: false },
+    tabs: [{ id: 17, active: true, lastAccessed: 10 }],
+  });
+  await sendRuntime(harness, { action: 'retryCollectorAuth' });
+  const selectedRequestId = harness.tabMessages.at(-1).message.requestId;
+  const begin = (requestId, sender) => sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    requestId,
+    generationId: 'generation_A_1234',
+    accountIdHint: 'account-a',
+  }, sender);
+
+  assert.equal((await begin(selectedRequestId, {
+    ...trustedSender,
+    tab: { ...trustedSender.tab, id: 18 },
+  })).ok, false);
+  assert.equal((await begin('collector-other-attempt', trustedSender)).ok, false);
+  assert.equal(harness.activationCalls.length, 0);
+
+  assert.equal((await begin(selectedRequestId, trustedSender)).ok, true);
+  assert.equal(harness.activationCalls.length, 1);
+});
+
 test('an ambiguous connection error from the first trusted tab fails closed', async () => {
   const harness = loadServiceWorker({
     activationResult: { changed: false },
@@ -594,7 +643,7 @@ test('a non-connection error from the first trusted tab fails closed without try
   assert.deepEqual(harness.scriptExecutions, []);
 });
 
-test('explicit collector auth request IDs use the canonical content contract before tab discovery', async (t) => {
+test('caller-supplied collector auth request IDs cannot bypass coordinator ownership', async (t) => {
   for (const requestId of [
     '',
     'request-without-prefix',
@@ -622,7 +671,7 @@ test('explicit collector auth request IDs use the canonical content contract bef
     });
   }
 
-  await t.test('canonical explicit ID is forwarded unchanged', async () => {
+  await t.test('canonical explicit ID is also rejected before discovery', async () => {
     const harness = loadServiceWorker({
       activationResult: { changed: false },
       tabs: [{ id: 10, active: true, lastAccessed: 200 }],
@@ -636,16 +685,10 @@ test('explicit collector auth request IDs use the canonical content contract bef
 
     assert.deepEqual(JSON.parse(JSON.stringify(response)), {
       ok: true,
-      data: { requested: 1 },
+      data: { requested: 0 },
     });
-    assert.equal(harness.tabQueries.length, queriesBefore + 1);
-    assert.deepEqual(harness.tabMessages, [{
-      tabId: 10,
-      message: {
-        action: 'collector.auth.request',
-        requestId: 'collector-explicit-attempt-1',
-      },
-    }]);
+    assert.equal(harness.tabQueries.length, queriesBefore);
+    assert.deepEqual(harness.tabMessages, []);
   });
 });
 
@@ -796,17 +839,60 @@ test('closed Web failure reaches coordinator and exchange outer budget survives 
   assert.equal((await pending).ok, true);
 });
 
+test('stale generation failure keeps the current generation on the selected worker attempt', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: true, reused: false, authenticated: false },
+    exchangeResult: {
+      account: { id: 'account-current', displayName: 'Current' },
+      permissions: ['collector.upload'],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    },
+  });
+  await sendCollectorBegin(harness);
+  const requestId = harness.activeTestRequestId;
+  await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    requestId,
+    generationId: 'generation_B_5678',
+  }, trustedSender);
+
+  await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.failure',
+    requestId,
+    generationId: 'generation_A_1234',
+    publicCode: 'LOCAL_SERVICE_UNAVAILABLE',
+  }, trustedSender);
+
+  const exchange = await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId,
+    generationId: 'generation_B_5678',
+    ticket: 'ctt_current_generation_only_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedSender);
+  assert.equal(exchange.ok, true);
+});
+
 test('transient exchange failure schedules retry and duplicate alarm resumes are single-flight', async () => {
   let resolveTabMessage;
   const tabMessagePromise = new Promise((resolve) => { resolveTabMessage = resolve; });
+  let tabRequestNumber = 0;
   const harness = loadServiceWorker({
     activationResult: { changed: true, reused: false, authenticated: false },
     exchangeError: Object.assign(new Error('secret transport detail'), {
       code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR',
       status: 0,
     }),
-    tabs: [{ id: 7, active: true, lastAccessed: 10 }],
-    tabMessage: () => tabMessagePromise,
+    tabs: [{ id: 17, active: true, lastAccessed: 10 }],
+    tabMessage: (_tabId, message) => {
+      tabRequestNumber += 1;
+      return tabRequestNumber === 1
+        ? { ok: true, requested: true, requestId: message.requestId }
+        : tabMessagePromise;
+    },
   });
   await sendCollectorBegin(harness);
   const failed = await sendRuntime(harness, {

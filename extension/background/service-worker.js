@@ -504,6 +504,17 @@ try {
     return left.id - right.id;
   };
   let lastCollectorAuthTabId = null;
+  let activeCollectorAuthAttempt = null;
+  const collectorAuthAttemptMatches = (message, sender) => (
+    isCanonicalCollectorAuthRequestId(message?.requestId)
+    && Number.isInteger(sender?.tab?.id)
+    && activeCollectorAuthAttempt?.requestId === message.requestId
+    && activeCollectorAuthAttempt?.tabId === sender.tab.id
+  );
+  const clearCollectorAuthAttemptAfterTransition = (message, sender, status) => {
+    if (status && status.generationId !== message.generationId) return;
+    if (collectorAuthAttemptMatches(message, sender)) activeCollectorAuthAttempt = null;
+  };
   const orderedCollectorAuthTabs = (tabs) => {
     const ordered = (Array.isArray(tabs) ? tabs : [])
       .filter((tab) => Number.isInteger(tab?.id))
@@ -517,6 +528,8 @@ try {
     if (!isCanonicalCollectorAuthRequestId(requestId)) return collectorAuthUnavailable();
     const tabs = await chrome.tabs.query({ url: TRUSTED_FRONTEND_TAB_URLS });
     for (const tab of orderedCollectorAuthTabs(tabs)) {
+      const attempt = Object.freeze({ requestId, tabId: tab.id });
+      activeCollectorAuthAttempt = attempt;
       const sendRequest = () => chrome.tabs.sendMessage(tab.id, {
         action: 'collector.auth.request',
         requestId,
@@ -525,16 +538,24 @@ try {
       try {
         response = await sendRequest();
       } catch (error) {
-        if (!collectorAuthNoReceiverError(error)) return collectorAuthUnavailable(requestId);
+        if (!collectorAuthNoReceiverError(error)) {
+          if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
+          return collectorAuthUnavailable(requestId);
+        }
         try {
           await injectCollectorAuthIntoTab(tab.id);
         } catch {
+          if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
           return collectorAuthUnavailable(requestId);
         }
         try {
           response = await sendRequest();
         } catch (retryError) {
-          if (collectorAuthNoReceiverError(retryError)) continue;
+          if (collectorAuthNoReceiverError(retryError)) {
+            if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
+            continue;
+          }
+          if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
           return collectorAuthUnavailable(requestId);
         }
       }
@@ -546,8 +567,10 @@ try {
         lastCollectorAuthTabId = tab.id;
         return { requested: true, requestId, tabId: tab.id };
       }
+      if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
       return collectorAuthUnavailable(requestId);
     }
+    activeCollectorAuthAttempt = null;
     return collectorAuthUnavailable(requestId);
   };
   const collectorAuthCoordinator =
@@ -555,7 +578,8 @@ try {
       storageSession: chrome.storage.session,
       alarms: chrome.alarms,
       getSession: () => collectorSessionManager.getCollectorAuthSnapshot(),
-      requestAuth: () => requestCollectorAuthFromWeb(),
+      newRequestId: newCollectorAuthRequestId,
+      requestAuth: (requestId) => requestCollectorAuthFromWeb(requestId),
     });
   const observeCollectorAuth = async (operation, input) => {
     try {
@@ -570,8 +594,7 @@ try {
   const retryCollectorAuth = async () => {
     const coordinated = await observeCollectorAuth('retryNow');
     if (coordinated) return coordinated;
-    const fallback = await requestCollectorAuthFromWeb();
-    return { requested: fallback?.requested === true, status: null };
+    return { requested: false, status: null };
   };
   const resumeCollectorAuth = (source) => {
     void Promise.resolve()
@@ -4188,7 +4211,7 @@ try {
     updateTab: (id, update) => chrome.tabs.update(id, update),
     updateWindow: (id, update) => chrome.windows.update(id, update),
     createTab: (options) => chrome.tabs.create(options),
-    requestCollectorAuth: () => requestCollectorAuthFromWeb(),
+    requestCollectorAuth: () => retryCollectorAuth(),
     injectCollectorAuth: injectCollectorAuthIntoTab,
   });
 
@@ -4419,11 +4442,17 @@ try {
         }
         case 'logout': {
           const status = await observeCollectorAuth('getStatus');
+          const attempt = activeCollectorAuthAttempt;
+          activeCollectorAuthAttempt = null;
           await collectorSessionManager.logoutCollectorSession();
-          await observeCollectorAuth('fail', {
-            generationId: status?.generationId || '',
-            error: { code: 'WEB_AUTH_REQUIRED' },
-          });
+          if (attempt) {
+            await observeCollectorAuth('fail', {
+              requestId: attempt.requestId,
+              generationId: status?.generationId,
+              error: { code: 'WEB_AUTH_REQUIRED' },
+            });
+          }
+          if (status) await observeCollectorAuth('resume');
           reloadOzonTabs();
           return { ok: true };
         }
@@ -4431,7 +4460,13 @@ try {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
           }
-          await observeCollectorAuth('begin', { generationId: message.generationId });
+          if (!collectorAuthAttemptMatches(message, sender)) {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          await observeCollectorAuth('begin', {
+            requestId: message.requestId,
+            generationId: message.generationId,
+          });
           let result;
           try {
             result = await collectorSessionManager.activateCollectorGeneration({
@@ -4439,18 +4474,22 @@ try {
               accountIdHint: message.accountIdHint,
             });
           } catch (error) {
-            await observeCollectorAuth('fail', {
+            const failureStatus = await observeCollectorAuth('fail', {
+              requestId: message.requestId,
               generationId: message.generationId,
               error,
             });
+            clearCollectorAuthAttemptAfterTransition(message, sender, failureStatus);
             throw error;
           }
           if (result?.reused === true && result?.authenticated === true) {
-            await observeCollectorAuth('succeed', {
+            const successStatus = await observeCollectorAuth('succeed', {
+              requestId: message.requestId,
               generationId: message.generationId,
               account: result.account,
               expiresAt: result.expiresAt,
             });
+            clearCollectorAuthAttemptAfterTransition(message, sender, successStatus);
           }
           if (!Object.hasOwn(message, 'accountIdHint')) {
             return { ok: true, data: { changed: result?.changed === true } };
@@ -4484,10 +4523,16 @@ try {
             message.generationId,
           );
           if (cleared) {
-            await observeCollectorAuth('fail', {
-              generationId: message.generationId,
-              error: { code: 'WEB_AUTH_REQUIRED' },
-            });
+            const attempt = activeCollectorAuthAttempt;
+            activeCollectorAuthAttempt = null;
+            if (attempt) {
+              await observeCollectorAuth('fail', {
+                requestId: attempt.requestId,
+                generationId: message.generationId,
+                error: { code: 'WEB_AUTH_REQUIRED' },
+              });
+            }
+            await observeCollectorAuth('resume');
           }
           return { ok: true, data: { cleared } };
         }
@@ -4495,7 +4540,11 @@ try {
           const accepted = senderIsWebPortal
             ? webBridgePolicy.normalizeCollectorAuthAccepted(message)
             : null;
-          if (!accepted || portalRoute !== 'INTERNAL') {
+          if (
+            !accepted
+            || portalRoute !== 'INTERNAL'
+            || !collectorAuthAttemptMatches(accepted, sender)
+          ) {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
           }
           await observeCollectorAuth('accept', accepted);
@@ -4505,17 +4554,39 @@ try {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
           }
-          await observeCollectorAuth('fail', {
+          if (!collectorAuthAttemptMatches(message, sender)) {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          const failureStatus = await observeCollectorAuth('fail', {
+            requestId: message.requestId,
             generationId: message.generationId,
             error: { code: message.publicCode },
           });
+          clearCollectorAuthAttemptAfterTransition(message, sender, failureStatus);
           return { ok: true };
         }
         case 'collector.auth.exchange': {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
           }
-          await observeCollectorAuth('exchange', { generationId: message.generationId });
+          if (!collectorAuthAttemptMatches(message, sender)) {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          const exchangeStatus = await observeCollectorAuth('exchange', {
+            requestId: message.requestId,
+            generationId: message.generationId,
+          });
+          if (
+            exchangeStatus?.phase !== 'EXCHANGING'
+            || exchangeStatus?.generationId !== message.generationId
+          ) {
+            return {
+              ok: false,
+              status: 409,
+              code: 'COLLECTOR_AUTH_GENERATION_CHANGED',
+              error: 'Collector auth generation changed',
+            };
+          }
           let session;
           try {
             const manifest = chrome.runtime.getManifest() || {};
@@ -4526,11 +4597,13 @@ try {
               generationId: message.generationId,
             });
           } catch (error) {
-            await observeCollectorAuth('fail', {
+            const failureStatus = await observeCollectorAuth('fail', {
+              requestId: message.requestId,
               generationId: message.generationId,
               error,
             });
             const statusValue = error?.status;
+            clearCollectorAuthAttemptAfterTransition(message, sender, failureStatus);
             const status = typeof statusValue === 'number' || typeof statusValue === 'string'
               ? Number(statusValue)
               : 0;
@@ -4548,13 +4621,15 @@ try {
               ),
             };
           }
-          await observeCollectorAuth('succeed', {
+          const successStatus = await observeCollectorAuth('succeed', {
+            requestId: message.requestId,
             generationId: message.generationId,
             account: session.account,
             expiresAt: session.expiresAt,
           });
           kickCollectorOzonEnrichment();
           reloadOzonTabs();
+          clearCollectorAuthAttemptAfterTransition(message, sender, successStatus);
           return {
             ok: true,
             data: {
@@ -4568,9 +4643,7 @@ try {
         case 'requestCollectorAuth': {
           const hasRequestId = Object.hasOwn(message, 'requestId');
           const result = hasRequestId
-            ? isCanonicalCollectorAuthRequestId(message.requestId)
-              ? await requestCollectorAuthFromWeb(message.requestId)
-              : collectorAuthUnavailable()
+            ? collectorAuthUnavailable()
             : await retryCollectorAuth();
           return {
             ok: true,

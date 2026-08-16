@@ -663,12 +663,10 @@ test('content script does not discover Web auth until selected by the worker', a
   await flush();
   assert.deepEqual(runtime.pageRequests, []);
 
-  await runtime.receiveContent({
-    action: 'collector.auth.request',
-    requestId: 'collector-attempt-1',
-  });
+  await runtime.requestCollectorAuth();
   await flush();
-  assert.deepEqual(runtime.pageRequests, ['collector-attempt-1']);
+  assert.equal(runtime.pageRequests.length, 1);
+  assert.match(runtime.pageRequests[0], /^collector-/);
 });
 
 test('content script installs no guard or runtime listener on an untrusted origin', async (t) => {
@@ -771,7 +769,43 @@ test('first real authentication emits exactly one accepted, ticket, and exchange
   assert.equal((await runtime.status()).phase, 'AUTHENTICATED');
 });
 
-test('real accepted route suppresses a second ticket until the exact 30,000 ms watchdog boundary', async (t) => {
+test('two tabs cannot issue tickets for one worker attempt', async (t) => {
+  const runtime = createBrowserHarness();
+  t.after(() => runtime.unloadPopup());
+  let ticketRequests = 0;
+  const removeBridge = await runtime.installWebBridge({
+    requestTicket: async () => {
+      ticketRequests += 1;
+      return {
+        ticket: 'ctt_acceptance_selected_tab_123456789',
+        expiresAt: '2030-01-01T00:01:00.000Z',
+      };
+    },
+  });
+  t.after(removeBridge);
+  await flush();
+  await runtime.requestCollectorAuth();
+  await flush(600);
+
+  const requestId = runtime.tabMessages[0]?.requestId;
+  const secondTabSender = {
+    url: trustedWebSender.url,
+    tab: { id: 18, url: trustedWebSender.url },
+  };
+  await runtime.sendWorker({
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId,
+    generationId: GENERATION,
+    ticket: 'ctt_acceptance_unselected_tab_123456789',
+    expiresAt: '2030-01-01T00:01:00.000Z',
+  }, secondTabSender);
+
+  assert.equal(ticketRequests, 1);
+  assert.equal(runtime.exchangeCalls.length, 1);
+});
+
+test('accepted response timeout retries through the coordinator after 31 seconds plus backoff', async (t) => {
   const runtime = createBrowserHarness();
   t.after(() => runtime.unloadPopup());
   const tickets = [deferred(), deferred()];
@@ -791,10 +825,12 @@ test('real accepted route suppresses a second ticket until the exact 30,000 ms w
   );
   assert.equal((await runtime.status()).phase, 'REQUESTING_TICKET');
 
-  await runtime.clock.advance(29_999);
+  await runtime.clock.advance(30_999);
   assert.equal(ticketRequests, 1);
   await runtime.clock.advance(1);
-  assert.equal(ticketRequests, 2, 'one fresh request is allowed only at the 30-second watchdog');
+  assert.equal(ticketRequests, 1, 'response timeout first enters the bounded retry state');
+  await runtime.clock.advance(1_000);
+  assert.equal(ticketRequests, 2, 'the coordinator alone starts the next worker attempt');
   assert.equal(
     runtime.workerMessages.filter(({ message }) => message.action === 'collector.auth.accepted').length,
     2,

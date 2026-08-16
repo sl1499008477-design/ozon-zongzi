@@ -457,6 +457,7 @@ function loadServiceWorker({
   });
   assert.equal(runtimeOnMessage.listeners.length, 1, 'service worker must register one message handler');
   return {
+    chrome,
     context,
     alarmsOnAlarm,
     cookieQueries,
@@ -494,6 +495,43 @@ async function sendRuntimeMessage(harness, message, sender = {}) {
   });
   await settle();
   return response;
+}
+
+const privilegedExtensionSender = {
+  id: 'sync-capability-test',
+  url: 'chrome-extension://sync-capability-test/popup/popup.html',
+};
+
+async function selectCollectorAttempt(harness, deliverRequest) {
+  const originalQuery = harness.chrome.tabs.query;
+  const originalSendMessage = harness.chrome.tabs.sendMessage;
+  harness.chrome.tabs.query = async (query = {}) => {
+    if (Array.isArray(query.url) && query.url.includes('https://qh.jizhangerp.com/*')) {
+      return [{ id: trustedWebSender.tab.id, active: true, lastAccessed: 10 }];
+    }
+    return originalQuery(query);
+  };
+  harness.chrome.tabs.sendMessage = async (tabId, message) => {
+    harness.sentTabMessages.push({ tabId, message });
+    if (message?.action === 'collector.auth.request') {
+      if (deliverRequest) return deliverRequest(message);
+      return { ok: true, requested: true, requestId: message.requestId };
+    }
+    return originalSendMessage(tabId, message);
+  };
+  try {
+    const selected = await sendRuntimeMessage(
+      harness,
+      { action: 'retryCollectorAuth' },
+      privilegedExtensionSender,
+    );
+    assert.equal(selected.ok, true);
+    assert.equal(selected.data.requested, 1);
+    return harness.sentTabMessages.at(-1).message.requestId;
+  } finally {
+    harness.chrome.tabs.query = originalQuery;
+    harness.chrome.tabs.sendMessage = originalSendMessage;
+  }
 }
 
 function sendRuntimeMessageUntilResponse(harness, message, sender = {}) {
@@ -651,6 +689,12 @@ test('openFrontend reuses a trusted Web tab only for the exact login path', asyn
   assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [17]);
   assert.equal(harness.sentTabMessages[0].message.action, 'collector.auth.request');
   assert.match(harness.sentTabMessages[0].message.requestId, /^collector-/);
+  const status = await sendRuntimeMessage(
+    harness,
+    { action: 'getCollectorAuthStatus' },
+    privilegedExtensionSender,
+  );
+  assert.equal(status.data.phase, 'DISCOVERING_WEB');
 });
 
 test('openFrontend returns top-level failure when the login opener cannot open a tab', async () => {
@@ -1021,15 +1065,17 @@ test('successful Collector exchange refreshes only open Ozon buyer pages', async
     },
   });
 
+  const requestId = await selectCollectorAttempt(harness);
   await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: G1,
   }, trustedWebSender);
   const exchanged = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-refresh-success',
+    requestId,
     generationId: G1,
     ticket: 'ctt_refresh_success_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1057,15 +1103,17 @@ test('failed Collector exchange never refreshes an Ozon page', async () => {
     tabQueryImpl: async () => [{ id: 31 }],
   });
 
+  const requestId = await selectCollectorAttempt(harness);
   await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: G1,
   }, trustedWebSender);
   const exchanged = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-refresh-failure',
+    requestId,
     generationId: G1,
     ticket: 'ctt_refresh_failure_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1169,9 +1217,11 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
       throw new Error(`unexpected exchange path: ${pathname}`);
     },
   });
+  const requestId = await selectCollectorAttempt(exchangeHarness);
   const begun = await sendRuntimeMessage(exchangeHarness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_A_1234',
   }, trustedWebSender);
   assert.deepEqual(JSON.parse(JSON.stringify(begun)), {
@@ -1182,7 +1232,7 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
   const exchanged = await sendRuntimeMessage(exchangeHarness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-kick',
+    requestId,
     generationId: 'generation_A_1234',
     ticket: 'ctt_exchange_kick_secret_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1215,9 +1265,32 @@ test('Collector portal generations fence stale exchange and stale logout', async
     },
   });
 
+  const requestId = await selectCollectorAttempt(harness);
+  const wrongRequest = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    requestId: 'collector-wrong-request-id',
+    generationId: 'generation_G1_1234',
+  }, trustedWebSender);
+  assert.equal(wrongRequest.ok, false);
+  assert.equal(wrongRequest.error, 'PORTAL_BRIDGE_FORBIDDEN');
+
+  const wrongTab = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    requestId,
+    generationId: 'generation_G1_1234',
+  }, {
+    ...trustedWebSender,
+    tab: { ...trustedWebSender.tab, id: trustedWebSender.tab.id + 1 },
+  });
+  assert.equal(wrongTab.ok, false);
+  assert.equal(wrongTab.error, 'PORTAL_BRIDGE_FORBIDDEN');
+
   const begunG1 = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_G1_1234',
   }, trustedWebSender);
   assert.deepEqual(JSON.parse(JSON.stringify(begunG1)), {
@@ -1228,6 +1301,7 @@ test('Collector portal generations fence stale exchange and stale logout', async
   const begunG2 = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_G2_5678',
   }, trustedWebSender);
   assert.deepEqual(JSON.parse(JSON.stringify(begunG2)), {
@@ -1238,7 +1312,7 @@ test('Collector portal generations fence stale exchange and stale logout', async
   const staleExchange = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-generation-g1-stale',
+    requestId,
     generationId: 'generation_G1_1234',
     ticket: 'ctt_exchange_generation_g1_secret_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1260,7 +1334,7 @@ test('Collector portal generations fence stale exchange and stale logout', async
   const exchangedG2 = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-generation-g2',
+    requestId,
     generationId: 'generation_G2_5678',
     ticket: 'ctt_exchange_generation_g2_secret_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1305,10 +1379,7 @@ test('authoritative content recovery re-begins Web G1 after internal logout', as
   });
   const webTab = await loadCollectorAuthContent(worker);
 
-  await webTab.sendRuntimeMessage({
-    action: 'collector.auth.request',
-    requestId: 'collector-initial-recovery-g1',
-  });
+  await selectCollectorAttempt(worker, (message) => webTab.sendRuntimeMessage(message));
   await webTab.emitWebMessage(collectorReady(G1));
   const firstRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(firstRequest.requestId, G1, 'g1-first'));
@@ -1322,17 +1393,7 @@ test('authoritative content recovery re-begins Web G1 after internal logout', as
   assert.equal(worker.session.state[COLLECTOR_SESSION_KEY], undefined);
   assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], undefined);
 
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({ action: 'collector.auth.request' }))),
-    { ok: false, requested: false, requestId: '' },
-  );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({
-      action: 'collector.auth.request',
-      requestId: 'collector-recovery-g1',
-    }))),
-    { ok: true, requested: true, requestId: 'collector-recovery-g1' },
-  );
+  await selectCollectorAttempt(worker, (message) => webTab.sendRuntimeMessage(message));
   const recoveryRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(recoveryRequest.requestId, G1, 'g1-recovery'));
 
@@ -1374,25 +1435,16 @@ test('authoritative content recovery adopts only current Web G2 over cached G1',
   });
   const webTab = await loadCollectorAuthContent(worker);
 
-  await webTab.sendRuntimeMessage({
-    action: 'collector.auth.request',
-    requestId: 'collector-initial-current-web-g1',
-  });
+  await selectCollectorAttempt(worker, (message) => webTab.sendRuntimeMessage(message));
   await webTab.emitWebMessage(collectorReady(G1));
   const firstRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(firstRequest.requestId, G1, 'g1'));
 
   assert.deepEqual(
-    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({ action: 'collector.auth.request' }))),
-    { ok: false, requested: false, requestId: '' },
+    JSON.parse(JSON.stringify(await sendRuntimeMessage(worker, { action: 'logout' }))),
+    { ok: true },
   );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({
-      action: 'collector.auth.request',
-      requestId: 'collector-recovery-g2',
-    }))),
-    { ok: true, requested: true, requestId: 'collector-recovery-g2' },
-  );
+  await selectCollectorAttempt(worker, (message) => webTab.sendRuntimeMessage(message));
   const recoveryRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(recoveryRequest.requestId, G2, 'g2'));
 
@@ -1431,10 +1483,7 @@ test('authoritative same-G1 recovery fences a logout-before deferred exchange in
   });
   const oldWebTab = await loadCollectorAuthContent(worker);
 
-  await oldWebTab.sendRuntimeMessage({
-    action: 'collector.auth.request',
-    requestId: 'collector-initial-old-incarnation-g1',
-  });
+  await selectCollectorAttempt(worker, (message) => oldWebTab.sendRuntimeMessage(message));
   await oldWebTab.emitWebMessage(collectorReady(G1));
   const oldRequest = oldWebTab.posts.at(-1).message;
   const oldFlowExchange = oldWebTab.emitWebMessage(
@@ -1452,22 +1501,9 @@ test('authoritative same-G1 recovery fences a logout-before deferred exchange in
   assert.equal(worker.session.state[COLLECTOR_INCARNATION_KEY], undefined);
 
   const recoveryWebTab = await loadCollectorAuthContent(worker);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(await recoveryWebTab.sendRuntimeMessage({
-      action: 'collector.auth.request',
-    }))),
-    { ok: false, requested: false, requestId: '' },
-  );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(await recoveryWebTab.sendRuntimeMessage({
-      action: 'collector.auth.request',
-      requestId: 'collector-recovery-g1-new-incarnation',
-    }))),
-    {
-      ok: true,
-      requested: true,
-      requestId: 'collector-recovery-g1-new-incarnation',
-    },
+  await selectCollectorAttempt(
+    worker,
+    (message) => recoveryWebTab.sendRuntimeMessage(message),
   );
   const recoveryRequest = recoveryWebTab.posts.at(-1).message;
   const newFlowExchange = recoveryWebTab.emitWebMessage(
@@ -1517,9 +1553,11 @@ test('Collector exchange errors expose only finite status and sanitized stable c
     },
   });
 
+  const requestId = await selectCollectorAttempt(harness);
   const begun = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_error_1234',
   }, trustedWebSender);
   assert.equal(begun.ok, true);
@@ -1527,7 +1565,7 @@ test('Collector exchange errors expose only finite status and sanitized stable c
   const response = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-error-envelope',
+    requestId,
     generationId: 'generation_error_1234',
     ticket,
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1566,9 +1604,11 @@ test('internal logout invalidates a held exchange generation before its response
     },
   });
 
+  const requestId = await selectCollectorAttempt(harness);
   const begun = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_G1_1234',
   }, trustedWebSender);
   assert.equal(begun.ok, true);
@@ -1577,7 +1617,7 @@ test('internal logout invalidates a held exchange generation before its response
   harness.runtimeOnMessage.listeners[0]({
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'internal-logout-held-exchange',
+    requestId,
     generationId: 'generation_G1_1234',
     ticket: 'ctt_internal_logout_secret_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',

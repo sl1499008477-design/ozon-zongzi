@@ -35,6 +35,7 @@ const deferred = () => {
 function createHarness({
   getSession,
   initial = {},
+  newRequestId,
   now: suppliedNow,
   randomValues = [0.5],
   requestAuth,
@@ -49,6 +50,9 @@ function createHarness({
   const timers = [];
   let currentTime = start;
   let randomIndex = 0;
+  let requestSequence = 0;
+  let activeRequestId = '';
+  let bootstrapping = false;
   const storageSession = {
     async get(key) { return { [key]: state[key] }; },
     async set(values) {
@@ -62,13 +66,20 @@ function createHarness({
       createdAlarms.push({ name, options: { ...options } });
     },
   };
-  const coordinator = createCollectorAuthCoordinator({
+  const rawCoordinator = createCollectorAuthCoordinator({
     alarms,
     getSession: async () => (getSession ? getSession() : session),
     now: () => (suppliedNow ? suppliedNow() : currentTime),
+    newRequestId: () => {
+      activeRequestId = newRequestId
+        ? newRequestId()
+        : `collector-coordinator-${++requestSequence}`;
+      return activeRequestId;
+    },
     random: () => randomValues[Math.min(randomIndex++, randomValues.length - 1)],
     requestAuth: async (input) => {
-      authRequests.push({ ...input });
+      if (bootstrapping) return { requested: true };
+      authRequests.push(input);
       return requestAuth ? requestAuth(input) : { requested: true };
     },
     setTimer(callback, milliseconds) {
@@ -80,6 +91,56 @@ function createHarness({
       if (timer) timer.cancelled = true;
     },
     storageSession,
+  });
+  const ensureActiveAttempt = async () => {
+    if (activeRequestId) return;
+    bootstrapping = true;
+    try { await rawCoordinator.retryNow(); } finally { bootstrapping = false; }
+  };
+  const withRequestId = (input = {}) => ({
+    ...input,
+    requestId: input.requestId || activeRequestId,
+  });
+  const coordinator = Object.freeze({
+    async begin(input) {
+      if (!input?.requestId) await ensureActiveAttempt();
+      return rawCoordinator.begin(withRequestId(input));
+    },
+    async accept(input) {
+      if (!input?.requestId) await ensureActiveAttempt();
+      return rawCoordinator.accept(withRequestId(input));
+    },
+    async exchange(input) {
+      if (!input?.requestId) await ensureActiveAttempt();
+      return rawCoordinator.exchange(withRequestId(input));
+    },
+    async fail(input) {
+      if (!input?.requestId) await ensureActiveAttempt();
+      const status = await rawCoordinator.fail(withRequestId(input));
+      if (!['DISCOVERING_WEB', 'REQUESTING_TICKET', 'EXCHANGING'].includes(status.phase)) {
+        activeRequestId = '';
+      }
+      return status;
+    },
+    getStatus: () => rawCoordinator.getStatus(),
+    async resume() {
+      const status = await rawCoordinator.resume();
+      if (!['DISCOVERING_WEB', 'REQUESTING_TICKET', 'EXCHANGING'].includes(status.phase)) {
+        activeRequestId = '';
+      }
+      return status;
+    },
+    async retryNow() {
+      const outcome = await rawCoordinator.retryNow();
+      if (!outcome.requested) activeRequestId = '';
+      return outcome;
+    },
+    async succeed(input) {
+      if (!input?.requestId) await ensureActiveAttempt();
+      const status = await rawCoordinator.succeed(withRequestId(input));
+      if (status.phase === 'AUTHENTICATED') activeRequestId = '';
+      return status;
+    },
   });
   return {
     alarms,
@@ -160,21 +221,32 @@ test('projects every authentication phase through the closed status contract', a
   assert.deepEqual(Object.keys(authenticated.account).sort(), ['displayName', 'id']);
 });
 
-test('coordinator-owned no-ack watchdog closes an accepted Web request gap', async () => {
+test('coordinator owns no-ack discovery and response watchdogs', async () => {
   const harness = createHarness();
+  await harness.coordinator.retryNow();
+  const watchdog = harness.timers.findLast(({ milliseconds, cancelled }) => (
+    milliseconds === 2_500 && !cancelled
+  ));
+  assert.ok(watchdog, 'discovery must arm the coordinator no-ack watchdog');
+
   await harness.coordinator.begin({ generationId: G1 });
-  const watchdog = harness.timers.find(({ milliseconds }) => milliseconds === 2_500);
-  assert.ok(watchdog, 'begin must arm the coordinator no-ack watchdog');
+  assert.equal(watchdog.cancelled, true);
+  await harness.coordinator.accept({ generationId: G1 });
+  assert.equal(harness.timers.at(-1).milliseconds, 31_000);
+});
+
+test('coordinator no-ack watchdog fails the exact worker request after delivery', async () => {
+  const harness = createHarness();
+  await harness.coordinator.retryNow();
+  const watchdog = harness.timers.findLast(({ milliseconds, cancelled }) => (
+    milliseconds === 2_500 && !cancelled
+  ));
 
   watchdog.callback();
   await waitFor(async () => (await harness.coordinator.getStatus()).phase === 'WAITING_FOR_WEB');
-  const failed = await harness.coordinator.getStatus();
-  assert.equal(failed.publicCode, 'WEB_LOGIN_REQUIRED');
 
-  await harness.coordinator.begin({ generationId: G1 });
-  const acceptedWatchdog = harness.timers.at(-1);
-  await harness.coordinator.accept({ requestId: 'request-1', generationId: G1 });
-  assert.equal(acceptedWatchdog.cancelled, true);
+  const status = await harness.coordinator.getStatus();
+  assert.equal(status.publicCode, 'WEB_LOGIN_REQUIRED');
 });
 
 test('coordinator watchdog releases a hanging Web discovery so a later request can recover', async () => {
@@ -335,7 +407,7 @@ test('a thirty-second retry uses only the durable alarm', async () => {
   });
 
   assert.equal(Date.parse(status.nextRetryAt), start + 30_000);
-  assert.equal(harness.timers.length, 0);
+  assert.equal(harness.timers.filter(({ cancelled }) => !cancelled).length, 0);
   assert.deepEqual(harness.createdAlarms.at(-1), {
     name: ALARM_NAME,
     options: { when: start + 30_000 },
@@ -376,7 +448,7 @@ test('a thirty-second retry uses one clock sample for its valid tuple and alarm'
     Date.parse(status.nextRetryAt) - Date.parse(status.updatedAt),
     30_000,
   );
-  assert.equal(harness.timers.length, 0);
+  assert.equal(harness.timers.filter(({ cancelled }) => !cancelled).length, 0);
   assert.deepEqual(harness.createdAlarms.at(-1), {
     name: ALARM_NAME,
     options: { when: Date.parse(status.nextRetryAt) },
@@ -455,7 +527,7 @@ test('manual and alarm retries join one in-memory request for the active generat
   await waitFor(() => harness.authRequests.length === 1);
 
   assert.equal(harness.authRequests.length, 1);
-  assert.deepEqual(harness.authRequests[0], { generationId: G1 });
+  assert.equal(harness.authRequests[0], 'collector-coordinator-2');
   pendingRequest.resolve({ requested: true });
   await Promise.all([manual, alarm, duplicate]);
   assert.equal(harness.authRequests.length, 1);
@@ -735,6 +807,85 @@ test('an old negative acknowledgement cannot release a replacement same-generati
   assert.equal(harness.authRequests.length, 1);
 });
 
+test('late failure cannot cancel the next worker attempt', async () => {
+  const requestIds = ['collector-attempt-1', 'collector-attempt-2'];
+  const harness = createHarness({
+    newRequestId: () => requestIds.shift(),
+  });
+
+  await harness.coordinator.retryNow();
+  await harness.coordinator.begin({
+    requestId: 'collector-attempt-1',
+    generationId: G1,
+  });
+  await harness.coordinator.accept({
+    requestId: 'collector-attempt-1',
+    generationId: G1,
+  });
+  await harness.coordinator.fail({
+    requestId: 'collector-attempt-1',
+    generationId: G1,
+    error: { code: 'LOCAL_SERVICE_UNAVAILABLE' },
+  });
+
+  await harness.coordinator.retryNow();
+  await harness.coordinator.begin({
+    requestId: 'collector-attempt-2',
+    generationId: G1,
+  });
+  await harness.coordinator.fail({
+    requestId: 'collector-attempt-1',
+    generationId: G1,
+    error: { code: 'WEB_LOGIN_REQUIRED' },
+  });
+
+  assert.equal((await harness.coordinator.getStatus()).phase, 'REQUESTING_TICKET');
+});
+
+test('accepted response timeout rotates to the next tab once', async () => {
+  const requestIds = ['collector-attempt-1', 'collector-attempt-2'];
+  const selectedTabIds = [];
+  let concurrentPageRequests = 0;
+  let maxConcurrentPageRequests = 0;
+  const harness = createHarness({
+    newRequestId: () => requestIds.shift(),
+    requestAuth: async () => {
+      concurrentPageRequests += 1;
+      maxConcurrentPageRequests = Math.max(maxConcurrentPageRequests, concurrentPageRequests);
+      selectedTabIds.push(selectedTabIds.length === 0 ? 10 : 11);
+      concurrentPageRequests -= 1;
+      return { requested: true };
+    },
+  });
+
+  await harness.coordinator.retryNow();
+  await harness.coordinator.begin({
+    requestId: 'collector-attempt-1',
+    generationId: G1,
+  });
+  await harness.coordinator.accept({
+    requestId: 'collector-attempt-1',
+    generationId: G1,
+  });
+  const responseWatchdog = harness.timers.find(
+    ({ cancelled, milliseconds }) => !cancelled && milliseconds === 31_000,
+  );
+  assert.ok(responseWatchdog, 'accepted must arm the 31-second coordinator watchdog');
+  harness.setTime(Date.parse('2030-01-01T00:00:31.000Z'));
+  responseWatchdog.callback();
+  await waitFor(async () => (await harness.coordinator.getStatus()).phase === 'RETRY_WAIT');
+  const retry = harness.timers.find(
+    ({ cancelled, milliseconds }) => !cancelled && milliseconds === 1_000,
+  );
+  assert.ok(retry, 'response timeout must schedule the existing bounded retry');
+  harness.setTime(Date.parse('2030-01-01T00:00:32.000Z'));
+  retry.callback();
+  await waitFor(() => harness.authRequests.length === 2);
+
+  assert.deepEqual(selectedTabIds, [10, 11]);
+  assert.equal(maxConcurrentPageRequests, 1);
+});
+
 test('a terminal transition queued at the final status check wins before the Web request side effect', async () => {
   const harness = createHarness();
   await harness.coordinator.begin({ generationId: G1 });
@@ -782,7 +933,7 @@ test('manual retry authoritatively rediscovers Web even when the stored status i
   const result = await harness.coordinator.retryNow();
   assert.equal(result.requested, true);
   assert.equal(result.status.phase, 'DISCOVERING_WEB');
-  assert.deepEqual(harness.authRequests, [{ generationId: G1 }]);
+  assert.deepEqual(harness.authRequests, ['collector-coordinator-2']);
 });
 
 test('stale generation events cannot overwrite the active generation', async () => {

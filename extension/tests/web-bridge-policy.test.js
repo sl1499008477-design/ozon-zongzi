@@ -1,7 +1,6 @@
 const assert = require('node:assert/strict');
 const {
   COLLECTOR_AUTH_PROTOCOL,
-  createCollectorAuthRelease,
   createCollectorAuthRequest,
   isTrustedWebBridgeSender,
   normalizeCollectorAuthAccepted,
@@ -14,18 +13,13 @@ const {
 const fs = require('node:fs');
 const syncAuthSource = fs.readFileSync('extension/content/sync-auth.js', 'utf8');
 
-assert.deepEqual(createCollectorAuthRequest('request-1'), {
+assert.deepEqual(createCollectorAuthRequest('collector-attempt-1'), {
   protocol: COLLECTOR_AUTH_PROTOCOL,
   action: 'collector.auth.request',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
 });
-assert.deepEqual(createCollectorAuthRelease('request-1'), {
-  protocol: COLLECTOR_AUTH_PROTOCOL,
-  action: 'collector.auth.release',
-  requestId: 'request-1',
-});
-for (const unsafe of ['', ' request-1 ', 'r'.repeat(129)]) {
-  assert.throws(() => createCollectorAuthRelease(unsafe));
+for (const unsafe of ['', ' request-1 ', 'request-without-prefix', 'collector-invalid_id', 'r'.repeat(129)]) {
+  assert.throws(() => createCollectorAuthRequest(unsafe));
 }
 assert.deepEqual(normalizeCollectorAuthReady({
   protocol: 'SONLI_COLLECTOR_AUTH',
@@ -94,57 +88,59 @@ for (const unsafe of [
 assert.deepEqual(normalizeCollectorAuthAccepted({
   protocol: 'SONLI_COLLECTOR_AUTH',
   action: 'collector.auth.accepted',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
-}, 'request-1'), {
+}, 'collector-attempt-1'), {
   protocol: 'SONLI_COLLECTOR_AUTH',
   action: 'collector.auth.accepted',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
 });
 assert.deepEqual(normalizeCollectorAuthAccepted(Object.assign(Object.create(null), {
   protocol: 'SONLI_COLLECTOR_AUTH',
   action: 'collector.auth.accepted',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
-}), 'request-1'), {
+}), 'collector-attempt-1'), {
   protocol: 'SONLI_COLLECTOR_AUTH',
   action: 'collector.auth.accepted',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
 });
 for (const unsafe of [
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'wrong-request', generationId: 'generation_A_1234' },
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: ' request-1 ', generationId: 'generation_A_1234' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'request-without-prefix', generationId: 'generation_A_1234' },
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'r'.repeat(129), generationId: 'generation_A_1234' },
-  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'request-1', generationId: 'too-short' },
-  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'request-1', generationId: 'generation_A_1234', ticket: 'never' },
-  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'request-1', generationId: 'generation_A_1234', token: 'never' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'collector-attempt-1', generationId: 'too-short' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'collector-attempt-1', generationId: 'generation_A_1234', ticket: 'never' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'collector-attempt-1', generationId: 'generation_A_1234', token: 'never' },
   Object.assign(Object.create({ inherited: true }), {
     protocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.accepted',
-    requestId: 'request-1',
+    requestId: 'collector-attempt-1',
     generationId: 'generation_A_1234',
   }),
-]) assert.equal(normalizeCollectorAuthAccepted(unsafe, 'request-1'), null);
+]) assert.equal(normalizeCollectorAuthAccepted(unsafe, 'collector-attempt-1'), null);
 assert.deepEqual(normalizeCollectorAuthFailure({
   protocol: 'SONLI_COLLECTOR_AUTH',
   action: 'collector.auth.failure',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
   publicCode: 'WEB_LOGIN_REQUIRED',
-}, 'request-1'), {
+}, 'collector-attempt-1'), {
   protocol: 'SONLI_COLLECTOR_AUTH',
   action: 'collector.auth.failure',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
   publicCode: 'WEB_LOGIN_REQUIRED',
 });
 for (const unsafe of [
-  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.failure', requestId: 'request-1', generationId: 'generation_A_1234', publicCode: 'RAW_SERVER_ERROR' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.failure', requestId: 'collector-attempt-1', generationId: 'generation_A_1234', publicCode: 'RAW_SERVER_ERROR' },
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.failure', requestId: 'wrong', generationId: 'generation_A_1234', publicCode: 'WEB_LOGIN_REQUIRED' },
-  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.failure', requestId: 'request-1', generationId: 'generation_A_1234', publicCode: 'WEB_LOGIN_REQUIRED', error: 'never' },
-]) assert.equal(normalizeCollectorAuthFailure(unsafe, 'request-1'), null);
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.failure', requestId: 'collector-attempt-1', generationId: 'generation_A_1234', publicCode: 'WEB_LOGIN_REQUIRED', error: 'never' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.failure', generationId: 'generation_A_1234', publicCode: 'WEB_LOGIN_REQUIRED' },
+]) assert.equal(normalizeCollectorAuthFailure(unsafe, 'collector-attempt-1'), null);
 for (const unsafe of [
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready' },
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready', generationId: 'generation_A_1234', token: 'never' },
@@ -165,14 +161,14 @@ for (const unsafe of [
 assert.deepEqual(normalizeCollectorAuthResponse({
   protocol: COLLECTOR_AUTH_PROTOCOL,
   action: 'collector.auth.response',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
   ticket: 'ctt_ticket_secret_123456789',
   expiresAt: '2030-01-01T00:01:00.000Z',
-}, 'request-1'), {
+}, 'collector-attempt-1'), {
   protocol: COLLECTOR_AUTH_PROTOCOL,
   action: 'collector.auth.response',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
   ticket: 'ctt_ticket_secret_123456789',
   expiresAt: '2030-01-01T00:01:00.000Z',
@@ -184,7 +180,7 @@ assert.equal(normalizeCollectorAuthResponse({
   generationId: 'generation_A_1234',
   ticket: 'ctt_ticket_secret_123456789',
   expiresAt: '2030-01-01T00:01:00.000Z',
-}, 'request-1'), null);
+}, 'collector-attempt-1'), null);
 assert.equal(normalizeCollectorAuthResponse({
   protocol: COLLECTOR_AUTH_PROTOCOL,
   action: 'collector.auth.response',
@@ -192,29 +188,29 @@ assert.equal(normalizeCollectorAuthResponse({
   generationId: 'generation_A_1234',
   ticket: 'ctt_ticket_secret_123456789',
   expiresAt: '2030-01-01T00:01:00.000Z',
-}, 'request-1'), null);
+}, 'collector-attempt-1'), null);
 for (const extra of ['token', 'storeId', 'accountId']) {
   assert.equal(normalizeCollectorAuthResponse({
     protocol: COLLECTOR_AUTH_PROTOCOL,
     action: 'collector.auth.response',
-    requestId: 'request-1',
+    requestId: 'collector-attempt-1',
     generationId: 'generation_A_1234',
     ticket: 'ctt_ticket_secret_123456789',
     expiresAt: '2030-01-01T00:01:00.000Z',
     [extra]: 'never',
-  }, 'request-1'), null);
+  }, 'collector-attempt-1'), null);
 }
 assert.equal(normalizeCollectorAuthResponse(Object.assign(
   Object.create({ inherited: true }),
   {
     protocol: COLLECTOR_AUTH_PROTOCOL,
     action: 'collector.auth.response',
-    requestId: 'request-1',
+    requestId: 'collector-attempt-1',
     generationId: 'generation_A_1234',
     ticket: 'ctt_ticket_secret_123456789',
     expiresAt: '2030-01-01T00:01:00.000Z',
   },
-), 'request-1'), null);
+), 'collector-attempt-1'), null);
 assert.equal(normalizeCollectorAuthResponse({
   protocol: COLLECTOR_AUTH_PROTOCOL,
   action: 'collector.auth.response',
@@ -226,13 +222,13 @@ assert.equal(normalizeCollectorAuthResponse({
 const responseWithHiddenAccount = {
   protocol: COLLECTOR_AUTH_PROTOCOL,
   action: 'collector.auth.response',
-  requestId: 'request-1',
+  requestId: 'collector-attempt-1',
   generationId: 'generation_A_1234',
   ticket: 'ctt_ticket_secret_123456789',
   expiresAt: '2030-01-01T00:01:00.000Z',
 };
 Object.defineProperty(responseWithHiddenAccount, 'accountId', { value: 'never' });
-assert.equal(normalizeCollectorAuthResponse(responseWithHiddenAccount, 'request-1'), null);
+assert.equal(normalizeCollectorAuthResponse(responseWithHiddenAccount, 'collector-attempt-1'), null);
 assert.equal(isTrustedWebBridgeSender({ url: 'http://127.0.0.1:3000/' }), true);
 assert.equal(isTrustedWebBridgeSender({ url: 'http://127.0.0.1:3001/' }), false);
 assert.equal(isTrustedWebBridgeSender({ url: 'http://localhost:3000/' }), true);
@@ -243,6 +239,7 @@ assert.doesNotMatch(syncAuthSource, /syncAuthFromWeb|SONLI_WEB_CONTROL|localStor
 assert.match(syncAuthSource, /window\.location\.origin/);
 assert.doesNotMatch(syncAuthSource, /postMessage\([^)]*,\s*['"]\*['"]\s*\)/s);
 assert.match(syncAuthSource, /normalizeCollectorAuthResponse/);
+assert.doesNotMatch(syncAuthSource, /collector\.auth\.release|createCollectorAuthRelease|releaseRequest/);
 assert.doesNotMatch(syncAuthSource, /passiveReadyConsumed|MAX_BRIDGE_REQUESTS|exchangeInFlight/);
 const workerSource = fs.readFileSync('extension/background/service-worker.js', 'utf8');
 assert.doesNotMatch(workerSource, /case ['"]syncAuthFromWeb['"]|case ['"]tryWebSync['"]/);

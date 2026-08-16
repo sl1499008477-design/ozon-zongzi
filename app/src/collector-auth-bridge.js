@@ -6,12 +6,10 @@ export const COLLECTOR_AUTH_ACTIONS = Object.freeze({
   readyV2: "collector.auth.ready.v2",
   accepted: "collector.auth.accepted",
   failure: "collector.auth.failure",
-  release: "collector.auth.release",
   logout: "collector.auth.logout",
 });
 
 const GENERATION_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
-const COLLECTOR_AUTH_REQUEST_LEASE_MS = 30_000;
 const COLLECTOR_AUTH_PUBLIC_FAILURE_CODES = new Set([
   "WEB_LOGIN_REQUIRED",
   "LOCAL_SERVICE_UNAVAILABLE",
@@ -120,8 +118,8 @@ export function startCollectorAuthBridgeLifecycle({
 }
 
 const validRequestId = (value) => {
-  const requestId = String(value || "").trim();
-  return requestId && requestId.length <= 128 ? requestId : "";
+  if (typeof value !== "string") return "";
+  return value.length <= 128 && /^collector-[A-Za-z0-9-]+$/.test(value) ? value : "";
 };
 
 const validAccountId = (value) => {
@@ -180,19 +178,6 @@ export function normalizeCollectorAuthRequest(value) {
   };
 }
 
-export function normalizeCollectorAuthRelease(value) {
-  const message = normalizeCollectorAuthRequest({
-    ...value,
-    action: COLLECTOR_AUTH_ACTIONS.request,
-  });
-  if (!message || value?.action !== COLLECTOR_AUTH_ACTIONS.release) return null;
-  return {
-    protocol: COLLECTOR_AUTH_PROTOCOL,
-    action: COLLECTOR_AUTH_ACTIONS.release,
-    requestId: message.requestId,
-  };
-}
-
 export function installCollectorAuthBridge({
   accountId,
   generationId,
@@ -201,8 +186,6 @@ export function installCollectorAuthBridge({
   postResponse,
   windowObject = window,
   announceReady = true,
-  setTimer = setTimeout,
-  clearTimer = clearTimeout,
 } = {}) {
   if (!isCollectorAuthGenerationId(generationId)) {
     throw new TypeError("collector auth bridge requires a valid generation ID");
@@ -215,7 +198,8 @@ export function installCollectorAuthBridge({
     throw new TypeError("collector auth bridge requires login and ticket adapters");
   }
   const send = (payload) => sendCollectorAuthPayload({ payload, postResponse, windowObject });
-  let activeTicketLease = null;
+  const pendingControllers = new Set();
+  let installed = true;
   const publicFailureCode = (error) => {
     const code = String(error?.code || "").trim().toUpperCase();
     const status = Number(error?.status) || 0;
@@ -250,83 +234,46 @@ export function installCollectorAuthBridge({
     ) {
       return;
     }
-    const release = normalizeCollectorAuthRelease(event.data);
-    if (release) {
-      if (activeTicketLease?.requestId === release.requestId) {
-        const releasedLease = activeTicketLease;
-        activeTicketLease = null;
-        clearTimer(releasedLease.leaseTimer);
-        releasedLease.abortController.abort();
-      }
-      return;
-    }
     const message = normalizeCollectorAuthRequest(event.data);
     if (!message || !isLoggedIn()) return;
-    if (activeTicketLease) {
-      return activeTicketLease.requestId === message.requestId
-        ? activeTicketLease.promise
-        : undefined;
-    }
-
-    let resolveEntry;
-    const entry = {
-      requestId: message.requestId,
-      leaseTimer: null,
-      abortController: new AbortController(),
-      promise: new Promise((resolve) => { resolveEntry = resolve; }),
-    };
-    activeTicketLease = entry;
-    entry.leaseTimer = setTimer(() => {
-      if (activeTicketLease === entry) {
-        activeTicketLease = null;
-        entry.abortController.abort();
-      }
-    }, COLLECTOR_AUTH_REQUEST_LEASE_MS);
-    entry.leaseTimer?.unref?.();
+    const abortController = new AbortController();
+    pendingControllers.add(abortController);
     send({
       protocol: COLLECTOR_AUTH_PROTOCOL,
       action: COLLECTOR_AUTH_ACTIONS.accepted,
       requestId: message.requestId,
       generationId,
     });
-    void (async () => {
-      try {
-        const result = await requestTicket({ signal: entry.abortController.signal });
-        if (activeTicketLease !== entry) return;
-        const ticket = String(result?.ticket || "");
-        const expiresAt = String(result?.expiresAt || "");
-        if (!ticket || !expiresAt) {
-          throw Object.assign(new Error("COLLECTOR_AUTH_RESPONSE_INVALID"), {
-            code: "COLLECTOR_AUTH_RESPONSE_INVALID",
-          });
-        }
-        send({
-          protocol: COLLECTOR_AUTH_PROTOCOL,
-          action: COLLECTOR_AUTH_ACTIONS.response,
-          requestId: message.requestId,
-          ticket,
-          expiresAt,
-          generationId,
+    try {
+      const result = await requestTicket({ signal: abortController.signal });
+      if (!installed || !pendingControllers.has(abortController)) return;
+      const ticket = String(result?.ticket || "");
+      const expiresAt = String(result?.expiresAt || "");
+      if (!ticket || !expiresAt) {
+        throw Object.assign(new Error("COLLECTOR_AUTH_RESPONSE_INVALID"), {
+          code: "COLLECTOR_AUTH_RESPONSE_INVALID",
         });
-      } catch (error) {
-        if (activeTicketLease !== entry) return;
-        send({
-          protocol: COLLECTOR_AUTH_PROTOCOL,
-          action: COLLECTOR_AUTH_ACTIONS.failure,
-          requestId: message.requestId,
-          generationId,
-          publicCode: publicFailureCode(error),
-        });
-        if (activeTicketLease === entry) {
-          entry.abortController.abort();
-          clearTimer(entry.leaseTimer);
-          activeTicketLease = null;
-        }
-      } finally {
-        resolveEntry();
       }
-    })();
-    return entry.promise;
+      send({
+        protocol: COLLECTOR_AUTH_PROTOCOL,
+        action: COLLECTOR_AUTH_ACTIONS.response,
+        requestId: message.requestId,
+        ticket,
+        expiresAt,
+        generationId,
+      });
+    } catch (error) {
+      if (!installed || !pendingControllers.has(abortController)) return;
+      send({
+        protocol: COLLECTOR_AUTH_PROTOCOL,
+        action: COLLECTOR_AUTH_ACTIONS.failure,
+        requestId: message.requestId,
+        generationId,
+        publicCode: publicFailureCode(error),
+      });
+    } finally {
+      pendingControllers.delete(abortController);
+    }
   };
   windowObject.addEventListener("message", onMessage);
   if (announceReady && isLoggedIn()) {
@@ -343,11 +290,9 @@ export function installCollectorAuthBridge({
     });
   }
   return () => {
+    installed = false;
     windowObject.removeEventListener("message", onMessage);
-    if (activeTicketLease) {
-      clearTimer(activeTicketLease.leaseTimer);
-      activeTicketLease.abortController.abort();
-      activeTicketLease = null;
-    }
+    for (const abortController of pendingControllers) abortController.abort();
+    pendingControllers.clear();
   };
 }

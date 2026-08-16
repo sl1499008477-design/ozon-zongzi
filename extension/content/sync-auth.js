@@ -22,13 +22,6 @@
   if (!policy || !collectorAuthFlow) return;
   globalThis[INSTALL_GUARD] = true;
 
-  const newRequestId = () => {
-    try {
-      return `collector-${crypto.randomUUID()}`;
-    } catch {
-      return `collector-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    }
-  };
   const isCanonicalRequestId = (requestId) => (
     typeof requestId === 'string'
     && /^collector-[a-zA-Z0-9-]+$/.test(requestId)
@@ -67,16 +60,12 @@
   );
 
   const flow = collectorAuthFlow.createCollectorAuthFlow({
-    newRequestId,
     postRequest: (requestId) => window.postMessage(
       policy.createCollectorAuthRequest(requestId),
       window.location.origin,
     ),
-    releaseRequest: (requestId) => window.postMessage(
-      policy.createCollectorAuthRelease(requestId),
-      window.location.origin,
-    ),
-    beginGeneration: (generationId, accountIdHint) => sendRuntime('collector.auth.begin', {
+    beginGeneration: (generationId, accountIdHint, requestId) => sendRuntime('collector.auth.begin', {
+      requestId,
       generationId,
       ...(accountIdHint ? { accountIdHint } : {}),
     }),
@@ -87,12 +76,10 @@
       'collector.auth.exchange',
       { requestId, generationId, ticket, expiresAt },
     ),
-    failAuthentication: ({ generationId, publicCode }) => sendRuntime(
+    failAuthentication: ({ requestId, generationId, publicCode }) => sendRuntime(
       'collector.auth.failure',
-      { generationId, publicCode },
+      { requestId, generationId, publicCode },
     ),
-    setTimer: (callback, milliseconds) => setTimeout(callback, milliseconds),
-    clearTimer: (timer) => clearTimeout(timer),
   });
 
   window.addEventListener('message', async (event) => {
@@ -136,6 +123,8 @@
     }
     const failure = policy.normalizeCollectorAuthFailure(event.data);
     if (failure) {
+      selectedRequestPending = false;
+      if (latestReady?.generationId === failure.generationId) latestReady = null;
       await flow.handleFailure(failure);
       return;
     }
