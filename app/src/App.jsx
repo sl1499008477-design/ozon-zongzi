@@ -94,7 +94,6 @@ import AutoListingPage from "./AutoListingPage.jsx";
 import AiModelSettingsPage from "./AiModelSettingsPage.jsx";
 import CategoryStrategyPage from "./CategoryStrategyPage.jsx";
 import { buildAutoListingCollectPush } from "./auto-listing-collect-push.js";
-import { createStoreDeletionCleanup } from "./store-deletion-cleanup.js";
 import { createStoreSwitchGate } from "./store-switch-gate.js";
 import ProfitTrendPage from "./ProfitTrendPage.jsx";
 import SourceTable, {
@@ -725,16 +724,6 @@ export function AppShell({ initialState = null }) {
     }
   }, []);
 
-  const handleStoreDeleted = createStoreDeletionCleanup({
-    clearStoreStorage,
-    readToken: () => localStorage.getItem("token"),
-    setCurrentStoreId: (storeId) => localStorage.setItem("currentOzonStoreId", storeId),
-    // Collector authentication is account-scoped and independent of store
-    // Keep this legacy cleanup adapter neutral until it is removed.
-    syncAuthToExtension: async () => true,
-    logoutExtension: async () => true,
-  });
-
   const collectorAuthAccountId = String(account?.id || "").trim();
   useEffect(() => {
     return startCollectorAuthBridgeLifecycle({
@@ -1310,7 +1299,6 @@ export function AppShell({ initialState = null }) {
                 onSwitchStore={switchCurrentStore}
                 switchingStoreId={switchingStoreId}
                 onRefresh={refreshLocalState}
-                onStoreDeleted={handleStoreDeleted}
                 account={account}
                 accounts={accounts}
                 navigate={navigate}
@@ -1701,7 +1689,7 @@ function MetricCard({ metric, compact = false }) {
   );
 }
 
-function GenericPage({ route, locationSearch, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted, navigate, account, accounts }) {
+function GenericPage({ route, locationSearch, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, navigate, account, accounts }) {
   if (route === "/extension") {
     return (
       <Card className="panel-card">
@@ -1710,7 +1698,7 @@ function GenericPage({ route, locationSearch, binding, hasStore, localData, onBi
     );
   }
 
-  const pageProps = { route, locationSearch, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted, navigate, account, accounts };
+  const pageProps = { route, locationSearch, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, navigate, account, accounts };
   if (route === "/ozon/products/list") return <ProductListPage {...pageProps} />;
   if (route.startsWith("/ozon/products/collect/edit")) return <CollectEditPage {...pageProps} />;
   if (route === "/ozon/products/collect") return <CollectPage {...pageProps} />;

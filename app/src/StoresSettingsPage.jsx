@@ -9,7 +9,6 @@ import {
   Tooltip,
 } from "antd";
 import { apiRequest } from "./client-transport.js";
-import { createStoreDeletionController } from "./store-deletion-controller.js";
 import { storeSwitchActionState } from "./store-switch-gate.js";
 import { operatingStoreSettingsModel } from "./stores-settings-model.js";
 import SourceTable from "./SourceTable.jsx";
@@ -19,7 +18,7 @@ import {
   renderSourceTextCell,
 } from "./table-text.jsx";
 
-export default function StoresSettingsPage({ hasStore, binding, localData, onBind, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted }) {
+export default function StoresSettingsPage({ hasStore, binding, localData, onBind, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh }) {
   const { message } = AntApp.useApp();
   const [refreshingStores, setRefreshingStores] = useState(false);
   const [syncingWarehouses, setSyncingWarehouses] = useState(false);
@@ -116,16 +115,9 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
       cancelText: "取消",
       onOk: async () => {
         try {
-          const controller = createStoreDeletionController({
-            deleteStore: (id) => apiRequest(`/local/stores/${encodeURIComponent(id)}`, { method: "DELETE" }),
-            refresh: onRefresh,
-            onStoreDeleted,
-          });
-          const result = await controller.delete(store);
+          await apiRequest(`/local/stores/${encodeURIComponent(storeId)}`, { method: "DELETE" });
+          await onRefresh?.({ silent: true, source: "store-delete" });
           message.success("门店已删除");
-          if (result.cleanupError) {
-            message.warning(`门店已删除，但扩展清理失败: ${result.cleanupError.message}`);
-          }
         } catch (error) {
           message.error(`删除失败: ${error.message}`);
         }
