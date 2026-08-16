@@ -331,11 +331,16 @@
           stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] === generationId
           && isCollectorAuthIncarnation(stored?.[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY])
         );
+        const storedSession = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
+        const validStoredSession = storedSession
+          ? isValidRawCollectorSession(storedSession, now())
+          : false;
         if (legacyActivation && activationIsCurrent) {
+          if (storedSession && !validStoredSession) {
+            await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+          }
           return { changed: false };
         }
-        const storedSession = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
-        const validStoredSession = isValidRawCollectorSession(storedSession, now());
         if (
           !legacyActivation
           && validStoredSession

@@ -355,6 +355,80 @@ test('malformed permission entries cannot expand a reused session permission set
   assert.deepEqual(result.permissions, ['collector.upload']);
 });
 
+async function assertCurrentLegacyActivationClearsMalformedSession(session) {
+  const harness = createHarness();
+  await harness.manager.activateCollectorGeneration('generation_legacy_1234');
+  const incarnation = harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY];
+  harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY] = session;
+  const callsBeforeActivation = harness.calls.length;
+
+  assert.deepEqual(
+    await harness.manager.activateCollectorGeneration('generation_legacy_1234'),
+    { changed: false },
+  );
+  assert.equal(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_legacy_1234',
+  );
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY],
+    incarnation,
+  );
+  assert.deepEqual(
+    harness.calls.slice(callsBeforeActivation).filter(([, operation]) => (
+      operation === 'set' || operation === 'remove'
+    )),
+    [['session', 'remove', COLLECTOR_SESSION_STORAGE_KEY]],
+  );
+}
+
+test('current-generation positional activation clears a malformed stored token', async () => {
+  await assertCurrentLegacyActivationClearsMalformedSession(validSession({
+    collectorToken: { bad: true },
+  }));
+});
+
+test('current-generation positional activation clears a malformed stored account', async () => {
+  await assertCurrentLegacyActivationClearsMalformedSession(validSession({
+    account: { id: 123, displayName: 'Malformed' },
+  }));
+});
+
+test('current-generation positional activation clears a malformed stored expiry', async () => {
+  await assertCurrentLegacyActivationClearsMalformedSession(validSession({
+    expiresAt: new Date('2030-01-01T01:00:00.000Z'),
+  }));
+});
+
+test('current-generation positional activation is a no-op for a valid stored session', async () => {
+  const harness = createHarness();
+  await harness.manager.activateCollectorGeneration('generation_legacy_1234');
+  await harness.manager.setCollectorSession(validSession());
+  const incarnation = harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY];
+  const callsBeforeActivation = harness.calls.length;
+
+  assert.deepEqual(
+    await harness.manager.activateCollectorGeneration('generation_legacy_1234'),
+    { changed: false },
+  );
+  assert.deepEqual(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], validSession());
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_legacy_1234',
+  );
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY],
+    incarnation,
+  );
+  assert.deepEqual(
+    harness.calls.slice(callsBeforeActivation).filter(([, operation]) => (
+      operation === 'set' || operation === 'remove'
+    )),
+    [],
+  );
+});
+
 test('same-account rebinding still fences a stale generation exchange', async () => {
   const staleResponse = deferred();
   const originalSession = validSession({
