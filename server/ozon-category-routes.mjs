@@ -82,14 +82,15 @@ export function createOzonCategoryRouteHandler(dependencies) {
           url.searchParams.get("descriptionCategoryId")
           || url.searchParams.get("description_category_id")
           || "";
-        const descriptionCategoryId = requestedCategoryId
-          ? requiredPositiveIdOf(requestedCategoryId)
-          : requiredPositiveIdOf(await dependencies.categoryService.resolveDescriptionCategoryId({
+        if (requestedCategoryId) requiredPositiveIdOf(requestedCategoryId);
+        const descriptionCategoryId = requiredPositiveIdOf(
+          await dependencies.categoryService.resolveDescriptionCategoryId({
             accountId: account.id,
             store,
             typeId,
             language: "DEFAULT",
-          }));
+          }),
+        );
         const verifiedContext = requestContext(dependencies, req, state, url);
         const result = await dependencies.categoryService.getCategoryAttributes({
           accountId: verifiedContext.account.id,
@@ -122,14 +123,15 @@ export function createOzonCategoryRouteHandler(dependencies) {
           url.searchParams.get("descriptionCategoryId")
           || url.searchParams.get("description_category_id")
           || "";
-        const descriptionCategoryId = requestedCategoryId
-          ? requiredPositiveIdOf(requestedCategoryId)
-          : requiredPositiveIdOf(await dependencies.categoryService.resolveDescriptionCategoryId({
+        if (requestedCategoryId) requiredPositiveIdOf(requestedCategoryId);
+        const descriptionCategoryId = requiredPositiveIdOf(
+          await dependencies.categoryService.resolveDescriptionCategoryId({
             accountId: account.id,
             store,
             typeId,
             language: "DEFAULT",
-          }));
+          }),
+        );
         const verifiedContext = requestContext(dependencies, req, state, url);
         const result = await dependencies.categoryService.getCategoryAttributeValues({
           accountId: verifiedContext.account.id,

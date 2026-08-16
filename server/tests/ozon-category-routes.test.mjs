@@ -121,19 +121,30 @@ function request(path, { method = "GET", headers = {} } = {}) {
 {
   const { calls, handler } = createFixture();
   const handled = await handler(request(
-    "/ozon/description-category/20/attributes?storeId=store-query&description_category_id=10&account_id=acct-forged",
+    "/ozon/description-category/20/attributes?storeId=store-query&description_category_id=99&account_id=acct-forged",
   ));
   assert.equal(handled, true);
-  assert.deepEqual(calls.categoryService, [{
-    method: "getCategoryAttributes",
-    input: {
-      accountId: "acct-auth",
-      store: { id: "store-query", ownerAccountId: "acct-auth" },
-      descriptionCategoryId: 10,
-      typeId: 20,
-      language: "DEFAULT",
+  assert.deepEqual(calls.categoryService, [
+    {
+      method: "resolveDescriptionCategoryId",
+      input: {
+        accountId: "acct-auth",
+        store: { id: "store-query", ownerAccountId: "acct-auth" },
+        typeId: 20,
+        language: "DEFAULT",
+      },
     },
-  }]);
+    {
+      method: "getCategoryAttributes",
+      input: {
+        accountId: "acct-auth",
+        store: { id: "store-query", ownerAccountId: "acct-auth" },
+        descriptionCategoryId: 10,
+        typeId: 20,
+        language: "DEFAULT",
+      },
+    },
+  ]);
   assert.deepEqual(calls.sendJson[0].body, {
     data: [{ id: 30 }],
     items: [{ id: 30 }],
@@ -147,7 +158,7 @@ function request(path, { method = "GET", headers = {} } = {}) {
 {
   const { calls, handler } = createFixture();
   const handled = await handler(request(
-    "/ozon/description-category/20/attributes/30/values?storeId=store-query&limit=77",
+    "/ozon/description-category/20/attributes/30/values?storeId=store-query&descriptionCategoryId=99&limit=77",
   ));
   assert.equal(handled, true);
   assert.deepEqual(calls.categoryService, [
