@@ -741,6 +741,7 @@ export function AppShell({ initialState = null }) {
       controller: collectorAuthGenerationRef.current,
       postLogout: (generationId) => postCollectorAuthLogout({ generationId }),
       installBridge: (transition) => installCollectorAuthBridge({
+        accountId: collectorAuthAccountId,
         generationId: transition.generationId,
         isLoggedIn: () => true,
         requestTicket: () => apiRequest("/extension/collector-auth/ticket", { method: "POST" }),

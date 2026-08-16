@@ -3,10 +3,13 @@ export const COLLECTOR_AUTH_ACTIONS = Object.freeze({
   request: "collector.auth.request",
   response: "collector.auth.response",
   ready: "collector.auth.ready",
+  readyV2: "collector.auth.ready.v2",
+  accepted: "collector.auth.accepted",
   logout: "collector.auth.logout",
 });
 
 const GENERATION_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+const COLLECTOR_AUTH_REQUEST_LEASE_MS = 30_000;
 
 export const isCollectorAuthGenerationId = (value) =>
   GENERATION_ID_PATTERN.test(String(value || ""));
@@ -111,6 +114,12 @@ const validRequestId = (value) => {
   return requestId && requestId.length <= 128 ? requestId : "";
 };
 
+const validAccountId = (value) => {
+  if (typeof value !== "string") return "";
+  const accountId = value.trim();
+  return accountId && accountId.length <= 128 ? accountId : "";
+};
+
 const sendCollectorAuthPayload = ({ payload, postResponse, windowObject }) => {
   if (typeof postResponse === "function") {
     postResponse(payload);
@@ -162,20 +171,28 @@ export function normalizeCollectorAuthRequest(value) {
 }
 
 export function installCollectorAuthBridge({
+  accountId,
   generationId,
   isLoggedIn,
   requestTicket,
   postResponse,
   windowObject = window,
   announceReady = true,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
 } = {}) {
   if (!isCollectorAuthGenerationId(generationId)) {
     throw new TypeError("collector auth bridge requires a valid generation ID");
+  }
+  const normalizedAccountId = validAccountId(accountId);
+  if (!normalizedAccountId) {
+    throw new TypeError("collector auth bridge requires a valid account ID");
   }
   if (typeof isLoggedIn !== "function" || typeof requestTicket !== "function") {
     throw new TypeError("collector auth bridge requires login and ticket adapters");
   }
   const send = (payload) => sendCollectorAuthPayload({ payload, postResponse, windowObject });
+  const activeRequests = new Map();
   const onMessage = async (event) => {
     if (
       event.source !== windowObject
@@ -185,26 +202,62 @@ export function installCollectorAuthBridge({
     }
     const message = normalizeCollectorAuthRequest(event.data);
     if (!message || !isLoggedIn()) return;
-    try {
-      const result = await requestTicket();
-      const ticket = String(result?.ticket || "");
-      const expiresAt = String(result?.expiresAt || "");
-      if (!ticket || !expiresAt) return;
-      send({
-        protocol: COLLECTOR_AUTH_PROTOCOL,
-        action: COLLECTOR_AUTH_ACTIONS.response,
-        requestId: message.requestId,
-        ticket,
-        expiresAt,
-        generationId,
-      });
-    } catch {
-      // Authentication errors stay inside the Web app. Never echo server details
-      // because they can contain a ticket or the parent Web credential.
-    }
+    const activeEntry = activeRequests.get(message.requestId);
+    if (activeEntry) return activeEntry.promise;
+
+    let resolveEntry;
+    const entry = {
+      leaseTimer: null,
+      promise: new Promise((resolve) => { resolveEntry = resolve; }),
+    };
+    activeRequests.set(message.requestId, entry);
+    entry.leaseTimer = setTimer(() => {
+      if (activeRequests.get(message.requestId) === entry) {
+        activeRequests.delete(message.requestId);
+      }
+    }, COLLECTOR_AUTH_REQUEST_LEASE_MS);
+    send({
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: COLLECTOR_AUTH_ACTIONS.accepted,
+      requestId: message.requestId,
+      generationId,
+    });
+    void (async () => {
+      try {
+        const result = await requestTicket();
+        if (activeRequests.get(message.requestId) !== entry) return;
+        const ticket = String(result?.ticket || "");
+        const expiresAt = String(result?.expiresAt || "");
+        if (!ticket || !expiresAt) return;
+        send({
+          protocol: COLLECTOR_AUTH_PROTOCOL,
+          action: COLLECTOR_AUTH_ACTIONS.response,
+          requestId: message.requestId,
+          ticket,
+          expiresAt,
+          generationId,
+        });
+      } catch {
+        // Authentication errors stay inside the Web app. Never echo server details
+        // because they can contain a ticket or the parent Web credential.
+      } finally {
+        if (activeRequests.get(message.requestId) === entry) {
+          activeRequests.delete(message.requestId);
+          clearTimer(entry.leaseTimer);
+        }
+        resolveEntry();
+      }
+    })();
+    return entry.promise;
   };
   windowObject.addEventListener("message", onMessage);
   if (announceReady && isLoggedIn()) {
+    send({
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: COLLECTOR_AUTH_ACTIONS.readyV2,
+      generationId,
+      accountId: normalizedAccountId,
+    });
     send({
       protocol: COLLECTOR_AUTH_PROTOCOL,
       action: COLLECTOR_AUTH_ACTIONS.ready,
