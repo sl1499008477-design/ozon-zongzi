@@ -459,6 +459,7 @@ const handleOzonCategoryRoute = createOzonCategoryRouteHandler({
   activeStore,
   sendJson,
   sendError,
+  reportError: (diagnostic) => console.warn("[ozon-category]", diagnostic),
 });
 
 async function readBody(req, { maxBytes = 10 * 1024 * 1024, requireBody = false } = {}) {

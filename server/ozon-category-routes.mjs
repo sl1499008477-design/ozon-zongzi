@@ -34,6 +34,9 @@ async function respondCategory(dependencies, res, operation) {
   } catch (error) {
     if (STABLE_CATEGORY_ERROR_CODES.has(error?.code)) {
       const status = Number(error.status);
+      if (error.diagnostic && typeof dependencies.reportError === "function") {
+        dependencies.reportError(error.diagnostic);
+      }
       dependencies.sendError(
         res,
         CATEGORY_ERROR_STATUSES.has(status) ? status : 502,

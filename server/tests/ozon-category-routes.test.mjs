@@ -22,6 +22,7 @@ function createFixture({
     sendError: [],
     sendJson: [],
     storeSelection: [],
+    reportError: [],
   };
   const categoryService = {
     getCategoryTree: async (input) => {
@@ -55,6 +56,7 @@ function createFixture({
     },
     sendJson: (res, status, body) => calls.sendJson.push({ res, status, body }),
     sendError: (res, status, message, code) => calls.sendError.push({ res, status, message, code }),
+    reportError: (diagnostic) => calls.reportError.push(diagnostic),
   });
   return { calls, handler };
 }
@@ -78,6 +80,7 @@ function request(path, { method = "GET", headers = {} } = {}) {
     sendError: [],
     sendJson: [],
     storeSelection: [],
+    reportError: [],
   });
 }
 
@@ -300,6 +303,10 @@ for (const invalidPath of [
     body: { operation: "TREE" },
     cause: null,
   });
+  Object.defineProperty(categoryError, "diagnostic", {
+    value: Object.freeze({ operation: "TREE", sourceCode: "OZON_TIMEOUT", sourceStatus: null, retryable: true }),
+    enumerable: false,
+  });
   const { calls, handler } = createFixture({
     categoryService: { getCategoryTree: async () => { throw categoryError; } },
   });
@@ -311,6 +318,12 @@ for (const invalidPath of [
     status: 502,
     message: "未能从 Ozon 获取真实类目数据，请重试",
     code: "OZON_CATEGORY_TREE_UNAVAILABLE",
+  }]);
+  assert.deepEqual(calls.reportError, [{
+    operation: "TREE",
+    sourceCode: "OZON_TIMEOUT",
+    sourceStatus: null,
+    retryable: true,
   }]);
 }
 

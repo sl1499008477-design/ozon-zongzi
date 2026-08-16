@@ -11,16 +11,28 @@ export const DEFAULT_CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CATEGORY_UNAVAILABLE_MESSAGE = "未能从 Ozon 获取真实类目数据，请重试";
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
-function categoryError(operation, status, code) {
+function categoryError(operation, status, code, diagnostic = null) {
   const error = new Error(CATEGORY_UNAVAILABLE_MESSAGE);
   error.status = status;
   error.code = code;
   error.body = { operation };
   error.cause = null;
+  if (diagnostic) {
+    Object.defineProperty(error, "diagnostic", {
+      value: Object.freeze(diagnostic),
+      enumerable: false,
+    });
+  }
   return error;
 }
 
 function unavailableError(operation, source) {
+  const numericStatus = Number(source?.status);
+  const sourceStatus = Number.isInteger(numericStatus) && numericStatus >= 400 && numericStatus <= 599
+    ? numericStatus
+    : null;
+  const rawCode = String(source?.code || "").trim().toUpperCase();
+  const sourceCode = /^[A-Z][A-Z0-9_]{0,79}$/u.test(rawCode) ? rawCode : "UPSTREAM_ERROR";
   const status = source?.code === "OZON_TIMEOUT"
     ? 504
     : source?.status === 429
@@ -31,7 +43,12 @@ function unavailableError(operation, source) {
     ATTRIBUTES: "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
     VALUES: "OZON_CATEGORY_VALUES_UNAVAILABLE",
   }[operation];
-  return categoryError(operation, status, code);
+  return categoryError(operation, status, code, {
+    operation,
+    sourceCode,
+    sourceStatus,
+    retryable: sourceCode === "OZON_TIMEOUT" || sourceStatus === 429 || Number(sourceStatus) >= 500,
+  });
 }
 
 function normalizedLanguageOf(language) {

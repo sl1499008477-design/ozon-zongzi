@@ -127,7 +127,14 @@ await assert.rejects(
     assert.equal(error.message, "未能从 Ozon 获取真实类目数据，请重试");
     assert.deepEqual(error.body, { operation: "TREE" });
     assert.equal(error.cause, null);
+    assert.deepEqual(error.diagnostic, {
+      operation: "TREE",
+      sourceCode: "UPSTREAM_ERROR",
+      sourceStatus: 429,
+      retryable: true,
+    });
     assert.equal(JSON.stringify(error).includes(sensitiveValue), false);
+    assert.equal(JSON.stringify(error).includes("diagnostic"), false);
     return true;
   },
 );
