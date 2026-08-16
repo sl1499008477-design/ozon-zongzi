@@ -12,6 +12,46 @@ const trustedSender = {
   tab: { id: 17, url: 'http://127.0.0.1:3000/app' },
 };
 
+function createFakeClock(start = Date.parse('2030-01-01T00:00:00.000Z')) {
+  let current = start;
+  let sequence = 0;
+  const timers = [];
+  class FixtureDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [current])); }
+    static now() { return current; }
+  }
+  const setTimer = (callback, delay = 0) => {
+    const timer = {
+      callback,
+      cancelled: false,
+      dueAt: current + Math.max(0, Number(delay) || 0),
+      id: ++sequence,
+      milliseconds: delay,
+    };
+    timers.push(timer);
+    return timer;
+  };
+  const clearTimer = (timer) => { if (timer) timer.cancelled = true; };
+  const advance = async (milliseconds) => {
+    const target = current + milliseconds;
+    while (true) {
+      const next = timers
+        .filter((timer) => !timer.cancelled && timer.dueAt <= target)
+        .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)[0];
+      if (!next) break;
+      next.cancelled = true;
+      current = next.dueAt;
+      await next.callback();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    current = target;
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+  return { Date: FixtureDate, advance, clearTimer, setTimer, timers };
+}
+
 function createEvent() {
   const listeners = [];
   return {
@@ -59,6 +99,7 @@ function createStorageArea(initial = {}) {
 
 function loadServiceWorker({
   activationResult,
+  clock,
   clearResult,
   exchangeError = null,
   exchangeResult = null,
@@ -189,9 +230,10 @@ function loadServiceWorker({
     btoa,
     chrome,
     clearInterval() {},
-    clearTimeout(timer) { if (timer) timer.cancelled = true; },
+    clearTimeout: clock?.clearTimer || ((timer) => { if (timer) timer.cancelled = true; }),
     console: { error() {}, info() {}, log() {}, warn() {} },
     crypto: webcrypto,
+    Date: clock?.Date || Date,
     fetch: async () => new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -205,7 +247,9 @@ function loadServiceWorker({
     },
     setInterval() { return 1; },
     setTimeout(callback, milliseconds) {
-      const timer = { callback, milliseconds, cancelled: false };
+      const timer = clock
+        ? clock.setTimer(callback, milliseconds)
+        : { callback, milliseconds, cancelled: false };
       scheduledTimeouts.push(timer);
       return timer;
     },
@@ -294,24 +338,13 @@ const extensionSender = {
 };
 
 async function sendRuntime(harness, message, sender = extensionSender) {
-  const attemptActions = new Set([
-    'collector.auth.begin',
-    'collector.auth.accepted',
-    'collector.auth.failure',
-    'collector.auth.exchange',
-  ]);
-  const routedMessage = harness.activeTestRequestId
-    && attemptActions.has(message?.action)
-    && (!message.requestId || String(message.requestId).startsWith('request-'))
-    ? { ...message, requestId: harness.activeTestRequestId }
-    : message;
   return new Promise((resolve) => {
-    harness.runtimeOnMessage.listeners[0](routedMessage, sender, resolve);
+    harness.runtimeOnMessage.listeners[0](message, sender, resolve);
   });
 }
 
 async function waitFor(predicate) {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
     if (await predicate()) return;
     await Promise.resolve();
   }
@@ -479,12 +512,38 @@ test('worker attempt rejects a mismatched sender tab or request ID before activa
     accountIdHint: 'account-a',
   }, sender);
 
+  const before = {
+    status: JSON.parse(JSON.stringify(
+      (await sendRuntime(harness, { action: 'getCollectorAuthStatus' })).data,
+    )),
+    timers: harness.scheduledTimeouts
+      .filter(({ milliseconds }) => [2_500, 31_000].includes(milliseconds))
+      .map(({ milliseconds, cancelled }) => ({ milliseconds, cancelled })),
+    session: JSON.parse(JSON.stringify(harness.session.state)),
+  };
+
   assert.equal((await begin(selectedRequestId, {
     ...trustedSender,
     tab: { ...trustedSender.tab, id: 18 },
   })).ok, false);
-  assert.equal((await begin('collector-other-attempt', trustedSender)).ok, false);
+  for (const invalidRequestId of [undefined, 'not canonical!', 'collector-other-attempt']) {
+    const response = await begin(invalidRequestId, trustedSender);
+    assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+      ok: false,
+      error: 'PORTAL_BRIDGE_FORBIDDEN',
+    });
+  }
   assert.equal(harness.activationCalls.length, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(
+    (await sendRuntime(harness, { action: 'getCollectorAuthStatus' })).data,
+  )), before.status);
+  assert.deepEqual(
+    harness.scheduledTimeouts
+      .filter(({ milliseconds }) => [2_500, 31_000].includes(milliseconds))
+      .map(({ milliseconds, cancelled }) => ({ milliseconds, cancelled })),
+    before.timers,
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.session.state)), before.session);
 
   assert.equal((await begin(selectedRequestId, trustedSender)).ok, true);
   assert.equal(harness.activationCalls.length, 1);
@@ -739,7 +798,7 @@ test('trusted normalized accepted and existing begin/exchange routes update stat
   const acceptedResponse = await sendRuntime(harness, {
     protocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.accepted',
-    requestId: 'request-1',
+    requestId: harness.activeTestRequestId,
     generationId: 'generation_A_1234',
   }, trustedSender);
   assert.deepEqual(JSON.parse(JSON.stringify(acceptedResponse)), { ok: true });
@@ -747,7 +806,7 @@ test('trusted normalized accepted and existing begin/exchange routes update stat
   assert.deepEqual(JSON.parse(JSON.stringify(await sendRuntime(harness, {
       protocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.accepted',
-      requestId: 'request-1',
+      requestId: harness.activeTestRequestId,
       generationId: 'generation_A_1234',
       token: 'never',
     }, trustedSender))), { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' });
@@ -755,7 +814,7 @@ test('trusted normalized accepted and existing begin/exchange routes update stat
   const exchange = await sendRuntime(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'request-1',
+    requestId: harness.activeTestRequestId,
     generationId: 'generation_A_1234',
     ticket: 'ctt_exchange_only_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -784,7 +843,7 @@ test('trusted normalized accepted and existing begin/exchange routes update stat
   await sendRuntime(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'request-2',
+    requestId: harness.activeTestRequestId,
     generationId: 'generation_A_1234',
     ticket: 'ctt_exchange_only_second_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -809,6 +868,7 @@ test('closed Web failure reaches coordinator and exchange outer budget survives 
   const failure = await sendRuntime(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.failure',
+    requestId: harness.activeTestRequestId,
     generationId: 'generation_A_1234',
     publicCode: 'WEB_LOGIN_REQUIRED',
   }, trustedSender);
@@ -820,7 +880,7 @@ test('closed Web failure reaches coordinator and exchange outer budget survives 
   const pending = sendRuntime(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'request-budget',
+    requestId: harness.activeTestRequestId,
     generationId: 'generation_A_1234',
     ticket: 'ctt_budget_only_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -876,6 +936,52 @@ test('stale generation failure keeps the current generation on the selected work
   assert.equal(exchange.ok, true);
 });
 
+test('expired worker attempt rejects its late begin before activation and rotates tabs', async () => {
+  const clock = createFakeClock();
+  const harness = loadServiceWorker({
+    activationResult: { changed: true, reused: false, authenticated: false },
+    clock,
+    tabs: [
+      { id: 10, active: true, lastAccessed: 20, url: trustedSender.url },
+      { id: 11, active: false, lastAccessed: 10, url: trustedSender.url },
+    ],
+  });
+  await sendRuntime(harness, { action: 'retryCollectorAuth' });
+  const requestId = harness.tabMessages[0].message.requestId;
+  const firstSender = {
+    ...trustedSender,
+    tab: { ...trustedSender.tab, id: 10 },
+  };
+  await sendRuntime(harness, {
+    protocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.accepted',
+    requestId,
+    generationId: 'generation_A_1234',
+  }, firstSender);
+
+  await clock.advance(31_000);
+  await waitFor(async () => (
+    await sendRuntime(harness, { action: 'getCollectorAuthStatus' })
+  ).data.phase === 'RETRY_WAIT');
+  const activationCount = harness.activationCalls.length;
+
+  const lateBegin = await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    requestId,
+    generationId: 'generation_A_1234',
+  }, firstSender);
+  assert.deepEqual(JSON.parse(JSON.stringify(lateBegin)), {
+    ok: false,
+    error: 'PORTAL_BRIDGE_FORBIDDEN',
+  });
+  assert.equal(harness.activationCalls.length, activationCount);
+
+  await clock.advance(1_000);
+  await waitFor(() => harness.tabMessages.length === 2);
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10, 11]);
+});
+
 test('transient exchange failure schedules retry and duplicate alarm resumes are single-flight', async () => {
   let resolveTabMessage;
   const tabMessagePromise = new Promise((resolve) => { resolveTabMessage = resolve; });
@@ -898,7 +1004,7 @@ test('transient exchange failure schedules retry and duplicate alarm resumes are
   const failed = await sendRuntime(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'request-1',
+    requestId: harness.activeTestRequestId,
     generationId: 'generation_A_1234',
     ticket: 'ctt_retry_only_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -939,7 +1045,7 @@ test('status projection storage failures cannot reverse successful exchange or b
   const exchanged = await sendRuntime(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'request-storage-failure',
+    requestId: harness.activeTestRequestId,
     generationId: 'generation_A_1234',
     ticket: 'ctt_storage_failure_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',

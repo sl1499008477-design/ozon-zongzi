@@ -162,3 +162,106 @@ git revert <task-2-commit-hash>
 ```
 
 Generated packages need no Task 2 rollback because they were not changed.
+
+---
+
+# Task 2 Fix Round 1 — fence expired worker attempts
+
+## Commit and scope
+
+- Parent Task 2 commit: `c268f23e16f758dd5e609fa6f11123d6d533b1cd`.
+- Fix commit subject: `fix: fence expired collector auth attempts`.
+- The final fix commit hash is reported in the task handoff. As above, the commit cannot contain its own stable object hash.
+- Modified only the authorized Task 2 source/tests: coordinator, service worker, and their coordinator/service-worker/cross-layer acceptance tests. No generated package, dependency, manifest, ledger, database, server, or page runtime source changed.
+
+## Changes and internal contract
+
+- `createCollectorAuthCoordinator` accepts an optional synchronous `onRequestEnd(requestId)` lifecycle callback. Every exact in-memory lease termination calls it; callback exceptions remain internal and cannot alter the public status transition.
+- `coordinator.begin({ requestId, generationId })` now returns the explicit internal envelope `{ accepted, status }`. It returns `accepted: true` only for the currently leased coordinator-generated request; missing, noncanonical, stale, or already-ended identities return `accepted: false` with the unchanged closed status.
+- The service worker clears only its matching in-memory `{ requestId, tabId }` attempt when the coordinator ends that request. The begin route invokes `activateCollectorGeneration` only when the coordinator returned `accepted: true`; it does not infer acceptance from a public phase.
+- Consequently, the 31-second accepted-response watchdog ends both coordinator and service-worker ownership. A late begin for the expired request/tab is `PORTAL_BRIDGE_FORBIDDEN`, cannot activate a generation, and the existing 1-second bounded retry can select the next tab.
+- Coordinator and service-worker test harnesses no longer generate, add, replace, or normalize a transition's `requestId`. Positive tests explicitly call a real retry, capture its generated ID, and pass it through begin/accepted/failure/exchange/success. Negative missing/noncanonical/stale values are sent literally.
+- The acceptance browser harness now creates independent content-script event registries, VM contexts, page windows, senders, and Web bridges per tab. The real worker selector sends attempt 1 only to tab 10, the actual 31-second watchdog expires it, and the existing backoff sends attempt 2 only to tab 11.
+- In that failover scenario `ticketRequestAttempts=2` (the expired tab's hanging HTTP attempt and the replacement attempt), `ticketsIssued=1`, `exchanges=1`, and `maxConcurrentTickets=1`. Uninstall aborts the expired tab handler before retry; its late path cannot issue or exchange a ticket.
+
+No public V2/legacy message shape changed. Request IDs, tickets, collector tokens, and raw errors remain absent from status/storage projections.
+
+## Fix-round TDD evidence
+
+### Group 1 — expired-attempt fencing and explicit begin acceptance
+
+RED:
+
+```bash
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-name-pattern='expired worker attempt rejects its late begin' extension/tests/service-worker-collector-auth.test.js
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-name-pattern='begin reports whether the exact request lease was accepted' extension/tests/collector-auth-coordinator.test.js
+```
+
+- Expired-attempt test: 0 passed, 1 failed. The late begin returned `{ ok: true }` and activated the retired generation instead of failing closed.
+- Begin-envelope test: 0 passed, 1 failed. The coordinator returned no explicit `accepted` decision (`undefined !== true`).
+
+GREEN: the same focused tests passed 1/1 each after adding the lease-end callback and explicit begin envelope. The service-worker test also proves the selected-tab order is `[10, 11]` after 31,000 ms plus the existing 1,000 ms retry.
+
+### Group 2 — remove request-ID rewriting from test harnesses
+
+After deleting the service-worker harness rewrite, the unchanged production-facing tests produced the expected RED:
+
+```bash
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test extension/tests/service-worker-collector-auth.test.js
+```
+
+Result: 27 passed, 4 failed. The failures were positive accepted/failure/exchange fixtures that had relied on silently replaced IDs. After each fixture explicitly captured the actual selected attempt ID: 31 passed, 0 failed.
+
+After deleting coordinator harness bootstrapping and automatic ID insertion:
+
+```bash
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test extension/tests/collector-auth-coordinator.test.js
+```
+
+Result: 18 passed, 19 failed. Each failure exposed a positive transition that had not established a legal lease or had asserted the pre-envelope begin return. After explicit retry/ID capture and envelope assertions: 37 passed, 0 failed.
+
+The negative begin boundary now sends `undefined`, `not canonical!`, and `collector-stale-attempt` literally. Coordinator assertions prove status, coordinator watchdog timers, and session storage are byte-for-byte unchanged. Service-worker assertions additionally cover wrong sender tab and prove `PORTAL_BRIDGE_FORBIDDEN`, zero activation, unchanged coordinator watchdogs, and unchanged session state. No no-ID compatibility path was added.
+
+### Group 3 — genuine two-tab cross-layer acceptance
+
+Focused command:
+
+```bash
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-name-pattern='two real tab bridges' extension/tests/collector-auth-acceptance.test.js
+```
+
+Result on first focused run after the lower-layer RED/GREEN fix: 1 passed, 0 failed. This replaced the previous synthetic second-sender assertion with two real content/page contexts and required no additional production change. It verifies real selector delivery, real accepted watchdog/backoff, serial abort before failover, one successful ticket, and one exchange.
+
+## Final regression
+
+```bash
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test app/tests/collector-auth-bridge.test.mjs extension/tests/collector-auth-flow.test.js extension/tests/collector-auth-coordinator.test.js extension/tests/portal-bridge-policy.test.js extension/tests/service-worker-collector-auth.test.js extension/tests/web-bridge-policy.test.js extension/tests/collector-auth-acceptance.test.js extension/tests/sync-capability-removed.test.js
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node extension/tests/web-bridge-policy.test.js
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node extension/tests/sync-auth-runtime.test.js
+```
+
+- Narrow group: 152 passed, 0 failed (the prior 150 plus two fix-round regressions).
+- Direct Web bridge policy script: exited 0 with `web bridge policy tests passed`.
+- Direct sync-auth runtime script: exited 0 with `sync auth runtime tests passed`.
+- `git diff --check`: passed.
+
+The first combined 152-test attempt found one fake-clock harness settling-budget flake: the retry callback completed in the isolated service-worker run but exceeded the helper's 30 microtask polls under multi-file concurrency (151 passed, 1 failed). Raising the test-only bounded poll budget to 300 made the same deterministic fake-clock transition stable; no wall-clock sleep or production timing changed.
+
+## Review, unverified scope, and risks
+
+- Local review verified every production `begin` call site consumes the new internal envelope, exact lease end ordering, callback exception isolation, matching service-worker attempt invalidation, and absence of request-ID rewriting in both affected harnesses.
+- The parent controller will dispatch the independent task reviewer after this fix commit; this implementation pass completed the required local self-review before commit.
+- No live Chrome extension, real tab closure, real login, or real ticket endpoint was exercised. Coverage uses the actual source in independent VM/browser fakes with deterministic fake clocks.
+- Generated packages intentionally remain unchanged until Task 4.
+- The full unrelated repository suite was not run; verification remains the authorized Task 2 narrow group and direct scripts.
+- `onRequestEnd` is intentionally synchronous and in-memory. It adds no durable/public state or retry owner. If a future coordinator consumer needs asynchronous cleanup, that would require a separate contract change rather than widening this fix.
+
+## Rollback / recovery
+
+This fix has no schema, dependency, production-data, or external side effect. Revert the final fix commit reported in the handoff:
+
+```bash
+git revert <task-2-fix-round-1-commit-hash>
+```
+
+That restores the prior Task 2 behavior. No generated artifact rollback is needed.

@@ -270,6 +270,7 @@
     random = () => Math.random(),
     newRequestId,
     requestAuth,
+    onRequestEnd = () => {},
     getSession = async () => null,
     setTimer = root.setTimeout?.bind(root),
     clearTimer = root.clearTimeout?.bind(root),
@@ -286,6 +287,9 @@
     }
     if (typeof newRequestId !== 'function') {
       throw new TypeError('collector auth coordinator requires newRequestId');
+    }
+    if (typeof onRequestEnd !== 'function') {
+      throw new TypeError('collector auth coordinator requires onRequestEnd');
     }
     if (typeof getSession !== 'function') {
       throw new TypeError('collector auth coordinator requires getSession');
@@ -386,6 +390,12 @@
       activeRequestLease = lease;
       return lease;
     };
+    const endRequestLease = (lease) => {
+      if (activeRequestLease !== lease) return false;
+      activeRequestLease = null;
+      try { onRequestEnd(lease.requestId); } catch {}
+      return true;
+    };
     const armNoAckWatchdog = (lease, { onTimeout, onCancel } = {}) => {
       clearNoAckWatchdog();
       cancelNoAckWaiter = typeof onCancel === 'function' ? onCancel : null;
@@ -424,13 +434,13 @@
         activeRequestLease?.requestId !== safeRequestId(requestId)
         || activeRequestLease?.generationId !== String(generationId || '')
       ) return;
-      activeRequestLease = null;
+      endRequestLease(activeRequestLease);
     };
     const releaseRequestLease = (lease) => {
       if (activeRequestLease !== lease) return;
       clearNoAckWatchdog();
       clearResponseWatchdog(lease.requestId);
-      activeRequestLease = null;
+      endRequestLease(lease);
       requestFence += 1;
     };
     const retryDelay = (attemptNumber) => {
@@ -448,11 +458,15 @@
     const begin = ({ requestId, generationId } = {}) => {
       const normalizedRequestId = safeRequestId(requestId);
       const normalizedGenerationId = safeGenerationId(generationId);
-      if (!normalizedRequestId || !normalizedGenerationId) return getStatus();
+      if (!normalizedRequestId || !normalizedGenerationId) {
+        return getStatus().then((status) => ({ accepted: false, status }));
+      }
       fenceActiveRequest(normalizedRequestId, normalizedGenerationId, true);
       return serializeStatusMutation(async () => {
         const current = await readStatus();
-        if (activeRequestLease?.requestId !== normalizedRequestId) return current;
+        if (activeRequestLease?.requestId !== normalizedRequestId) {
+          return { accepted: false, status: current };
+        }
         const changed = current.generationId !== normalizedGenerationId;
         const timestamp = currentIso();
         await clearRetrySchedule();
@@ -471,7 +485,7 @@
         transitionVersion += 1;
         clearNoAckWatchdog();
         replaceRequestLease(normalizedRequestId, normalizedGenerationId);
-        return status;
+        return { accepted: true, status };
       });
     };
 
@@ -809,7 +823,7 @@
           transitionVersion += 1;
           if (activeRequestLease?.generationId === latest.generationId) {
             clearResponseWatchdog(activeRequestLease.requestId);
-            activeRequestLease = null;
+            endRequestLease(activeRequestLease);
           }
           return { request: false, status };
         }
@@ -831,7 +845,7 @@
           transitionVersion += 1;
           if (activeRequestLease?.generationId === latest.generationId) {
             clearResponseWatchdog(activeRequestLease.requestId);
-            activeRequestLease = null;
+            endRequestLease(activeRequestLease);
           }
           return { request: false, status };
         }

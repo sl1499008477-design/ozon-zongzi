@@ -47,12 +47,11 @@ function createHarness({
   const createdAlarms = [];
   const clearedAlarms = [];
   const authRequests = [];
+  const generatedRequestIds = [];
   const timers = [];
   let currentTime = start;
   let randomIndex = 0;
   let requestSequence = 0;
-  let activeRequestId = '';
-  let bootstrapping = false;
   const storageSession = {
     async get(key) { return { [key]: state[key] }; },
     async set(values) {
@@ -71,14 +70,14 @@ function createHarness({
     getSession: async () => (getSession ? getSession() : session),
     now: () => (suppliedNow ? suppliedNow() : currentTime),
     newRequestId: () => {
-      activeRequestId = newRequestId
+      const requestId = newRequestId
         ? newRequestId()
         : `collector-coordinator-${++requestSequence}`;
-      return activeRequestId;
+      generatedRequestIds.push(requestId);
+      return requestId;
     },
     random: () => randomValues[Math.min(randomIndex++, randomValues.length - 1)],
     requestAuth: async (input) => {
-      if (bootstrapping) return { requested: true };
       authRequests.push(input);
       return requestAuth ? requestAuth(input) : { requested: true };
     },
@@ -92,62 +91,13 @@ function createHarness({
     },
     storageSession,
   });
-  const ensureActiveAttempt = async () => {
-    if (activeRequestId) return;
-    bootstrapping = true;
-    try { await rawCoordinator.retryNow(); } finally { bootstrapping = false; }
-  };
-  const withRequestId = (input = {}) => ({
-    ...input,
-    requestId: input.requestId || activeRequestId,
-  });
-  const coordinator = Object.freeze({
-    async begin(input) {
-      if (!input?.requestId) await ensureActiveAttempt();
-      return rawCoordinator.begin(withRequestId(input));
-    },
-    async accept(input) {
-      if (!input?.requestId) await ensureActiveAttempt();
-      return rawCoordinator.accept(withRequestId(input));
-    },
-    async exchange(input) {
-      if (!input?.requestId) await ensureActiveAttempt();
-      return rawCoordinator.exchange(withRequestId(input));
-    },
-    async fail(input) {
-      if (!input?.requestId) await ensureActiveAttempt();
-      const status = await rawCoordinator.fail(withRequestId(input));
-      if (!['DISCOVERING_WEB', 'REQUESTING_TICKET', 'EXCHANGING'].includes(status.phase)) {
-        activeRequestId = '';
-      }
-      return status;
-    },
-    getStatus: () => rawCoordinator.getStatus(),
-    async resume() {
-      const status = await rawCoordinator.resume();
-      if (!['DISCOVERING_WEB', 'REQUESTING_TICKET', 'EXCHANGING'].includes(status.phase)) {
-        activeRequestId = '';
-      }
-      return status;
-    },
-    async retryNow() {
-      const outcome = await rawCoordinator.retryNow();
-      if (!outcome.requested) activeRequestId = '';
-      return outcome;
-    },
-    async succeed(input) {
-      if (!input?.requestId) await ensureActiveAttempt();
-      const status = await rawCoordinator.succeed(withRequestId(input));
-      if (status.phase === 'AUTHENTICATED') activeRequestId = '';
-      return status;
-    },
-  });
   return {
     alarms,
     authRequests,
     clearedAlarms,
-    coordinator,
+    coordinator: rawCoordinator,
     createdAlarms,
+    generatedRequestIds,
     setTime(value) { currentTime = value; },
     state,
     storageSession,
@@ -163,6 +113,14 @@ const waitFor = async (predicate) => {
     await Promise.resolve();
   }
   assert.fail('condition was not reached');
+};
+
+const startAttempt = async (harness) => {
+  const before = harness.authRequests.length;
+  const result = await harness.coordinator.retryNow();
+  assert.equal(result.requested, true);
+  assert.equal(harness.authRequests.length, before + 1);
+  return harness.authRequests.at(-1);
 };
 
 test('projects every authentication phase through the closed status contract', async () => {
@@ -187,15 +145,17 @@ test('projects every authentication phase through the closed status contract', a
   await waitFor(async () => (await coordinator.getStatus()).phase === 'DISCOVERING_WEB');
   pendingRequest.resolve({ requested: true });
   await discovery;
+  const requestId = harness.authRequests.at(-1);
 
-  assert.equal((await coordinator.begin({ generationId: G1 })).phase, 'REQUESTING_TICKET');
+  assert.equal((await coordinator.begin({ requestId, generationId: G1 })).status.phase, 'REQUESTING_TICKET');
   assert.equal((await coordinator.accept({
-    requestId: 'request-secret-free-1',
+    requestId,
     generationId: G1,
   })).phase, 'REQUESTING_TICKET');
-  assert.equal((await coordinator.exchange({ generationId: G1 })).phase, 'EXCHANGING');
+  assert.equal((await coordinator.exchange({ requestId, generationId: G1 })).phase, 'EXCHANGING');
 
   const authenticated = await coordinator.succeed({
+    requestId,
     generationId: G1,
     account: {
       id: 'account-a',
@@ -223,15 +183,15 @@ test('projects every authentication phase through the closed status contract', a
 
 test('coordinator owns no-ack discovery and response watchdogs', async () => {
   const harness = createHarness();
-  await harness.coordinator.retryNow();
+  const requestId = await startAttempt(harness);
   const watchdog = harness.timers.findLast(({ milliseconds, cancelled }) => (
     milliseconds === 2_500 && !cancelled
   ));
   assert.ok(watchdog, 'discovery must arm the coordinator no-ack watchdog');
 
-  await harness.coordinator.begin({ generationId: G1 });
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   assert.equal(watchdog.cancelled, true);
-  await harness.coordinator.accept({ generationId: G1 });
+  await harness.coordinator.accept({ requestId, generationId: G1 });
   assert.equal(harness.timers.at(-1).milliseconds, 31_000);
 });
 
@@ -247,6 +207,39 @@ test('coordinator no-ack watchdog fails the exact worker request after delivery'
 
   const status = await harness.coordinator.getStatus();
   assert.equal(status.publicCode, 'WEB_LOGIN_REQUIRED');
+});
+
+test('begin reports whether the exact request lease was accepted', async () => {
+  const harness = createHarness();
+  await harness.coordinator.retryNow();
+  const requestId = harness.authRequests[0];
+
+  const before = {
+    status: plain(await harness.coordinator.getStatus()),
+    timers: plain(harness.timers),
+    session: plain(harness.state),
+  };
+  for (const invalidRequestId of [undefined, 'not canonical!', 'collector-stale-attempt']) {
+    const rejected = await harness.coordinator.begin({
+      requestId: invalidRequestId,
+      generationId: G1,
+    });
+    assert.equal(rejected.accepted, false);
+    assert.deepEqual(plain(await harness.coordinator.getStatus()), before.status);
+    assert.deepEqual(plain(harness.timers), before.timers);
+    assert.deepEqual(plain(harness.state), before.session);
+  }
+
+  const accepted = await harness.coordinator.begin({ requestId, generationId: G1 });
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.status.phase, 'REQUESTING_TICKET');
+
+  const stale = await harness.coordinator.begin({
+    requestId: 'collector-stale-attempt',
+    generationId: G2,
+  });
+  assert.equal(stale.accepted, false);
+  assert.equal(stale.status.generationId, G1);
 });
 
 test('coordinator watchdog releases a hanging Web discovery so a later request can recover', async () => {
@@ -328,9 +321,10 @@ test('maps every public condition exactly and retries only transient failures', 
 
   for (const [error, phase, publicCode, retries] of cases) {
     const harness = createHarness();
-    await harness.coordinator.begin({ generationId: G1 });
-    await harness.coordinator.exchange({ generationId: G1 });
-    const status = await harness.coordinator.fail({ generationId: G1, error });
+    const requestId = await startAttempt(harness);
+    await harness.coordinator.begin({ requestId, generationId: G1 });
+    await harness.coordinator.exchange({ requestId, generationId: G1 });
+    const status = await harness.coordinator.fail({ requestId, generationId: G1, error });
     assert.equal(status.phase, phase, error.code);
     assert.equal(status.publicCode, publicCode, error.code);
     assert.equal(status.nextRetryAt !== '', retries, error.code);
@@ -345,11 +339,13 @@ test('uses bounded jitter over 1/2/5/10/30 second backoff and never exceeds 30 s
   const upper = createHarness({ randomValues: [1] });
 
   for (const harness of [lower, upper]) {
-    await harness.coordinator.begin({ generationId: G1 });
     for (let index = 0; index < bases.length; index += 1) {
-      await harness.coordinator.exchange({ generationId: G1 });
+      const requestId = await startAttempt(harness);
+      await harness.coordinator.begin({ requestId, generationId: G1 });
+      await harness.coordinator.exchange({ requestId, generationId: G1 });
       const before = Date.parse((await harness.coordinator.getStatus()).updatedAt);
       const status = await harness.coordinator.fail({
+        requestId,
         generationId: G1,
         error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
       });
@@ -366,8 +362,10 @@ test('uses bounded jitter over 1/2/5/10/30 second backoff and never exceeds 30 s
 test('sub-thirty-second retry uses an exact in-memory timer and a durable thirty-second alarm', async () => {
   const start = Date.parse('2030-01-01T00:00:00.000Z');
   const harness = createHarness({ start });
-  await harness.coordinator.begin({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   const status = await harness.coordinator.fail({
+    requestId,
     generationId: G1,
     error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
   });
@@ -401,7 +399,10 @@ test('a thirty-second retry uses only the durable alarm', async () => {
     },
     start,
   });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   const status = await harness.coordinator.fail({
+    requestId,
     generationId: G1,
     error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
   });
@@ -438,7 +439,10 @@ test('a thirty-second retry uses one clock sample for its valid tuple and alarm'
       return sampled;
     },
   });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   const status = await harness.coordinator.fail({
+    requestId,
     generationId: G1,
     error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
   });
@@ -458,12 +462,15 @@ test('a thirty-second retry uses one clock sample for its valid tuple and alarm'
 test('short timer and alarm overlap converge on one due request and cancel their schedule', async () => {
   const start = Date.parse('2030-01-01T00:00:00.000Z');
   const pendingRequest = deferred();
+  let requestCount = 0;
   const harness = createHarness({
-    requestAuth: () => pendingRequest.promise,
+    requestAuth: () => (++requestCount === 1 ? { requested: true } : pendingRequest.promise),
     start,
   });
-  await harness.coordinator.begin({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   await harness.coordinator.fail({
+    requestId,
     generationId: G1,
     error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
   });
@@ -472,13 +479,13 @@ test('short timer and alarm overlap converge on one due request and cancel their
 
   const timerRetry = timer.callback();
   const alarmRetry = harness.coordinator.resume();
-  await waitFor(() => harness.authRequests.length === 1);
-  assert.equal(harness.authRequests.length, 1);
+  await waitFor(() => harness.authRequests.length === 2);
+  assert.equal(harness.authRequests.length, 2);
   assert.equal(timer.cancelled, true);
   assert.ok(harness.clearedAlarms.includes(ALARM_NAME));
   pendingRequest.resolve({ requested: true });
   await Promise.all([timerRetry, alarmRetry]);
-  assert.equal(harness.authRequests.length, 1);
+  assert.equal(harness.authRequests.length, 2);
 });
 
 test('restart restores a short timer with a durable fallback and a suspended worker resumes at the alarm', async () => {
@@ -514,9 +521,14 @@ test('restart restores a short timer with a durable fallback and a suspended wor
 
 test('manual and alarm retries join one in-memory request for the active generation', async () => {
   const pendingRequest = deferred();
-  const harness = createHarness({ requestAuth: () => pendingRequest.promise });
-  await harness.coordinator.begin({ generationId: G1 });
+  let requestCount = 0;
+  const harness = createHarness({
+    requestAuth: () => (++requestCount === 1 ? { requested: true } : pendingRequest.promise),
+  });
+  const initialRequestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId: initialRequestId, generationId: G1 });
   await harness.coordinator.fail({
+    requestId: initialRequestId,
     generationId: G1,
     error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
   });
@@ -524,13 +536,13 @@ test('manual and alarm retries join one in-memory request for the active generat
   const manual = harness.coordinator.retryNow();
   const alarm = harness.coordinator.resume();
   const duplicate = harness.coordinator.retryNow();
-  await waitFor(() => harness.authRequests.length === 1);
+  await waitFor(() => harness.authRequests.length === 2);
 
-  assert.equal(harness.authRequests.length, 1);
-  assert.equal(harness.authRequests[0], 'collector-coordinator-2');
+  assert.equal(harness.authRequests.length, 2);
+  assert.equal(harness.authRequests[1], 'collector-coordinator-2');
   pendingRequest.resolve({ requested: true });
   await Promise.all([manual, alarm, duplicate]);
-  assert.equal(harness.authRequests.length, 1);
+  assert.equal(harness.authRequests.length, 2);
 });
 
 test('resume cannot regress a concurrent successful authentication after a delayed session read', async () => {
@@ -542,12 +554,14 @@ test('resume cannot regress a concurrent successful authentication after a delay
       return sessionRead.promise;
     },
   });
-  await harness.coordinator.begin({ generationId: G1 });
-  await harness.coordinator.exchange({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
+  await harness.coordinator.exchange({ requestId, generationId: G1 });
 
   const resumed = harness.coordinator.resume();
   await sessionReadStarted.promise;
   await harness.coordinator.succeed({
+    requestId,
     generationId: G1,
     account: { id: 'account-a', displayName: 'Account A' },
     expiresAt: '2031-01-01T00:00:00.000Z',
@@ -558,7 +572,7 @@ test('resume cannot regress a concurrent successful authentication after a delay
   const status = await harness.coordinator.getStatus();
   assert.equal(status.phase, 'AUTHENTICATED');
   assert.equal(status.account.id, 'account-a');
-  assert.equal(harness.authRequests.length, 0);
+  assert.equal(harness.authRequests.length, 1);
 });
 
 test('resume cannot request for an older generation after a delayed session read', async () => {
@@ -570,19 +584,20 @@ test('resume cannot request for an older generation after a delayed session read
       return sessionRead.promise;
     },
   });
-  await harness.coordinator.begin({ generationId: G1 });
-  await harness.coordinator.exchange({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
+  await harness.coordinator.exchange({ requestId, generationId: G1 });
 
   const resumed = harness.coordinator.resume();
   await sessionReadStarted.promise;
-  await harness.coordinator.begin({ generationId: G2 });
+  await harness.coordinator.begin({ requestId, generationId: G2 });
   sessionRead.resolve(null);
   await resumed;
 
   const status = await harness.coordinator.getStatus();
   assert.equal(status.generationId, G2);
   assert.equal(status.phase, 'REQUESTING_TICKET');
-  assert.equal(harness.authRequests.length, 0);
+  assert.equal(harness.authRequests.length, 1);
 });
 
 test('resume cannot regress action-required or logout state after a delayed session read', async () => {
@@ -598,26 +613,28 @@ test('resume cannot regress action-required or logout state after a delayed sess
         return sessionRead.promise;
       },
     });
-    await harness.coordinator.begin({ generationId: G1 });
-    await harness.coordinator.exchange({ generationId: G1 });
+    const requestId = await startAttempt(harness);
+    await harness.coordinator.begin({ requestId, generationId: G1 });
+    await harness.coordinator.exchange({ requestId, generationId: G1 });
 
     const resumed = harness.coordinator.resume();
     await sessionReadStarted.promise;
-    await harness.coordinator.fail({ generationId: G1, error });
+    await harness.coordinator.fail({ requestId, generationId: G1, error });
     sessionRead.resolve(null);
     await resumed;
 
     const status = await harness.coordinator.getStatus();
     assert.equal(status.phase, expectedPhase);
     assert.equal(status.publicCode, expectedCode);
-    assert.equal(harness.authRequests.length, 0);
+    assert.equal(harness.authRequests.length, 1);
   }
 });
 
 for (const [name, transition] of [
   [
     'successful account B authentication',
-    (coordinator) => coordinator.succeed({
+    (coordinator, requestId) => coordinator.succeed({
+      requestId,
       generationId: G1,
       account: { id: 'account-b', displayName: 'Account B' },
       expiresAt: '2031-01-02T00:00:00.000Z',
@@ -625,18 +642,20 @@ for (const [name, transition] of [
   ],
   [
     'same-generation begin',
-    (coordinator) => coordinator.begin({ generationId: G1 }),
+    (coordinator, requestId) => coordinator.begin({ requestId, generationId: G1 }),
   ],
   [
     'action-required failure',
-    (coordinator) => coordinator.fail({
+    (coordinator, requestId) => coordinator.fail({
+      requestId,
       generationId: G1,
       error: { code: 'COLLECTOR_ACCOUNT_DISABLED' },
     }),
   ],
   [
     'matching logout',
-    (coordinator) => coordinator.fail({
+    (coordinator, requestId) => coordinator.fail({
+      requestId,
       generationId: G1,
       error: { code: 'WEB_AUTH_REQUIRED' },
     }),
@@ -651,12 +670,13 @@ for (const [name, transition] of [
         return sessionRead.promise;
       },
     });
-    await harness.coordinator.begin({ generationId: G1 });
-    await harness.coordinator.exchange({ generationId: G1 });
+    const requestId = await startAttempt(harness);
+    await harness.coordinator.begin({ requestId, generationId: G1 });
+    await harness.coordinator.exchange({ requestId, generationId: G1 });
 
     const resumed = harness.coordinator.resume();
     await sessionReadStarted.promise;
-    const expected = await transition(harness.coordinator);
+    const expected = await transition(harness.coordinator, requestId);
     sessionRead.resolve({
       collectorToken: 'cst_stale_session_a_123456789',
       account: { id: 'account-a', displayName: 'Account A' },
@@ -667,9 +687,9 @@ for (const [name, transition] of [
 
     assert.deepEqual(
       plain(await harness.coordinator.getStatus()),
-      plain(expected),
+      plain(expected.status || expected),
     );
-    assert.equal(harness.authRequests.length, 0);
+    assert.equal(harness.authRequests.length, 1);
   });
 }
 
@@ -682,11 +702,12 @@ test('transition identity fences an identical same-clock repeated begin from del
       return sessionRead.promise;
     },
   });
-  const initial = await harness.coordinator.begin({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  const initial = await harness.coordinator.begin({ requestId, generationId: G1 });
 
   const resumed = harness.coordinator.resume();
   await sessionReadStarted.promise;
-  const repeated = await harness.coordinator.begin({ generationId: G1 });
+  const repeated = await harness.coordinator.begin({ requestId, generationId: G1 });
   assert.deepEqual(plain(repeated), plain(initial));
   sessionRead.resolve({
     collectorToken: 'cst_stale_identical_projection_123456789',
@@ -698,29 +719,31 @@ test('transition identity fences an identical same-clock repeated begin from del
 
   assert.deepEqual(
     plain(await harness.coordinator.getStatus()),
-    plain(repeated),
+    plain(repeated.status),
   );
-  assert.equal(harness.authRequests.length, 0);
+  assert.equal(harness.authRequests.length, 1);
 });
 
 test('startup and alarm resumes cannot duplicate a request after its Web acknowledgement', async () => {
   const harness = createHarness();
-  await harness.coordinator.begin({ generationId: G1 });
+  const initialRequestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId: initialRequestId, generationId: G1 });
   await harness.coordinator.fail({
+    requestId: initialRequestId,
     generationId: G1,
     error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
   });
 
   const requested = await harness.coordinator.retryNow();
   assert.equal(requested.requested, true);
-  assert.equal(harness.authRequests.length, 1);
+  assert.equal(harness.authRequests.length, 2);
   await Promise.all([
     harness.coordinator.resume(),
     harness.coordinator.resume(),
   ]);
 
   assert.equal((await harness.coordinator.getStatus()).phase, 'DISCOVERING_WEB');
-  assert.equal(harness.authRequests.length, 1);
+  assert.equal(harness.authRequests.length, 2);
 });
 
 test('a failed negative-ack projection releases its lease for one later retry', async () => {
@@ -757,8 +780,10 @@ test('a failed negative-ack projection releases its lease for one later retry', 
   assert.equal(startup.phase, 'DISCOVERING_WEB');
   assert.equal(harness.authRequests.length, 2);
 
-  await harness.coordinator.begin({ generationId: G1 });
+  const requestId = harness.authRequests.at(-1);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   await harness.coordinator.succeed({
+    requestId,
     generationId: G1,
     account: { id: 'account-a', displayName: 'Account A' },
     expiresAt: '2031-01-01T00:00:00.000Z',
@@ -774,8 +799,8 @@ test('an old negative acknowledgement cannot release a replacement same-generati
     requestAuth: async () => {
       webRequestNumber += 1;
       return webRequestNumber === 1
-        ? oldWebRequest.promise
-        : { requested: true };
+        ? { requested: true }
+        : oldWebRequest.promise;
     },
   });
   const originalGet = harness.storageSession.get.bind(harness.storageSession);
@@ -787,15 +812,21 @@ test('an old negative acknowledgement cannot release a replacement same-generati
     return originalGet(key);
   };
 
-  await harness.coordinator.begin({ generationId: G1 });
+  const initialRequestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId: initialRequestId, generationId: G1 });
   await harness.coordinator.fail({
+    requestId: initialRequestId,
     generationId: G1,
     error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
   });
   const oldRetry = harness.coordinator.retryNow();
-  await waitFor(() => harness.authRequests.length === 1);
+  await waitFor(() => harness.authRequests.length === 2);
 
-  const replacement = await harness.coordinator.begin({ generationId: G1 });
+  const replacementRequestId = harness.authRequests.at(-1);
+  const replacement = await harness.coordinator.begin({
+    requestId: replacementRequestId,
+    generationId: G1,
+  });
   failNextStatusRead = true;
   oldWebRequest.resolve({ requested: false, publicCode: 'WEB_TAB_UNAVAILABLE' });
   await oldRetry;
@@ -803,8 +834,8 @@ test('an old negative acknowledgement cannot release a replacement same-generati
   harness.storageSession.get = originalGet;
 
   const resumed = await harness.coordinator.resume();
-  assert.deepEqual(plain(resumed), plain(replacement));
-  assert.equal(harness.authRequests.length, 1);
+  assert.deepEqual(plain(resumed), plain(replacement.status));
+  assert.equal(harness.authRequests.length, 2);
 });
 
 test('late failure cannot cancel the next worker attempt', async () => {
@@ -888,8 +919,10 @@ test('accepted response timeout rotates to the next tab once', async () => {
 
 test('a terminal transition queued at the final status check wins before the Web request side effect', async () => {
   const harness = createHarness();
-  await harness.coordinator.begin({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   await harness.coordinator.fail({
+    requestId,
     generationId: G1,
     error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
   });
@@ -910,6 +943,7 @@ test('a terminal transition queued at the final status check wins before the Web
   const retry = harness.coordinator.retryNow();
   await finalReadCaptured.promise;
   const succeeded = harness.coordinator.succeed({
+    requestId: harness.generatedRequestIds.at(-1),
     generationId: G1,
     account: { id: 'account-a', displayName: 'Account A' },
     expiresAt: '2031-01-01T00:00:00.000Z',
@@ -918,13 +952,15 @@ test('a terminal transition queued at the final status check wins before the Web
   await Promise.all([retry, succeeded]);
 
   assert.equal((await harness.coordinator.getStatus()).phase, 'AUTHENTICATED');
-  assert.equal(harness.authRequests.length, 0);
+  assert.equal(harness.authRequests.length, 1);
 });
 
 test('manual retry authoritatively rediscovers Web even when the stored status is authenticated', async () => {
   const harness = createHarness();
-  await harness.coordinator.begin({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   await harness.coordinator.succeed({
+    requestId,
     generationId: G1,
     account: { id: 'account-a', displayName: 'Account A' },
     expiresAt: '2031-01-01T00:00:00.000Z',
@@ -933,13 +969,17 @@ test('manual retry authoritatively rediscovers Web even when the stored status i
   const result = await harness.coordinator.retryNow();
   assert.equal(result.requested, true);
   assert.equal(result.status.phase, 'DISCOVERING_WEB');
-  assert.deepEqual(harness.authRequests, ['collector-coordinator-2']);
+  assert.deepEqual(harness.authRequests, [
+    'collector-coordinator-1',
+    'collector-coordinator-2',
+  ]);
 });
 
 test('stale generation events cannot overwrite the active generation', async () => {
   const harness = createHarness();
-  await harness.coordinator.begin({ generationId: G1 });
-  await harness.coordinator.begin({ generationId: G2 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
+  await harness.coordinator.begin({ requestId, generationId: G2 });
   const before = await harness.coordinator.getStatus();
 
   for (const operation of [
@@ -963,14 +1003,16 @@ test('stale generation events cannot overwrite the active generation', async () 
 
 test('a late same-generation accepted event cannot regress exchanging or authenticated status', async () => {
   const harness = createHarness();
-  await harness.coordinator.begin({ generationId: G1 });
-  await harness.coordinator.exchange({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
+  await harness.coordinator.exchange({ requestId, generationId: G1 });
   const exchanging = await harness.coordinator.getStatus();
   assert.deepEqual(await harness.coordinator.accept({
     requestId: 'request-late-1', generationId: G1,
   }), exchanging);
 
   await harness.coordinator.succeed({
+    requestId,
     generationId: G1,
     account: { id: 'account-a', displayName: 'Account A' },
     expiresAt: '2031-01-01T00:00:00.000Z',
@@ -983,7 +1025,8 @@ test('a late same-generation accepted event cannot regress exchanging or authent
 
 test('a generation change fences a stale transition that already captured old storage', async () => {
   const harness = createHarness();
-  await harness.coordinator.begin({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   const captured = deferred();
   const release = deferred();
   const originalGet = harness.storageSession.get.bind(harness.storageSession);
@@ -999,12 +1042,13 @@ test('a generation change fences a stale transition that already captured old st
   };
 
   const staleSuccess = harness.coordinator.succeed({
+    requestId,
     generationId: G1,
     account: { id: 'account-stale', displayName: 'Stale' },
     expiresAt: '2031-01-01T00:00:00.000Z',
   });
   await captured.promise;
-  const freshBegin = harness.coordinator.begin({ generationId: G2 });
+  const freshBegin = harness.coordinator.begin({ requestId, generationId: G2 });
   await Promise.resolve();
   await Promise.resolve();
   release.resolve();
@@ -1301,7 +1345,7 @@ test('stored and returned status never contains credential keys, credential valu
     'request-should-not-survive',
     'ctt_stolen_ticket_123456789',
     'machine-v3-never',
-    'ctt_request_value_must_not_be_stored_123456789',
+    'collector-request-value-must-not-be-stored-123456789',
     'Bearer parent-secret ctt_raw_ticket_123456789',
     'cst_raw_collector_token_123456789',
   ];
@@ -1312,6 +1356,7 @@ test('stored and returned status never contains credential keys, credential valu
     for (const value of forbiddenValues) assert.equal(serialized.includes(value), false, value);
   };
   const harness = createHarness({
+    newRequestId: () => 'collector-request-value-must-not-be-stored-123456789',
     initial: {
       [STORAGE_KEY]: {
         version: 1,
@@ -1338,12 +1383,14 @@ test('stored and returned status never contains credential keys, credential valu
   const sanitized = await harness.coordinator.getStatus();
   assertClosedAndCredentialFree(sanitized);
 
-  await harness.coordinator.begin({ generationId: G1 });
+  const requestId = await startAttempt(harness);
+  await harness.coordinator.begin({ requestId, generationId: G1 });
   await harness.coordinator.accept({
-    requestId: 'ctt_request_value_must_not_be_stored_123456789',
+    requestId,
     generationId: G1,
   });
   await harness.coordinator.fail({
+    requestId,
     generationId: G1,
     error: {
       code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR',

@@ -580,6 +580,11 @@ try {
       getSession: () => collectorSessionManager.getCollectorAuthSnapshot(),
       newRequestId: newCollectorAuthRequestId,
       requestAuth: (requestId) => requestCollectorAuthFromWeb(requestId),
+      onRequestEnd: (requestId) => {
+        if (activeCollectorAuthAttempt?.requestId === requestId) {
+          activeCollectorAuthAttempt = null;
+        }
+      },
     });
   const observeCollectorAuth = async (operation, input) => {
     try {
@@ -4463,10 +4468,13 @@ try {
           if (!collectorAuthAttemptMatches(message, sender)) {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
           }
-          await observeCollectorAuth('begin', {
+          const beginResult = await observeCollectorAuth('begin', {
             requestId: message.requestId,
             generationId: message.generationId,
           });
+          if (beginResult?.accepted !== true) {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
           let result;
           try {
             result = await collectorSessionManager.activateCollectorGeneration({

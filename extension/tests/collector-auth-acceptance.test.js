@@ -305,10 +305,11 @@ function createBrowserHarness({
   expectedContentListenerCount = 1,
   initialSession = null,
   exchangeResponses = [],
+  tabIds = [17],
 } = {}) {
   const clock = createFakeClock();
   const storageOnChanged = createEvent();
-  const contentOnMessage = createEvent();
+  const contentOnMessages = new Map(tabIds.map((tabId) => [tabId, createEvent()]));
   const workerOnMessage = createEvent();
   const alarmOnAlarm = createEvent();
   const runtimeOnInstalled = createEvent();
@@ -325,6 +326,7 @@ function createBrowserHarness({
   const sync = createStorageArea('sync', storageOnChanged);
   const workerMessages = [];
   const tabMessages = [];
+  const tabDeliveries = [];
   const exchangeCalls = [];
   const alarmCreates = [];
   const importedEntries = [];
@@ -337,9 +339,10 @@ function createBrowserHarness({
       workerOnMessage.listeners[0](clone(message), clone(sender), resolve);
     });
   };
-  const sendContent = (message) => new Promise((resolve) => {
+  const sendContent = (tabId, message) => new Promise((resolve) => {
     tabMessages.push(clone(message));
-    const listener = contentOnMessage.listeners[0];
+    tabDeliveries.push({ tabId, message: clone(message) });
+    const listener = contentOnMessages.get(tabId)?.listeners[0];
     if (!listener) {
       resolve(null);
       return;
@@ -382,15 +385,15 @@ function createBrowserHarness({
       onCreated: tabsOnCreated,
       onRemoved: tabsOnRemoved,
       onUpdated: tabsOnUpdated,
-      query: async () => [{
-        id: 17,
-        active: true,
-        lastAccessed: clock.now(),
+      query: async () => tabIds.map((tabId, index) => ({
+        id: tabId,
+        active: index === 0,
+        lastAccessed: clock.now() - index,
         url: trustedWebSender.url,
-      }],
+      })),
       reload() {},
       remove: async () => {},
-      sendMessage: (_tabId, message) => sendContent(message),
+      sendMessage: (tabId, message) => sendContent(tabId, message),
       update: async () => ({}),
     },
     windows: { update: async () => ({}) },
@@ -466,44 +469,62 @@ function createBrowserHarness({
   vm.runInContext(fs.readFileSync(workerPath, 'utf8'), context, { filename: workerPath });
   assert.equal(workerOnMessage.listeners.length, 1);
 
-  const pageWindow = new FakePageWindow(contentOrigin);
-  const contentChrome = {
-    runtime: {
-      lastError: null,
-      onMessage: contentOnMessage,
-      sendMessage(message, callback) {
-        sendWorker(message, trustedWebSender).then(callback);
+  const pageWindows = new Map();
+  const contentContexts = new Map();
+  for (const tabId of tabIds) {
+    const pageWindow = new FakePageWindow(contentOrigin);
+    pageWindows.set(tabId, pageWindow);
+    const contentChrome = {
+      runtime: {
+        lastError: null,
+        onMessage: contentOnMessages.get(tabId),
+        sendMessage(message, callback) {
+          sendWorker(message, {
+            url: trustedWebSender.url,
+            tab: { id: tabId, url: trustedWebSender.url },
+          }).then(callback);
+        },
       },
-    },
-  };
-  const contentContext = vm.createContext({
-    chrome: contentChrome,
-    clearTimeout: clock.clearTimer,
-    crypto: webcrypto,
-    Date: clock.Date,
-    globalThis: null,
-    JzCollectorAuthFlow: collectorAuthFlow,
-    JzWebBridgePolicy: webBridgePolicy,
-    Math,
-    setTimeout: clock.setTimer,
-    window: pageWindow,
-  });
-  contentContext.globalThis = contentContext;
-  vm.runInContext(fs.readFileSync(syncAuthPath, 'utf8'), contentContext, {
-    filename: syncAuthPath,
-  });
-  assert.equal(contentOnMessage.listeners.length, expectedContentListenerCount);
+    };
+    const contentContext = vm.createContext({
+      chrome: contentChrome,
+      clearTimeout: clock.clearTimer,
+      crypto: webcrypto,
+      Date: clock.Date,
+      globalThis: null,
+      JzCollectorAuthFlow: collectorAuthFlow,
+      JzWebBridgePolicy: webBridgePolicy,
+      Math,
+      setTimeout: clock.setTimer,
+      window: pageWindow,
+    });
+    contentContext.globalThis = contentContext;
+    vm.runInContext(fs.readFileSync(syncAuthPath, 'utf8'), contentContext, {
+      filename: `${syncAuthPath}?tab=${tabId}`,
+    });
+    assert.equal(
+      contentOnMessages.get(tabId).listeners.length,
+      expectedContentListenerCount,
+    );
+    contentContexts.set(tabId, contentContext);
+  }
+  const pageWindow = pageWindows.get(tabIds[0]);
+  const contentContext = contentContexts.get(tabIds[0]);
 
   const popupDocument = new FakeDocument();
   const popupWindowListeners = new Map();
   const popupMessages = [];
   const popupResponses = [];
   const pageRequests = [];
-  pageWindow.addEventListener('message', (event) => {
-    if (event.data?.action === 'collector.auth.request') {
-      pageRequests.push(event.data.requestId);
-    }
-  });
+  const pageRequestDeliveries = [];
+  for (const [tabId, tabWindow] of pageWindows) {
+    tabWindow.addEventListener('message', (event) => {
+      if (event.data?.action === 'collector.auth.request') {
+        pageRequests.push(event.data.requestId);
+        pageRequestDeliveries.push({ tabId, requestId: event.data.requestId });
+      }
+    });
+  }
   const popupChrome = {
     runtime: {
       getURL: chrome.runtime.getURL,
@@ -605,31 +626,36 @@ function createBrowserHarness({
     alarmOnAlarm,
     clock,
     contentInstallGuard: contentContext.__JZ_COLLECTOR_SYNC_AUTH_INSTALLED__,
-    contentListenerCount: () => contentOnMessage.listeners.length,
+    contentListenerCount: (tabId = tabIds[0]) => (
+      contentOnMessages.get(tabId)?.listeners.length || 0
+    ),
     exchangeCalls,
     importedEntries,
     pageWindow,
+    pageWindows,
     pageRequests,
+    pageRequestDeliveries,
     popupDocument,
     popupMessages,
     popupResponses,
     popupObservations,
     session,
-    receiveContent: sendContent,
+    receiveContent(message, tabId = tabIds[0]) { return sendContent(tabId, message); },
     requestCollectorAuth() {
       return sendWorker({ action: 'requestCollectorAuth' }, extensionSender);
     },
     sendWorker,
+    tabDeliveries,
     tabMessages,
     workerMessages,
-    async installWebBridge({ accountId = 'account-a', requestTicket } = {}) {
+    async installWebBridge({ accountId = 'account-a', requestTicket, tabId = tabIds[0] } = {}) {
       const bridge = await import(`${pathToFileURL(webBridgePath).href}?acceptance=${Math.random()}`);
       return bridge.installCollectorAuthBridge({
         accountId,
         generationId: GENERATION,
         isLoggedIn: () => true,
         requestTicket,
-        windowObject: pageWindow,
+        windowObject: pageWindows.get(tabId),
         setTimer: clock.setTimer,
         clearTimer: clock.clearTimer,
       });
@@ -769,40 +795,71 @@ test('first real authentication emits exactly one accepted, ticket, and exchange
   assert.equal((await runtime.status()).phase, 'AUTHENTICATED');
 });
 
-test('two tabs cannot issue tickets for one worker attempt', async (t) => {
-  const runtime = createBrowserHarness();
+test('two real tab bridges accept only their selected worker attempt across watchdog rotation', async (t) => {
+  const runtime = createBrowserHarness({ tabIds: [10, 11] });
   t.after(() => runtime.unloadPopup());
-  let ticketRequests = 0;
-  const removeBridge = await runtime.installWebBridge({
+  let ticketRequestAttempts = 0;
+  let ticketsIssued = 0;
+  let concurrentTickets = 0;
+  let maxConcurrentTickets = 0;
+  const removeFirstBridge = await runtime.installWebBridge({
+    tabId: 10,
+    requestTicket: ({ signal }) => {
+      ticketRequestAttempts += 1;
+      concurrentTickets += 1;
+      maxConcurrentTickets = Math.max(maxConcurrentTickets, concurrentTickets);
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          concurrentTickets -= 1;
+          reject(Object.assign(new Error('first tab closed'), { code: 'REQUEST_ABORTED' }));
+        }, { once: true });
+      });
+    },
+  });
+  t.after(removeFirstBridge);
+  const removeSecondBridge = await runtime.installWebBridge({
+    tabId: 11,
     requestTicket: async () => {
-      ticketRequests += 1;
+      ticketRequestAttempts += 1;
+      concurrentTickets += 1;
+      maxConcurrentTickets = Math.max(maxConcurrentTickets, concurrentTickets);
+      ticketsIssued += 1;
+      concurrentTickets -= 1;
       return {
         ticket: 'ctt_acceptance_selected_tab_123456789',
         expiresAt: '2030-01-01T00:01:00.000Z',
       };
     },
   });
-  t.after(removeBridge);
+  t.after(removeSecondBridge);
   await flush();
   await runtime.requestCollectorAuth();
+  await flush();
+
+  assert.deepEqual(runtime.tabDeliveries.map(({ tabId }) => tabId), [10]);
+  assert.deepEqual(runtime.pageRequestDeliveries.map(({ tabId }) => tabId), [10]);
+  assert.equal(ticketRequestAttempts, 1);
+  assert.equal(ticketsIssued, 0);
+  assert.equal(runtime.exchangeCalls.length, 0);
+
+  await runtime.clock.advance(31_000);
+  assert.equal((await runtime.status()).phase, 'RETRY_WAIT');
+  removeFirstBridge();
+  await flush();
+  await runtime.clock.advance(1_000);
   await flush(600);
 
-  const requestId = runtime.tabMessages[0]?.requestId;
-  const secondTabSender = {
-    url: trustedWebSender.url,
-    tab: { id: 18, url: trustedWebSender.url },
-  };
-  await runtime.sendWorker({
-    portalProtocol: 'SONLI_COLLECTOR_AUTH',
-    action: 'collector.auth.exchange',
-    requestId,
-    generationId: GENERATION,
-    ticket: 'ctt_acceptance_unselected_tab_123456789',
-    expiresAt: '2030-01-01T00:01:00.000Z',
-  }, secondTabSender);
-
-  assert.equal(ticketRequests, 1);
+  assert.deepEqual(runtime.tabDeliveries.map(({ tabId }) => tabId), [10, 11]);
+  assert.deepEqual(runtime.pageRequestDeliveries.map(({ tabId }) => tabId), [10, 11]);
+  assert.equal(ticketRequestAttempts, 2);
+  assert.equal(ticketsIssued, 1);
   assert.equal(runtime.exchangeCalls.length, 1);
+  assert.equal(
+    runtime.workerMessages.filter(({ message }) => message.action === 'collector.auth.exchange').length,
+    1,
+  );
+  assert.equal(maxConcurrentTickets, 1);
+  assert.equal((await runtime.status()).phase, 'AUTHENTICATED');
 });
 
 test('accepted response timeout retries through the coordinator after 31 seconds plus backoff', async (t) => {
