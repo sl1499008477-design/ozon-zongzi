@@ -171,11 +171,34 @@
       : [],
   });
 
+  const publicSessionFields = (session) => {
+    const safe = safeSession(session);
+    return {
+      account: safe.account,
+      permissions: safe.permissions,
+      expiresAt: safe.expiresAt,
+    };
+  };
+
+  const unauthenticatedActivation = (changed) => ({
+    changed,
+    reused: false,
+    authenticated: false,
+    account: null,
+    permissions: [],
+    expiresAt: '',
+  });
+
+  const validAccountIdHint = (value) => typeof value === 'string'
+    && value.length > 0
+    && value.length <= 128
+    && value.trim() === value;
+
   function createCollectorSessionManager({
     chromeApi = root.chrome,
     backendUrl,
     fetchImpl = root.fetch?.bind(root),
-    createExchangeSignal = () => root.AbortSignal.timeout(5_000),
+    createExchangeSignal = () => root.AbortSignal.timeout(60_000),
     now = () => Date.now(),
     newGenerationIncarnation = defaultNewGenerationIncarnation,
     logger = root.console || { warn() {}, error() {} },
@@ -251,17 +274,60 @@
     };
 
     async function activateCollectorGeneration(value) {
-      const generationId = requireCollectorGenerationId(value);
+      const legacyActivation = typeof value === 'string';
+      const generationId = requireCollectorGenerationId(
+        legacyActivation ? value : value?.generationId,
+      );
+      const accountIdHint = !legacyActivation && validAccountIdHint(value?.accountIdHint)
+        ? value.accountIdHint
+        : '';
       return serializeSessionMutation(async () => {
         const stored = await chromeApi.storage.session.get([
+          COLLECTOR_SESSION_STORAGE_KEY,
           COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
           COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
         ]);
-        if (
+        const activationIsCurrent = (
           stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] === generationId
           && isCollectorAuthIncarnation(stored?.[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY])
-        ) {
+        );
+        if (legacyActivation && activationIsCurrent) {
           return { changed: false };
+        }
+        const storedSession = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
+        const storedExpiry = Date.parse(storedSession?.expiresAt || '');
+        const validStoredSession = Boolean(
+          storedSession?.collectorToken
+          && accountIdOf(storedSession)
+          && Number.isFinite(storedExpiry)
+          && storedExpiry > now()
+        );
+        if (
+          !legacyActivation
+          && validStoredSession
+          && accountIdOf(storedSession) === accountIdHint
+        ) {
+          if (activationIsCurrent) {
+            return {
+              changed: false,
+              reused: true,
+              authenticated: true,
+              ...publicSessionFields(storedSession),
+            };
+          }
+          await chromeApi.storage.session.set({
+            [COLLECTOR_AUTH_GENERATION_STORAGE_KEY]: generationId,
+            [COLLECTOR_AUTH_INCARNATION_STORAGE_KEY]: createGenerationIncarnation(),
+          });
+          return {
+            changed: true,
+            reused: true,
+            authenticated: true,
+            ...publicSessionFields(storedSession),
+          };
+        }
+        if (!legacyActivation && activationIsCurrent && !storedSession) {
+          return unauthenticatedActivation(false);
         }
         await chromeApi.storage.session.remove([
           COLLECTOR_SESSION_STORAGE_KEY,
@@ -273,7 +339,9 @@
           [COLLECTOR_AUTH_GENERATION_STORAGE_KEY]: generationId,
           [COLLECTOR_AUTH_INCARNATION_STORAGE_KEY]: incarnation,
         });
-        return { changed: true };
+        return legacyActivation
+          ? { changed: true }
+          : unauthenticatedActivation(true);
       });
     }
 

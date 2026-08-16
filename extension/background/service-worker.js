@@ -4262,10 +4262,33 @@ try {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
           }
-          const result = await collectorSessionManager.activateCollectorGeneration(
-            message.generationId,
-          );
-          return { ok: true, data: result };
+          const result = await collectorSessionManager.activateCollectorGeneration({
+            generationId: message.generationId,
+            accountIdHint: message.accountIdHint,
+          });
+          if (!Object.hasOwn(message, 'accountIdHint')) {
+            return { ok: true, data: { changed: result?.changed === true } };
+          }
+          const reused = result?.reused === true;
+          const authenticated = reused && result?.authenticated === true;
+          return {
+            ok: true,
+            data: {
+              changed: result?.changed === true,
+              reused,
+              authenticated,
+              account: authenticated && result?.account && typeof result.account === 'object'
+                ? {
+                    id: String(result.account.id || ''),
+                    displayName: String(result.account.displayName || ''),
+                  }
+                : null,
+              permissions: authenticated && Array.isArray(result?.permissions)
+                ? [...result.permissions]
+                : [],
+              expiresAt: authenticated ? String(result?.expiresAt || '') : '',
+            },
+          };
         }
         case 'collector.auth.logout': {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {

@@ -164,6 +164,142 @@ test('activating a new Collector generation clears the previous session and is i
   );
 });
 
+test('activating a new generation reuses only an unexpired exact-account session', async () => {
+  const harness = createHarness();
+  const session = validSession({
+    permissions: ['collector.upload', 'collector.admin'],
+  });
+  await harness.manager.setCollectorSession(session);
+  const callsBeforeActivation = harness.calls.length;
+
+  assert.deepEqual(
+    await harness.manager.activateCollectorGeneration({
+      generationId: 'generation_A_1234',
+      accountIdHint: 'account-a',
+    }),
+    {
+      changed: true,
+      reused: true,
+      authenticated: true,
+      account: { id: 'account-a', displayName: 'A' },
+      permissions: ['collector.upload'],
+      expiresAt: '2030-01-01T01:00:00.000Z',
+    },
+  );
+  assert.equal(
+    harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY].collectorToken,
+    session.collectorToken,
+  );
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_A_1234',
+  );
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY],
+    'collector_activation_1_1234',
+  );
+  assert.deepEqual(
+    harness.calls.slice(callsBeforeActivation).filter(([, operation]) => operation === 'get'),
+    [[
+      'session',
+      'get',
+      [
+        COLLECTOR_SESSION_STORAGE_KEY,
+        COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+        COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
+      ],
+    ]],
+  );
+});
+
+test('account mismatch, missing or malformed hints, and expired sessions clear credentials', async () => {
+  const cases = [
+    { name: 'different account', accountIdHint: 'account-b' },
+    { name: 'missing hint' },
+    { name: 'non-string hint', accountIdHint: 123 },
+    { name: 'whitespace hint', accountIdHint: ' account-a ' },
+    { name: 'oversized hint', accountIdHint: 'a'.repeat(129) },
+    {
+      name: 'expired session',
+      accountIdHint: 'account-a',
+      session: validSession({ expiresAt: '2029-12-31T23:59:59.000Z' }),
+    },
+  ];
+
+  for (const [index, scenario] of cases.entries()) {
+    const harness = createHarness();
+    await harness.manager.setCollectorSession(scenario.session || validSession());
+
+    assert.deepEqual(
+      await harness.manager.activateCollectorGeneration({
+        generationId: `generation_case_${index}_1234`,
+        ...(Object.hasOwn(scenario, 'accountIdHint')
+          ? { accountIdHint: scenario.accountIdHint }
+          : {}),
+      }),
+      {
+        changed: true,
+        reused: false,
+        authenticated: false,
+        account: null,
+        permissions: [],
+        expiresAt: '',
+      },
+      scenario.name,
+    );
+    assert.equal(
+      harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY],
+      undefined,
+      scenario.name,
+    );
+  }
+});
+
+test('same-account rebinding still fences a stale generation exchange', async () => {
+  const staleResponse = deferred();
+  const originalSession = validSession({
+    collectorToken: 'cst_original_session_secret_123456789',
+  });
+  const staleSession = validSession({
+    collectorToken: 'cst_stale_exchange_secret_123456789',
+  });
+  let exchangeCalls = 0;
+  const harness = createHarness({
+    fetchImpl: async () => {
+      exchangeCalls += 1;
+      return staleResponse.promise;
+    },
+  });
+  await harness.manager.activateCollectorGeneration('generation_G1_1234');
+  await harness.manager.setCollectorSession(originalSession);
+
+  const staleExchange = harness.manager.exchangeCollectorTicket({
+    ticket: 'ctt_stale_rebind_secret_123456789',
+    generationId: 'generation_G1_1234',
+  });
+  while (exchangeCalls < 1) await new Promise((resolve) => setImmediate(resolve));
+
+  const activation = await harness.manager.activateCollectorGeneration({
+    generationId: 'generation_G2_5678',
+    accountIdHint: 'account-a',
+  });
+  assert.equal(activation.reused, true);
+  staleResponse.resolve(jsonResponse(200, { data: staleSession }));
+
+  await assert.rejects(
+    staleExchange,
+    (error) => error?.code === 'COLLECTOR_AUTH_GENERATION_CHANGED',
+  );
+  assert.equal(
+    harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY].collectorToken,
+    originalSession.collectorToken,
+  );
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_G2_5678',
+  );
+});
+
 async function assertFailedSuccessorIncarnationFencesOldExchange({
   createSuccessorIncarnation,
   expectedActivationError,
@@ -520,6 +656,31 @@ test('ticket exchange requires its generation to be active before the network re
   );
   assert.equal(fetchCalls, 0);
   assert.equal(await harness.manager.getCollectorSession(), null);
+});
+
+test('ticket exchange requests a sixty-second default abort deadline', async () => {
+  const requestedTimeouts = [];
+  const originalTimeout = globalThis.AbortSignal.timeout;
+  const controller = new AbortController();
+  globalThis.AbortSignal.timeout = (milliseconds) => {
+    requestedTimeouts.push(milliseconds);
+    return controller.signal;
+  };
+  try {
+    const harness = createHarness({
+      fetchImpl: async () => jsonResponse(200, { data: validSession() }),
+    });
+    await harness.manager.activateCollectorGeneration('generation_timeout_1234');
+
+    await harness.manager.exchangeCollectorTicket({
+      ticket: 'ctt_default_timeout_secret_123456789',
+      generationId: 'generation_timeout_1234',
+    });
+
+    assert.deepEqual(requestedTimeouts, [60_000]);
+  } finally {
+    globalThis.AbortSignal.timeout = originalTimeout;
+  }
 });
 
 test('ticket exchange uses a bounded abort signal and redacts timeout diagnostics', async () => {
