@@ -132,14 +132,21 @@ function createInjectedWebTabHarness({ runtimeSendMessageImpl } = {}) {
       if (runtimeOnMessage.listeners.length === 0) {
         throw new Error('Could not establish connection. Receiving end does not exist.');
       }
-      let response;
-      for (const listener of runtimeOnMessage.listeners) {
-        listener(message, { url: windowObject.location.origin }, (value) => {
-          response = value;
-        });
-        if (response !== undefined) return response;
-      }
-      throw new Error('Could not establish connection. Receiving end does not exist.');
+      return new Promise((resolve, reject) => {
+        for (const listener of runtimeOnMessage.listeners) {
+          let responded = false;
+          const keepChannelOpen = listener(
+            message,
+            { url: windowObject.location.origin },
+            (value) => {
+              responded = true;
+              resolve(value);
+            },
+          );
+          if (responded || keepChannelOpen === true) return;
+        }
+        reject(new Error('Could not establish connection. Receiving end does not exist.'));
+      });
     },
     async emitWebMessage(data) {
       const listener = windowListeners.get('message');
@@ -194,6 +201,7 @@ function loadServiceWorker({
   sellerCapture = false,
   executeScriptImpl,
   tabCreateImpl,
+  tabGetImpl,
   tabQueryImpl,
   tabSendMessageImpl,
   tabUpdateImpl,
@@ -217,6 +225,7 @@ function loadServiceWorker({
   const reloadedTabs = [];
   const createdTabs = [];
   const sentTabMessages = [];
+  const tabGetCalls = [];
   const tabQueryCalls = [];
   const updatedTabs = [];
   const updatedWindows = [];
@@ -331,7 +340,12 @@ function loadServiceWorker({
         createdTabs.push(options);
         return tabCreateImpl ? tabCreateImpl(options) : { id: 1 };
       },
-      get: async (tabId) => ({ id: tabId, url: 'https://seller.ozon.ru/app' }),
+      get: async (tabId) => {
+        tabGetCalls.push(tabId);
+        return tabGetImpl
+          ? tabGetImpl(tabId)
+          : { id: tabId, url: 'https://seller.ozon.ru/app' };
+      },
       onCreated: event,
       onRemoved: event,
       onUpdated: event,
@@ -443,6 +457,7 @@ function loadServiceWorker({
   });
   assert.equal(runtimeOnMessage.listeners.length, 1, 'service worker must register one message handler');
   return {
+    chrome,
     context,
     alarmsOnAlarm,
     cookieQueries,
@@ -461,6 +476,7 @@ function loadServiceWorker({
     runtimeSendMessageCalls,
     sentTabMessages,
     session,
+    tabGetCalls,
     tabQueryCalls,
     updatedTabs,
     updatedWindows,
@@ -479,6 +495,43 @@ async function sendRuntimeMessage(harness, message, sender = {}) {
   });
   await settle();
   return response;
+}
+
+const privilegedExtensionSender = {
+  id: 'sync-capability-test',
+  url: 'chrome-extension://sync-capability-test/popup/popup.html',
+};
+
+async function selectCollectorAttempt(harness, deliverRequest) {
+  const originalQuery = harness.chrome.tabs.query;
+  const originalSendMessage = harness.chrome.tabs.sendMessage;
+  harness.chrome.tabs.query = async (query = {}) => {
+    if (Array.isArray(query.url) && query.url.includes('https://qh.jizhangerp.com/*')) {
+      return [{ id: trustedWebSender.tab.id, active: true, lastAccessed: 10 }];
+    }
+    return originalQuery(query);
+  };
+  harness.chrome.tabs.sendMessage = async (tabId, message) => {
+    harness.sentTabMessages.push({ tabId, message });
+    if (message?.action === 'collector.auth.request') {
+      if (deliverRequest) return deliverRequest(message);
+      return { ok: true, requested: true, requestId: message.requestId };
+    }
+    return originalSendMessage(tabId, message);
+  };
+  try {
+    const selected = await sendRuntimeMessage(
+      harness,
+      { action: 'retryCollectorAuth' },
+      privilegedExtensionSender,
+    );
+    assert.equal(selected.ok, true);
+    assert.equal(selected.data.requested, 1);
+    return harness.sentTabMessages.at(-1).message.requestId;
+  } finally {
+    harness.chrome.tabs.query = originalQuery;
+    harness.chrome.tabs.sendMessage = originalSendMessage;
+  }
 }
 
 function sendRuntimeMessageUntilResponse(harness, message, sender = {}) {
@@ -608,7 +661,11 @@ test('openFrontend reuses a trusted Web tab only for the exact login path', asyn
       windowId: 8,
       url: 'http://127.0.0.1:3000/ozon/dashboard',
     }],
-    tabSendMessageImpl: async () => ({ ok: true, requested: true }),
+    tabSendMessageImpl: async (_tabId, message) => ({
+      ok: true,
+      requested: true,
+      requestId: message.requestId,
+    }),
   });
 
   const response = await sendRuntimeMessage(harness, {
@@ -629,10 +686,15 @@ test('openFrontend reuses a trusted Web tab only for the exact login path', asyn
     windowId: 8,
     update: { focused: true },
   }]);
-  assert.deepEqual(JSON.parse(JSON.stringify(harness.sentTabMessages)), [{
-    tabId: 17,
-    message: { action: 'collector.auth.request' },
-  }]);
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [17]);
+  assert.equal(harness.sentTabMessages[0].message.action, 'collector.auth.request');
+  assert.match(harness.sentTabMessages[0].message.requestId, /^collector-/);
+  const status = await sendRuntimeMessage(
+    harness,
+    { action: 'getCollectorAuthStatus' },
+    privilegedExtensionSender,
+  );
+  assert.equal(status.data.phase, 'DISCOVERING_WEB');
 });
 
 test('openFrontend returns top-level failure when the login opener cannot open a tab', async () => {
@@ -662,6 +724,12 @@ test('Collector auth routes query HTTPS brand pages plus the explicit local HTTP
   assert.deepEqual(
     JSON.parse(JSON.stringify(harness.tabQueryCalls.map(({ url }) => url))),
     [
+      [
+        'https://qh.jizhangerp.com/*',
+        'http://localhost:3000/*',
+        'http://127.0.0.1:3000/*',
+        'http://store.localhost:3000/*',
+      ],
       [
         'https://qh.jizhangerp.com/*',
         'http://localhost:3000/*',
@@ -718,7 +786,11 @@ test('requestCollectorAuth chooses one authoritative trusted Web tab determinist
     await t.test(scenario.name, async () => {
       const harness = loadServiceWorker({
         tabQueryImpl: async () => scenario.tabs,
-        tabSendMessageImpl: async () => ({ ok: true, requested: true }),
+        tabSendMessageImpl: async (_tabId, message) => ({
+          ok: true,
+          requested: true,
+          requestId: message.requestId,
+        }),
       });
 
       const response = await sendRuntimeMessage(harness, { action: 'requestCollectorAuth' });
@@ -735,17 +807,54 @@ test('requestCollectorAuth chooses one authoritative trusted Web tab determinist
   }
 });
 
-test('requestCollectorAuth does not fall through when the authoritative tab has no receiver', async () => {
+test('requestCollectorAuth falls through when the authoritative tab has no receiver', async () => {
   const harness = loadServiceWorker({
     tabQueryImpl: async () => [
-      { id: 19, active: true, lastAccessed: 100 },
-      { id: 17, active: false, lastAccessed: 900 },
+      { id: 19, url: 'http://127.0.0.1:3000/login', active: true, lastAccessed: 100 },
+      { id: 17, url: 'http://127.0.0.1:3000/login', active: false, lastAccessed: 900 },
     ],
-    tabSendMessageImpl: async (tabId) => {
+    tabGetImpl: async (tabId) => ({ id: tabId, url: 'http://127.0.0.1:3000/login' }),
+    tabSendMessageImpl: async (tabId, message) => {
       if (tabId === 19) {
         throw new Error('Could not establish connection. Receiving end does not exist.');
       }
-      return { ok: true, requested: true };
+      return { ok: true, requested: true, requestId: message.requestId };
+    },
+  });
+
+  const response = await sendRuntimeMessage(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 1 },
+  });
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19, 19, 17]);
+  assert.equal(
+    harness.sentTabMessages[0].message.requestId,
+    harness.sentTabMessages[1].message.requestId,
+  );
+  assert.deepEqual(harness.tabGetCalls, [19]);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(harness.executeScriptCalls.map(({ target, files }) => ({ target, files }))),
+    ),
+    [
+      { target: { tabId: 19 }, files: ['lib/web-bridge-policy.js'] },
+      { target: { tabId: 19 }, files: ['lib/collector-auth-flow.js'] },
+      { target: { tabId: 19 }, files: ['content/sync-auth.js'] },
+    ],
+  );
+});
+
+test('no-receiver recovery stops before injection when the selected tab navigated away', async () => {
+  const harness = loadServiceWorker({
+    tabQueryImpl: async () => [
+      { id: 19, url: 'http://127.0.0.1:3000/login', active: true, lastAccessed: 100 },
+      { id: 17, url: 'http://127.0.0.1:3000/login', active: false, lastAccessed: 900 },
+    ],
+    tabGetImpl: async (tabId) => ({ id: tabId, url: 'https://attacker.example/login' }),
+    tabSendMessageImpl: async () => {
+      throw new Error('Could not establish connection. Receiving end does not exist.');
     },
   });
 
@@ -756,6 +865,33 @@ test('requestCollectorAuth does not fall through when the authoritative tab has 
     data: { requested: 0 },
   });
   assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19]);
+  assert.deepEqual(harness.tabGetCalls, [19]);
+  assert.deepEqual(harness.executeScriptCalls, []);
+});
+
+test('no-receiver recovery stops before injection when the selected tab lookup fails', async () => {
+  const harness = loadServiceWorker({
+    tabQueryImpl: async () => [
+      { id: 19, url: 'http://127.0.0.1:3000/login', active: true, lastAccessed: 100 },
+      { id: 17, url: 'http://127.0.0.1:3000/login', active: false, lastAccessed: 900 },
+    ],
+    tabGetImpl: async () => {
+      throw new Error('No tab with id: 19');
+    },
+    tabSendMessageImpl: async () => {
+      throw new Error('Could not establish connection. Receiving end does not exist.');
+    },
+  });
+
+  const response = await sendRuntimeMessage(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19]);
+  assert.deepEqual(harness.tabGetCalls, [19]);
+  assert.deepEqual(harness.executeScriptCalls, []);
 });
 
 test('production requestCollectorAuth routes recovery through only one real content flow', async () => {
@@ -834,10 +970,14 @@ test('production requestCollectorAuth routes recovery through only one real cont
   );
 });
 
-test('openFrontend injects collector auth scripts in order before one no-receiver retry', async () => {
+test('openFrontend injects collector auth into the same worker-selected no-receiver tab once', async () => {
   const webTab = createInjectedWebTabHarness();
   const harness = loadServiceWorker({
     executeScriptImpl: (input) => webTab.executeScript(input),
+    tabGetImpl: async (tabId) => ({
+      id: tabId,
+      url: 'http://127.0.0.1:3000/ozon/dashboard',
+    }),
     tabQueryImpl: async () => [{
       id: 17,
       windowId: 8,
@@ -857,11 +997,12 @@ test('openFrontend injects collector auth scripts in order before one no-receive
   });
   assert.equal(webTab.listenerCount(), 1);
   assert.equal(webTab.runtimeMessages.length, 2);
-  assert.deepEqual(JSON.parse(JSON.stringify(webTab.runtimeMessages)), [
-    { action: 'collector.auth.request' },
-    { action: 'collector.auth.request' },
-  ]);
-  assert.equal(webTab.posts.length, 2, 'install discovery and retried recovery both request a ticket');
+  assert.equal(webTab.runtimeMessages[0].action, 'collector.auth.request');
+  assert.match(webTab.runtimeMessages[0].requestId, /^collector-/);
+  assert.equal(webTab.runtimeMessages[1].requestId, webTab.runtimeMessages[0].requestId);
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [17, 17]);
+  assert.equal(new Set(webTab.runtimeMessages.map(({ requestId }) => requestId)).size, 1);
+  assert.equal(webTab.posts.length, 1, 'only the injected selected flow requests a ticket');
   assert.deepEqual(webTab.executedFiles, [
     'lib/web-bridge-policy.js',
     'lib/collector-auth-flow.js',
@@ -924,15 +1065,17 @@ test('successful Collector exchange refreshes only open Ozon buyer pages', async
     },
   });
 
+  const requestId = await selectCollectorAttempt(harness);
   await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: G1,
   }, trustedWebSender);
   const exchanged = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-refresh-success',
+    requestId,
     generationId: G1,
     ticket: 'ctt_refresh_success_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -960,15 +1103,17 @@ test('failed Collector exchange never refreshes an Ozon page', async () => {
     tabQueryImpl: async () => [{ id: 31 }],
   });
 
+  const requestId = await selectCollectorAttempt(harness);
   await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: G1,
   }, trustedWebSender);
   const exchanged = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-refresh-failure',
+    requestId,
     generationId: G1,
     ticket: 'ctt_refresh_failure_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1072,9 +1217,11 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
       throw new Error(`unexpected exchange path: ${pathname}`);
     },
   });
+  const requestId = await selectCollectorAttempt(exchangeHarness);
   const begun = await sendRuntimeMessage(exchangeHarness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_A_1234',
   }, trustedWebSender);
   assert.deepEqual(JSON.parse(JSON.stringify(begun)), {
@@ -1085,7 +1232,7 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
   const exchanged = await sendRuntimeMessage(exchangeHarness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-kick',
+    requestId,
     generationId: 'generation_A_1234',
     ticket: 'ctt_exchange_kick_secret_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1118,9 +1265,32 @@ test('Collector portal generations fence stale exchange and stale logout', async
     },
   });
 
+  const requestId = await selectCollectorAttempt(harness);
+  const wrongRequest = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    requestId: 'collector-wrong-request-id',
+    generationId: 'generation_G1_1234',
+  }, trustedWebSender);
+  assert.equal(wrongRequest.ok, false);
+  assert.equal(wrongRequest.error, 'PORTAL_BRIDGE_FORBIDDEN');
+
+  const wrongTab = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    requestId,
+    generationId: 'generation_G1_1234',
+  }, {
+    ...trustedWebSender,
+    tab: { ...trustedWebSender.tab, id: trustedWebSender.tab.id + 1 },
+  });
+  assert.equal(wrongTab.ok, false);
+  assert.equal(wrongTab.error, 'PORTAL_BRIDGE_FORBIDDEN');
+
   const begunG1 = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_G1_1234',
   }, trustedWebSender);
   assert.deepEqual(JSON.parse(JSON.stringify(begunG1)), {
@@ -1131,6 +1301,7 @@ test('Collector portal generations fence stale exchange and stale logout', async
   const begunG2 = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_G2_5678',
   }, trustedWebSender);
   assert.deepEqual(JSON.parse(JSON.stringify(begunG2)), {
@@ -1141,7 +1312,7 @@ test('Collector portal generations fence stale exchange and stale logout', async
   const staleExchange = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-generation-g1-stale',
+    requestId,
     generationId: 'generation_G1_1234',
     ticket: 'ctt_exchange_generation_g1_secret_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1163,7 +1334,7 @@ test('Collector portal generations fence stale exchange and stale logout', async
   const exchangedG2 = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-generation-g2',
+    requestId,
     generationId: 'generation_G2_5678',
     ticket: 'ctt_exchange_generation_g2_secret_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1208,6 +1379,7 @@ test('authoritative content recovery re-begins Web G1 after internal logout', as
   });
   const webTab = await loadCollectorAuthContent(worker);
 
+  await selectCollectorAttempt(worker, (message) => webTab.sendRuntimeMessage(message));
   await webTab.emitWebMessage(collectorReady(G1));
   const firstRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(firstRequest.requestId, G1, 'g1-first'));
@@ -1221,10 +1393,7 @@ test('authoritative content recovery re-begins Web G1 after internal logout', as
   assert.equal(worker.session.state[COLLECTOR_SESSION_KEY], undefined);
   assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], undefined);
 
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({ action: 'collector.auth.request' }))),
-    { ok: true, requested: true },
-  );
+  await selectCollectorAttempt(worker, (message) => webTab.sendRuntimeMessage(message));
   const recoveryRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(recoveryRequest.requestId, G1, 'g1-recovery'));
 
@@ -1266,14 +1435,16 @@ test('authoritative content recovery adopts only current Web G2 over cached G1',
   });
   const webTab = await loadCollectorAuthContent(worker);
 
+  await selectCollectorAttempt(worker, (message) => webTab.sendRuntimeMessage(message));
   await webTab.emitWebMessage(collectorReady(G1));
   const firstRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(firstRequest.requestId, G1, 'g1'));
 
   assert.deepEqual(
-    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({ action: 'collector.auth.request' }))),
-    { ok: true, requested: true },
+    JSON.parse(JSON.stringify(await sendRuntimeMessage(worker, { action: 'logout' }))),
+    { ok: true },
   );
+  await selectCollectorAttempt(worker, (message) => webTab.sendRuntimeMessage(message));
   const recoveryRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(recoveryRequest.requestId, G2, 'g2'));
 
@@ -1312,6 +1483,7 @@ test('authoritative same-G1 recovery fences a logout-before deferred exchange in
   });
   const oldWebTab = await loadCollectorAuthContent(worker);
 
+  await selectCollectorAttempt(worker, (message) => oldWebTab.sendRuntimeMessage(message));
   await oldWebTab.emitWebMessage(collectorReady(G1));
   const oldRequest = oldWebTab.posts.at(-1).message;
   const oldFlowExchange = oldWebTab.emitWebMessage(
@@ -1329,11 +1501,9 @@ test('authoritative same-G1 recovery fences a logout-before deferred exchange in
   assert.equal(worker.session.state[COLLECTOR_INCARNATION_KEY], undefined);
 
   const recoveryWebTab = await loadCollectorAuthContent(worker);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(await recoveryWebTab.sendRuntimeMessage({
-      action: 'collector.auth.request',
-    }))),
-    { ok: true, requested: true },
+  await selectCollectorAttempt(
+    worker,
+    (message) => recoveryWebTab.sendRuntimeMessage(message),
   );
   const recoveryRequest = recoveryWebTab.posts.at(-1).message;
   const newFlowExchange = recoveryWebTab.emitWebMessage(
@@ -1383,9 +1553,11 @@ test('Collector exchange errors expose only finite status and sanitized stable c
     },
   });
 
+  const requestId = await selectCollectorAttempt(harness);
   const begun = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_error_1234',
   }, trustedWebSender);
   assert.equal(begun.ok, true);
@@ -1393,7 +1565,7 @@ test('Collector exchange errors expose only finite status and sanitized stable c
   const response = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'exchange-error-envelope',
+    requestId,
     generationId: 'generation_error_1234',
     ticket,
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1432,9 +1604,11 @@ test('internal logout invalidates a held exchange generation before its response
     },
   });
 
+  const requestId = await selectCollectorAttempt(harness);
   const begun = await sendRuntimeMessage(harness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.begin',
+    requestId,
     generationId: 'generation_G1_1234',
   }, trustedWebSender);
   assert.equal(begun.ok, true);
@@ -1443,7 +1617,7 @@ test('internal logout invalidates a held exchange generation before its response
   harness.runtimeOnMessage.listeners[0]({
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
-    requestId: 'internal-logout-held-exchange',
+    requestId,
     generationId: 'generation_G1_1234',
     ticket: 'ctt_internal_logout_secret_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',

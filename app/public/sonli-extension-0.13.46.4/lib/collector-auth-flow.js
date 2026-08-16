@@ -1,377 +1,225 @@
 (function (root) {
   'use strict';
 
-  const MAX_TICKET_EXCHANGE_ATTEMPTS = 2;
-  const BRIDGE_RETRY_MS = 1000;
-  const RESPONSE_WATCHDOG_MS = 30_000;
+  const REQUEST_PATTERN = /^collector-[A-Za-z0-9-]+$/;
+  const GENERATION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+
+  const safeRequestId = (value) => (
+    typeof value === 'string'
+    && value.length <= 128
+    && REQUEST_PATTERN.test(value)
+      ? value
+      : ''
+  );
+  const safeGenerationId = (value) => (
+    typeof value === 'string' && GENERATION_PATTERN.test(value) ? value : ''
+  );
+  const safeAccountIdHint = (value) => (
+    typeof value === 'string'
+    && value === value.trim()
+    && value.length <= 128
+      ? value
+      : ''
+  );
 
   const createCollectorAuthFlow = ({
-    newRequestId,
     postRequest,
-    releaseRequest,
     beginGeneration,
     clearGeneration,
     exchangeTicket,
     failAuthentication,
-    setTimer,
-    clearTimer,
   } = {}) => {
     for (const dependency of [
-      newRequestId,
       postRequest,
-      releaseRequest,
       beginGeneration,
       clearGeneration,
       exchangeTicket,
       failAuthentication,
-      setTimer,
-      clearTimer,
     ]) {
       if (typeof dependency !== 'function') {
         throw new TypeError('collector auth flow requires function dependencies');
       }
     }
 
-    let desiredGenerationId = '';
-    let desiredAccountIdHint = '';
-    let activeRequest = null; // { requestId, generationId, accountIdHint, accepted, leaseExpiresAt }
-    let lastHandledGenerationId = '';
-    let pendingGenerationId = '';
-    let attempts = 0;
+    let activeRequest = null;
     let exchangeInFlight = false;
-    let authenticated = false;
-    let retryTimer = null;
     let transitionTail = Promise.resolve();
-
-    const cancelRetry = () => {
-      if (retryTimer !== null) clearTimer(retryTimer);
-      retryTimer = null;
-    };
 
     const queueTransition = (operation) => {
       const transition = transitionTail.then(operation);
       transitionTail = transition.then(() => undefined, () => undefined);
       return transition;
     };
-
     const transitionSucceeded = (result) => result !== null && result?.ok !== false;
     const transitionAuthenticated = (result) => (
       result?.authenticated === true || result?.data?.authenticated === true
     );
 
-    const requestTicket = (generationId, accountIdHint, allowUnacceptedRetry = true) => {
-      if (
-        authenticated
-        || exchangeInFlight
-        || attempts >= MAX_TICKET_EXCHANGE_ATTEMPTS
-      ) return false;
-      if (generationId ? desiredGenerationId !== generationId : desiredGenerationId !== '') {
-        return false;
-      }
-      const requestId = String(newRequestId() || '').trim();
-      if (!requestId || requestId.length > 128) return false;
-      const request = {
-        requestId,
-        generationId,
-        accountIdHint,
-        accepted: false,
-        leaseExpiresAt: 0,
-      };
-      activeRequest = request;
+    const postSelectedRequest = (request) => {
+      if (request.posted) return true;
       try {
-        postRequest(requestId);
+        postRequest(request.requestId);
+        request.posted = true;
+        return true;
       } catch {
         if (activeRequest === request) activeRequest = null;
         return false;
       }
-      cancelRetry();
-      if (allowUnacceptedRetry) {
-        retryTimer = setTimer(() => {
-          retryTimer = null;
-          if (activeRequest !== request || request.accepted) return;
-          requestTicket(generationId, accountIdHint, false);
-        }, BRIDGE_RETRY_MS);
-      }
-      return true;
     };
 
-    const restartRequestCycle = (generationId, accountIdHint) => {
-      cancelRetry();
-      activeRequest = null;
-      attempts = 0;
-      authenticated = false;
-      return requestTicket(generationId, accountIdHint);
-    };
-
-    const rollbackFailedBegin = (generationId) => {
-      if (desiredGenerationId !== generationId) return;
-      desiredGenerationId = '';
-      desiredAccountIdHint = '';
-      activeRequest = null;
-      if (lastHandledGenerationId === generationId) lastHandledGenerationId = '';
-      if (pendingGenerationId === generationId) pendingGenerationId = '';
-      attempts = 0;
-      authenticated = false;
-      cancelRetry();
-    };
-
-    const waitForQueuedTransitions = async () => {
-      let observedTail;
-      do {
-        observedTail = transitionTail;
-        await observedTail;
-      } while (observedTail !== transitionTail);
-    };
-
-    const processPendingGeneration = async () => {
-      await waitForQueuedTransitions();
-      const generationId = pendingGenerationId;
-      if (!generationId || generationId !== desiredGenerationId || exchangeInFlight) {
-        return false;
-      }
-      pendingGenerationId = '';
-      return restartRequestCycle(generationId, desiredAccountIdHint);
-    };
-
-    const performExchange = async (message) => {
-      if (exchangeInFlight) {
-        if (desiredGenerationId) pendingGenerationId = desiredGenerationId;
-        return { accepted: false, reason: 'exchange-in-flight' };
-      }
-      cancelRetry();
-      activeRequest = null;
-      attempts += 1;
-      exchangeInFlight = true;
+    const adoptGeneration = async (request, generationId, accountIdHint = '') => {
       let result = null;
-      try {
-        result = await exchangeTicket({
-          requestId: message.requestId,
-          generationId: message.generationId,
-          ticket: message.ticket,
-          expiresAt: message.expiresAt,
-        });
-      } catch {
-        result = null;
-      }
-      const authenticatedCurrentGeneration = result?.ok === true
-        && desiredGenerationId === message.generationId;
-      if (authenticatedCurrentGeneration) authenticated = true;
-      const retryExpiredTicket = result?.ok === false
-        && result?.code === 'COLLECTOR_TICKET_EXPIRED'
-        && attempts < MAX_TICKET_EXCHANGE_ATTEMPTS
-        && desiredGenerationId === message.generationId;
-      if (result?.ok !== true) {
-        try {
-          releaseRequest(message.requestId);
-        } catch {}
-      }
-      exchangeInFlight = false;
-      if (pendingGenerationId) {
-        await processPendingGeneration();
-      } else if (retryExpiredTicket) {
-        requestTicket(message.generationId, desiredAccountIdHint);
-      }
-      return {
-        accepted: true,
-        authenticated: authenticatedCurrentGeneration,
-      };
-    };
-
-    const startDiscovery = () => {
-      if (desiredGenerationId || exchangeInFlight) return { requested: false };
-      return { requested: restartRequestCycle('', '') };
-    };
-
-    const handleReady = async (message) => {
-      const generationId = String(message?.generationId || '');
-      const accountIdHint = typeof message?.accountIdHint === 'string'
-        && message.accountIdHint === message.accountIdHint.trim()
-        && message.accountIdHint.length <= 128
-        ? message.accountIdHint
-        : '';
-      if (!generationId) return { accepted: false, reason: 'invalid-generation' };
-      if (
-        generationId === lastHandledGenerationId
-        && generationId === desiredGenerationId
-      ) {
-        return { accepted: false, reason: 'duplicate-generation' };
-      }
-
-      desiredGenerationId = generationId;
-      desiredAccountIdHint = accountIdHint;
-      lastHandledGenerationId = generationId;
-      pendingGenerationId = generationId;
-      authenticated = false;
-      activeRequest = null;
-      attempts = 0;
-      cancelRetry();
-
-      let result;
       try {
         result = await queueTransition(() => beginGeneration(
           generationId,
           accountIdHint || undefined,
+          request.requestId,
         ));
-      } catch {
-        result = null;
-      }
-      if (desiredGenerationId !== generationId) {
-        return { accepted: false, reason: 'stale-generation' };
+      } catch {}
+      if (activeRequest !== request) {
+        return { accepted: false, reason: 'stale-request' };
       }
       if (!transitionSucceeded(result)) {
-        rollbackFailedBegin(generationId);
+        activeRequest = null;
         return { accepted: false, reason: 'begin-failed' };
       }
-      if (transitionAuthenticated(result)) {
-        if (pendingGenerationId === generationId) pendingGenerationId = '';
-        activeRequest = null;
-        attempts = 0;
-        authenticated = true;
-        cancelRetry();
-        return { accepted: true, requested: false, authenticated: true };
-      }
-      if (exchangeInFlight) {
-        pendingGenerationId = generationId;
-        return { accepted: true, requested: false };
-      }
-      if (pendingGenerationId === generationId) pendingGenerationId = '';
+      request.generationId = generationId;
+      request.accountIdHint = accountIdHint;
       return {
         accepted: true,
-        requested: restartRequestCycle(generationId, accountIdHint),
+        authenticated: transitionAuthenticated(result),
       };
     };
 
-    const handleLogout = async (message) => {
-      const generationId = String(message?.generationId || '');
-      if (!generationId) return { accepted: false, reason: 'invalid-generation' };
-      const matchingGeneration = generationId === desiredGenerationId;
-      if (matchingGeneration) {
-        desiredGenerationId = '';
-        desiredAccountIdHint = '';
-        activeRequest = null;
-        lastHandledGenerationId = '';
-        pendingGenerationId = '';
-        attempts = 0;
-        authenticated = false;
-        cancelRetry();
-      }
-      let result;
-      try {
-        result = await queueTransition(() => clearGeneration(generationId));
-      } catch {
-        result = null;
-      }
-      if (!matchingGeneration) {
-        return { accepted: false, reason: 'stale-generation' };
-      }
-      return { accepted: true, cleared: transitionSucceeded(result) };
-    };
-
-    const handleResponse = async (message) => {
+    const handleReady = async (message) => {
       const request = activeRequest;
-      if (!request || message?.requestId !== request.requestId) {
-        return { accepted: false, reason: 'stale-request' };
+      const generationId = safeGenerationId(message?.generationId);
+      if (!request) return { accepted: false, reason: 'stale-request' };
+      if (!generationId) return { accepted: false, reason: 'invalid-generation' };
+      if (exchangeInFlight) return { accepted: false, reason: 'exchange-in-flight' };
+      if (request.generationId) {
+        return {
+          accepted: false,
+          reason: request.generationId === generationId
+            ? 'duplicate-generation'
+            : 'stale-generation',
+        };
       }
-      if (!request.generationId) {
-        if (desiredGenerationId) {
-          return { accepted: false, reason: 'stale-generation' };
-        }
-        desiredGenerationId = message.generationId;
-        desiredAccountIdHint = request.accountIdHint;
-        lastHandledGenerationId = message.generationId;
-        pendingGenerationId = message.generationId;
-        cancelRetry();
+      const accountIdHint = safeAccountIdHint(message?.accountIdHint);
+      const adopted = await adoptGeneration(request, generationId, accountIdHint);
+      if (!adopted.accepted) return adopted;
+      if (adopted.authenticated) {
         activeRequest = null;
-        let result;
-        try {
-          result = await queueTransition(() => beginGeneration(message.generationId, undefined));
-        } catch {
-          result = null;
-        }
-        if (desiredGenerationId !== message.generationId) {
-          return { accepted: false, reason: 'stale-generation' };
-        }
-        if (!transitionSucceeded(result)) {
-          rollbackFailedBegin(message.generationId);
-          return { accepted: false, reason: 'begin-failed' };
-        }
-        if (pendingGenerationId === message.generationId) pendingGenerationId = '';
-        return performExchange(message);
+        return { accepted: true, requested: false, authenticated: true };
       }
-      if (
-        request.generationId !== desiredGenerationId
-        || message?.generationId !== request.generationId
-      ) {
-        return { accepted: false, reason: 'stale-generation' };
-      }
-      return performExchange(message);
+      return {
+        accepted: true,
+        requested: postSelectedRequest(request),
+        requestId: request.requestId,
+      };
     };
 
     const handleAccepted = (message) => {
       const request = activeRequest;
-      if (!request || message?.requestId !== request.requestId) {
+      if (!request || safeRequestId(message?.requestId) !== request.requestId) {
         return { accepted: false, reason: 'stale-request' };
       }
-      if (
-        request.generationId
-        && (
-          request.generationId !== desiredGenerationId
-          || message?.generationId !== request.generationId
-        )
-      ) {
+      const generationId = safeGenerationId(message?.generationId);
+      if (!generationId || (request.generationId && request.generationId !== generationId)) {
         return { accepted: false, reason: 'stale-generation' };
       }
-      if (!request.generationId && desiredGenerationId) {
-        return { accepted: false, reason: 'stale-generation' };
-      }
-      if (request.accepted) return { accepted: true };
-      cancelRetry();
-      request.accepted = true;
-      request.leaseExpiresAt = Date.now() + RESPONSE_WATCHDOG_MS;
-      retryTimer = setTimer(() => {
-        retryTimer = null;
-        if (activeRequest !== request || !request.accepted) return;
-        requestTicket(request.generationId, request.accountIdHint);
-      }, RESPONSE_WATCHDOG_MS);
       return { accepted: true };
     };
 
     const handleFailure = async (message) => {
       const request = activeRequest;
-      if (!request || message?.requestId !== request.requestId) {
+      if (!request || safeRequestId(message?.requestId) !== request.requestId) {
         return { accepted: false, reason: 'stale-request' };
       }
-      if (message?.generationId !== request.generationId
-        || request.generationId !== desiredGenerationId) {
+      const generationId = safeGenerationId(message?.generationId);
+      if (!generationId || (request.generationId && request.generationId !== generationId)) {
         return { accepted: false, reason: 'stale-generation' };
       }
-      cancelRetry();
       activeRequest = null;
       await failAuthentication({
-        generationId: request.generationId,
+        requestId: request.requestId,
+        generationId,
         publicCode: message.publicCode,
       });
       return { accepted: true };
     };
 
-    const requestAuthoritatively = () => {
-      if (exchangeInFlight) return { requested: false };
-      if (pendingGenerationId && pendingGenerationId === desiredGenerationId) {
-        return { requested: false };
+    const handleResponse = async (message) => {
+      const request = activeRequest;
+      if (!request || safeRequestId(message?.requestId) !== request.requestId) {
+        return { accepted: false, reason: 'stale-request' };
       }
-      cancelRetry();
-      desiredGenerationId = '';
-      desiredAccountIdHint = '';
-      lastHandledGenerationId = '';
-      pendingGenerationId = '';
-      activeRequest = null;
-      attempts = 0;
-      authenticated = false;
-      return startDiscovery();
+      const generationId = safeGenerationId(message?.generationId);
+      if (!generationId || (request.generationId && request.generationId !== generationId)) {
+        return { accepted: false, reason: 'stale-generation' };
+      }
+      if (exchangeInFlight) return { accepted: false, reason: 'exchange-in-flight' };
+      if (!request.generationId) {
+        const adopted = await adoptGeneration(
+          request,
+          generationId,
+          request.accountIdHint,
+        );
+        if (!adopted.accepted) return adopted;
+        if (adopted.authenticated) {
+          activeRequest = null;
+          return { accepted: true, authenticated: true };
+        }
+      }
+      exchangeInFlight = true;
+      let result = null;
+      try {
+        result = await exchangeTicket({
+          requestId: request.requestId,
+          generationId,
+          ticket: message.ticket,
+          expiresAt: message.expiresAt,
+        });
+      } catch {}
+      exchangeInFlight = false;
+      if (activeRequest === request) activeRequest = null;
+      return {
+        accepted: true,
+        authenticated: result?.ok === true,
+      };
+    };
+
+    const handleLogout = async (message) => {
+      const generationId = safeGenerationId(message?.generationId);
+      if (!generationId) return { accepted: false, reason: 'invalid-generation' };
+      const matching = activeRequest?.generationId === generationId;
+      if (matching) activeRequest = null;
+      let result = null;
+      try { result = await queueTransition(() => clearGeneration(generationId)); } catch {}
+      return matching
+        ? { accepted: true, cleared: transitionSucceeded(result) }
+        : { accepted: false, reason: 'stale-generation' };
+    };
+
+    const requestAuthoritatively = (requestId, accountIdHint, readyMessage) => {
+      const normalized = safeRequestId(requestId);
+      if (!normalized || exchangeInFlight) return { requested: false, requestId: normalized };
+      const request = {
+        requestId: normalized,
+        generationId: '',
+        accountIdHint: safeAccountIdHint(accountIdHint),
+        posted: false,
+      };
+      activeRequest = request;
+      if (readyMessage) return handleReady(readyMessage);
+      return {
+        requested: postSelectedRequest(request),
+        requestId: normalized,
+      };
     };
 
     return Object.freeze({
-      startDiscovery,
+      startDiscovery: () => ({ requested: false, requestId: '' }),
       handleAccepted,
       handleFailure,
       handleReady,

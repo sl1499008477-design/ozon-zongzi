@@ -7,7 +7,6 @@
   const READY_V2_ACTION = 'collector.auth.ready.v2';
   const ACCEPTED_ACTION = 'collector.auth.accepted';
   const FAILURE_ACTION = 'collector.auth.failure';
-  const RELEASE_ACTION = 'collector.auth.release';
   const LOGOUT_ACTION = 'collector.auth.logout';
   const PUBLIC_FAILURE_CODES = new Set([
     'WEB_LOGIN_REQUIRED',
@@ -43,8 +42,8 @@
     typeof value === 'string' && collectorGenerationPattern.test(value) ? value : ''
   );
   const requestId = (value) => {
-    const normalized = String(value || '').trim();
-    return normalized && normalized.length <= 128 ? normalized : '';
+    if (typeof value !== 'string') return '';
+    return value.length <= 128 && /^collector-[A-Za-z0-9-]+$/.test(value) ? value : '';
   };
   const accountIdHint = (value) => {
     if (typeof value !== 'string') return '';
@@ -64,17 +63,6 @@
     return {
       protocol: COLLECTOR_AUTH_PROTOCOL,
       action: REQUEST_ACTION,
-      requestId: normalized,
-    };
-  };
-  const createCollectorAuthRelease = (value) => {
-    const normalized = requestId(value);
-    if (typeof value !== 'string' || !normalized || value !== normalized) {
-      throw new Error('COLLECTOR_AUTH_REQUEST_ID_REQUIRED');
-    }
-    return {
-      protocol: COLLECTOR_AUTH_PROTOCOL,
-      action: RELEASE_ACTION,
       requestId: normalized,
     };
   };
@@ -181,7 +169,6 @@
   }
   const api = Object.freeze({
     COLLECTOR_AUTH_PROTOCOL,
-    createCollectorAuthRelease,
     createCollectorAuthRequest,
     isTrustedWebBridgeSender,
     normalizeCollectorAuthAccepted,

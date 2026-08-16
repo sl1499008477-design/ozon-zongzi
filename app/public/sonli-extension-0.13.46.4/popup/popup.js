@@ -1043,14 +1043,10 @@
       expiresAt: status.expiresAt,
     });
     currentMainViewActivation = activation;
-    setLoginState(true);
-    if (
-      initializedMainViewActivation
-      && initializedMainViewActivation.identity === activation.identity
-    ) {
-      initializedMainViewActivation = activation;
-      return;
-    }
+    sellerStatusController.stop();
+    setLoginState(false);
+    renderNavBadges({ collect: 0, products: 0 });
+    showTip("正在确认登录状态", "progress");
     const initPromise = (async () => {
       const auth = await fetchAuth();
       if (
@@ -1062,6 +1058,15 @@
         || auth.expiresAt !== activation.expiresAt
       ) {
         rejectMainViewActivation(activation);
+        return;
+      }
+      showTip("采集会话已连接", "progress");
+      setLoginState(true);
+      if (
+        initializedMainViewActivation
+        && initializedMainViewActivation.identity === activation.identity
+      ) {
+        initializedMainViewActivation = activation;
         return;
       }
       await initMainView(auth, () => mainViewActivationIsCurrent(activation));

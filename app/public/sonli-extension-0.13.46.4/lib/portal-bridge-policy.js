@@ -5,9 +5,9 @@
   };
   const copy = (source, fields) => Object.fromEntries(fields.filter((field) => source[field] !== undefined).map((field) => [field, source[field]]));
   const collectorKeys = Object.freeze({
-    'collector.auth.begin': Object.freeze(['action', 'generationId']),
+    'collector.auth.begin': Object.freeze(['action', 'generationId', 'requestId']),
     'collector.auth.logout': Object.freeze(['action', 'generationId']),
-    'collector.auth.failure': Object.freeze(['action', 'generationId', 'publicCode']),
+    'collector.auth.failure': Object.freeze(['action', 'generationId', 'publicCode', 'requestId']),
     'collector.auth.exchange': Object.freeze([
       'action',
       'expiresAt',
@@ -16,8 +16,11 @@
       'ticket',
     ]),
   });
-  const collectorHintedBeginKeys = Object.freeze(['accountIdHint', 'action', 'generationId']);
+  const collectorHintedBeginKeys = Object.freeze([
+    'accountIdHint', 'action', 'generationId', 'requestId',
+  ]);
   const collectorGenerationPattern = /^[A-Za-z0-9_-]{16,128}$/;
+  const collectorRequestPattern = /^collector-[A-Za-z0-9-]+$/;
   const collectorFailureCodes = new Set([
     'WEB_LOGIN_REQUIRED',
     'LOCAL_SERVICE_UNAVAILABLE',
@@ -64,9 +67,14 @@
       if (!collectorGenerationPattern.test(generationId)) {
         throw new Error('PORTAL_BRIDGE_FORBIDDEN');
       }
+      const requestId = typeof message.requestId === 'string' ? message.requestId : '';
+      if (
+        message.action !== 'collector.auth.logout'
+        && (!collectorRequestPattern.test(requestId) || requestId.length > 128)
+      ) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
       if (message.action === 'collector.auth.begin') {
         if (!Object.hasOwn(message, 'accountIdHint')) {
-          return { protocol, action: message.action, generationId };
+          return { protocol, action: message.action, requestId, generationId };
         }
         const accountIdHint = typeof message.accountIdHint === 'string'
           ? message.accountIdHint.trim()
@@ -78,7 +86,7 @@
         ) {
           throw new Error('PORTAL_BRIDGE_FORBIDDEN');
         }
-        return { protocol, action: message.action, generationId, accountIdHint };
+        return { protocol, action: message.action, requestId, generationId, accountIdHint };
       }
       if (message.action === 'collector.auth.logout') {
         return { protocol, action: message.action, generationId };
@@ -90,14 +98,14 @@
         return {
           protocol,
           action: message.action,
+          requestId,
           generationId,
           publicCode: message.publicCode,
         };
       }
-      const requestId = typeof message.requestId === 'string' ? message.requestId.trim() : '';
       const ticket = typeof message.ticket === 'string' ? message.ticket : '';
       const expiresAt = typeof message.expiresAt === 'string' ? message.expiresAt : '';
-      if (!requestId || requestId.length > 128 || !ticket || !expiresAt) {
+      if (!ticket || !expiresAt) {
         throw new Error('PORTAL_BRIDGE_FORBIDDEN');
       }
       return {

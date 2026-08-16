@@ -405,6 +405,9 @@ const createHarness = (options = {}) => {
     delayedCount(action) {
       return delayedCallbacks.get(action)?.length || 0;
     },
+    delayAction(action) {
+      delayedActionSet.add(action);
+    },
     resolveAction(action, response) {
       const callbacks = delayedCallbacks.get(action) || [];
       assert.ok(callbacks.length > 0, `${action} must be pending`);
@@ -663,15 +666,67 @@ test("an open failure after unload cannot mutate DOM or restart lifecycle work",
   assert.equal(harness.intervals.length, 0);
 });
 
-test("authenticated storage transition switches immediately and preserves the main view", async (t) => {
+test("authenticated projection stays neutral until privileged auth confirms it", async (t) => {
+  const harness = createHarness({ delayedActions: ["getAuth"] });
+  t.after(() => harness.unload());
+  await settle();
+
+  harness.emitStatus(harness.authenticatedStatus("account-a"));
+
+  assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
+  assert.equal(harness.document.getElementById("login-view").style.display, "flex");
+  assert.equal(harness.document.getElementById("login-tip").textContent, "正在确认登录状态");
+  assert.equal(harness.intervals.length, 0);
+
+  harness.resolveAction("getAuth", {
+    ok: true,
+    data: {
+      authenticated: true,
+      account: { id: "account-a", displayName: "账号 A" },
+      expiresAt: harness.authExpiry,
+      backendUrl: "http://127.0.0.1:3000/api",
+    },
+  });
+  await settle();
+
+  assert.equal(harness.document.getElementById("main-view").classList.contains("active"), true);
+  assert.equal(harness.document.getElementById("login-tip").textContent, "采集会话已连接");
+  assert.equal(harness.intervals.length, 1);
+});
+
+test("a newer authenticated projection hides prior-account UI while authority is pending", async (t) => {
+  const harness = createHarness({
+    authenticated: true,
+    initialStatus: ({ authExpiry }) => authenticatedStatus("account-a", undefined, authExpiry),
+  });
+  t.after(() => harness.unload());
+  await settle();
+
+  const collectBadge = harness.document.getElementById("nav-badge-collect");
+  const productsBadge = harness.document.getElementById("nav-badge-products");
+  collectBadge.textContent = "12";
+  collectBadge.style.display = "";
+  productsBadge.textContent = "8";
+  productsBadge.style.display = "";
+  harness.delayAction("getAuth");
+  harness.emitStatus(harness.authenticatedStatus("account-a", "generation-account-a-next"));
+
+  assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
+  assert.equal(collectBadge.style.display, "none");
+  assert.equal(productsBadge.style.display, "none");
+  assert.deepEqual(harness.clearedIntervals, [1]);
+  assert.equal(harness.document.getElementById("login-tip").textContent, "正在确认登录状态");
+});
+
+test("confirmed authenticated storage transition preserves the main view", async (t) => {
   const harness = createHarness({ authenticated: true });
   t.after(() => harness.unload());
   await settle();
   harness.emitStatus(harness.authenticatedStatus("account-a"));
+  await settle();
 
   assert.equal(harness.document.getElementById("login-view").style.display, "none");
   assert.equal(harness.document.getElementById("main-view").classList.contains("active"), true);
-  await settle();
 
   const signals = harness.document.getElementById("signals");
   const captureCard = signals.children.find((card) => card.textContent.includes("采集当前商品"));
@@ -705,6 +760,9 @@ test("a late initialization snapshot cannot overwrite a newer live status", asyn
   const liveAuthStatus = harness.authenticatedStatus("account-a");
 
   harness.emitStatus(liveAuthStatus);
+  assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
+  assert.equal(harness.document.getElementById("login-tip").textContent, "正在确认登录状态");
+  await settle();
   assert.equal(harness.document.getElementById("main-view").classList.contains("active"), true);
   harness.resolveStatus({
     ok: true,
@@ -773,32 +831,67 @@ test("AUTH A stale async work cannot block or mutate AUTH B initialization", asy
   assert.equal(harness.createdTabs.at(-1)?.url, "http://127.0.0.1:3000/extension");
 });
 
-test("authoritative auth denial revokes the current activation for missing, mismatched, or expired credentials", async () => {
-  const cases = [
-    { authenticated: false, account: null, expiresAt: "" },
-    { authenticated: true, account: { id: "account-b", displayName: "账号 B" }, expiresAt: null },
-    { authenticated: true, account: { id: "account-a", displayName: "账号 A" }, expiresAt: "2035-01-01T00:00:00.000Z" },
-  ];
-  for (const auth of cases) {
-    const harness = createHarness({ delayedActions: ["getAuth"] });
-    await settle();
-    harness.emitStatus(harness.authenticatedStatus("account-a"));
-    assert.equal(harness.document.getElementById("main-view").classList.contains("active"), true);
-    harness.resolveAction("getAuth", {
-      ok: true,
-      data: {
-        ...auth,
-        expiresAt: auth.expiresAt === null ? harness.authExpiry : auth.expiresAt,
-        backendUrl: "http://127.0.0.1:3000/api",
-      },
-    });
-    await settle();
-    assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
-    assert.equal(harness.document.getElementById("login-view").style.display, "flex");
-    assert.match(harness.document.getElementById("login-tip").textContent, /等待 Web 端登录|正在检测 Web 登录状态/);
-    assert.equal(harness.messages.some(({ action }) => action === "retryCollectorAuth"), true);
-    harness.unload();
-  }
+const assertAuthoritativeDenial = async (auth) => {
+  const harness = createHarness({ delayedActions: ["getAuth"] });
+  await settle();
+  harness.emitStatus(harness.authenticatedStatus("account-a"));
+  assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
+  assert.equal(harness.document.getElementById("login-tip").textContent, "正在确认登录状态");
+  harness.resolveAction("getAuth", {
+    ok: true,
+    data: {
+      ...auth,
+      backendUrl: "http://127.0.0.1:3000/api",
+    },
+  });
+  await settle();
+  assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
+  assert.equal(harness.document.getElementById("login-view").style.display, "flex");
+  assert.match(harness.document.getElementById("login-tip").textContent, /等待 Web 端登录|正在检测 Web 登录状态/);
+  assert.equal(harness.messages.some(({ action }) => action === "retryCollectorAuth"), true);
+  harness.unload();
+};
+
+test("unauthenticated authority never exposes the projected account", async () => {
+  await assertAuthoritativeDenial({ authenticated: false, account: null, expiresAt: "" });
+});
+
+test("account-mismatched authority never exposes the projected account", async () => {
+  await assertAuthoritativeDenial({
+    authenticated: true,
+    account: { id: "account-b", displayName: "账号 B" },
+    expiresAt: futureAuthExpiry(Date.now()),
+  });
+});
+
+test("expiry-mismatched authority never exposes the projected account", async () => {
+  await assertAuthoritativeDenial({
+    authenticated: true,
+    account: { id: "account-a", displayName: "账号 A" },
+    expiresAt: "2035-01-01T00:00:00.000Z",
+  });
+});
+
+test("stale authority response cannot expose UI after a newer status", async (t) => {
+  const harness = createHarness({ delayedActions: ["getAuth"] });
+  t.after(() => harness.unload());
+  await settle();
+  harness.emitStatus(harness.authenticatedStatus("account-a"));
+  harness.emitStatus(status("WAITING_FOR_WEB", "WEB_LOGIN_REQUIRED"));
+  harness.resolveAction("getAuth", {
+    ok: true,
+    data: {
+      authenticated: true,
+      account: { id: "account-a", displayName: "账号 A" },
+      expiresAt: harness.authExpiry,
+      backendUrl: "http://127.0.0.1:3000/api",
+    },
+  });
+  await settle();
+
+  assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
+  assert.equal(harness.document.getElementById("login-tip").textContent, "等待 Web 端登录");
+  assert.equal(harness.intervals.length, 0);
 });
 
 test("unload removes the one storage listener and clears authentication display timers", async () => {

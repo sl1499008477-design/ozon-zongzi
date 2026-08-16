@@ -8,6 +8,7 @@
   const JITTER_RATIO = 0.1;
   const DISCOVERY_GENERATION_ID = 'collector_discovery_pending';
   const GENERATION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+  const REQUEST_PATTERN = /^collector-[A-Za-z0-9-]+$/;
   const PUBLIC_PHASES = new Set([
     'WAITING_FOR_WEB',
     'DISCOVERING_WEB',
@@ -107,6 +108,14 @@
     if (typeof value !== 'string' || !GENERATION_PATTERN.test(value)) return '';
     return SENSITIVE_VALUE_PATTERN.test(value) ? '' : value;
   };
+
+  const safeRequestId = (value) => (
+    typeof value === 'string'
+    && value.length <= 128
+    && REQUEST_PATTERN.test(value)
+      ? value
+      : ''
+  );
 
   const safeAccountText = (value, { required = false } = {}) => {
     if (typeof value !== 'string') return '';
@@ -259,7 +268,9 @@
     alarms = root.chrome?.alarms,
     now = () => Date.now(),
     random = () => Math.random(),
+    newRequestId,
     requestAuth,
+    onRequestEnd = () => {},
     getSession = async () => null,
     setTimer = root.setTimeout?.bind(root),
     clearTimer = root.clearTimeout?.bind(root),
@@ -274,6 +285,12 @@
     if (typeof requestAuth !== 'function') {
       throw new TypeError('collector auth coordinator requires requestAuth');
     }
+    if (typeof newRequestId !== 'function') {
+      throw new TypeError('collector auth coordinator requires newRequestId');
+    }
+    if (typeof onRequestEnd !== 'function') {
+      throw new TypeError('collector auth coordinator requires onRequestEnd');
+    }
     if (typeof getSession !== 'function') {
       throw new TypeError('collector auth coordinator requires getSession');
     }
@@ -286,6 +303,7 @@
     let requestFence = 0;
     let retryTimer = null;
     let noAckTimer = null;
+    let responseWatchdog = null;
     let cancelNoAckWaiter = null;
     let statusMutationTail = Promise.resolve();
     let transitionVersion = 0;
@@ -317,6 +335,14 @@
       cancelNoAckWaiter = null;
       if (cancelWaiter) cancelWaiter();
     };
+    const clearResponseWatchdog = (requestId = '') => {
+      if (requestId && responseWatchdog?.requestId !== requestId) return false;
+      if (responseWatchdog !== null) {
+        try { clearTimer(responseWatchdog.timer); } catch {}
+        responseWatchdog = null;
+      }
+      return true;
+    };
     const scheduleRetry = async (when, currentTime = Number(now())) => {
       await clearRetrySchedule();
       const delay = Math.max(0, when - currentTime);
@@ -347,17 +373,28 @@
     const generationIsCurrent = (status, generationId) => (
       status.generationId === String(generationId || '')
     );
-    const fenceActiveRequest = (generationId, replace = false) => {
+    const fenceActiveRequest = (requestId, generationId, replace = false) => {
+      const normalizedRequestId = safeRequestId(requestId);
       const normalizedGenerationId = String(generationId || '');
       if (
         activeRequestLease !== null
+        && activeRequestLease.requestId === normalizedRequestId
         && (replace || activeRequestLease.generationId === normalizedGenerationId)
       ) requestFence += 1;
     };
-    const replaceRequestLease = (generationId) => {
-      const lease = Object.freeze({ generationId: String(generationId || '') });
+    const replaceRequestLease = (requestId, generationId) => {
+      const lease = Object.freeze({
+        requestId: safeRequestId(requestId),
+        generationId: String(generationId || ''),
+      });
       activeRequestLease = lease;
       return lease;
+    };
+    const endRequestLease = (lease) => {
+      if (activeRequestLease !== lease) return false;
+      activeRequestLease = null;
+      try { onRequestEnd(lease.requestId); } catch {}
+      return true;
     };
     const armNoAckWatchdog = (lease, { onTimeout, onCancel } = {}) => {
       clearNoAckWatchdog();
@@ -369,20 +406,41 @@
         if (typeof onTimeout === 'function') onTimeout();
         else {
           void applyFailure({
+            requestId: lease.requestId,
             generationId: lease.generationId,
             error: { code: 'WEB_LOGIN_REQUIRED' },
           }, lease).catch(() => null);
         }
       }, 2_500);
     };
-    const clearRequestLeaseForGeneration = (generationId) => {
-      if (activeRequestLease?.generationId !== String(generationId || '')) return;
-      activeRequestLease = null;
+    const armResponseWatchdog = (requestId) => {
+      if (responseWatchdog?.requestId === requestId) return;
+      clearResponseWatchdog();
+      const timer = setTimer(() => {
+        if (responseWatchdog?.timer !== timer) return;
+        responseWatchdog = null;
+        const lease = activeRequestLease;
+        if (!lease || lease.requestId !== requestId) return;
+        void applyFailure({
+          requestId,
+          generationId: lease.generationId,
+          error: { code: 'LOCAL_SERVICE_UNAVAILABLE' },
+        }, lease).catch(() => null);
+      }, 31_000);
+      responseWatchdog = { requestId, timer };
+    };
+    const clearRequestLease = (requestId, generationId) => {
+      if (
+        activeRequestLease?.requestId !== safeRequestId(requestId)
+        || activeRequestLease?.generationId !== String(generationId || '')
+      ) return;
+      endRequestLease(activeRequestLease);
     };
     const releaseRequestLease = (lease) => {
       if (activeRequestLease !== lease) return;
       clearNoAckWatchdog();
-      activeRequestLease = null;
+      clearResponseWatchdog(lease.requestId);
+      endRequestLease(lease);
       requestFence += 1;
     };
     const retryDelay = (attemptNumber) => {
@@ -397,12 +455,18 @@
 
     const getStatus = () => serializeStatusMutation(() => readStatus());
 
-    const begin = ({ generationId } = {}) => {
+    const begin = ({ requestId, generationId } = {}) => {
+      const normalizedRequestId = safeRequestId(requestId);
       const normalizedGenerationId = safeGenerationId(generationId);
-      if (!normalizedGenerationId) return getStatus();
-      fenceActiveRequest(normalizedGenerationId, true);
+      if (!normalizedRequestId || !normalizedGenerationId) {
+        return getStatus().then((status) => ({ accepted: false, status }));
+      }
+      fenceActiveRequest(normalizedRequestId, normalizedGenerationId, true);
       return serializeStatusMutation(async () => {
         const current = await readStatus();
+        if (activeRequestLease?.requestId !== normalizedRequestId) {
+          return { accepted: false, status: current };
+        }
         const changed = current.generationId !== normalizedGenerationId;
         const timestamp = currentIso();
         await clearRetrySchedule();
@@ -419,23 +483,23 @@
           expiresAt: '',
         });
         transitionVersion += 1;
-        const lease = replaceRequestLease(normalizedGenerationId);
-        armNoAckWatchdog(lease);
-        return status;
+        clearNoAckWatchdog();
+        replaceRequestLease(normalizedRequestId, normalizedGenerationId);
+        return { accepted: true, status };
       });
     };
 
     const accept = ({ requestId, generationId } = {}) => {
-      fenceActiveRequest(generationId);
+      const normalizedRequestId = safeRequestId(requestId);
+      fenceActiveRequest(normalizedRequestId, generationId);
       return serializeStatusMutation(async () => {
         const current = await readStatus();
-        const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
         if (
-          !generationIsCurrent(current, generationId)
+          activeRequestLease?.requestId !== normalizedRequestId
           || !['DISCOVERING_WEB', 'REQUESTING_TICKET'].includes(current.phase)
           || !normalizedRequestId
-          || normalizedRequestId !== requestId
-          || normalizedRequestId.length > 128
+          || (current.phase === 'REQUESTING_TICKET'
+            && !generationIsCurrent(current, generationId))
         ) return current;
         await clearRetrySchedule();
         clearNoAckWatchdog();
@@ -449,18 +513,24 @@
           expiresAt: '',
         });
         transitionVersion += 1;
-        replaceRequestLease(current.generationId);
+        armResponseWatchdog(normalizedRequestId);
         return status;
       });
     };
 
-    const exchange = ({ generationId } = {}) => {
-      fenceActiveRequest(generationId);
+    const exchange = ({ requestId, generationId } = {}) => {
+      const normalizedRequestId = safeRequestId(requestId);
+      fenceActiveRequest(normalizedRequestId, generationId);
       return serializeStatusMutation(async () => {
         const current = await readStatus();
-        if (!generationIsCurrent(current, generationId)) return current;
+        if (
+          activeRequestLease?.requestId !== normalizedRequestId
+          || activeRequestLease?.generationId !== String(generationId || '')
+          || !generationIsCurrent(current, generationId)
+        ) return current;
         await clearRetrySchedule();
         clearNoAckWatchdog();
+        clearResponseWatchdog(normalizedRequestId);
         const status = await writeStatus({
           ...current,
           phase: 'EXCHANGING',
@@ -471,16 +541,22 @@
           expiresAt: '',
         });
         transitionVersion += 1;
-        replaceRequestLease(current.generationId);
         return status;
       });
     };
 
-    const succeed = ({ generationId, account, expiresAt } = {}) => {
-      fenceActiveRequest(generationId);
+    const succeed = ({ requestId, generationId, account, expiresAt } = {}) => {
+      const normalizedRequestId = safeRequestId(requestId);
+      fenceActiveRequest(normalizedRequestId, generationId);
+      const transitionFence = requestFence;
       return serializeStatusMutation(async () => {
         const current = await readStatus();
-        if (!generationIsCurrent(current, generationId)) return current;
+        if (
+          requestFence !== transitionFence
+          || activeRequestLease?.requestId !== normalizedRequestId
+          || activeRequestLease?.generationId !== String(generationId || '')
+          || !generationIsCurrent(current, generationId)
+        ) return current;
         const timestamp = currentIso();
         await clearRetrySchedule();
         clearNoAckWatchdog();
@@ -495,19 +571,27 @@
           expiresAt: safeIso(expiresAt),
         });
         transitionVersion += 1;
-        clearRequestLeaseForGeneration(current.generationId);
+        clearResponseWatchdog(normalizedRequestId);
+        clearRequestLease(normalizedRequestId, current.generationId);
         return status;
       });
     };
 
-    const applyFailure = ({ generationId, error } = {}, requestLease = null) => {
-      if (requestLease === null) fenceActiveRequest(generationId);
+    const applyFailure = ({ requestId, generationId, error } = {}, requestLease = null) => {
+      const normalizedRequestId = safeRequestId(requestId);
+      if (requestLease === null) fenceActiveRequest(normalizedRequestId, generationId);
       else if (activeRequestLease === requestLease) requestFence += 1;
       return serializeStatusMutation(async () => {
-        clearNoAckWatchdog();
         const current = await readStatus();
         if (requestLease !== null && activeRequestLease !== requestLease) return current;
-        if (!generationIsCurrent(current, generationId)) return current;
+        if (
+          !normalizedRequestId
+          || activeRequestLease?.requestId !== normalizedRequestId
+          || activeRequestLease?.generationId !== String(generationId || '')
+          || !generationIsCurrent(current, generationId)
+        ) return current;
+        clearNoAckWatchdog();
+        clearResponseWatchdog(normalizedRequestId);
         const classification = classifyFailure(error);
         const transitionTime = Number(now());
         const timestamp = new Date(transitionTime).toISOString();
@@ -523,7 +607,7 @@
             expiresAt: '',
           });
           transitionVersion += 1;
-          clearRequestLeaseForGeneration(current.generationId);
+          clearRequestLease(normalizedRequestId, current.generationId);
           return status;
         }
         const attemptNumber = current.attemptNumber + 1;
@@ -540,7 +624,7 @@
         });
         transitionVersion += 1;
         await scheduleRetry(when, transitionTime);
-        clearRequestLeaseForGeneration(current.generationId);
+        clearRequestLease(normalizedRequestId, current.generationId);
         return status;
       });
     };
@@ -572,6 +656,8 @@
             activeRequestLease?.generationId === current.generationId
             && ['DISCOVERING_WEB', 'REQUESTING_TICKET', 'EXCHANGING'].includes(current.phase)
           ) return { shouldRequest: false, status: current };
+          const requestId = safeRequestId(newRequestId());
+          if (!requestId) return { shouldRequest: false, status: current };
           const timestamp = currentIso();
           await clearRetrySchedule();
           const status = await writeStatus({
@@ -586,7 +672,7 @@
             expiresAt: '',
           });
           transitionVersion += 1;
-          const requestLease = replaceRequestLease(status.generationId);
+          const requestLease = replaceRequestLease(requestId, status.generationId);
           return {
             fence: requestFence,
             requestLease,
@@ -628,7 +714,7 @@
             onCancel: () => settle({ type: 'cancelled' }),
           });
           Promise.resolve()
-            .then(() => requestAuth({ generationId: discovering.generationId }))
+            .then(() => requestAuth(start.requestLease.requestId))
             .then(
               (result) => settle({ type: 'result', result }),
               (error) => settle({ type: 'error', error }),
@@ -641,6 +727,7 @@
           let status = discovering;
           try {
             status = await applyFailure({
+              requestId: start.requestLease.requestId,
               generationId: discovering.generationId,
               error: { code: 'WEB_LOGIN_REQUIRED' },
             }, start.requestLease);
@@ -655,6 +742,7 @@
           let status = discovering;
           try {
             status = await applyFailure({
+              requestId: start.requestLease.requestId,
               generationId: discovering.generationId,
               error: requestOutcome.error,
             }, start.requestLease);
@@ -670,6 +758,7 @@
           let status = discovering;
           try {
             status = await applyFailure({
+              requestId: start.requestLease.requestId,
               generationId: discovering.generationId,
               error: { code: result?.publicCode || 'WEB_TAB_UNAVAILABLE' },
             }, start.requestLease);
@@ -732,7 +821,10 @@
             expiresAt: safeIso(session.expiresAt),
           });
           transitionVersion += 1;
-          clearRequestLeaseForGeneration(latest.generationId);
+          if (activeRequestLease?.generationId === latest.generationId) {
+            clearResponseWatchdog(activeRequestLease.requestId);
+            endRequestLease(activeRequestLease);
+          }
           return { request: false, status };
         }
         if (latest.phase === 'ACTION_REQUIRED' || latest.phase === 'WAITING_FOR_WEB') {
@@ -751,7 +843,10 @@
             expiresAt: '',
           });
           transitionVersion += 1;
-          clearRequestLeaseForGeneration(latest.generationId);
+          if (activeRequestLease?.generationId === latest.generationId) {
+            clearResponseWatchdog(activeRequestLease.requestId);
+            endRequestLease(activeRequestLease);
+          }
           return { request: false, status };
         }
         if (latest.phase === 'RETRY_WAIT') {
