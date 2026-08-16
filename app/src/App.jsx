@@ -83,7 +83,8 @@ import {
   dictionaryRowsOfResponse,
   useCategoryDictionaryReadiness,
 } from "./use-category-dictionary-readiness.js";
-import { postingMoneyGroups } from "./order-money.js";
+import { postingMoneyGroups, summarizePostingMoney } from "./order-money.js";
+import { scopedPostingsForCurrentStore } from "./posting-store-scope.js";
 import { localDayKey } from "./order-analytics.js";
 import DataScreenPage from "./DataScreenPage.jsx";
 import PricingSettingsPage from "./PricingSettingsPage.jsx";
@@ -2981,10 +2982,11 @@ const postingMatchesTab = (posting, tab) => {
   return (postingStatusMap[tab] || []).includes(postingStatus(posting));
 };
 
-const postingStatusCount = (postings, statusCounts, tab) => {
+const postingStatusCount = (postings, tab) => {
   if (tab === "所有订单") return postings.length;
   if (tab === "已超时") return postings.filter(isLatePosting).length;
-  return (postingStatusMap[tab] || []).reduce((sum, status) => sum + (statusCounts[status] || 0), 0);
+  const statuses = postingStatusMap[tab] || [];
+  return postings.filter((posting) => statuses.includes(postingStatus(posting))).length;
 };
 
 const returnTypeMatches = (item = {}, activeType = "退货申请 (rFBS)") => {
@@ -7900,12 +7902,14 @@ function PostingsPage({ binding, hasStore, localData, onRefresh }) {
   const [dateRange, setDateRange] = useState(null);
   const [syncingPostings, setSyncingPostings] = useState(false);
   const [autoSync, setAutoSync] = useState(false);
-  const summary = localData?.summary || emptyLocalData.summary;
-  const postings = localData?.caches?.postings || [];
-  const statusCounts = summary.statusCounts || {};
+  const postings = scopedPostingsForCurrentStore(localData?.caches?.postings || [], binding, localData);
+  const pendingPostings = postings.filter((posting) =>
+    ["awaiting_packaging", "awaiting_deliver"].includes(postingStatus(posting))
+  ).length;
+  const currentStoreMoney = dashboardMoneyGroups(summarizePostingMoney(postings).byCurrency);
   const statusItems = postingStatusTabs.map((label) => ({
     label,
-    count: postingStatusCount(postings, statusCounts, label),
+    count: postingStatusCount(postings, label),
   }));
   const filteredPostings = postings.filter((posting) =>
     postingMatchesTab(posting, activeStatus) &&
@@ -7972,10 +7976,10 @@ function PostingsPage({ binding, hasStore, localData, onRefresh }) {
       />
       <SourceMetricStrip
         items={[
-          ["本周 GMV", dashboardSummaryMoney(summary, "week"), "当前店铺"],
+          ["累计 GMV", currentStoreMoney, "当前店铺"],
           ["本周利润", "¥—", "当前店铺"],
           ["本周利润率", "—%", "当前店铺"],
-          ["待处理", String(summary.pendingPostings || 0), (summary.pendingPostings || 0) ? "需及时处理" : "↑ 全部已处理"],
+          ["待处理", String(pendingPostings), pendingPostings ? "需及时处理" : "↑ 全部已处理"],
         ]}
       />
       <Card className="panel-card source-card">
