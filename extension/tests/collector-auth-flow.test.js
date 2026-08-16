@@ -27,13 +27,16 @@ const response = (requestId, generationId, suffix = '1') => ({
 
 const createHarness = ({ beginGeneration, clearGeneration, exchangeTicket } = {}) => {
   const begins = [];
+  const beginHints = [];
   const clears = [];
   const exchanges = [];
   const requests = [];
   const timers = [];
   let nextRequestId = 0;
+  let now = 0;
   const harness = {
     begins,
+    beginHints,
     clears,
     exchanges,
     requests,
@@ -44,7 +47,8 @@ const createHarness = ({ beginGeneration, clearGeneration, exchangeTicket } = {}
     postRequest(requestId) { requests.push(requestId); },
     async beginGeneration(generationId) {
       begins.push(generationId);
-      if (beginGeneration) return beginGeneration(generationId);
+      beginHints.push(arguments[1]);
+      if (beginGeneration) return beginGeneration(generationId, arguments[1]);
       return { ok: true };
     },
     async clearGeneration(generationId) {
@@ -58,7 +62,12 @@ const createHarness = ({ beginGeneration, clearGeneration, exchangeTicket } = {}
       return { ok: true };
     },
     setTimer(callback, milliseconds) {
-      const timer = { callback, milliseconds, cancelled: false };
+      const timer = {
+        callback,
+        milliseconds,
+        dueAt: now + milliseconds,
+        cancelled: false,
+      };
       timers.push(timer);
       return timer;
     },
@@ -66,15 +75,20 @@ const createHarness = ({ beginGeneration, clearGeneration, exchangeTicket } = {}
       if (timer) timer.cancelled = true;
     },
   });
+  harness.advanceTime = (milliseconds) => {
+    const target = now + milliseconds;
+    while (true) {
+      const timer = timers
+        .filter((candidate) => !candidate.cancelled && !candidate.ran && candidate.dueAt <= target)
+        .sort((left, right) => left.dueAt - right.dueAt)[0];
+      if (!timer) break;
+      now = timer.dueAt;
+      timer.ran = true;
+      timer.callback();
+    }
+    now = target;
+  };
   return harness;
-};
-
-const runNextTimer = (harness) => {
-  const timer = harness.timers.find((candidate) => !candidate.cancelled && !candidate.ran);
-  if (!timer) return false;
-  timer.ran = true;
-  timer.callback();
-  return true;
 };
 
 test('duplicate ready begins and requests a generation only once', async () => {
@@ -86,6 +100,18 @@ test('duplicate ready begins and requests a generation only once', async () => {
   assert.deepEqual(harness.begins, [G1]);
   assert.deepEqual(harness.requests, ['request-1']);
   assert.deepEqual(duplicate, { accepted: false, reason: 'duplicate-generation' });
+});
+
+test('V2 ready begins with its account hint and the following legacy ready is ignored', async () => {
+  const harness = createHarness();
+
+  await harness.flow.handleReady({ generationId: G1, accountIdHint: 'account-a' });
+  const legacyDuplicate = await harness.flow.handleReady({ generationId: G1 });
+
+  assert.deepEqual(harness.begins, [G1]);
+  assert.deepEqual(harness.beginHints, ['account-a']);
+  assert.deepEqual(harness.requests, ['request-1']);
+  assert.deepEqual(legacyDuplicate, { accepted: false, reason: 'duplicate-generation' });
 });
 
 test('ready waits for its serialized begin before requesting a ticket', async () => {
@@ -289,15 +315,76 @@ test('authoritative recheck never reactivates or exchanges a stale cached genera
   assert.deepEqual(harness.exchanges.map(({ generationId }) => generationId), [G2]);
 });
 
-test('request retries are bounded to ten requests at exactly one second', async () => {
+test('accepted replaces the one-second retry with a thirty-second response watchdog', async () => {
   const harness = createHarness();
 
   await harness.flow.handleReady({ generationId: G1 });
-  while (runNextTimer(harness)) {}
+  const retryTimer = harness.timers.at(-1);
+  assert.equal(retryTimer.milliseconds, 1000);
 
-  assert.equal(harness.requests.length, 10);
-  assert.equal(harness.timers.length, 10);
-  assert.equal(harness.timers.every(({ milliseconds }) => milliseconds === 1000), true);
+  assert.deepEqual(harness.flow.handleAccepted({ requestId: 'request-1', generationId: G1 }), {
+    accepted: true,
+  });
+  assert.equal(retryTimer.cancelled, true);
+  assert.equal(harness.timers.at(-1).milliseconds, 30000);
+
+  harness.advanceTime(29999);
+  assert.deepEqual(harness.requests, ['request-1']);
+  harness.advanceTime(1);
+  assert.deepEqual(harness.requests, ['request-1', 'request-2']);
+});
+
+test('duplicate accepted acknowledgements do not extend the response watchdog', async () => {
+  const harness = createHarness();
+
+  await harness.flow.handleReady({ generationId: G1 });
+  harness.flow.handleAccepted({ requestId: 'request-1', generationId: G1 });
+  harness.advanceTime(10000);
+  harness.flow.handleAccepted({ requestId: 'request-1', generationId: G1 });
+  harness.advanceTime(19999);
+  assert.deepEqual(harness.requests, ['request-1']);
+  harness.advanceTime(1);
+  assert.deepEqual(harness.requests, ['request-1', 'request-2']);
+});
+
+test('an unaccepted request retries only once at one second', async () => {
+  const harness = createHarness();
+
+  await harness.flow.handleReady({ generationId: G1 });
+  harness.advanceTime(1000);
+  harness.advanceTime(10000);
+
+  assert.deepEqual(harness.requests, ['request-1', 'request-2']);
+});
+
+test('stale accepted and response messages cannot cancel or complete a newer request', async () => {
+  const harness = createHarness();
+
+  await harness.flow.handleReady({ generationId: G1 });
+  const g1Request = harness.requests.at(-1);
+  await harness.flow.handleReady({ generationId: G2 });
+  const g2Request = harness.requests.at(-1);
+  const g2RetryTimer = harness.timers.at(-1);
+
+  assert.deepEqual(harness.flow.handleAccepted({ requestId: g1Request, generationId: G1 }), {
+    accepted: false,
+    reason: 'stale-request',
+  });
+  assert.equal(g2RetryTimer.cancelled, false);
+  assert.deepEqual(await harness.flow.handleResponse(response(g1Request, G1)), {
+    accepted: false,
+    reason: 'stale-request',
+  });
+  assert.equal(harness.exchanges.length, 0);
+
+  assert.deepEqual(harness.flow.handleAccepted({ requestId: g2Request, generationId: G2 }), {
+    accepted: true,
+  });
+  assert.deepEqual(await harness.flow.handleResponse(response(g2Request, G2, '2')), {
+    accepted: true,
+    authenticated: true,
+  });
+  assert.equal(harness.exchanges.length, 1);
 });
 
 test('expired tickets are exchanged at most twice', async () => {

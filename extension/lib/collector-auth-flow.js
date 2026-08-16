@@ -2,8 +2,8 @@
   'use strict';
 
   const MAX_TICKET_EXCHANGE_ATTEMPTS = 2;
-  const MAX_BRIDGE_REQUESTS = 10;
   const BRIDGE_RETRY_MS = 1000;
+  const RESPONSE_WATCHDOG_MS = 30_000;
 
   const createCollectorAuthFlow = ({
     newRequestId,
@@ -29,11 +29,11 @@
     }
 
     let desiredGenerationId = '';
-    let activeRequest = null; // { requestId, generationId, discovery }
+    let desiredAccountIdHint = '';
+    let activeRequest = null; // { requestId, generationId, accountIdHint, accepted, leaseExpiresAt }
     let lastHandledGenerationId = '';
     let pendingGenerationId = '';
     let attempts = 0;
-    let requestCount = 0;
     let exchangeInFlight = false;
     let authenticated = false;
     let retryTimer = null;
@@ -52,51 +52,58 @@
 
     const transitionSucceeded = (result) => result !== null && result?.ok !== false;
 
-    const requestTicket = (generationId, discovery) => {
+    const requestTicket = (generationId, accountIdHint, allowUnacceptedRetry = true) => {
       if (
         authenticated
         || exchangeInFlight
         || attempts >= MAX_TICKET_EXCHANGE_ATTEMPTS
-        || requestCount >= MAX_BRIDGE_REQUESTS
       ) return false;
-      if (discovery ? desiredGenerationId !== '' : desiredGenerationId !== generationId) {
+      if (generationId ? desiredGenerationId !== generationId : desiredGenerationId !== '') {
         return false;
       }
       const requestId = String(newRequestId() || '').trim();
       if (!requestId || requestId.length > 128) return false;
-      requestCount += 1;
-      activeRequest = { requestId, generationId, discovery };
+      const request = {
+        requestId,
+        generationId,
+        accountIdHint,
+        accepted: false,
+        leaseExpiresAt: 0,
+      };
+      activeRequest = request;
       try {
         postRequest(requestId);
       } catch {
-        activeRequest = null;
+        if (activeRequest === request) activeRequest = null;
         return false;
       }
       cancelRetry();
-      retryTimer = setTimer(() => {
-        retryTimer = null;
-        requestTicket(generationId, discovery);
-      }, BRIDGE_RETRY_MS);
+      if (allowUnacceptedRetry) {
+        retryTimer = setTimer(() => {
+          retryTimer = null;
+          if (activeRequest !== request || request.accepted) return;
+          requestTicket(generationId, accountIdHint, false);
+        }, BRIDGE_RETRY_MS);
+      }
       return true;
     };
 
-    const restartRequestCycle = (generationId, discovery) => {
+    const restartRequestCycle = (generationId, accountIdHint) => {
       cancelRetry();
       activeRequest = null;
       attempts = 0;
-      requestCount = 0;
       authenticated = false;
-      return requestTicket(generationId, discovery);
+      return requestTicket(generationId, accountIdHint);
     };
 
     const rollbackFailedBegin = (generationId) => {
       if (desiredGenerationId !== generationId) return;
       desiredGenerationId = '';
+      desiredAccountIdHint = '';
       activeRequest = null;
       if (lastHandledGenerationId === generationId) lastHandledGenerationId = '';
       if (pendingGenerationId === generationId) pendingGenerationId = '';
       attempts = 0;
-      requestCount = 0;
       authenticated = false;
       cancelRetry();
     };
@@ -116,7 +123,7 @@
         return false;
       }
       pendingGenerationId = '';
-      return restartRequestCycle(generationId, false);
+      return restartRequestCycle(generationId, desiredAccountIdHint);
     };
 
     const performExchange = async (message) => {
@@ -150,8 +157,7 @@
       if (pendingGenerationId) {
         await processPendingGeneration();
       } else if (retryExpiredTicket) {
-        requestCount = 0;
-        requestTicket(message.generationId, false);
+        requestTicket(message.generationId, desiredAccountIdHint);
       }
       return {
         accepted: true,
@@ -161,11 +167,16 @@
 
     const startDiscovery = () => {
       if (desiredGenerationId || exchangeInFlight) return { requested: false };
-      return { requested: restartRequestCycle('', true) };
+      return { requested: restartRequestCycle('', '') };
     };
 
     const handleReady = async (message) => {
       const generationId = String(message?.generationId || '');
+      const accountIdHint = typeof message?.accountIdHint === 'string'
+        && message.accountIdHint === message.accountIdHint.trim()
+        && message.accountIdHint.length <= 128
+        ? message.accountIdHint
+        : '';
       if (!generationId) return { accepted: false, reason: 'invalid-generation' };
       if (
         generationId === lastHandledGenerationId
@@ -175,17 +186,20 @@
       }
 
       desiredGenerationId = generationId;
+      desiredAccountIdHint = accountIdHint;
       lastHandledGenerationId = generationId;
       pendingGenerationId = generationId;
       authenticated = false;
       activeRequest = null;
       attempts = 0;
-      requestCount = 0;
       cancelRetry();
 
       let result;
       try {
-        result = await queueTransition(() => beginGeneration(generationId));
+        result = await queueTransition(() => beginGeneration(
+          generationId,
+          accountIdHint || undefined,
+        ));
       } catch {
         result = null;
       }
@@ -203,7 +217,7 @@
       if (pendingGenerationId === generationId) pendingGenerationId = '';
       return {
         accepted: true,
-        requested: restartRequestCycle(generationId, false),
+        requested: restartRequestCycle(generationId, accountIdHint),
       };
     };
 
@@ -213,11 +227,11 @@
       const matchingGeneration = generationId === desiredGenerationId;
       if (matchingGeneration) {
         desiredGenerationId = '';
+        desiredAccountIdHint = '';
         activeRequest = null;
         lastHandledGenerationId = '';
         pendingGenerationId = '';
         attempts = 0;
-        requestCount = 0;
         authenticated = false;
         cancelRetry();
       }
@@ -238,18 +252,19 @@
       if (!request || message?.requestId !== request.requestId) {
         return { accepted: false, reason: 'stale-request' };
       }
-      if (request.discovery) {
+      if (!request.generationId) {
         if (desiredGenerationId) {
           return { accepted: false, reason: 'stale-generation' };
         }
         desiredGenerationId = message.generationId;
+        desiredAccountIdHint = request.accountIdHint;
         lastHandledGenerationId = message.generationId;
         pendingGenerationId = message.generationId;
         cancelRetry();
         activeRequest = null;
         let result;
         try {
-          result = await queueTransition(() => beginGeneration(message.generationId));
+          result = await queueTransition(() => beginGeneration(message.generationId, undefined));
         } catch {
           result = null;
         }
@@ -272,6 +287,35 @@
       return performExchange(message);
     };
 
+    const handleAccepted = (message) => {
+      const request = activeRequest;
+      if (!request || message?.requestId !== request.requestId) {
+        return { accepted: false, reason: 'stale-request' };
+      }
+      if (
+        request.generationId
+        && (
+          request.generationId !== desiredGenerationId
+          || message?.generationId !== request.generationId
+        )
+      ) {
+        return { accepted: false, reason: 'stale-generation' };
+      }
+      if (!request.generationId && desiredGenerationId) {
+        return { accepted: false, reason: 'stale-generation' };
+      }
+      if (request.accepted) return { accepted: true };
+      cancelRetry();
+      request.accepted = true;
+      request.leaseExpiresAt = Date.now() + RESPONSE_WATCHDOG_MS;
+      retryTimer = setTimer(() => {
+        retryTimer = null;
+        if (activeRequest !== request || !request.accepted) return;
+        requestTicket(request.generationId, request.accountIdHint);
+      }, RESPONSE_WATCHDOG_MS);
+      return { accepted: true };
+    };
+
     const requestAuthoritatively = () => {
       if (exchangeInFlight) return { requested: false };
       if (pendingGenerationId && pendingGenerationId === desiredGenerationId) {
@@ -279,17 +323,18 @@
       }
       cancelRetry();
       desiredGenerationId = '';
+      desiredAccountIdHint = '';
       lastHandledGenerationId = '';
       pendingGenerationId = '';
       activeRequest = null;
       attempts = 0;
-      requestCount = 0;
       authenticated = false;
       return startDiscovery();
     };
 
     return Object.freeze({
       startDiscovery,
+      handleAccepted,
       handleReady,
       handleLogout,
       handleResponse,

@@ -42,8 +42,9 @@
       policy.createCollectorAuthRequest(requestId),
       window.location.origin,
     ),
-    beginGeneration: (generationId) => sendRuntime('collector.auth.begin', {
+    beginGeneration: (generationId, accountIdHint) => sendRuntime('collector.auth.begin', {
       generationId,
+      ...(accountIdHint ? { accountIdHint } : {}),
     }),
     clearGeneration: (generationId) => sendRuntime('collector.auth.logout', {
       generationId,
@@ -62,6 +63,11 @@
       || event.origin !== window.location.origin
     ) return;
 
+    const readyV2 = policy.normalizeCollectorAuthReadyV2(event.data);
+    if (readyV2) {
+      await flow.handleReady(readyV2);
+      return;
+    }
     const ready = policy.normalizeCollectorAuthReady(event.data);
     if (ready) {
       await flow.handleReady(ready);
@@ -70,6 +76,11 @@
     const logout = policy.normalizeCollectorAuthLogout(event.data);
     if (logout) {
       await flow.handleLogout(logout);
+      return;
+    }
+    const accepted = policy.normalizeCollectorAuthAccepted(event.data);
+    if (accepted) {
+      flow.handleAccepted(accepted);
       return;
     }
     const response = policy.normalizeCollectorAuthResponse(event.data);

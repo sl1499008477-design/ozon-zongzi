@@ -3,13 +3,14 @@ const {
   COLLECTOR_AUTH_PROTOCOL,
   createCollectorAuthRequest,
   isTrustedWebBridgeSender,
+  normalizeCollectorAuthAccepted,
   normalizeCollectorAuthLogout,
   normalizeCollectorAuthReady,
+  normalizeCollectorAuthReadyV2,
   normalizeCollectorAuthResponse,
 } = require('../lib/web-bridge-policy.js');
 const fs = require('node:fs');
 const syncAuthSource = fs.readFileSync('extension/content/sync-auth.js', 'utf8');
-const collectorAuthFlowSource = fs.readFileSync('extension/lib/collector-auth-flow.js', 'utf8');
 
 assert.deepEqual(createCollectorAuthRequest('request-1'), {
   protocol: COLLECTOR_AUTH_PROTOCOL,
@@ -43,6 +44,79 @@ assert.deepEqual(normalizeCollectorAuthReady(Object.assign(Object.create(null), 
   action: 'collector.auth.ready',
   generationId: 'generation_A_1234',
 });
+assert.deepEqual(normalizeCollectorAuthReadyV2({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.ready.v2',
+  generationId: 'generation_A_1234',
+  accountId: 'account-a',
+}), {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.ready.v2',
+  generationId: 'generation_A_1234',
+  accountIdHint: 'account-a',
+});
+assert.deepEqual(normalizeCollectorAuthReadyV2(Object.assign(Object.create(null), {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.ready.v2',
+  generationId: 'generation_A_1234',
+  accountId: 'account-a',
+})), {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.ready.v2',
+  generationId: 'generation_A_1234',
+  accountIdHint: 'account-a',
+});
+for (const unsafe of [
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready.v2', generationId: 'generation_A_1234' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready.v2', generationId: 'generation_A_1234', accountId: '' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready.v2', generationId: 'generation_A_1234', accountId: ' account-a ' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready.v2', generationId: 'generation_A_1234', accountId: 'a'.repeat(129) },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready.v2', generationId: 'generation_A_1234', accountId: 'account-a', ticket: 'never' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready.v2', generationId: 'generation_A_1234', accountId: 'account-a', token: 'never' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready', generationId: 'generation_A_1234', accountId: 'account-a' },
+  Object.assign(Object.create({ inherited: true }), {
+    protocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.ready.v2',
+    generationId: 'generation_A_1234',
+    accountId: 'account-a',
+  }),
+]) assert.equal(normalizeCollectorAuthReadyV2(unsafe), null);
+assert.deepEqual(normalizeCollectorAuthAccepted({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.accepted',
+  requestId: 'request-1',
+  generationId: 'generation_A_1234',
+}, 'request-1'), {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.accepted',
+  requestId: 'request-1',
+  generationId: 'generation_A_1234',
+});
+assert.deepEqual(normalizeCollectorAuthAccepted(Object.assign(Object.create(null), {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.accepted',
+  requestId: 'request-1',
+  generationId: 'generation_A_1234',
+}), 'request-1'), {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.accepted',
+  requestId: 'request-1',
+  generationId: 'generation_A_1234',
+});
+for (const unsafe of [
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'wrong-request', generationId: 'generation_A_1234' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: ' request-1 ', generationId: 'generation_A_1234' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'r'.repeat(129), generationId: 'generation_A_1234' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'request-1', generationId: 'too-short' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'request-1', generationId: 'generation_A_1234', ticket: 'never' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.accepted', requestId: 'request-1', generationId: 'generation_A_1234', token: 'never' },
+  Object.assign(Object.create({ inherited: true }), {
+    protocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.accepted',
+    requestId: 'request-1',
+    generationId: 'generation_A_1234',
+  }),
+]) assert.equal(normalizeCollectorAuthAccepted(unsafe, 'request-1'), null);
 for (const unsafe of [
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready' },
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready', generationId: 'generation_A_1234', token: 'never' },
@@ -142,9 +216,6 @@ assert.match(syncAuthSource, /window\.location\.origin/);
 assert.doesNotMatch(syncAuthSource, /postMessage\([^)]*,\s*['"]\*['"]\s*\)/s);
 assert.match(syncAuthSource, /normalizeCollectorAuthResponse/);
 assert.doesNotMatch(syncAuthSource, /passiveReadyConsumed|MAX_BRIDGE_REQUESTS|exchangeInFlight/);
-assert.match(collectorAuthFlowSource, /MAX_TICKET_EXCHANGE_ATTEMPTS\s*=\s*2/);
-assert.match(collectorAuthFlowSource, /MAX_BRIDGE_REQUESTS\s*=\s*10/);
-assert.match(collectorAuthFlowSource, /BRIDGE_RETRY_MS\s*=\s*1000/);
 const workerSource = fs.readFileSync('extension/background/service-worker.js', 'utf8');
 assert.doesNotMatch(workerSource, /case ['"]syncAuthFromWeb['"]|case ['"]tryWebSync['"]/);
 assert.match(workerSource, /collector\.auth\.exchange/);

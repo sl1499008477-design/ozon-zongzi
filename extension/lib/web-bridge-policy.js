@@ -4,6 +4,8 @@
   const REQUEST_ACTION = 'collector.auth.request';
   const RESPONSE_ACTION = 'collector.auth.response';
   const READY_ACTION = 'collector.auth.ready';
+  const READY_V2_ACTION = 'collector.auth.ready.v2';
+  const ACCEPTED_ACTION = 'collector.auth.accepted';
   const LOGOUT_ACTION = 'collector.auth.logout';
   const collectorGenerationPattern = /^[A-Za-z0-9_-]{16,128}$/;
   const nativeObjectConstructorSource = Function.prototype.toString.call(Object);
@@ -34,6 +36,11 @@
     const normalized = String(value || '').trim();
     return normalized && normalized.length <= 128 ? normalized : '';
   };
+  const accountIdHint = (value) => {
+    if (typeof value !== 'string') return '';
+    const normalized = value.trim();
+    return normalized && normalized.length <= 128 && value === normalized ? normalized : '';
+  };
   const isTrustedWebBridgeSender = (sender) => {
     try {
       const url = new URL(String(sender?.url || ''));
@@ -61,6 +68,37 @@
       generationId: normalizedGenerationId,
     };
   };
+  const normalizeCollectorAuthReadyV2 = (value) => {
+    if (!hasExactKeys(value, ['accountId', 'action', 'generationId', 'protocol'])) return null;
+    if (value.protocol !== COLLECTOR_AUTH_PROTOCOL || value.action !== READY_V2_ACTION) return null;
+    const normalizedGenerationId = generationId(value.generationId);
+    const normalizedAccountIdHint = accountIdHint(value.accountId);
+    if (!normalizedGenerationId || !normalizedAccountIdHint) return null;
+    return {
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: READY_V2_ACTION,
+      generationId: normalizedGenerationId,
+      accountIdHint: normalizedAccountIdHint,
+    };
+  };
+  function normalizeCollectorAuthAccepted(value, expectedRequestId) {
+    if (!hasExactKeys(value, ['action', 'generationId', 'protocol', 'requestId'])) return null;
+    if (value.protocol !== COLLECTOR_AUTH_PROTOCOL || value.action !== ACCEPTED_ACTION) return null;
+    if (typeof value.requestId !== 'string') return null;
+    if (arguments.length > 1 && typeof expectedRequestId !== 'string') return null;
+    const normalizedRequestId = requestId(value.requestId);
+    const normalizedGenerationId = generationId(value.generationId);
+    if (!normalizedRequestId || value.requestId !== normalizedRequestId || !normalizedGenerationId) {
+      return null;
+    }
+    if (arguments.length > 1 && value.requestId !== expectedRequestId) return null;
+    return {
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: ACCEPTED_ACTION,
+      requestId: normalizedRequestId,
+      generationId: normalizedGenerationId,
+    };
+  }
   const normalizeCollectorAuthLogout = (value) => {
     if (!hasExactKeys(value, ['action', 'generationId', 'protocol'])) return null;
     if (value.protocol !== COLLECTOR_AUTH_PROTOCOL || value.action !== LOGOUT_ACTION) return null;
@@ -104,8 +142,10 @@
     COLLECTOR_AUTH_PROTOCOL,
     createCollectorAuthRequest,
     isTrustedWebBridgeSender,
+    normalizeCollectorAuthAccepted,
     normalizeCollectorAuthLogout,
     normalizeCollectorAuthReady,
+    normalizeCollectorAuthReadyV2,
     normalizeCollectorAuthResponse,
   });
   root.JzWebBridgePolicy = api;
