@@ -14,6 +14,7 @@ import { createOzonCategoryService } from "./ozon-category-service.mjs";
 import { createOzonCategoryRouteHandler } from "./ozon-category-routes.mjs";
 import { createOzonSyncService } from "./ozon-sync-service.mjs";
 import { summarizeOrderMoney } from "./order-money-summary.mjs";
+import { resolvePostingCurrencyCode } from "../shared/order-money.mjs";
 import { appendAuditEvent } from "./audit-event.mjs";
 import { removeAccountScope } from "./account-deletion.mjs";
 import { migrateLegacyDataCollectionStoreStateForAudit } from "./legacy-data-collection-store.mjs";
@@ -648,13 +649,22 @@ function postingDateKey(posting = {}) {
 
 function summarize(state) {
   const postings = state.caches.postings || [];
+  const currencyByStoreId = Object.fromEntries((state.stores || []).map((store) => [
+    String(store.id || ""),
+    publicStore(store, state)?.currencyCode || "",
+  ]).filter(([storeId, currency]) => storeId && currency));
   const syncTypes = new Set(["PRODUCTS", "POSTINGS", "WAREHOUSES", "PROMOTIONS"]);
   const today = dateKey();
   const dayMs = 24 * 60 * 60 * 1000;
   const weekKeys = new Set(
     Array.from({ length: 7 }, (_, index) => dateKey(Date.now() - index * dayMs))
   );
-  const moneySummary = summarizeOrderMoney(postings, { dateKey, todayKey: today, weekKeys });
+  const moneySummary = summarizeOrderMoney(postings, {
+    dateKey,
+    todayKey: today,
+    weekKeys,
+    currencyByStoreId,
+  });
   const postingStats = postings.reduce(
     (stats, posting) => {
       const status = String(posting.status || "").toLowerCase();
@@ -822,9 +832,20 @@ function localStatePayload(state, options = {}) {
     .map(publicPersistedCollectionItem);
   const visibleFiles = ensureFilesCache(state).filter((file) => canAccessLocalFile(file, account));
   const listingCaches = listingEligibilityCaches({ products: accountScopedCache(state.caches.products, account, accountStoreIds), warehouses: accountScopedCache(state.caches.warehouses, account, accountStoreIds), accountId: account.id });
+  const currencyByStoreId = Object.fromEntries(accountStores.map((store) => [
+    String(store.id || ""),
+    publicStore(store, state)?.currencyCode || "",
+  ]).filter(([storeId, currency]) => storeId && currency));
+  const visiblePostings = accountScopedCache(state.caches.postings, account, accountStoreIds)
+    .map((posting) => {
+      const currencyCode = resolvePostingCurrencyCode(posting, { currencyByStoreId });
+      return currencyCode === "UNKNOWN" || resolvePostingCurrencyCode(posting) !== "UNKNOWN"
+        ? posting
+        : { ...posting, currency_code: currencyCode };
+    });
   const visibleCaches = {
     products: listingCaches.products,
-    postings: accountScopedCache(state.caches.postings, account, accountStoreIds),
+    postings: visiblePostings,
     warehouses: listingCaches.warehouses,
     collectBox: visibleCollectBox,
     favorites: accountScopedCache(state.caches.favorites, account, accountStoreIds),

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import {
+  parseMinorUnits,
   postingMoneyGroups,
   summarizePostingMoney,
 } from "../src/order-money.js";
+import { parseMinorUnits as sharedParseMinorUnits } from "../../shared/order-money.mjs";
+
+assert.equal(parseMinorUnits, sharedParseMinorUnits, "frontend must use the shared money parser");
 
 const decimalPosting = {
   currency_code: "RUB",
@@ -25,5 +29,13 @@ const mixed = summarizePostingMoney([
 assert.deepEqual(mixed.currencyCodes, ["CNY", "RUB"]);
 assert.equal(mixed.singleCurrency, false);
 assert.deepEqual(mixed.byCurrency, { CNY: "100", RUB: "30" });
+
+assert.deepEqual(
+  postingMoneyGroups(
+    { storeId: "store-rub", total_price: "4.56" },
+    { currencyByStoreId: { "store-rub": "RUB" } },
+  ),
+  { RUB: "456" },
+);
 
 console.log("frontend order money test passed");

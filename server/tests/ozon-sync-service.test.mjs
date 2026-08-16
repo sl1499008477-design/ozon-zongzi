@@ -7,7 +7,10 @@ const originalFetch = globalThis.fetch;
 const basePersisted = {
   currentAccountId: "acct_a",
   stores: [
-    { id: "store_a", ownerAccountId: "acct_a", clientId: "client_a", apiKey: "key_a" },
+    {
+      id: "store_a", ownerAccountId: "acct_a", clientId: "client_a", apiKey: "key_a",
+      currencyCode: "RUB", currencySource: "OZON_SELLER_INFO", currencySyncedAt: "2026-07-27T08:00:00.000Z",
+    },
     { id: "store_b", ownerAccountId: "acct_b", clientId: "client_b", apiKey: "key_b" },
   ],
   caches: { products: [], postings: [], warehouses: [], promotions: [] },
@@ -474,6 +477,8 @@ try {
     persisted.caches.postings.find((row) => row.id === "fbo_1").shipment_type,
     "FBO",
   );
+  assert.equal(persisted.caches.postings.find((row) => row.id === "fbs_1").currency_code, "RUB");
+  assert.equal(persisted.caches.postings.find((row) => row.id === "fbo_1").currency_code, "RUB");
   assert.equal(capturedFbsBodies[0].filter.to, "2026-07-28T08:00:00.000Z");
   assert.equal(
     persisted.caches.postings.some((row) => row.id === "foreign_posting" && row.storeId === "store_b"),

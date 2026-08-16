@@ -9,6 +9,7 @@ import {
   upsertCacheItemByStore,
   upsertProductByStore,
 } from "./store-cache-scope.mjs";
+import { resolvePostingCurrencyCode } from "../shared/order-money.mjs";
 
 const cleanText = (value, maxLength = 160) =>
   String(value ?? "").trim().slice(0, maxLength);
@@ -731,8 +732,12 @@ export function createOzonSyncService({
       const postings = await fetchFbsPostingsForRange(store, batchStart, batchEnd);
       for (const raw of postings) {
         const id = raw.posting_number || raw.order_id || raw.id;
+        const currencyCode = resolvePostingCurrencyCode(raw, {
+          fallbackCurrencyCode: store.currencyCode || store.currency || store.companyCurrency,
+        });
         const syncedFields = {
           ...raw,
+          ...(currencyCode === "UNKNOWN" ? {} : { currency_code: currencyCode }),
           id: String(id),
           ...cacheItemScope(store, store.ownerAccountId),
           syncedAt: nowIso(),
@@ -772,8 +777,12 @@ export function createOzonSyncService({
       if (!fboPostings.length) break;
       for (const raw of fboPostings) {
         const id = raw.posting_number || raw.order_id || raw.id;
+        const currencyCode = resolvePostingCurrencyCode(raw, {
+          fallbackCurrencyCode: store.currencyCode || store.currency || store.companyCurrency,
+        });
         const syncedFields = {
           ...raw,
+          ...(currencyCode === "UNKNOWN" ? {} : { currency_code: currencyCode }),
           id: String(id),
           ...cacheItemScope(store, store.ownerAccountId),
           syncedAt: nowIso(),

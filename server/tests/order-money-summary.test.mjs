@@ -70,4 +70,15 @@ assert.equal(single.totalGmv, "3.30");
 assert.equal(single.todayGmv, "3.30");
 assert.equal(single.weekGmv, "3.30");
 
+const historical = summarizeOrderMoney([
+  { storeId: "store-rub", created_at: "2026-07-27", total_price: "4.56" },
+], {
+  dateKey: (value) => String(value).slice(0, 10),
+  todayKey: "2026-07-27",
+  weekKeys: new Set(["2026-07-27"]),
+  currencyByStoreId: { "store-rub": "RUB" },
+});
+assert.equal(historical.currencyCode, "RUB", "trusted store currency should recover historical postings");
+assert.equal(historical.totalGmv, "4.56");
+
 console.log("order money summary test passed");

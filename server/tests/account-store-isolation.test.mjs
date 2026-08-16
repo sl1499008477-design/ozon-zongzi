@@ -187,7 +187,8 @@ const noCrossStoreCurrency = localStatePayload(ensureAccountState({
   currentStoreIdsByAccount: { [accountA.id]: "store_unknown" },
   caches: {
     products: [{ id: "cny-product", storeId: "store_cny", currency_code: "CNY" }],
-    postings: [], warehouses: [], collectBox: [], favorites: [], promotions: [], returns: [], refunds: [],
+    postings: [{ id: "historical-cny-order", storeId: "store_cny", total_price: "8.88" }],
+    warehouses: [], collectBox: [], favorites: [], promotions: [], returns: [], refunds: [],
   },
   jobs: {},
   reports: [],
@@ -196,6 +197,9 @@ const noCrossStoreCurrency = localStatePayload(ensureAccountState({
 assert.equal(noCrossStoreCurrency.binding.currencyCode, "");
 assert.equal(noCrossStoreCurrency.stores.find((store) => store.id === "store_unknown").currencyCode, "");
 assert.equal(noCrossStoreCurrency.stores.find((store) => store.id === "store_cny").currencyCode, "CNY");
+assert.equal(noCrossStoreCurrency.caches.postings[0].currency_code, "CNY");
+assert.equal(noCrossStoreCurrency.summary.currencyCode, "CNY");
+assert.equal(noCrossStoreCurrency.summary.totalGmv, "8.88");
 
 assert.equal(canAccessLocalFile(state.caches.files[0], accountB), false);
 assert.equal(canAccessLocalFile(state.caches.files[1], accountB), true);
