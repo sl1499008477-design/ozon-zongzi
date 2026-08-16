@@ -165,6 +165,121 @@ function postgresRuntimeHarness() {
   };
 }
 
+test("real runtime ticket route preserves stable Web auth and account codes without leaking credentials", async (context) => {
+  const cases = [{
+    name: "missing Web session",
+    mutateState(state) { delete state.sessions[WEB_TOKEN]; },
+    expectedStatus: 401,
+    expectedCode: "WEB_AUTH_REQUIRED",
+  }, {
+    name: "missing account",
+    mutateState(state) { state.accounts = []; },
+    expectedStatus: 401,
+    expectedCode: "WEB_AUTH_REQUIRED",
+  }, {
+    name: "disabled",
+    mutateState(state) { state.accounts[0].status = "disabled"; },
+    expectedStatus: 403,
+    expectedCode: "COLLECTOR_ACCOUNT_DISABLED",
+  }, {
+    name: "expired",
+    mutateState(state) { state.accounts[0].expiresAt = "2000-01-01T00:00:00.000Z"; },
+    expectedStatus: 403,
+    expectedCode: "COLLECTOR_ACCOUNT_EXPIRED",
+  }];
+
+  for (const fixture of cases) {
+    await context.test(fixture.name, async () => {
+      const state = initialState();
+      fixture.mutateState(state);
+
+      const result = await request(
+        jsonRuntime(state),
+        "POST",
+        "/extension/collector-auth/ticket",
+        { authorization: `Bearer ${WEB_TOKEN}` },
+      );
+
+      assert.equal(result.status, fixture.expectedStatus);
+      assert.equal(result.body.code, fixture.expectedCode);
+      const serialized = JSON.stringify(result.body);
+      assert.equal(serialized.includes(ACCOUNT.id), false);
+      assert.equal(serialized.includes(WEB_TOKEN), false);
+      assert.equal(serialized.includes("COLLECTOR_AUTH_FAILED"), false);
+    });
+  }
+});
+
+test("disabled and expired account authentication persistently revokes old Collector tokens across recovery", async (context) => {
+  const cases = [{
+    name: "disabled",
+    deactivate(account) { account.status = "disabled"; },
+    recover(account) { account.status = "active"; },
+    expectedCode: "COLLECTOR_ACCOUNT_DISABLED",
+    expectedReason: "ACCOUNT_DISABLED",
+  }, {
+    name: "expired",
+    deactivate(account) { account.expiresAt = "2000-01-01T00:00:00.000Z"; },
+    recover(account) { account.expiresAt = "2099-01-01T00:00:00.000Z"; },
+    expectedCode: "COLLECTOR_ACCOUNT_EXPIRED",
+    expectedReason: "ACCOUNT_EXPIRED",
+  }];
+
+  for (const fixture of cases) {
+    await context.test(fixture.name, async () => {
+      const state = initialState();
+      const runtime = jsonRuntime(state);
+      const issued = await request(runtime, "POST", "/extension/collector-auth/ticket", {
+        authorization: `Bearer ${WEB_TOKEN}`,
+      });
+      const exchanged = await request(runtime, "POST", "/extension/collector-auth/exchange", {
+        body: {
+          ticket: issued.body.ticket,
+          deviceFingerprint: `runtime-${fixture.name}-device`,
+          extensionVersion: "3.0.0-test",
+        },
+      });
+      const collectorToken = exchanged.body.collectorToken;
+
+      fixture.deactivate(state.accounts[0]);
+      let inactiveError;
+      await assert.rejects(
+        runtime.authenticateSessionRequest(
+          collectorRequest(collectorToken),
+          "collector.config.read",
+        ),
+        (error) => {
+          inactiveError = error;
+          return error?.code === fixture.expectedCode;
+        },
+      );
+      const inactiveErrorText = `${inactiveError?.code} ${inactiveError?.message}`;
+      for (const secret of [ACCOUNT.id, WEB_TOKEN, collectorToken]) {
+        assert.equal(inactiveErrorText.includes(secret), false);
+      }
+      assert.ok(state.collectorSessions[0].revokedAt);
+      assert.equal(state.collectorSessions[0].revokedReason, fixture.expectedReason);
+
+      fixture.recover(state.accounts[0]);
+      let recoveryError;
+      await assert.rejects(
+        runtime.authenticateSessionRequest(
+          collectorRequest(collectorToken),
+          "collector.config.read",
+        ),
+        (error) => {
+          recoveryError = error;
+          return error?.code === "COLLECTOR_SESSION_REVOKED";
+        },
+      );
+      const recoveryErrorText = `${recoveryError?.code} ${recoveryError?.message}`;
+      for (const secret of [ACCOUNT.id, WEB_TOKEN, collectorToken]) {
+        assert.equal(recoveryErrorText.includes(secret), false);
+      }
+    });
+  }
+});
+
 test("authenticateSessionRequest returns the safe full session for Ozon reads without Collector or Web secrets", async () => {
   const state = initialState();
   const runtime = jsonRuntime(state);

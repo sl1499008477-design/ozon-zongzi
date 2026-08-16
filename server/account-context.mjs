@@ -236,32 +236,28 @@ export function createAuthSession(state, account, req) {
   return token;
 }
 
+function codedAuthError(code, status, message) {
+  return Object.assign(new Error(message), { code, status });
+}
+
 export function requireAuth(req, state) {
   const token = bearerToken(req);
   const session = findSession(state, token);
   if (!session) {
-    const error = new Error("未登录，请先登录 sonli");
-    error.status = 401;
-    throw error;
+    throw codedAuthError("WEB_AUTH_REQUIRED", 401, "未登录，请先登录 sonli");
   }
   const account = activeAccount(state, session.accountId);
   if (!account) {
     removeSession(state, token);
-    const error = new Error("登录状态已失效，请重新登录");
-    error.status = 401;
-    throw error;
+    throw codedAuthError("WEB_AUTH_REQUIRED", 401, "登录状态已失效，请重新登录");
   }
   if (account.status === "disabled") {
     revokeAccountSessions(state, account.id);
-    const error = new Error("账号已被停用，请联系管理员");
-    error.status = 403;
-    throw error;
+    throw codedAuthError("COLLECTOR_ACCOUNT_DISABLED", 403, "账号已被停用，请联系管理员");
   }
   if (isAccountExpired(account)) {
     revokeAccountSessions(state, account.id);
-    const error = new Error("账号登录期限已过期，请联系管理员");
-    error.status = 403;
-    throw error;
+    throw codedAuthError("COLLECTOR_ACCOUNT_EXPIRED", 403, "账号登录期限已过期，请联系管理员");
   }
   if (state.sessions?.[token]) state.sessions[token].lastSeenAt = new Date().toISOString();
   setSessionContext(state, token, account, session);

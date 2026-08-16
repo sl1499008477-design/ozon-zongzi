@@ -457,8 +457,8 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
       began = true;
       if (record.deviceFingerprint) {
         await client.query(
-          "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-          [`${record.accountId}\u0000${record.deviceFingerprint}`],
+          "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+          [record.accountId, record.deviceFingerprint],
         );
       }
       const inserted = await client.query(

@@ -2,7 +2,6 @@ import {
   activeAccount,
   bearerToken,
   findSession,
-  isAccountExpired,
   requireAuth,
 } from "./account-context.mjs";
 import {
@@ -156,24 +155,21 @@ export function createCollectorAuthRuntime({
         await saveState(state);
       });
     }
+    const accountRevocationReason = event.outcome === "collector_account_disabled"
+      ? "ACCOUNT_DISABLED"
+      : event.outcome === "collector_account_expired"
+        ? "ACCOUNT_EXPIRED"
+        : "";
     if (
       event.action === "collector.session.authenticate"
-      && event.outcome === "collector_account_inactive"
+      && accountRevocationReason
       && event.accountId
     ) {
       const state = await loadState();
-      const account = activeAccount(state, event.accountId);
-      const reason = !account
-        ? "ACCOUNT_DELETED"
-        : account.status === "disabled"
-          ? "ACCOUNT_DISABLED"
-          : isAccountExpired(account)
-            ? "ACCOUNT_EXPIRED"
-            : "PARENT_SESSION_REVOKED";
       await revokeAccountSessions({
         state,
         accountId: event.accountId,
-        reason,
+        reason: accountRevocationReason,
       });
     }
   }

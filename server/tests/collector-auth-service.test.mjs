@@ -1045,7 +1045,7 @@ test("PostgreSQL repository lets the conditional UPDATE decide ticket consumptio
   assert.equal(operations[0].values[0], ticketHash);
 });
 
-test("PostgreSQL session creation atomically inserts and supersedes only an exact active account device", async () => {
+test("PostgreSQL session creation uses two NUL-free lock parameters before atomically superseding an exact active account device", async () => {
   const calls = [];
   const row = {
     id: "session_pg_new",
@@ -1092,8 +1092,9 @@ test("PostgreSQL session creation atomically inserts and supersedes only an exac
   assert.deepEqual(calls.map(({ sql }) => sql.trim().split(/\s+/)[0]), [
     "BEGIN", "SELECT", "INSERT", "UPDATE", "COMMIT", "RELEASE",
   ]);
-  assert.match(calls[1].sql, /pg_advisory_xact_lock/i);
-  assert.equal(calls[1].values[0], `${ACTIVE_ACCOUNT.id}\u0000${row.device_fingerprint}`);
+  assert.match(calls[1].sql, /pg_advisory_xact_lock\(hashtext\(\$1\),\s*hashtext\(\$2\)\)/i);
+  assert.deepEqual(calls[1].values, [ACTIVE_ACCOUNT.id, row.device_fingerprint]);
+  assert.equal(calls[1].values.some((value) => value.includes("\u0000")), false);
   assert.match(calls[2].sql, /account\.status='active'/i);
   assert.match(calls[3].sql, /account_id\s*=\s*\$1/i);
   assert.match(calls[3].sql, /device_fingerprint\s*=\s*\$2/i);
@@ -1161,6 +1162,11 @@ test("PostgreSQL same-account/device concurrent session transactions serialize o
       async query(sql, values = []) {
         if (/^BEGIN/i.test(sql.trim())) return { rows: [] };
         if (/pg_advisory_xact_lock/i.test(sql)) {
+          if (values.some((value) => String(value).includes("\u0000"))) {
+            throw new Error("PostgreSQL text parameters cannot contain NUL");
+          }
+          assert.match(sql, /pg_advisory_xact_lock\(hashtext\(\$1\),\s*hashtext\(\$2\)\)/i);
+          assert.deepEqual(values, [ACTIVE_ACCOUNT.id, "device-concurrent"]);
           const predecessor = lockTail;
           lockTail = new Promise((resolve) => { releaseLock = resolve; });
           await predecessor;
