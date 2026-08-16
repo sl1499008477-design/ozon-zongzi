@@ -524,7 +524,11 @@ test('transient exchange failure schedules retry and duplicate alarm resumes are
   assert.equal(retryStatus.data.phase, 'RETRY_WAIT');
   assert.equal(retryStatus.data.publicCode, 'LOCAL_SERVICE_UNAVAILABLE');
   assert.ok(harness.alarmCreates.some(({ name }) => name === 'collectorAuthRetry'));
-  harness.session.state.sonliCollectorAuthStatus.nextRetryAt = '2020-01-01T00:00:00.000Z';
+  Object.assign(harness.session.state.sonliCollectorAuthStatus, {
+    startedAt: '2020-01-01T00:00:00.000Z',
+    updatedAt: '2020-01-01T00:00:00.000Z',
+    nextRetryAt: '2020-01-01T00:00:01.000Z',
+  });
 
   for (const listener of harness.alarmsOnAlarm.listeners) {
     listener({ name: 'collectorAuthRetry' });

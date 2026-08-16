@@ -184,10 +184,16 @@
       return withoutCredentials('ACTION_REQUIRED', 'SERVER_UPGRADE_REQUIRED');
     }
     if (status.phase === 'RETRY_WAIT') {
+      const startedAt = Date.parse(status.startedAt);
+      const updatedAt = Date.parse(status.updatedAt);
+      const nextRetryAt = Date.parse(status.nextRetryAt);
       if (
         status.attemptNumber < 1
         || status.publicCode !== 'LOCAL_SERVICE_UNAVAILABLE'
         || !status.nextRetryAt
+        || startedAt > updatedAt
+        || updatedAt >= nextRetryAt
+        || nextRetryAt - updatedAt > MAX_RETRY_DELAY_MS
       ) return withoutCredentials('ACTION_REQUIRED', 'SERVER_UPGRADE_REQUIRED');
       return {
         ...status,
@@ -336,6 +342,11 @@
         activeRequestGenerationId !== null
         && (replace || activeRequestGenerationId === normalizedGenerationId)
       ) requestFence += 1;
+    };
+    const releaseRequestLease = (generationId) => {
+      if (activeRequestGenerationId !== String(generationId || '')) return;
+      activeRequestGenerationId = null;
+      requestFence += 1;
     };
     const retryDelay = (attemptNumber) => {
       const base = RETRY_BASE_DELAYS_MS[Math.min(
@@ -553,7 +564,13 @@
         try {
           result = await requestAuth({ generationId: discovering.generationId });
         } catch (error) {
-          const status = await fail({ generationId: discovering.generationId, error });
+          let status = discovering;
+          try {
+            status = await fail({ generationId: discovering.generationId, error });
+          } catch {}
+          finally {
+            releaseRequestLease(discovering.generationId);
+          }
           return { requested: false, status };
         }
         const requested = result?.requested === true || result?.requested === 1;
@@ -565,6 +582,9 @@
               error: { code: result?.publicCode || 'WEB_TAB_UNAVAILABLE' },
             });
           } catch {}
+          finally {
+            releaseRequestLease(discovering.generationId);
+          }
           return { requested: false, status };
         }
         return { requested: true, status: discovering };
@@ -589,10 +609,9 @@
           return { request: false, status: latest };
         }
         const unchanged = JSON.stringify(latest) === JSON.stringify(initial);
+        if (!unchanged) return { request: false, status: latest };
         if (session?.account && safeIso(session.expiresAt)) {
-          if (latest.phase === 'ACTION_REQUIRED' || (latest.phase === 'WAITING_FOR_WEB' && !unchanged)) {
-            return { request: false, status: latest };
-          }
+          if (latest.phase === 'ACTION_REQUIRED') return { request: false, status: latest };
           const timestamp = currentIso();
           await clearRetrySchedule();
           const status = await writeStatus({
@@ -615,7 +634,6 @@
           return { request: false, status: latest };
         }
         if (latest.phase === 'AUTHENTICATED') {
-          if (!unchanged) return { request: false, status: latest };
           await clearRetrySchedule();
           const status = await writeStatus({
             ...latest,

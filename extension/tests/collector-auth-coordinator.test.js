@@ -429,6 +429,65 @@ test('resume cannot regress action-required or logout state after a delayed sess
   }
 });
 
+for (const [name, transition] of [
+  [
+    'successful account B authentication',
+    (coordinator) => coordinator.succeed({
+      generationId: G1,
+      account: { id: 'account-b', displayName: 'Account B' },
+      expiresAt: '2031-01-02T00:00:00.000Z',
+    }),
+  ],
+  [
+    'same-generation begin',
+    (coordinator) => coordinator.begin({ generationId: G1 }),
+  ],
+  [
+    'action-required failure',
+    (coordinator) => coordinator.fail({
+      generationId: G1,
+      error: { code: 'COLLECTOR_ACCOUNT_DISABLED' },
+    }),
+  ],
+  [
+    'matching logout',
+    (coordinator) => coordinator.fail({
+      generationId: G1,
+      error: { code: 'WEB_AUTH_REQUIRED' },
+    }),
+  ],
+]) {
+  test(`a delayed non-null session cannot overwrite a concurrent ${name}`, async () => {
+    const sessionReadStarted = deferred();
+    const sessionRead = deferred();
+    const harness = createHarness({
+      getSession: async () => {
+        sessionReadStarted.resolve();
+        return sessionRead.promise;
+      },
+    });
+    await harness.coordinator.begin({ generationId: G1 });
+    await harness.coordinator.exchange({ generationId: G1 });
+
+    const resumed = harness.coordinator.resume();
+    await sessionReadStarted.promise;
+    const expected = await transition(harness.coordinator);
+    sessionRead.resolve({
+      collectorToken: 'cst_stale_session_a_123456789',
+      account: { id: 'account-a', displayName: 'Account A' },
+      permissions: ['collector.upload'],
+      expiresAt: '2031-01-01T00:00:00.000Z',
+    });
+    await resumed;
+
+    assert.deepEqual(
+      plain(await harness.coordinator.getStatus()),
+      plain(expected),
+    );
+    assert.equal(harness.authRequests.length, 0);
+  });
+}
+
 test('startup and alarm resumes cannot duplicate a request after its Web acknowledgement', async () => {
   const harness = createHarness();
   await harness.coordinator.begin({ generationId: G1 });
@@ -447,6 +506,49 @@ test('startup and alarm resumes cannot duplicate a request after its Web acknowl
 
   assert.equal((await harness.coordinator.getStatus()).phase, 'DISCOVERING_WEB');
   assert.equal(harness.authRequests.length, 1);
+});
+
+test('a failed negative-ack projection releases its lease for one later retry', async () => {
+  let failNextStatusRead = false;
+  let webRequestNumber = 0;
+  const harness = createHarness({
+    requestAuth: async () => {
+      webRequestNumber += 1;
+      if (webRequestNumber === 1) {
+        failNextStatusRead = true;
+        return { requested: false, publicCode: 'WEB_TAB_UNAVAILABLE' };
+      }
+      return { requested: true };
+    },
+  });
+  const originalGet = harness.storageSession.get.bind(harness.storageSession);
+  harness.storageSession.get = async (key) => {
+    if (failNextStatusRead) {
+      failNextStatusRead = false;
+      throw new Error('status projection read failed');
+    }
+    return originalGet(key);
+  };
+
+  const first = await harness.coordinator.retryNow();
+  assert.equal(first.requested, false);
+  assert.equal(harness.authRequests.length, 1);
+
+  const [manual, startup] = await Promise.all([
+    harness.coordinator.retryNow(),
+    harness.coordinator.resume(),
+  ]);
+  assert.equal(manual.requested, true);
+  assert.equal(startup.phase, 'DISCOVERING_WEB');
+  assert.equal(harness.authRequests.length, 2);
+
+  await harness.coordinator.begin({ generationId: G1 });
+  await harness.coordinator.succeed({
+    generationId: G1,
+    account: { id: 'account-a', displayName: 'Account A' },
+    expiresAt: '2031-01-01T00:00:00.000Z',
+  });
+  assert.equal((await harness.coordinator.getStatus()).phase, 'AUTHENTICATED');
 });
 
 test('a terminal transition queued at the final status check wins before the Web request side effect', async () => {
@@ -771,6 +873,63 @@ test('impossible persisted states rewrite to a safe terminal status without cold
     assert.equal(harness.authRequests.length, 0);
     assert.ok(harness.clearedAlarms.includes(ALARM_NAME));
   }
+});
+
+test('persisted retry timestamps enforce ordering and the thirty-second hard cap', async () => {
+  const base = {
+    version: 1,
+    phase: 'RETRY_WAIT',
+    generationId: G1,
+    startedAt: '2030-01-01T00:00:00.000Z',
+    updatedAt: '2030-01-01T00:00:05.000Z',
+    attemptNumber: 1,
+    nextRetryAt: '2030-01-01T00:00:06.000Z',
+    publicCode: 'LOCAL_SERVICE_UNAVAILABLE',
+    account: null,
+    expiresAt: '',
+  };
+  const corrupt = [
+    { ...base, nextRetryAt: '2030-01-01T00:00:04.999Z' },
+    { ...base, nextRetryAt: '2030-01-01T00:00:05.000Z' },
+    { ...base, nextRetryAt: '2030-01-01T00:00:35.001Z' },
+    { ...base, startedAt: '2030-01-01T00:00:05.001Z' },
+    { ...base, attemptNumber: 0 },
+    { ...base, publicCode: 'ACCOUNT_DISABLED' },
+  ];
+
+  for (const raw of corrupt) {
+    const harness = createHarness({
+      initial: { [STORAGE_KEY]: raw },
+      start: Date.parse('2030-01-01T00:00:05.000Z'),
+    });
+    const status = await harness.coordinator.getStatus();
+    assert.equal(status.phase, 'ACTION_REQUIRED');
+    assert.equal(status.publicCode, 'SERVER_UPGRADE_REQUIRED');
+    assert.equal(status.nextRetryAt, '');
+
+    await harness.coordinator.resume();
+    assert.equal(harness.authRequests.length, 0);
+  }
+
+  const boundary = createHarness({
+    initial: {
+      [STORAGE_KEY]: {
+        ...base,
+        nextRetryAt: '2030-01-01T00:00:35.000Z',
+      },
+    },
+    start: Date.parse('2030-01-01T00:00:05.000Z'),
+  });
+  const status = await boundary.coordinator.getStatus();
+  assert.equal(status.phase, 'RETRY_WAIT');
+  assert.equal(status.nextRetryAt, '2030-01-01T00:00:35.000Z');
+
+  await boundary.coordinator.resume();
+  assert.equal(boundary.authRequests.length, 0);
+  assert.deepEqual(boundary.createdAlarms.at(-1), {
+    name: ALARM_NAME,
+    options: { when: Date.parse('2030-01-01T00:00:35.000Z') },
+  });
 });
 
 test('persisted status projection clears fields that are incoherent for its phase', async () => {
