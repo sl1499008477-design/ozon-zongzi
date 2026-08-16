@@ -188,6 +188,13 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
   await emit(accepted(g1Request.requestId, G1));
   assert.equal(g1RetryTimer.cancelled, true, 'accepted cancels the one-second retry');
   assert.equal(timers.at(-1).milliseconds, 30000, 'accepted starts the response watchdog');
+  const forwardedAccepted = findPendingRuntime('collector.auth.accepted', G1);
+  assert.deepEqual(asLocalRecord(forwardedAccepted.message), {
+    protocol: policy.COLLECTOR_AUTH_PROTOCOL,
+    action: 'collector.auth.accepted',
+    requestId: g1Request.requestId,
+    generationId: G1,
+  });
   await advanceTime(29999);
   assert.equal(posts.length, 2, 'watchdog does not request early');
   await advanceTime(1);
@@ -224,6 +231,16 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
   assert.equal(runtimeCalls.filter(({ message }) => message.action === 'collector.auth.exchange').length, 2);
   resolveRuntime('collector.auth.exchange', G2, { ok: true });
   await g2Exchange;
+
+  const acceptedForwardCount = runtimeCalls.filter(
+    ({ message }) => message.action === 'collector.auth.accepted',
+  ).length;
+  await emit(accepted(g1Request.requestId, G1));
+  assert.equal(
+    runtimeCalls.filter(({ message }) => message.action === 'collector.auth.accepted').length,
+    acceptedForwardCount,
+    'stale accepted events are not forwarded to the service worker coordinator',
+  );
 
   const staleLogout = emit(logout(G1));
   await tick();
@@ -285,7 +302,10 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
 
   assert.equal(maximumConcurrentExchanges, 1, 'runtime adapter never overlaps ticket exchanges');
   assert.equal(runtimeCalls.every(({ message }) => (
-    message.portalProtocol === policy.COLLECTOR_AUTH_PROTOCOL
+    message.action === 'collector.auth.accepted'
+      ? message.protocol === policy.COLLECTOR_AUTH_PROTOCOL
+        && !Object.hasOwn(message, 'portalProtocol')
+      : message.portalProtocol === policy.COLLECTOR_AUTH_PROTOCOL
   )), true);
   console.log('sync auth runtime tests passed');
 })().catch((error) => {

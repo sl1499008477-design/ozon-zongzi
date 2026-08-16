@@ -36,6 +36,7 @@ try {
   importScripts(
     '../lib/cdn-buster.js',
     '../lib/web-bridge-policy.js',
+    '../lib/collector-auth-coordinator.js',
     '../lib/collector-session.js',
     '../lib/category-strategy-handoff.js',
     '../lib/category-strategy-sampling.js',
@@ -436,6 +437,66 @@ try {
     fetchImpl: (...args) => fetch(...args),
     logger: console,
   });
+  const selectAuthoritativeCollectorAuthTab = (tabs) => (
+    (Array.isArray(tabs) ? tabs : [])
+      .filter((tab) => Number.isInteger(tab?.id))
+      .sort((left, right) => {
+        const activeOrder = Number(right.active === true) - Number(left.active === true);
+        if (activeOrder !== 0) return activeOrder;
+        const leftLastAccessed = Number.isFinite(left.lastAccessed)
+          ? left.lastAccessed
+          : Number.NEGATIVE_INFINITY;
+        const rightLastAccessed = Number.isFinite(right.lastAccessed)
+          ? right.lastAccessed
+          : Number.NEGATIVE_INFINITY;
+        if (leftLastAccessed !== rightLastAccessed) return rightLastAccessed - leftLastAccessed;
+        return left.id - right.id;
+      })[0]
+  );
+  const requestCollectorAuthFromWeb = async () => {
+    const tabs = await chrome.tabs.query({ url: TRUSTED_FRONTEND_TAB_URLS });
+    const authoritativeTab = selectAuthoritativeCollectorAuthTab(tabs);
+    if (!authoritativeTab) return { requested: false, publicCode: 'WEB_TAB_UNAVAILABLE' };
+    try {
+      const response = await chrome.tabs.sendMessage(authoritativeTab.id, {
+        action: 'collector.auth.request',
+      });
+      return { requested: response?.ok === true && response?.requested === true };
+    } catch {
+      return { requested: false, publicCode: 'WEB_TAB_UNAVAILABLE' };
+    }
+  };
+  const collectorAuthCoordinator =
+    globalThis.JzCollectorAuthCoordinator.createCollectorAuthCoordinator({
+      storageSession: chrome.storage.session,
+      alarms: chrome.alarms,
+      getSession: () => collectorSessionManager.getCollectorSession(),
+      requestAuth: () => requestCollectorAuthFromWeb(),
+    });
+  const observeCollectorAuth = async (operation, input) => {
+    try {
+      return input === undefined
+        ? await collectorAuthCoordinator[operation]()
+        : await collectorAuthCoordinator[operation](input);
+    } catch {
+      console.warn(`[collector-auth] ${operation} status projection failed`);
+      return null;
+    }
+  };
+  const retryCollectorAuth = async () => {
+    const coordinated = await observeCollectorAuth('retryNow');
+    if (coordinated) return coordinated;
+    const fallback = await requestCollectorAuthFromWeb();
+    return { requested: fallback?.requested === true, status: null };
+  };
+  const resumeCollectorAuth = (source) => {
+    void Promise.resolve()
+      .then(() => collectorAuthCoordinator.resume())
+      .catch(() => {
+        console.warn(`[collector-auth] ${source} resume failed`);
+      });
+  };
+  resumeCollectorAuth('cold start');
   globalThis.JzCollectorClient.setContext({
     sessionManager: collectorSessionManager,
     getDeviceFingerprint: () => getExtensionFingerprint(),
@@ -3358,6 +3419,8 @@ try {
       refreshExchangeRate();
     } else if (alarm.name === COLLECTOR_OZON_ENRICHMENT_ALARM) {
       kickCollectorOzonEnrichment();
+    } else if (alarm.name === globalThis.JzCollectorAuthCoordinator.COLLECTOR_AUTH_RETRY_ALARM) {
+      resumeCollectorAuth('retry alarm');
     }
   });
 
@@ -3385,6 +3448,7 @@ try {
     setupCollectorOzonEnrichmentAlarm();
     kickCollectorOzonEnrichment();
     refreshExchangeRate();
+    resumeCollectorAuth('startup');
   });
 
   chrome.contextMenus.onClicked.addListener((info) => {
@@ -3764,6 +3828,16 @@ try {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const webBridgePolicy = globalThis.JzWebBridgePolicy;
     const senderIsWebPortal = webBridgePolicy?.isTrustedWebBridgeSender(sender);
+    const senderIsPrivilegedExtensionPage = (() => {
+      if (sender?.id !== chrome.runtime.id || sender?.tab) return false;
+      if (!sender?.url) return true;
+      try {
+        const url = new URL(sender.url);
+        return url.protocol === 'chrome-extension:' && url.hostname === chrome.runtime.id;
+      } catch {
+        return false;
+      }
+    })();
     let portalRoute = 'INTERNAL';
     if (senderIsWebPortal) {
       try {
@@ -4212,6 +4286,22 @@ try {
             },
           };
         }
+        case 'getCollectorAuthStatus': {
+          if (
+            !senderIsPrivilegedExtensionPage
+            || !exactRuntimeMessage(message, ['action'])
+          ) return { ok: false };
+          const status = await observeCollectorAuth('getStatus');
+          return status ? { ok: true, data: status } : { ok: false };
+        }
+        case 'retryCollectorAuth': {
+          if (
+            !senderIsPrivilegedExtensionPage
+            || !exactRuntimeMessage(message, ['action'])
+          ) return { ok: false };
+          const result = await retryCollectorAuth();
+          return { ok: true, data: { requested: result?.requested === true ? 1 : 0 } };
+        }
         case 'usageTrack': {
           // 通用功能埋点。当天每个 (featureKey, client, version) 组合只发一次到
           // backend — 设备级去重避免高频写,backend 用 (tenantId, featureKey,
@@ -4254,7 +4344,12 @@ try {
           }
         }
         case 'logout': {
+          const status = await observeCollectorAuth('getStatus');
           await collectorSessionManager.logoutCollectorSession();
+          await observeCollectorAuth('fail', {
+            generationId: status?.generationId || '',
+            error: { code: 'WEB_AUTH_REQUIRED' },
+          });
           reloadOzonTabs();
           return { ok: true };
         }
@@ -4262,10 +4357,27 @@ try {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
           }
-          const result = await collectorSessionManager.activateCollectorGeneration({
-            generationId: message.generationId,
-            accountIdHint: message.accountIdHint,
-          });
+          await observeCollectorAuth('begin', { generationId: message.generationId });
+          let result;
+          try {
+            result = await collectorSessionManager.activateCollectorGeneration({
+              generationId: message.generationId,
+              accountIdHint: message.accountIdHint,
+            });
+          } catch (error) {
+            await observeCollectorAuth('fail', {
+              generationId: message.generationId,
+              error,
+            });
+            throw error;
+          }
+          if (result?.reused === true && result?.authenticated === true) {
+            await observeCollectorAuth('succeed', {
+              generationId: message.generationId,
+              account: result.account,
+              expiresAt: result.expiresAt,
+            });
+          }
           if (!Object.hasOwn(message, 'accountIdHint')) {
             return { ok: true, data: { changed: result?.changed === true } };
           }
@@ -4297,32 +4409,43 @@ try {
           const cleared = await collectorSessionManager.clearCollectorGeneration(
             message.generationId,
           );
+          if (cleared) {
+            await observeCollectorAuth('fail', {
+              generationId: message.generationId,
+              error: { code: 'WEB_AUTH_REQUIRED' },
+            });
+          }
           return { ok: true, data: { cleared } };
+        }
+        case 'collector.auth.accepted': {
+          const accepted = senderIsWebPortal
+            ? webBridgePolicy.normalizeCollectorAuthAccepted(message)
+            : null;
+          if (!accepted || portalRoute !== 'INTERNAL') {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          await observeCollectorAuth('accept', accepted);
+          return { ok: true };
         }
         case 'collector.auth.exchange': {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
           }
+          await observeCollectorAuth('exchange', { generationId: message.generationId });
+          let session;
           try {
             const manifest = chrome.runtime.getManifest() || {};
-            const session = await collectorSessionManager.exchangeCollectorTicket({
+            session = await collectorSessionManager.exchangeCollectorTicket({
               ticket: message.ticket,
               deviceFingerprint: await getExtensionFingerprint(),
               extensionVersion: String(manifest.version || ''),
               generationId: message.generationId,
             });
-            kickCollectorOzonEnrichment();
-            reloadOzonTabs();
-            return {
-              ok: true,
-              data: {
-                authenticated: true,
-                account: session.account,
-                permissions: session.permissions,
-                expiresAt: session.expiresAt,
-              },
-            };
           } catch (error) {
+            await observeCollectorAuth('fail', {
+              generationId: message.generationId,
+              error,
+            });
             const statusValue = error?.status;
             const status = typeof statusValue === 'number' || typeof statusValue === 'string'
               ? Number(statusValue)
@@ -4341,39 +4464,29 @@ try {
               ),
             };
           }
+          await observeCollectorAuth('succeed', {
+            generationId: message.generationId,
+            account: session.account,
+            expiresAt: session.expiresAt,
+          });
+          kickCollectorOzonEnrichment();
+          reloadOzonTabs();
+          return {
+            ok: true,
+            data: {
+              authenticated: true,
+              account: session.account,
+              permissions: session.permissions,
+              expiresAt: session.expiresAt,
+            },
+          };
         }
         case 'requestCollectorAuth': {
-          const tabs = await chrome.tabs.query({
-            url: TRUSTED_FRONTEND_TAB_URLS,
-          });
-          const authoritativeTab = (Array.isArray(tabs) ? tabs : [])
-            .filter((tab) => Number.isInteger(tab?.id))
-            .sort((left, right) => {
-              const activeOrder = Number(right.active === true) - Number(left.active === true);
-              if (activeOrder !== 0) return activeOrder;
-              const leftLastAccessed = Number.isFinite(left.lastAccessed)
-                ? left.lastAccessed
-                : Number.NEGATIVE_INFINITY;
-              const rightLastAccessed = Number.isFinite(right.lastAccessed)
-                ? right.lastAccessed
-                : Number.NEGATIVE_INFINITY;
-              if (leftLastAccessed !== rightLastAccessed) {
-                return rightLastAccessed - leftLastAccessed;
-              }
-              return left.id - right.id;
-            })[0];
-          if (!authoritativeTab) return { ok: true, data: { requested: 0 } };
-          try {
-            const response = await chrome.tabs.sendMessage(authoritativeTab.id, {
-              action: 'collector.auth.request',
-            });
-            return {
-              ok: true,
-              data: { requested: response?.ok === true && response?.requested === true ? 1 : 0 },
-            };
-          } catch {
-            return { ok: true, data: { requested: 0 } };
-          }
+          const result = await retryCollectorAuth();
+          return {
+            ok: true,
+            data: { requested: result?.requested === true ? 1 : 0 },
+          };
         }
         case 'flashBadge': {
           // Flash the toolbar icon badge to draw user attention

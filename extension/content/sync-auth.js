@@ -36,6 +36,19 @@
     }
   });
 
+  const forwardAccepted = ({ protocol, action, requestId, generationId }) => new Promise(
+    (resolve) => {
+      try {
+        chrome.runtime.sendMessage({ protocol, action, requestId, generationId }, (result) => {
+          void chrome.runtime.lastError;
+          resolve(result || null);
+        });
+      } catch {
+        resolve(null);
+      }
+    },
+  );
+
   const flow = collectorAuthFlow.createCollectorAuthFlow({
     newRequestId,
     postRequest: (requestId) => window.postMessage(
@@ -80,7 +93,8 @@
     }
     const accepted = policy.normalizeCollectorAuthAccepted(event.data);
     if (accepted) {
-      flow.handleAccepted(accepted);
+      const outcome = flow.handleAccepted(accepted);
+      if (outcome?.accepted === true) void forwardAccepted(accepted);
       return;
     }
     const response = policy.normalizeCollectorAuthResponse(event.data);

@@ -57,13 +57,54 @@ function createStorageArea(initial = {}) {
   };
 }
 
-function loadServiceWorker({ activationResult }) {
+function loadServiceWorker({
+  activationResult,
+  clearResult,
+  exchangeError = null,
+  exchangeResult = null,
+  initialSession = {},
+  statusFailure = null,
+  tabs = [],
+  tabMessage,
+} = {}) {
   const workerPath = path.join(extensionRoot, manifest.background.service_worker);
   const runtimeOnMessage = createEvent();
-  const event = createEvent();
+  const alarmsOnAlarm = createEvent();
+  const contextMenusOnClicked = createEvent();
+  const notificationsOnClicked = createEvent();
+  const runtimeOnInstalled = createEvent();
+  const runtimeOnStartup = createEvent();
+  const tabsOnCreated = createEvent();
+  const tabsOnRemoved = createEvent();
+  const tabsOnUpdated = createEvent();
   const activationCalls = [];
+  const exchangeCalls = [];
+  const alarmCreates = [];
+  const alarmClears = [];
+  const tabMessages = [];
+  const importedEntries = [];
   const local = createStorageArea();
-  const session = createStorageArea();
+  const session = createStorageArea(initialSession);
+  const sessionGet = session.get.bind(session);
+  const sessionSet = session.set.bind(session);
+  session.get = (keys, callback) => {
+    const requestedKeys = typeof keys === 'string' ? [keys] : (Array.isArray(keys) ? keys : []);
+    if (statusFailure?.get === true && requestedKeys.includes('sonliCollectorAuthStatus')) {
+      const failure = Promise.reject(new Error('status projection read failed'));
+      if (callback) { void failure.catch(() => {}); return undefined; }
+      return failure;
+    }
+    return sessionGet(keys, callback);
+  };
+  session.set = (values, callback) => {
+    const status = values?.sonliCollectorAuthStatus;
+    if (status && statusFailure?.setPhase === status.phase) {
+      const failure = Promise.reject(new Error('status projection write failed'));
+      if (callback) { void failure.catch(() => {}); return undefined; }
+      return failure;
+    }
+    return sessionSet(values, callback);
+  };
   const sync = createStorageArea();
   let context;
   const chrome = {
@@ -72,19 +113,25 @@ function loadServiceWorker({ activationResult }) {
       setBadgeBackgroundColor() {},
       setBadgeText() {},
     },
-    alarms: { create() {}, onAlarm: event },
-    contextMenus: { removeAll(callback) { callback?.(); }, create() {}, onClicked: event },
+    alarms: {
+      clear: async (name) => { alarmClears.push(name); return true; },
+      create(name, options) { alarmCreates.push({ name, options: { ...options } }); },
+      onAlarm: alarmsOnAlarm,
+    },
+    contextMenus: {
+      removeAll(callback) { callback?.(); }, create() {}, onClicked: contextMenusOnClicked,
+    },
     cookies: { getAll: async () => [] },
-    notifications: { create() {}, clear() {}, onClicked: event },
+    notifications: { create() {}, clear() {}, onClicked: notificationsOnClicked },
     runtime: {
       id: 'service-worker-collector-auth-test',
       getManifest: () => manifest,
       getPlatformInfo(callback) { callback?.({}); },
       getURL: (entry) => `chrome-extension://service-worker-collector-auth-test/${entry}`,
       lastError: null,
-      onInstalled: event,
+      onInstalled: runtimeOnInstalled,
       onMessage: runtimeOnMessage,
-      onStartup: event,
+      onStartup: runtimeOnStartup,
       sendMessage: async () => null,
     },
     scripting: { executeScript: async () => [] },
@@ -92,13 +139,16 @@ function loadServiceWorker({ activationResult }) {
     tabs: {
       create: async () => ({ id: 1 }),
       get: async (tabId) => ({ id: tabId, url: 'https://seller.ozon.ru/app' }),
-      onCreated: event,
-      onRemoved: event,
-      onUpdated: event,
-      query: async () => [],
+      onCreated: tabsOnCreated,
+      onRemoved: tabsOnRemoved,
+      onUpdated: tabsOnUpdated,
+      query: async () => tabs,
       reload() {},
       remove: async () => {},
-      sendMessage: async () => null,
+      sendMessage: async (tabId, message) => {
+        tabMessages.push({ tabId, message: JSON.parse(JSON.stringify(message)) });
+        return tabMessage ? tabMessage(tabId, message) : { ok: true, requested: true };
+      },
       update: async () => ({}),
     },
     windows: { update: async () => ({}) },
@@ -140,6 +190,7 @@ function loadServiceWorker({ activationResult }) {
   context.self = context;
   context.importScripts = (...entries) => {
     for (const entry of entries) {
+      importedEntries.push(entry);
       const file = path.resolve(path.dirname(workerPath), entry);
       vm.runInContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
       if (entry === '../lib/collector-session.js') {
@@ -154,6 +205,16 @@ function loadServiceWorker({ activationResult }) {
                 activationCalls.push(JSON.parse(JSON.stringify(input)));
                 return activationResult;
               },
+              async exchangeCollectorTicket(input) {
+                exchangeCalls.push(JSON.parse(JSON.stringify(input)));
+                if (exchangeError) throw exchangeError;
+                if (exchangeResult) return exchangeResult;
+                return manager.exchangeCollectorTicket(input);
+              },
+              async clearCollectorGeneration(generationId) {
+                if (clearResult !== undefined) return clearResult;
+                return manager.clearCollectorGeneration(generationId);
+              },
             });
           },
         });
@@ -162,7 +223,18 @@ function loadServiceWorker({ activationResult }) {
   };
   vm.runInContext(fs.readFileSync(workerPath, 'utf8'), context, { filename: workerPath });
   assert.equal(runtimeOnMessage.listeners.length, 1);
-  return { activationCalls, runtimeOnMessage };
+  return {
+    activationCalls,
+    alarmClears,
+    alarmCreates,
+    alarmsOnAlarm,
+    exchangeCalls,
+    importedEntries,
+    runtimeOnMessage,
+    runtimeOnStartup,
+    session,
+    tabMessages,
+  };
 }
 
 async function sendCollectorBegin(harness, accountIdHint = 'account-a') {
@@ -174,6 +246,25 @@ async function sendCollectorBegin(harness, accountIdHint = 'account-a') {
       accountIdHint,
     }, trustedSender, resolve);
   });
+}
+
+const extensionSender = {
+  id: 'service-worker-collector-auth-test',
+  url: 'chrome-extension://service-worker-collector-auth-test/popup/popup.html',
+};
+
+async function sendRuntime(harness, message, sender = extensionSender) {
+  return new Promise((resolve) => {
+    harness.runtimeOnMessage.listeners[0](message, sender, resolve);
+  });
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (await predicate()) return;
+    await Promise.resolve();
+  }
+  assert.fail('condition was not reached');
 }
 
 test('collector auth begin passes the account hint and returns a token-free reused projection', async () => {
@@ -236,4 +327,289 @@ test('collector auth begin returns unauthenticated public fields when reuse does
     },
   });
   assert.equal(JSON.stringify(response).includes('cst_false_auth'), false);
+});
+
+test('service worker imports the coordinator before session code and exposes only a privileged closed status', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    tabs: [{ id: 99, active: true, lastAccessed: 10 }],
+  });
+  assert.ok(
+    harness.importedEntries.indexOf('../lib/collector-auth-coordinator.js')
+      < harness.importedEntries.indexOf('../lib/collector-session.js'),
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(harness.tabMessages.length, 0, 'cold boot with no pending status stays idle');
+
+  const response = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: {
+      version: 1,
+      phase: 'WAITING_FOR_WEB',
+      generationId: '',
+      startedAt: '',
+      updatedAt: '',
+      attemptNumber: 0,
+      nextRetryAt: '',
+      publicCode: '',
+      account: null,
+      expiresAt: '',
+    },
+  });
+  assert.equal(JSON.stringify(response).includes('sonliCollectorSession'), false);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(
+      await sendRuntime(harness, { action: 'getCollectorAuthStatus' }, trustedSender),
+    )),
+    { ok: false },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(
+      await sendRuntime(harness, { action: 'getCollectorAuthStatus', token: 'never' }),
+    )),
+    { ok: false },
+  );
+});
+
+test('manual collector auth retry discovers one authoritative Web tab or publishes WEB_TAB_UNAVAILABLE', async () => {
+  const unavailable = loadServiceWorker({ activationResult: { changed: false } });
+  const unavailableResponse = await sendRuntime(unavailable, { action: 'retryCollectorAuth' });
+  assert.deepEqual(JSON.parse(JSON.stringify(unavailableResponse.data)), {
+    requested: 0,
+  });
+  const unavailableStatus = await sendRuntime(unavailable, { action: 'getCollectorAuthStatus' });
+  assert.equal(unavailableStatus.data.phase, 'WAITING_FOR_WEB');
+  assert.equal(unavailableStatus.data.publicCode, 'WEB_TAB_UNAVAILABLE');
+
+  const available = loadServiceWorker({
+    activationResult: { changed: false },
+    tabs: [{ id: 9, active: true, lastAccessed: 10 }],
+  });
+  const availableResponse = await sendRuntime(available, { action: 'retryCollectorAuth' });
+  assert.deepEqual(JSON.parse(JSON.stringify(availableResponse.data)), { requested: 1 });
+  assert.deepEqual(available.tabMessages, [{
+    tabId: 9,
+    message: { action: 'collector.auth.request' },
+  }]);
+  const availableStatus = await sendRuntime(available, { action: 'getCollectorAuthStatus' });
+  assert.equal(availableStatus.data.phase, 'DISCOVERING_WEB');
+});
+
+test('trusted normalized accepted and existing begin/exchange routes update status without exposing credentials', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: true, reused: false, authenticated: false },
+    clearResult: true,
+    exchangeResult: {
+      collectorToken: 'cst_service_worker_only_123456789',
+      account: { id: 'account-a', displayName: 'Account A', token: 'never' },
+      permissions: ['collector.upload'],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    },
+  });
+
+  await sendCollectorBegin(harness);
+  let status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
+  assert.equal(status.data.phase, 'REQUESTING_TICKET');
+
+  const acceptedResponse = await sendRuntime(harness, {
+    protocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.accepted',
+    requestId: 'request-1',
+    generationId: 'generation_A_1234',
+  }, trustedSender);
+  assert.deepEqual(JSON.parse(JSON.stringify(acceptedResponse)), { ok: true });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(await sendRuntime(harness, {
+      protocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.accepted',
+      requestId: 'request-1',
+      generationId: 'generation_A_1234',
+      token: 'never',
+    }, trustedSender))), { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' });
+
+  const exchange = await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'request-1',
+    generationId: 'generation_A_1234',
+    ticket: 'ctt_exchange_only_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedSender);
+  assert.equal(exchange.ok, true);
+  status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
+  assert.deepEqual(JSON.parse(JSON.stringify(status.data.account)), {
+    id: 'account-a', displayName: 'Account A',
+  });
+  assert.equal(status.data.phase, 'AUTHENTICATED');
+  assert.equal(status.data.expiresAt, '2099-01-01T00:00:00.000Z');
+  assert.equal(JSON.stringify(status).includes('ctt_exchange_only'), false);
+  assert.equal(JSON.stringify(status).includes('cst_service_worker_only'), false);
+
+  const logout = await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.logout',
+    generationId: 'generation_A_1234',
+  }, trustedSender);
+  assert.deepEqual(JSON.parse(JSON.stringify(logout)), { ok: true, data: { cleared: true } });
+  status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
+  assert.equal(status.data.phase, 'WAITING_FOR_WEB');
+  assert.equal(status.data.publicCode, 'WEB_LOGIN_REQUIRED');
+
+  await sendCollectorBegin(harness);
+  await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'request-2',
+    generationId: 'generation_A_1234',
+    ticket: 'ctt_exchange_only_second_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedSender);
+  assert.equal((await sendRuntime(
+    harness, { action: 'getCollectorAuthStatus' },
+  )).data.phase, 'AUTHENTICATED');
+  await sendRuntime(harness, { action: 'logout' });
+  status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
+  assert.equal(status.data.phase, 'WAITING_FOR_WEB');
+  assert.equal(status.data.publicCode, 'WEB_LOGIN_REQUIRED');
+});
+
+test('transient exchange failure schedules retry and duplicate alarm resumes are single-flight', async () => {
+  let resolveTabMessage;
+  const tabMessagePromise = new Promise((resolve) => { resolveTabMessage = resolve; });
+  const harness = loadServiceWorker({
+    activationResult: { changed: true, reused: false, authenticated: false },
+    exchangeError: Object.assign(new Error('secret transport detail'), {
+      code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR',
+      status: 0,
+    }),
+    tabs: [{ id: 7, active: true, lastAccessed: 10 }],
+    tabMessage: () => tabMessagePromise,
+  });
+  await sendCollectorBegin(harness);
+  const failed = await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'request-1',
+    generationId: 'generation_A_1234',
+    ticket: 'ctt_retry_only_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedSender);
+  assert.equal(failed.ok, false);
+  const retryStatus = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
+  assert.equal(retryStatus.data.phase, 'RETRY_WAIT');
+  assert.equal(retryStatus.data.publicCode, 'LOCAL_SERVICE_UNAVAILABLE');
+  assert.ok(harness.alarmCreates.some(({ name }) => name === 'collectorAuthRetry'));
+  harness.session.state.sonliCollectorAuthStatus.nextRetryAt = '2020-01-01T00:00:00.000Z';
+
+  for (const listener of harness.alarmsOnAlarm.listeners) {
+    listener({ name: 'collectorAuthRetry' });
+    listener({ name: 'collectorAuthRetry' });
+  }
+  await waitFor(() => harness.tabMessages.length === 1);
+  assert.equal(harness.tabMessages.length, 1);
+  resolveTabMessage({ ok: true, requested: true });
+});
+
+test('status projection storage failures cannot reverse successful exchange or block logout', async () => {
+  const statusFailure = { get: false, setPhase: 'AUTHENTICATED' };
+  const harness = loadServiceWorker({
+    activationResult: { changed: true, reused: false, authenticated: false },
+    exchangeResult: {
+      collectorToken: 'cst_authoritative_session_123456789',
+      account: { id: 'account-a', displayName: 'Account A' },
+      permissions: ['collector.upload'],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    },
+    statusFailure,
+  });
+  await sendCollectorBegin(harness);
+  const exchanged = await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'request-storage-failure',
+    generationId: 'generation_A_1234',
+    ticket: 'ctt_storage_failure_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedSender);
+  assert.equal(exchanged.ok, true, 'installed session remains the authoritative exchange result');
+
+  statusFailure.setPhase = '';
+  statusFailure.get = true;
+  const logout = await sendRuntime(harness, { action: 'logout' });
+  assert.deepEqual(JSON.parse(JSON.stringify(logout)), { ok: true });
+});
+
+test('a projection read failure after Web acknowledgement cannot duplicate the tab request', async () => {
+  const statusFailure = { get: false, setPhase: '' };
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    statusFailure,
+    tabs: [{ id: 21, active: true, lastAccessed: 10 }],
+    tabMessage: async () => {
+      statusFailure.get = true;
+      return { ok: true, requested: true };
+    },
+  });
+  const response = await sendRuntime(harness, { action: 'retryCollectorAuth' });
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 1 },
+  });
+  assert.equal(harness.tabMessages.length, 1);
+});
+
+test('a projection failure after a negative Web acknowledgement cannot duplicate the tab request', async () => {
+  const statusFailure = { get: false, setPhase: '' };
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    statusFailure,
+    tabs: [{ id: 22, active: true, lastAccessed: 10 }],
+    tabMessage: async () => {
+      statusFailure.get = true;
+      return { ok: true, requested: false };
+    },
+  });
+  const response = await sendRuntime(harness, { action: 'retryCollectorAuth' });
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.equal(harness.tabMessages.length, 1);
+});
+
+test('cold evaluation resumes one due retry and overlapping startup events join it', async () => {
+  let resolveTabMessage;
+  const tabMessagePromise = new Promise((resolve) => { resolveTabMessage = resolve; });
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    initialSession: {
+      sonliCollectorAuthStatus: {
+        version: 1,
+        phase: 'RETRY_WAIT',
+        generationId: 'generation_A_1234',
+        startedAt: '2020-01-01T00:00:00.000Z',
+        updatedAt: '2020-01-01T00:00:00.000Z',
+        attemptNumber: 1,
+        nextRetryAt: '2020-01-01T00:00:01.000Z',
+        publicCode: 'LOCAL_SERVICE_UNAVAILABLE',
+        account: null,
+        expiresAt: '',
+      },
+    },
+    tabs: [{ id: 8, active: true, lastAccessed: 10 }],
+    tabMessage: () => tabMessagePromise,
+  });
+  assert.equal(harness.alarmsOnAlarm.listeners.length, 1);
+  assert.equal(harness.runtimeOnStartup.listeners.length, 1);
+  await waitFor(() => harness.tabMessages.length === 1);
+  harness.runtimeOnStartup.listeners[0]();
+  harness.runtimeOnStartup.listeners[0]();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(harness.tabMessages.length, 1);
+  resolveTabMessage({ ok: true, requested: true });
 });
