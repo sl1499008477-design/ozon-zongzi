@@ -6,8 +6,7 @@ export const AUTO_LISTING_PLANNING_CONTRACTS = Object.freeze({
 });
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
-const SELECTOR_KEYS = Object.freeze(["pilotScope", "accountId", "sourceType", "collectItemId"]);
-const SCOPE_KEYS = Object.freeze(["accountId", "collectItemId"]);
+const SELECTOR_KEYS = Object.freeze(["accountId", "sourceType", "collectItemId"]);
 
 function exactDataObject(value, keys) {
   try {
@@ -27,16 +26,11 @@ function exactDataObject(value, keys) {
 export function selectAutoListingPlanningContract(raw = {}) {
   const input = exactDataObject(raw, SELECTOR_KEYS);
   if (!input) return AUTO_LISTING_PLANNING_CONTRACTS.LEGACY;
-  const { pilotScope, accountId, sourceType, collectItemId } = input;
-  const scope = exactDataObject(pilotScope, SCOPE_KEYS);
-  if (!scope || !SAFE_ID.test(accountId) || !SAFE_ID.test(collectItemId)
-    || !SAFE_ID.test(scope.accountId) || !SAFE_ID.test(scope.collectItemId)) {
+  const { accountId, sourceType, collectItemId } = input;
+  if (!SAFE_ID.test(accountId) || !SAFE_ID.test(collectItemId)) {
     return AUTO_LISTING_PLANNING_CONTRACTS.LEGACY;
   }
-  return pilotScope
-    && sourceType === "COLLECT_BOX"
-    && scope.accountId === accountId
-    && scope.collectItemId === collectItemId
+  return sourceType === "COLLECT_BOX"
     ? AUTO_LISTING_PLANNING_CONTRACTS.FIXED
     : AUTO_LISTING_PLANNING_CONTRACTS.LEGACY;
 }

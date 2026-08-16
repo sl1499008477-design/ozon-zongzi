@@ -93,6 +93,13 @@ function exactKeys(value, keys) {
     && Object.keys(value).length === keys.size && Object.keys(value).every((key) => keys.has(key));
 }
 
+function validStringArray(value, { nonempty = false } = {}) {
+  return Array.isArray(value)
+    && (!nonempty || value.length > 0)
+    && value.length === new Set(value).size
+    && value.every((entry) => typeof entry === "string" && entry.trim());
+}
+
 function safeSummary(value) {
   if (value === null || value === undefined) return null;
   if (Array.isArray(value)) return `array(${value.length})`;
@@ -136,16 +143,27 @@ function numberUnitPairs(text) {
     .map(([, number, unit]) => ({ number: number.replaceAll(",", "."), unit: normalizedUnit(unit) })) : [];
 }
 
-function numericEvidenceMatches(text, facts) {
-  const evidenceNumbers = new Set(facts.flatMap((fact) => numberTokens(fact?.value)));
+function numericEvidenceMatches(text, facts, claimType = "") {
+  const scopedFacts = claimType ? facts.filter((fact) => fact?.kind === claimType) : facts;
+  const evidenceNumbers = new Set(scopedFacts.flatMap((fact) => numberTokens(fact?.value)));
   if (numberTokens(text).some((number) => !evidenceNumbers.has(number))) return false;
-  return numberUnitPairs(text).every((pair) => pair.unit && facts.some((fact) => numberUnitPairs(fact?.value)
+  return numberUnitPairs(text).every((pair) => pair.unit && scopedFacts.some((fact) => numberUnitPairs(fact?.value)
     .some((evidence) => evidence.number === pair.number && evidence.unit === pair.unit)));
 }
 
 function textUsesEvidence(claim, facts) {
   const normalized = String(claim.text || "").toLocaleLowerCase("ru-RU");
-  if (String(claim.claimType || "").startsWith("DIMENSION_")) return numericEvidenceMatches(claim.text, facts);
+  if (String(claim.claimType || "").startsWith("DIMENSION_")) {
+    if (!numberTokens(claim.text).length || !numericEvidenceMatches(claim.text, facts, claim.claimType)) return false;
+    const mentionedKinds = [
+      [/высот/u, "DIMENSION_HEIGHT"],
+      [/ширин/u, "DIMENSION_WIDTH"],
+      [/длин/u, "DIMENSION_LENGTH"],
+      [/глубин/u, "DIMENSION_DEPTH"],
+      [/диаметр/u, "DIMENSION_DIAMETER"],
+    ].filter(([pattern]) => pattern.test(normalized)).map(([, kind]) => kind);
+    return !mentionedKinds.length || mentionedKinds.every((kind) => kind === claim.claimType);
+  }
   return facts.some((fact) => {
     if (fact?.kind !== claim.claimType || typeof fact.value !== "string") return false;
     const value = fact.value.toLocaleLowerCase("ru-RU").trim();
@@ -196,6 +214,9 @@ function collectIssues(plan, plannerContext) {
       addIssue(issues, { code: "SLOT_SHAPE_INVALID", slotKey, field: `slots[${index}]`, expected: "closed slot", actual: slot });
       continue;
     }
+    if (typeof slot.slotKey !== "string" || !slot.slotKey.trim()) addIssue(issues, {
+      code: "SLOT_IDENTITY_MISMATCH", slotKey, field: "slotKey", expected: "non-empty slot key", actual: slot.slotKey,
+    });
     if (expectedSlot && slot.order !== expectedSlot.order) addIssue(issues, {
       code: "SLOT_ORDER_MISMATCH", slotKey, field: "order", expected: expectedSlot.order, actual: slot.order,
     });
@@ -226,10 +247,15 @@ function collectIssues(plan, plannerContext) {
       || JSON.stringify([...slot.prohibitedClaims].sort()) !== JSON.stringify([...(input.prohibitedClaims || [])].sort())) {
       addIssue(issues, { code: "PROHIBITED_POLICY_MISMATCH", slotKey, field: "prohibitedClaims", expected: input.prohibitedClaims, actual: slot.prohibitedClaims });
     }
-    if (!Array.isArray(slot.referenceAssetIds) || slot.referenceAssetIds.some((assetId) => !allowedAssets.has(assetId))) {
+    if (!validStringArray(slot.referenceAssetIds, { nonempty: true })
+      || slot.referenceAssetIds.some((assetId) => !allowedAssets.has(assetId))) {
       addIssue(issues, { code: "REFERENCE_ASSET_OUT_OF_SCOPE", slotKey, field: "referenceAssetIds", expected: "group reference assets", actual: slot.referenceAssetIds });
     }
-    if (!Array.isArray(slot.sourceFactIds) || slot.sourceFactIds.some((factId) => !facts.has(factId))) {
+    const slotFacts = Array.isArray(slot.sourceFactIds) ? slot.sourceFactIds.map((factId) => facts.get(factId)) : [];
+    if (!validStringArray(slot.sourceFactIds, { nonempty: true })
+      || slotFacts.some((fact) => !fact
+        || (Array.isArray(fact.visualGroupKeys) && fact.visualGroupKeys.length
+          && !fact.visualGroupKeys.includes(slot.visualGroupKey)))) {
       addIssue(issues, { code: "SOURCE_FACT_NOT_FOUND", slotKey, field: "sourceFactIds", expected: "known fact IDs", actual: slot.sourceFactIds });
     }
     if (!Array.isArray(slot.claims)) {
@@ -248,8 +274,16 @@ function collectIssues(plan, plannerContext) {
       }
       const field = `claims[${claimIndex}].sourceFactIds`;
       const claimFacts = Array.isArray(claim.sourceFactIds) ? claim.sourceFactIds.map((id) => facts.get(id)) : [];
-      if (!Array.isArray(claim.sourceFactIds) || claim.sourceFactIds.some((id) => !facts.has(id))) {
+      if (!validStringArray(claim.sourceFactIds, { nonempty: true })
+        || claim.sourceFactIds.some((id) => !Array.isArray(slot.sourceFactIds) || !slot.sourceFactIds.includes(id))
+        || claimFacts.some((fact) => !fact
+          || (Array.isArray(fact.visualGroupKeys) && fact.visualGroupKeys.length
+            && !fact.visualGroupKeys.includes(slot.visualGroupKey)))) {
         addIssue(issues, { code: "SOURCE_FACT_NOT_FOUND", slotKey, claimIndex, field, expected: "known fact IDs", actual: claim.sourceFactIds });
+      }
+      if (typeof claim.text !== "string" || !claim.text.trim() || claim.text.length > 300
+        || typeof claim.claimType !== "string" || !claim.claimType.trim()) {
+        addIssue(issues, { code: "CLAIM_SHAPE_INVALID", slotKey, claimIndex, field: `claims[${claimIndex}]`, expected: "bounded claim text and type", actual: claim });
       }
       if (!claimFacts.some((fact) => fact?.kind === claim.claimType)) addIssue(issues, {
         code: "CLAIM_TYPE_EVIDENCE_MISMATCH", slotKey, claimIndex,
@@ -263,7 +297,7 @@ function collectIssues(plan, plannerContext) {
       if (typeof claim.text !== "string" || (!/\p{Script=Cyrillic}/u.test(claim.text) && !identityExact)) {
         addIssue(issues, { code: "RUSSIAN_TEXT_REQUIRED", slotKey, claimIndex, field: `claims[${claimIndex}].text`, expected: "Russian or exact identity", actual: claim.text });
       }
-      if (numberTokens(claim.text).length && !numericEvidenceMatches(claim.text, claimFacts)) {
+      if (numberTokens(claim.text).length && !numericEvidenceMatches(claim.text, claimFacts, claim.claimType)) {
         addIssue(issues, { code: "NUMERIC_EVIDENCE_MISMATCH", slotKey, claimIndex, field: `claims[${claimIndex}].text`, expected: "cited number and unit", actual: claim.text });
       }
       if (claimFacts.length && !textUsesEvidence(claim, claimFacts)) {
@@ -288,8 +322,7 @@ function rejected(issues) {
   });
 }
 
-export function createContentPlanDiagnoser(validateLegacy) {
-  if (typeof validateLegacy !== "function") throw new TypeError("validateLegacy must be a function");
+export function createContentPlanDiagnoser() {
   return function diagnoseContentPlan(input = {}) {
     let projected;
     try {
@@ -302,20 +335,13 @@ export function createContentPlanDiagnoser(validateLegacy) {
         expected: "safe closed data", actual: "rejected",
       })]);
     }
-    try {
-      const plan = validateLegacy(projected);
-      return deepFreeze({
-        status: "ACCEPTED",
-        validatorVersion: AUTO_LISTING_CONTENT_PLAN_VALIDATOR_VERSION,
-        issues: [],
-        plan,
-      });
-    } catch {
-      const issues = collectIssues(projected.plan, projected.plannerContext);
-      if (!issues.length) addIssue(issues, {
-        code: "CONTENT_PLAN_RULE_MISMATCH", field: "plan", expected: "all frozen business rules", actual: "rejected",
-      });
-      return rejected(issues);
-    }
+    const issues = collectIssues(projected.plan, projected.plannerContext);
+    if (issues.length) return rejected(issues);
+    return deepFreeze({
+      status: "ACCEPTED",
+      validatorVersion: AUTO_LISTING_CONTENT_PLAN_VALIDATOR_VERSION,
+      issues: [],
+      plan: deepFreeze(projected.plan),
+    });
   };
 }

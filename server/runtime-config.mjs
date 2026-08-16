@@ -1,5 +1,4 @@
 import { isIP } from "node:net";
-import { types as utilTypes } from "node:util";
 
 function configured(name) {
   return Boolean(String(process.env[name] || "").trim());
@@ -49,40 +48,6 @@ export function autoListingAiEnabled(env = process.env) {
 export function autoListingUploadEnabled(env = process.env) {
   const value = String(env?.AUTO_LISTING_UPLOAD_ENABLED || "").trim().toLowerCase();
   return value === "1" || value === "true";
-}
-
-const AUTO_LISTING_PILOT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
-
-function fixedSkeletonConfigurationError() {
-  const error = aiConfigurationError("AUTO_LISTING_FIXED_SKELETON_CONFIG_INVALID");
-  error.cause = null;
-  return error;
-}
-
-function pilotEnvironmentValue(env, name) {
-  try {
-    if (!env || typeof env !== "object" || utilTypes.isProxy(env)) throw fixedSkeletonConfigurationError();
-    const descriptor = Object.getOwnPropertyDescriptor(env, name);
-    if (!descriptor) return "";
-    if (!Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "string") {
-      throw fixedSkeletonConfigurationError();
-    }
-    return descriptor.value.trim();
-  } catch (error) {
-    if (error?.code === "AUTO_LISTING_FIXED_SKELETON_CONFIG_INVALID") throw error;
-    throw fixedSkeletonConfigurationError();
-  }
-}
-
-export function autoListingFixedSkeletonPilotScope(env = process.env) {
-  const enabled = pilotEnvironmentValue(env, "AUTO_LISTING_FIXED_SKELETON_PILOT_ENABLED").toLowerCase();
-  if (enabled !== "1" && enabled !== "true") return null;
-  const accountId = pilotEnvironmentValue(env, "AUTO_LISTING_FIXED_SKELETON_PILOT_ACCOUNT_ID");
-  const collectItemId = pilotEnvironmentValue(env, "AUTO_LISTING_FIXED_SKELETON_PILOT_COLLECT_ITEM_ID");
-  if (!AUTO_LISTING_PILOT_ID.test(accountId) || !AUTO_LISTING_PILOT_ID.test(collectItemId)) {
-    throw fixedSkeletonConfigurationError();
-  }
-  return Object.freeze({ accountId, collectItemId });
 }
 
 export function listingAssetPublicationConfig(env = process.env) {

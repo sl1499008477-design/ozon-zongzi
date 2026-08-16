@@ -446,13 +446,13 @@ if (!enabled) {
     });
   });
 
-  test("the pilot selector is exact and cannot be enabled by another account, item or Excel request", () => {
-    const pilotScope = { accountId: "account-a", collectItemId: "collect-pilot" };
-    assert.equal(selectAutoListingPlanningContract({ pilotScope, accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-pilot" }), "FIXED_SKELETON_V1");
+  test("the selector defaults collect-box items to fixed while Excel stays legacy", () => {
     for (const candidate of [
-      { accountId: "account-b", sourceType: "COLLECT_BOX", collectItemId: "collect-pilot" },
-      { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-other" },
-      { accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "collect-pilot" },
-    ]) assert.equal(selectAutoListingPlanningContract({ pilotScope, ...candidate }), "LEGACY_FULL_PLAN_V3");
+      { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a" },
+      { accountId: "account-b", sourceType: "COLLECT_BOX", collectItemId: "collect-b" },
+    ]) assert.equal(selectAutoListingPlanningContract(candidate), "FIXED_SKELETON_V1");
+    assert.equal(selectAutoListingPlanningContract({
+      accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "excel-a",
+    }), "LEGACY_FULL_PLAN_V3");
   });
 }

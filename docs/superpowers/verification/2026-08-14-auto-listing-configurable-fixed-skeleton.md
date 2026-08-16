@@ -72,7 +72,7 @@ npm run test:auto-listing-configurable-skeleton-e2e
 
 出现问题时：
 
-1. 先关闭 `AUTO_LISTING_FIXED_SKELETON_PILOT_ENABLED`，新任务立即回到 `LEGACY_FULL_PLAN_V3`。
+1. 如需回滚，恢复服务端合同选择器；新采集箱任务会回到 `LEGACY_FULL_PLAN_V3`，既有任务不迁移。
 2. 已冻结为固定合同的任务保留其原合同，可继续到人工审核，或在审核前取消；不得改写为旧合同。
 3. 按从新到旧顺序回滚应用提交；保留迁移 `074` 和已写入的不可变诊断证据。
 4. 一次性文字诊断出现网络结果不确定时标记为 `AUTO_LISTING_PLAN_DIAGNOSTIC_RESPONSE_UNKNOWN`，不得用原幂等键盲目重发；由管理员使用新的费用确认请求决定是否再试。

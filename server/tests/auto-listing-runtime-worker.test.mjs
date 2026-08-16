@@ -377,15 +377,10 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
   assert.deepEqual({ pools, repositories, services }, { pools: 1, repositories: 1, services: 1 });
 });
 
-test("runtime injects an exact server-owned fixed skeleton selector", async () => {
+test("runtime defaults new collect-box items to the server-owned fixed skeleton", async () => {
   let serviceInput;
   const runtime = createAutoListingRuntime({
-    env: enabledEnv({
-      AUTO_LISTING_AI_ENABLED: "0",
-      AUTO_LISTING_FIXED_SKELETON_PILOT_ENABLED: "true",
-      AUTO_LISTING_FIXED_SKELETON_PILOT_ACCOUNT_ID: "account-a",
-      AUTO_LISTING_FIXED_SKELETON_PILOT_COLLECT_ITEM_ID: "collect-a",
-    }),
+    env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0" }),
     getPostgresPool: async () => ({ name: "pool-a" }),
     createRepository: () => ({ name: "repository-a" }),
     createListingBasePreparer: async () => async () => {},
@@ -401,6 +396,9 @@ test("runtime injects an exact server-owned fixed skeleton selector", async () =
   }), "FIXED_SKELETON_V1");
   assert.equal(serviceInput.selectPlanningContract({
     accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-b",
+  }), "FIXED_SKELETON_V1");
+  assert.equal(serviceInput.selectPlanningContract({
+    accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "collect-b",
   }), "LEGACY_FULL_PLAN_V3");
 });
 

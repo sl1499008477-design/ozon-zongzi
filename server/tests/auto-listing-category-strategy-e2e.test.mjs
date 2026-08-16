@@ -385,10 +385,7 @@ if (!enabled) {
       const autoRuntime = createAutoListingRuntime({
         getPostgresPool: async () => pool,
         env: { AUTO_LISTING_ENABLED: "true", AUTO_LISTING_AI_ENABLED: "false",
-          AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET: "e2e-observer-key-that-is-at-least-thirty-two-characters",
-          AUTO_LISTING_FIXED_SKELETON_PILOT_ENABLED: "true",
-          AUTO_LISTING_FIXED_SKELETON_PILOT_ACCOUNT_ID: accountId,
-          AUTO_LISTING_FIXED_SKELETON_PILOT_COLLECT_ITEM_ID: source.collectItemId },
+          AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET: "e2e-observer-key-that-is-at-least-thirty-two-characters" },
         createListingBasePreparer: async () => async ({ source: entry, pricingEvidence }) => {
           autoPorts.prepare += 1;
           return { productDraft: { id: entry.productDraft.id, version: entry.productDraft.version,

@@ -31,12 +31,6 @@ const V2_SCOPE_KEYS = new Set(["taxonomyScope", "descriptionCategoryId", "typeId
 const V2_GUIDANCE_KEYS = new Set(["composition", "background", "textDensity", "layout"]);
 const PROFILE_KEYS = new Set(["id", "configVersion", "textModel"]);
 const REGENERATION_KEYS = new Set(["requestId", "reason"]);
-const PLAN_KEYS = new Set(["version", "language", "slots"]);
-const SLOT_KEYS = new Set([
-  "slotKey", "visualGroupKey", "role", "order", "textDensity", "claims", "sourceFactIds",
-  "referenceAssetIds", "preserve", "prohibitedClaims",
-]);
-const CLAIM_KEYS = new Set(["text", "claimType", "sourceFactIds"]);
 const ROLE_ORDER = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
 const ROLE_LOWER = {
   MAIN: "main", SELLING_POINT: "sellingPoint", DETAIL: "detail", SCENE: "scene",
@@ -64,12 +58,6 @@ const STRATEGY_DIAGNOSTICS = new Set([
   "CATEGORY_STRATEGY_EXTRA_ROLE_GUIDANCE_IGNORED",
   "CATEGORY_STRATEGY_ROLE_GUIDANCE_FALLBACK",
 ]);
-const PLANNER_INPUT_KEYS = new Set([
-  "contractVersion", "factRegistry", "strategy", "textDensityByRole", "requestedRoleCounts",
-  "imagesPerVisualGroup", "visualGroups", "language", "ratio", "resolution", "quality",
-  "prohibitedClaims", "profile", "plannerModel", "promptTemplateVersion", "regeneration",
-]);
-
 const STYLE_DENSITIES = {
   VISUAL_FIRST: { MAIN: "NONE", SELLING_POINT: "LIGHT", DETAIL: "LIGHT", SCENE: "NONE", SPECIFICATION: "MEDIUM", INFOGRAPHIC: "LIGHT" },
   PARAMETER_FIRST: { MAIN: "LIGHT", SELLING_POINT: "HEAVY", DETAIL: "MEDIUM", SCENE: "LIGHT", SPECIFICATION: "HEAVY", INFOGRAPHIC: "HEAVY" },
@@ -605,161 +593,7 @@ function contentPlanError() {
   return plannerError("AUTO_LISTING_CONTENT_PLAN_INVALID", "AI 图片规划结果不符合商品事实");
 }
 
-function assertStringArray(value, { nonempty = false } = {}) {
-  if (!Array.isArray(value) || (nonempty && !value.length) || value.length !== new Set(value).size
-    || value.some((entry) => typeof entry !== "string" || !entry.trim())) throw contentPlanError();
-}
-
-function textMatchesRussianOrExactIdentity(text, facts) {
-  if (/\p{Script=Cyrillic}/u.test(text)) return true;
-  return facts.some((fact) => fact.kind.startsWith("IDENTITY_") && text === fact.value);
-}
-
-function normalizedNumber(value) {
-  return value.replaceAll(",", ".");
-}
-
-function normalizedUnit(value) {
-  const unit = value.toLocaleLowerCase("ru-RU");
-  return new Map([
-    ["mm", "mm"], ["мм", "mm"], ["cm", "cm"], ["см", "cm"], ["m", "m"], ["м", "m"],
-    ["kg", "kg"], ["кг", "kg"], ["g", "g"], ["г", "g"], ["l", "l"], ["л", "l"],
-  ]).get(unit) || null;
-}
-
-function numericUnitPairs(text) {
-  return [...text.matchAll(/(\d+(?:[.,]\d+)?)\s*([\p{L}]+)/gu)].map(([, number, unit]) => ({ number: normalizedNumber(number), unit: normalizedUnit(unit) }));
-}
-
-function numericClaimsSupported(text, facts, claimType) {
-  const numbers = text.match(/\d+(?:[.,]\d+)?/g) || [];
-  if (!numbers.length) return true;
-  const supportedFacts = facts.filter((fact) => fact.kind === claimType);
-  const evidenceNumbers = new Set(supportedFacts.flatMap((fact) => fact.value.match(/\d+(?:[.,]\d+)?/g) || [])
-    .map(normalizedNumber));
-  if (!numbers.every((number) => evidenceNumbers.has(normalizedNumber(number)))) return false;
-  return numericUnitPairs(text).every(({ number, unit }) => unit && supportedFacts.some((fact) => {
-    const pairs = numericUnitPairs(fact.value);
-    return pairs.some((pair) => pair.number === number && pair.unit === unit);
-  }));
-}
-
-function claimTextUsesEvidence(claim, facts) {
-  const normalizedText = claim.text.toLocaleLowerCase("ru-RU");
-  if (claim.claimType.startsWith("DIMENSION_")) {
-    const dimensions = facts.filter((fact) => fact.kind === claim.claimType);
-    if (!dimensions.length) return false;
-    const dimensionPairs = dimensions.map((fact) => ({ fact, pairs: numericUnitPairs(fact.value) }));
-    const numbers = claim.text.match(/\d+(?:[.,]\d+)?/g) || [];
-    if (!numbers.length || !numbers.every((number) => dimensionPairs.some(({ pairs }) => pairs.some((pair) => pair.number === normalizedNumber(number))))) return false;
-    if (!numericUnitPairs(claim.text).every(({ number, unit }) => unit && dimensionPairs.some(({ pairs }) => pairs.some((pair) => pair.number === number && pair.unit === unit)))) return false;
-    const mentioned = {
-      height: /высот/u.test(normalizedText),
-      width: /ширин/u.test(normalizedText),
-      length: /длин/u.test(normalizedText),
-      depth: /глубин/u.test(normalizedText),
-      diameter: /диаметр/u.test(normalizedText),
-    };
-    const specificMentions = Object.entries(mentioned).filter(([, present]) => present).map(([kind]) => kind);
-    const requiredKindByMention = {
-      height: "DIMENSION_HEIGHT", width: "DIMENSION_WIDTH", length: "DIMENSION_LENGTH",
-      depth: "DIMENSION_DEPTH", diameter: "DIMENSION_DIAMETER",
-    };
-    if (specificMentions.length && specificMentions.some((kind) => requiredKindByMention[kind] !== claim.claimType)) return false;
-    return true;
-  }
-  return facts.some((fact) => {
-    if (fact.kind !== claim.claimType) return false;
-    const value = fact.value.toLocaleLowerCase("ru-RU").trim();
-    if (!value) return false;
-    if (value.length > 2) return normalizedText.includes(value);
-    return normalizedText.split(/[^\p{L}\p{N}]+/u).includes(value);
-  });
-}
-
-function containsForbiddenSemanticClaim(text) {
-  return /сертиф|certif|гаранти|warrant|медицин|лечеб|medical\s+benefit|вылеч|cure\b/i.test(text);
-}
-
-function validateContentPlanLegacy({ plan, plannerContext } = {}) {
-  if (!plannerContext || typeof plannerContext !== "object" || !exactObject(plan, PLAN_KEYS)
-    || plan.version !== 1 || plan.language !== "ru" || !Array.isArray(plan.slots)) throw contentPlanError();
-  const input = plannerContext.plannerInput;
-  if (!input || !exactObject(input, PLANNER_INPUT_KEYS) || !Array.isArray(input.visualGroups) || !Array.isArray(input.factRegistry)) throw contentPlanError();
-  const factsById = new Map(input.factRegistry.map((fact) => [fact.factId, fact]));
-  const groupsByKey = new Map(input.visualGroups.map((group) => [group.visualGroupKey, group]));
-  const slotsByKey = new Set();
-  const groupRoleCounts = new Map([...groupsByKey.keys()].map((key) => [key, Object.fromEntries(ROLE_ORDER.map((role) => [role, 0]))]));
-  const groupOrders = new Map([...groupsByKey.keys()].map((key) => [key, []]));
-  for (const slot of plan.slots) {
-    if (!exactObject(slot, SLOT_KEYS) || typeof slot.slotKey !== "string" || !slot.slotKey.trim()
-      || slotsByKey.has(slot.slotKey) || !groupsByKey.has(slot.visualGroupKey)
-      || !ROLE_ORDER.includes(slot.role) || !Number.isInteger(slot.order) || slot.order < 1
-      || !DENSITIES.has(slot.textDensity) || slot.textDensity !== input.textDensityByRole[slot.role]) throw contentPlanError();
-    slotsByKey.add(slot.slotKey);
-    assertStringArray(slot.sourceFactIds, { nonempty: true });
-    assertStringArray(slot.referenceAssetIds, { nonempty: true });
-    assertStringArray(slot.preserve, { nonempty: true });
-    assertStringArray(slot.prohibitedClaims);
-    if (!sameJson([...slot.prohibitedClaims].sort(compareText), input.prohibitedClaims)) throw contentPlanError();
-    const group = groupsByKey.get(slot.visualGroupKey);
-    if (!sameJson([...slot.preserve].sort(compareText), [...group.requiredPreserve].sort(compareText))) throw contentPlanError();
-    const groupAssets = new Set(group.referenceImages.map((entry) => entry.assetId));
-    if (slot.referenceAssetIds.some((assetId) => !groupAssets.has(assetId))) throw contentPlanError();
-    const slotFacts = slot.sourceFactIds.map((factId) => factsById.get(factId));
-    if (slotFacts.some((fact) => !fact || (fact.visualGroupKeys.length && !fact.visualGroupKeys.includes(slot.visualGroupKey)))) throw contentPlanError();
-    if (!Array.isArray(slot.claims)) throw contentPlanError();
-    const claimLimit = { NONE: 0, LIGHT: 1, MEDIUM: 2, HEAVY: 3 }[slot.textDensity];
-    if (slot.claims.length > claimLimit || (slot.textDensity === "NONE" && slot.claims.length)) throw contentPlanError();
-    for (const claim of slot.claims) {
-      if (!exactObject(claim, CLAIM_KEYS) || typeof claim.text !== "string" || !claim.text.trim() || claim.text.length > 300
-        || typeof claim.claimType !== "string") throw contentPlanError();
-      assertStringArray(claim.sourceFactIds, { nonempty: true });
-      if (claim.sourceFactIds.some((factId) => !slot.sourceFactIds.includes(factId))) throw contentPlanError();
-      const claimFacts = claim.sourceFactIds.map((factId) => factsById.get(factId));
-      if (claimFacts.some((fact) => !fact || (fact.visualGroupKeys.length && !fact.visualGroupKeys.includes(slot.visualGroupKey)))
-        || !claimFacts.some((fact) => fact.kind === claim.claimType)
-        || input.prohibitedClaims.includes(claim.claimType)
-        || containsForbiddenSemanticClaim(claim.text)
-        || !textMatchesRussianOrExactIdentity(claim.text, claimFacts)
-        || !claimTextUsesEvidence(claim, claimFacts)
-        || !numericClaimsSupported(claim.text, claimFacts, claim.claimType)) throw contentPlanError();
-    }
-    const roleIndex = groupRoleCounts.get(slot.visualGroupKey)[slot.role] + 1;
-    const expectedSlotKey = `${slot.visualGroupKey}:${slot.role.toLowerCase().replaceAll("_", "-")}:${String(roleIndex).padStart(2, "0")}`;
-    if (slot.slotKey !== expectedSlotKey) throw contentPlanError();
-    groupRoleCounts.get(slot.visualGroupKey)[slot.role] = roleIndex;
-    groupOrders.get(slot.visualGroupKey).push(slot.order);
-  }
-  const expectedTotal = input.visualGroups.length * input.imagesPerVisualGroup;
-  if (plan.slots.length !== expectedTotal || input.imagesPerVisualGroup < 6 || input.imagesPerVisualGroup > 13) throw contentPlanError();
-  for (const group of input.visualGroups) {
-    if (!sameJson(groupRoleCounts.get(group.visualGroupKey), input.requestedRoleCounts)) throw contentPlanError();
-    const orders = groupOrders.get(group.visualGroupKey);
-    if (!sameJson(orders, Array.from({ length: input.imagesPerVisualGroup }, (_, index) => index + 1))) throw contentPlanError();
-  }
-  const expectedSlots = [];
-  for (const group of input.visualGroups) {
-    let order = 1;
-    for (const role of ROLE_ORDER) for (let occurrence = 1; occurrence <= input.requestedRoleCounts[role]; occurrence += 1) {
-      expectedSlots.push({
-        visualGroupKey: group.visualGroupKey,
-        role,
-        order: order++,
-        slotKey: `${group.visualGroupKey}:${role.toLowerCase().replaceAll("_", "-")}:${String(occurrence).padStart(2, "0")}`,
-      });
-    }
-  }
-  for (let index = 0; index < expectedSlots.length; index += 1) {
-    const slot = plan.slots[index];
-    const expected = expectedSlots[index];
-    if (!slot || slot.visualGroupKey !== expected.visualGroupKey || slot.role !== expected.role
-      || slot.order !== expected.order || slot.slotKey !== expected.slotKey) throw contentPlanError();
-  }
-  return deepFreeze(structuredClone(plan));
-}
-
-const diagnoseContentPlanClosed = createContentPlanDiagnoser(validateContentPlanLegacy);
+const diagnoseContentPlanClosed = createContentPlanDiagnoser();
 
 export function diagnoseContentPlan(input) {
   return diagnoseContentPlanClosed(input);

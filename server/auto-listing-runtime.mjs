@@ -10,7 +10,6 @@ import { selectAutoListingPlanningContract } from "./auto-listing-planning-contr
 import {
   autoListingAiEnabled,
   autoListingEnabled,
-  autoListingFixedSkeletonPilotScope,
   autoListingUploadEnabled,
 } from "./runtime-config.mjs";
 
@@ -165,16 +164,12 @@ export function createAutoListingRuntime({
   let aiWorkerPromise = null;
   const serviceDisabled = !autoListingEnabled(env);
   const aiEnabled = autoListingEnabled(env) && autoListingAiEnabled(env);
-  const planningPilotScope = autoListingFixedSkeletonPilotScope(env);
   const observabilitySecret = String(
     env.AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET || "",
   );
   const observability = observabilitySecret ? createObservability({ metrics, logger,
     accountHashSecret: observabilitySecret }) : null;
-  const selectPlanningContract = (input) => selectAutoListingPlanningContract({
-    pilotScope: planningPilotScope,
-    ...input,
-  });
+  const selectPlanningContract = (input) => selectAutoListingPlanningContract(input);
   const resolveAiWorkerDependencies = createAiWorkerDependencies || (async ({ env: runtimeEnv, resolvePool: runtimePool }) => {
     const { createDefaultAutoListingAiProductionDependencies } = await import("./auto-listing-ai-runtime-composition.mjs");
     return createDefaultAutoListingAiProductionDependencies({ env: runtimeEnv, resolvePool: runtimePool });
