@@ -25,12 +25,14 @@ const response = (requestId, generationId, suffix = '1') => ({
   expiresAt: `2030-01-01T00:0${suffix}:00.000Z`,
 });
 
-const createHarness = ({ beginGeneration, clearGeneration, exchangeTicket } = {}) => {
+const createHarness = ({ beginGeneration, clearGeneration, exchangeTicket, failAuthentication } = {}) => {
   const begins = [];
   const beginHints = [];
   const clears = [];
   const exchanges = [];
+  const failures = [];
   const requests = [];
+  const releases = [];
   const timers = [];
   let nextRequestId = 0;
   let now = 0;
@@ -39,12 +41,15 @@ const createHarness = ({ beginGeneration, clearGeneration, exchangeTicket } = {}
     beginHints,
     clears,
     exchanges,
+    failures,
     requests,
+    releases,
     timers,
   };
   harness.flow = createCollectorAuthFlow({
     newRequestId: () => `request-${++nextRequestId}`,
     postRequest(requestId) { requests.push(requestId); },
+    releaseRequest(requestId) { releases.push(requestId); },
     async beginGeneration(generationId) {
       begins.push(generationId);
       beginHints.push(arguments[1]);
@@ -59,6 +64,11 @@ const createHarness = ({ beginGeneration, clearGeneration, exchangeTicket } = {}
     async exchangeTicket(payload) {
       exchanges.push(payload);
       if (exchangeTicket) return exchangeTicket(payload);
+      return { ok: true };
+    },
+    async failAuthentication(payload) {
+      failures.push(payload);
+      if (failAuthentication) return failAuthentication(payload);
       return { ok: true };
     },
     setTimer(callback, milliseconds) {
@@ -100,6 +110,33 @@ test('duplicate ready begins and requests a generation only once', async () => {
   assert.deepEqual(harness.begins, [G1]);
   assert.deepEqual(harness.requests, ['request-1']);
   assert.deepEqual(duplicate, { accepted: false, reason: 'duplicate-generation' });
+});
+
+test('a failed exchange releases its completed Web ticket lease before coordinated retry', async () => {
+  const harness = createHarness({ exchangeTicket: async () => ({
+    ok: false,
+    code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR',
+  }) });
+  await harness.flow.handleReady({ generationId: G1 });
+  await harness.flow.handleResponse(response('request-1', G1));
+  assert.deepEqual(harness.releases, ['request-1']);
+});
+
+test('a closed Web failure cancels the active request and reaches the failure adapter once', async () => {
+  const harness = createHarness();
+  await harness.flow.handleReady({ generationId: G1 });
+  const outcome = await harness.flow.handleFailure({
+    requestId: 'request-1',
+    generationId: G1,
+    publicCode: 'WEB_LOGIN_REQUIRED',
+  });
+  assert.deepEqual(outcome, { accepted: true });
+  assert.deepEqual(harness.failures, [{
+    generationId: G1,
+    publicCode: 'WEB_LOGIN_REQUIRED',
+  }]);
+  harness.advanceTime(30_000);
+  assert.deepEqual(harness.requests, ['request-1']);
 });
 
 test('V2 ready begins with its account hint and the following legacy ready is ignored', async () => {

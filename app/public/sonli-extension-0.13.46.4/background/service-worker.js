@@ -470,7 +470,7 @@ try {
     globalThis.JzCollectorAuthCoordinator.createCollectorAuthCoordinator({
       storageSession: chrome.storage.session,
       alarms: chrome.alarms,
-      getSession: () => collectorSessionManager.getCollectorSession(),
+      getSession: () => collectorSessionManager.getCollectorAuthSnapshot(),
       requestAuth: () => requestCollectorAuthFromWeb(),
     });
   const observeCollectorAuth = async (operation, input) => {
@@ -4432,6 +4432,16 @@ try {
           await observeCollectorAuth('accept', accepted);
           return { ok: true };
         }
+        case 'collector.auth.failure': {
+          if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          await observeCollectorAuth('fail', {
+            generationId: message.generationId,
+            error: { code: message.publicCode },
+          });
+          return { ok: true };
+        }
         case 'collector.auth.exchange': {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
@@ -5403,6 +5413,7 @@ try {
       'enrichOzonCollect',
       'enrichOzonCollectBatch',
       'pushSourceCollect',
+      'collector.auth.exchange',
       // 视频转存:download(跨源 .mp4) + media-storage 上传跑在 seller/buyer tab,executeScript
       // 可达 90s+,必须保活防 SW unload 中断 sendResponse。
       'uploadFollowSellVideo',
@@ -5432,9 +5443,12 @@ try {
     // 还叠加买家 tab 抓图册 40s),50s 会把**正常但慢**的转存误杀。给它们 160s 上限,并配合
     // content LONG_ACTIONS 把这俩 action 的 content 侧超时也放宽到 600s。
     const VIDEO_ACTIONS = new Set(['uploadFollowSellVideo', 'transferVariantVideo']);
+    const COLLECTOR_AUTH_LONG_ACTIONS = new Set(['collector.auth.exchange']);
     const HANDLER_TOTAL_TIMEOUT_MS = VIDEO_ACTIONS.has(message?.action)
       ? 160_000
-      : (AI_WIZARD_LONG_ACTIONS.has(message?.action) ? 150_000 : 50_000);
+      : (AI_WIZARD_LONG_ACTIONS.has(message?.action)
+        ? 150_000
+        : (COLLECTOR_AUTH_LONG_ACTIONS.has(message?.action) ? 75_000 : 50_000));
     const handlerPromise = Promise.race([
       handle(),
       new Promise((_, reject) =>

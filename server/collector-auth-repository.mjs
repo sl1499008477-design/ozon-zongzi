@@ -449,9 +449,20 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
   async function createSession(input) {
     const record = sessionRecord(input);
     record.tokenHash = requireSecretHash(record.tokenHash);
-    const result = await query(
-      `
-        WITH inserted AS (
+    let client;
+    let began = false;
+    try {
+      client = typeof pool.connect === "function" ? await pool.connect() : pool;
+      await client.query("BEGIN");
+      began = true;
+      if (record.deviceFingerprint) {
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${record.accountId}\u0000${record.deviceFingerprint}`],
+        );
+      }
+      const inserted = await client.query(
+        `
           INSERT INTO collector_sessions (
             id, token_hash, account_id, parent_session_token,
             device_fingerprint, extension_version, permissions, expires_at,
@@ -467,43 +478,58 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
             AND parent.revoked_at IS NULL
             AND (parent.expires_at IS NULL OR parent.expires_at>$12)
           RETURNING *
-        ), superseded AS (
-          UPDATE collector_sessions AS previous
-          SET revoked_at=$12, revoked_reason=$13
-          FROM inserted
-          WHERE previous.account_id=$3
-            AND previous.device_fingerprint=$5
-            AND $5<>''
-            AND previous.id<>$1
-            AND previous.revoked_at IS NULL
-          RETURNING previous.id
-        )
-        SELECT inserted.*,
-               (SELECT COUNT(*) FROM superseded) AS superseded_count
-        FROM inserted
-      `,
-      [
-        record.id,
-        record.tokenHash,
-        record.accountId,
-        record.parentSessionToken,
-        record.deviceFingerprint,
-        record.extensionVersion,
-        JSON.stringify(record.permissions),
-        record.expiresAt,
-        record.revokedAt,
-        record.revokedReason,
-        record.lastSeenAt,
-        record.createdAt,
-        normalizeCollectorRevokeReason("SESSION_SUPERSEDED"),
-      ],
-    );
-    return result.rows[0]
-      ? {
-          session: sessionRecord(result.rows[0]),
-          supersededCount: Number(result.rows[0].superseded_count || 0),
-        }
-      : null;
+        `,
+        [
+          record.id,
+          record.tokenHash,
+          record.accountId,
+          record.parentSessionToken,
+          record.deviceFingerprint,
+          record.extensionVersion,
+          JSON.stringify(record.permissions),
+          record.expiresAt,
+          record.revokedAt,
+          record.revokedReason,
+          record.lastSeenAt,
+          record.createdAt,
+        ],
+      );
+      const insertedRow = inserted.rows[0];
+      let supersededCount = 0;
+      if (insertedRow && record.deviceFingerprint) {
+        const superseded = await client.query(
+          `
+            UPDATE collector_sessions
+            SET revoked_at=$4, revoked_reason=$5
+            WHERE account_id=$1
+              AND device_fingerprint=$2
+              AND id<>$3
+              AND revoked_at IS NULL
+            RETURNING id
+          `,
+          [
+            record.accountId,
+            record.deviceFingerprint,
+            record.id,
+            record.createdAt,
+            normalizeCollectorRevokeReason("SESSION_SUPERSEDED"),
+          ],
+        );
+        supersededCount = Number(superseded.rowCount ?? superseded.rows?.length ?? 0) || 0;
+      }
+      await client.query("COMMIT");
+      began = false;
+      return insertedRow
+        ? { session: sessionRecord(insertedRow), supersededCount }
+        : null;
+    } catch {
+      if (began && client?.query) {
+        try { await client.query("ROLLBACK"); } catch {}
+      }
+      throw repositoryError("采集认证数据操作失败");
+    } finally {
+      if (client && client !== pool && typeof client.release === "function") client.release();
+    }
   }
 
   async function findActiveSession({ tokenHash }) {

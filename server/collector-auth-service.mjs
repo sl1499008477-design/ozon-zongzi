@@ -88,8 +88,11 @@ function mandatoryExpiresAtMillis(value, message, code) {
 }
 
 function assertActiveAccount(account, at) {
-  if (!account?.id || account.status !== "active" || expiresAtMillis(account.expiresAt) <= at.getTime()) {
-    throw serviceError("账号不可用于采集认证", 403, "COLLECTOR_ACCOUNT_INACTIVE");
+  if (!account?.id || account.status !== "active") {
+    throw serviceError("账号已停用", 403, "COLLECTOR_ACCOUNT_DISABLED");
+  }
+  if (expiresAtMillis(account.expiresAt) <= at.getTime()) {
+    throw serviceError("账号已过期", 403, "COLLECTOR_ACCOUNT_EXPIRED");
   }
 }
 

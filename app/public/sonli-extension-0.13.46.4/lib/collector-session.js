@@ -435,6 +435,30 @@
       });
     }
 
+    async function getCollectorAuthSnapshot() {
+      return serializeSessionMutation(async () => {
+        const stored = await chromeApi.storage.session.get([
+          COLLECTOR_SESSION_STORAGE_KEY,
+          COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+          COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
+        ]);
+        const session = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
+        const generationId = stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY];
+        const incarnation = stored?.[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY];
+        if (!session) return null;
+        if (!isValidRawCollectorSession(session, now())) {
+          await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+          return null;
+        }
+        if (!COLLECTOR_AUTH_GENERATION_PATTERN.test(String(generationId || ''))
+          || !isCollectorAuthIncarnation(incarnation)) return null;
+        return {
+          generationId,
+          ...publicSessionFields(session),
+        };
+      });
+    }
+
     const createCollectorOperation = (session) => {
       const safe = safeSession(session);
       const snapshot = Object.freeze({
@@ -850,6 +874,7 @@
       exchangeCollectorTicketWithRetry,
       flushPendingUploads,
       getCollectorSession,
+      getCollectorAuthSnapshot,
       listPendingUploads,
       logoutCollectorSession,
       setCollectorSession,

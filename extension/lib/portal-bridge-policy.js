@@ -7,6 +7,7 @@
   const collectorKeys = Object.freeze({
     'collector.auth.begin': Object.freeze(['action', 'generationId']),
     'collector.auth.logout': Object.freeze(['action', 'generationId']),
+    'collector.auth.failure': Object.freeze(['action', 'generationId', 'publicCode']),
     'collector.auth.exchange': Object.freeze([
       'action',
       'expiresAt',
@@ -17,6 +18,14 @@
   });
   const collectorHintedBeginKeys = Object.freeze(['accountIdHint', 'action', 'generationId']);
   const collectorGenerationPattern = /^[A-Za-z0-9_-]{16,128}$/;
+  const collectorFailureCodes = new Set([
+    'WEB_LOGIN_REQUIRED',
+    'LOCAL_SERVICE_UNAVAILABLE',
+    'ACCOUNT_DISABLED',
+    'ACCOUNT_EXPIRED',
+    'PERMISSION_DENIED',
+    'SERVER_UPGRADE_REQUIRED',
+  ]);
   const nativeObjectConstructorSource = Function.prototype.toString.call(Object);
   const isPlainRecord = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -73,6 +82,17 @@
       }
       if (message.action === 'collector.auth.logout') {
         return { protocol, action: message.action, generationId };
+      }
+      if (message.action === 'collector.auth.failure') {
+        if (!collectorFailureCodes.has(message.publicCode)) {
+          throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+        }
+        return {
+          protocol,
+          action: message.action,
+          generationId,
+          publicCode: message.publicCode,
+        };
       }
       const requestId = typeof message.requestId === 'string' ? message.requestId.trim() : '';
       const ticket = typeof message.ticket === 'string' ? message.ticket : '';

@@ -6,7 +6,17 @@
   const READY_ACTION = 'collector.auth.ready';
   const READY_V2_ACTION = 'collector.auth.ready.v2';
   const ACCEPTED_ACTION = 'collector.auth.accepted';
+  const FAILURE_ACTION = 'collector.auth.failure';
+  const RELEASE_ACTION = 'collector.auth.release';
   const LOGOUT_ACTION = 'collector.auth.logout';
+  const PUBLIC_FAILURE_CODES = new Set([
+    'WEB_LOGIN_REQUIRED',
+    'LOCAL_SERVICE_UNAVAILABLE',
+    'ACCOUNT_DISABLED',
+    'ACCOUNT_EXPIRED',
+    'PERMISSION_DENIED',
+    'SERVER_UPGRADE_REQUIRED',
+  ]);
   const collectorGenerationPattern = /^[A-Za-z0-9_-]{16,128}$/;
   const nativeObjectConstructorSource = Function.prototype.toString.call(Object);
   const isPlainRecord = (value) => {
@@ -57,6 +67,17 @@
       requestId: normalized,
     };
   };
+  const createCollectorAuthRelease = (value) => {
+    const normalized = requestId(value);
+    if (typeof value !== 'string' || !normalized || value !== normalized) {
+      throw new Error('COLLECTOR_AUTH_REQUEST_ID_REQUIRED');
+    }
+    return {
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: RELEASE_ACTION,
+      requestId: normalized,
+    };
+  };
   const normalizeCollectorAuthReady = (value) => {
     if (!hasExactKeys(value, ['action', 'generationId', 'protocol'])) return null;
     if (value.protocol !== COLLECTOR_AUTH_PROTOCOL || value.action !== READY_ACTION) return null;
@@ -97,6 +118,26 @@
       action: ACCEPTED_ACTION,
       requestId: normalizedRequestId,
       generationId: normalizedGenerationId,
+    };
+  }
+  function normalizeCollectorAuthFailure(value, expectedRequestId) {
+    if (!hasExactKeys(value, [
+      'action', 'generationId', 'protocol', 'publicCode', 'requestId',
+    ])) return null;
+    if (value.protocol !== COLLECTOR_AUTH_PROTOCOL || value.action !== FAILURE_ACTION) return null;
+    if (typeof value.requestId !== 'string') return null;
+    if (arguments.length > 1 && typeof expectedRequestId !== 'string') return null;
+    const normalizedRequestId = requestId(value.requestId);
+    const normalizedGenerationId = generationId(value.generationId);
+    if (!normalizedRequestId || normalizedRequestId !== value.requestId || !normalizedGenerationId
+      || !PUBLIC_FAILURE_CODES.has(value.publicCode)) return null;
+    if (arguments.length > 1 && normalizedRequestId !== expectedRequestId) return null;
+    return {
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: FAILURE_ACTION,
+      requestId: normalizedRequestId,
+      generationId: normalizedGenerationId,
+      publicCode: value.publicCode,
     };
   }
   const normalizeCollectorAuthLogout = (value) => {
@@ -140,9 +181,11 @@
   }
   const api = Object.freeze({
     COLLECTOR_AUTH_PROTOCOL,
+    createCollectorAuthRelease,
     createCollectorAuthRequest,
     isTrustedWebBridgeSender,
     normalizeCollectorAuthAccepted,
+    normalizeCollectorAuthFailure,
     normalizeCollectorAuthLogout,
     normalizeCollectorAuthReady,
     normalizeCollectorAuthReadyV2,

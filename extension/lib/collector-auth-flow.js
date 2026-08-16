@@ -8,18 +8,22 @@
   const createCollectorAuthFlow = ({
     newRequestId,
     postRequest,
+    releaseRequest,
     beginGeneration,
     clearGeneration,
     exchangeTicket,
+    failAuthentication,
     setTimer,
     clearTimer,
   } = {}) => {
     for (const dependency of [
       newRequestId,
       postRequest,
+      releaseRequest,
       beginGeneration,
       clearGeneration,
       exchangeTicket,
+      failAuthentication,
       setTimer,
       clearTimer,
     ]) {
@@ -156,6 +160,11 @@
         && result?.code === 'COLLECTOR_TICKET_EXPIRED'
         && attempts < MAX_TICKET_EXCHANGE_ATTEMPTS
         && desiredGenerationId === message.generationId;
+      if (result?.ok !== true) {
+        try {
+          releaseRequest(message.requestId);
+        } catch {}
+      }
       exchangeInFlight = false;
       if (pendingGenerationId) {
         await processPendingGeneration();
@@ -327,6 +336,24 @@
       return { accepted: true };
     };
 
+    const handleFailure = async (message) => {
+      const request = activeRequest;
+      if (!request || message?.requestId !== request.requestId) {
+        return { accepted: false, reason: 'stale-request' };
+      }
+      if (message?.generationId !== request.generationId
+        || request.generationId !== desiredGenerationId) {
+        return { accepted: false, reason: 'stale-generation' };
+      }
+      cancelRetry();
+      activeRequest = null;
+      await failAuthentication({
+        generationId: request.generationId,
+        publicCode: message.publicCode,
+      });
+      return { accepted: true };
+    };
+
     const requestAuthoritatively = () => {
       if (exchangeInFlight) return { requested: false };
       if (pendingGenerationId && pendingGenerationId === desiredGenerationId) {
@@ -346,6 +373,7 @@
     return Object.freeze({
       startDiscovery,
       handleAccepted,
+      handleFailure,
       handleReady,
       handleLogout,
       handleResponse,

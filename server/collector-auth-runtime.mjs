@@ -55,6 +55,7 @@ export function createCollectorAuthRuntime({
   persistenceMode,
   stateTransaction,
   initializePostgresRepository,
+  postgresPool,
   insertAuditEvent,
   readJson,
   sendJson,
@@ -79,12 +80,14 @@ export function createCollectorAuthRuntime({
     });
   }
 
-  const initializeRepository = initializePostgresRepository || (async () => {
-    await loadState();
-    return createPostgresCollectorAuthRepository({
-      pool: await getPostgresPool(),
-    });
-  });
+  const resolvePostgresPool = async () => (
+    typeof postgresPool === "function"
+      ? postgresPool()
+      : postgresPool || getPostgresPool()
+  );
+  const initializeRepository = initializePostgresRepository || (async () => (
+    createPostgresCollectorAuthRepository({ pool: await resolvePostgresPool() })
+  ));
 
   function postgresRepository() {
     if (!postgresRepositoryPromise) {
@@ -100,7 +103,7 @@ export function createCollectorAuthRuntime({
   }
 
   const writePostgresAuditEvent = insertAuditEvent || (async (event) => (
-    insertPostgresAuditEvent(await getPostgresPool(), event)
+    insertPostgresAuditEvent(await resolvePostgresPool(), event)
   ));
 
   async function callRepository(method, input) {
@@ -142,6 +145,7 @@ export function createCollectorAuthRuntime({
         expiresAt: String(event.expiresAt || ""),
         requiredPermission: String(event.requiredPermission || ""),
         revoked: Number(event.revoked || 0),
+        superseded: Number(event.superseded || 0),
       },
     });
     if (persistenceMode() === "postgres") {

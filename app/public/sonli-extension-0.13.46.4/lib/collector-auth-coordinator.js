@@ -42,6 +42,7 @@
     'WEB_LOGIN_REQUIRED',
     'COLLECTOR_AUTH_REQUIRED',
     'COLLECTOR_PARENT_SESSION_REVOKED',
+    'COLLECTOR_PARENT_SESSION_EXPIRED',
     'COLLECTOR_SESSION_REVOKED',
   ]);
   const TRANSIENT_CODES = new Set([
@@ -59,7 +60,6 @@
   const ACCOUNT_EXPIRED_CODES = new Set([
     'ACCOUNT_EXPIRED',
     'COLLECTOR_ACCOUNT_EXPIRED',
-    'COLLECTOR_PARENT_SESSION_EXPIRED',
   ]);
   const PERMISSION_CODES = new Set([
     'PERMISSION_DENIED',
@@ -285,6 +285,8 @@
     let activeRequestLease = null;
     let requestFence = 0;
     let retryTimer = null;
+    let noAckTimer = null;
+    let cancelNoAckWaiter = null;
     let statusMutationTail = Promise.resolve();
     let transitionVersion = 0;
 
@@ -305,6 +307,15 @@
         retryTimer = null;
       }
       await clearRetryAlarm();
+    };
+    const clearNoAckWatchdog = () => {
+      if (noAckTimer !== null) {
+        try { clearTimer(noAckTimer); } catch {}
+        noAckTimer = null;
+      }
+      const cancelWaiter = cancelNoAckWaiter;
+      cancelNoAckWaiter = null;
+      if (cancelWaiter) cancelWaiter();
     };
     const scheduleRetry = async (when, currentTime = Number(now())) => {
       await clearRetrySchedule();
@@ -348,12 +359,29 @@
       activeRequestLease = lease;
       return lease;
     };
+    const armNoAckWatchdog = (lease, { onTimeout, onCancel } = {}) => {
+      clearNoAckWatchdog();
+      cancelNoAckWaiter = typeof onCancel === 'function' ? onCancel : null;
+      noAckTimer = setTimer(() => {
+        noAckTimer = null;
+        cancelNoAckWaiter = null;
+        if (activeRequestLease !== lease) return;
+        if (typeof onTimeout === 'function') onTimeout();
+        else {
+          void applyFailure({
+            generationId: lease.generationId,
+            error: { code: 'WEB_LOGIN_REQUIRED' },
+          }, lease).catch(() => null);
+        }
+      }, 2_500);
+    };
     const clearRequestLeaseForGeneration = (generationId) => {
       if (activeRequestLease?.generationId !== String(generationId || '')) return;
       activeRequestLease = null;
     };
     const releaseRequestLease = (lease) => {
       if (activeRequestLease !== lease) return;
+      clearNoAckWatchdog();
       activeRequestLease = null;
       requestFence += 1;
     };
@@ -391,7 +419,8 @@
           expiresAt: '',
         });
         transitionVersion += 1;
-        replaceRequestLease(normalizedGenerationId);
+        const lease = replaceRequestLease(normalizedGenerationId);
+        armNoAckWatchdog(lease);
         return status;
       });
     };
@@ -409,6 +438,7 @@
           || normalizedRequestId.length > 128
         ) return current;
         await clearRetrySchedule();
+        clearNoAckWatchdog();
         const status = await writeStatus({
           ...current,
           phase: 'REQUESTING_TICKET',
@@ -430,6 +460,7 @@
         const current = await readStatus();
         if (!generationIsCurrent(current, generationId)) return current;
         await clearRetrySchedule();
+        clearNoAckWatchdog();
         const status = await writeStatus({
           ...current,
           phase: 'EXCHANGING',
@@ -452,6 +483,7 @@
         if (!generationIsCurrent(current, generationId)) return current;
         const timestamp = currentIso();
         await clearRetrySchedule();
+        clearNoAckWatchdog();
         const status = await writeStatus({
           ...current,
           phase: 'AUTHENTICATED',
@@ -472,6 +504,7 @@
       if (requestLease === null) fenceActiveRequest(generationId);
       else if (activeRequestLease === requestLease) requestFence += 1;
       return serializeStatusMutation(async () => {
+        clearNoAckWatchdog();
         const current = await readStatus();
         if (requestLease !== null && activeRequestLease !== requestLease) return current;
         if (!generationIsCurrent(current, generationId)) return current;
@@ -583,15 +616,33 @@
         ) {
           return { requested: false, status: authorized.status };
         }
-        let result;
-        try {
-          result = await requestAuth({ generationId: discovering.generationId });
-        } catch (error) {
+        const requestOutcome = await new Promise((resolve) => {
+          let settled = false;
+          const settle = (value) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+          };
+          armNoAckWatchdog(start.requestLease, {
+            onTimeout: () => settle({ type: 'timeout' }),
+            onCancel: () => settle({ type: 'cancelled' }),
+          });
+          Promise.resolve()
+            .then(() => requestAuth({ generationId: discovering.generationId }))
+            .then(
+              (result) => settle({ type: 'result', result }),
+              (error) => settle({ type: 'error', error }),
+            );
+        });
+        if (requestOutcome.type === 'cancelled') {
+          return { requested: false, status: discovering };
+        }
+        if (requestOutcome.type === 'timeout') {
           let status = discovering;
           try {
             status = await applyFailure({
               generationId: discovering.generationId,
-              error,
+              error: { code: 'WEB_LOGIN_REQUIRED' },
             }, start.requestLease);
           } catch {}
           finally {
@@ -599,6 +650,21 @@
           }
           return { requested: false, status };
         }
+        clearNoAckWatchdog();
+        if (requestOutcome.type === 'error') {
+          let status = discovering;
+          try {
+            status = await applyFailure({
+              generationId: discovering.generationId,
+              error: requestOutcome.error,
+            }, start.requestLease);
+          } catch {}
+          finally {
+            releaseRequestLease(start.requestLease);
+          }
+          return { requested: false, status };
+        }
+        const result = requestOutcome.result;
         const requested = result?.requested === true || result?.requested === 1;
         if (!requested) {
           let status = discovering;
@@ -613,6 +679,7 @@
           }
           return { requested: false, status };
         }
+        armNoAckWatchdog(start.requestLease);
         return { requested: true, status: discovering };
       })();
       operationPromise = operation;
@@ -643,13 +710,20 @@
         }
         const unchanged = JSON.stringify(latest) === JSON.stringify(initial);
         if (!unchanged) return { request: false, status: latest };
-        if (session?.account && safeIso(session.expiresAt)) {
+        const sessionGenerationId = safeGenerationId(session?.generationId);
+        if (
+          session?.account
+          && safeIso(session.expiresAt)
+          && sessionGenerationId
+          && (!latest.generationId || latest.generationId === sessionGenerationId)
+        ) {
           if (latest.phase === 'ACTION_REQUIRED') return { request: false, status: latest };
           const timestamp = currentIso();
           await clearRetrySchedule();
           const status = await writeStatus({
             ...latest,
             phase: 'AUTHENTICATED',
+            generationId: sessionGenerationId,
             startedAt: latest.startedAt || timestamp,
             updatedAt: timestamp,
             nextRetryAt: '',

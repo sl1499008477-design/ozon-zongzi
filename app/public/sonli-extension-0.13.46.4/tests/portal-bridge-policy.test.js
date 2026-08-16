@@ -38,6 +38,19 @@ const collectorMessages = [
   },
   {
     input: {
+      action: 'collector.auth.failure',
+      generationId: 'generation_A_1234',
+      publicCode: 'WEB_LOGIN_REQUIRED',
+    },
+    expected: {
+      protocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.failure',
+      generationId: 'generation_A_1234',
+      publicCode: 'WEB_LOGIN_REQUIRED',
+    },
+  },
+  {
+    input: {
       action: 'collector.auth.exchange',
       requestId: 'request-1',
       generationId: 'generation_A_1234',

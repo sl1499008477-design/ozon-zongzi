@@ -1,9 +1,11 @@
 const assert = require('node:assert/strict');
 const {
   COLLECTOR_AUTH_PROTOCOL,
+  createCollectorAuthRelease,
   createCollectorAuthRequest,
   isTrustedWebBridgeSender,
   normalizeCollectorAuthAccepted,
+  normalizeCollectorAuthFailure,
   normalizeCollectorAuthLogout,
   normalizeCollectorAuthReady,
   normalizeCollectorAuthReadyV2,
@@ -17,6 +19,14 @@ assert.deepEqual(createCollectorAuthRequest('request-1'), {
   action: 'collector.auth.request',
   requestId: 'request-1',
 });
+assert.deepEqual(createCollectorAuthRelease('request-1'), {
+  protocol: COLLECTOR_AUTH_PROTOCOL,
+  action: 'collector.auth.release',
+  requestId: 'request-1',
+});
+for (const unsafe of ['', ' request-1 ', 'r'.repeat(129)]) {
+  assert.throws(() => createCollectorAuthRelease(unsafe));
+}
 assert.deepEqual(normalizeCollectorAuthReady({
   protocol: 'SONLI_COLLECTOR_AUTH',
   action: 'collector.auth.ready',
@@ -117,6 +127,24 @@ for (const unsafe of [
     generationId: 'generation_A_1234',
   }),
 ]) assert.equal(normalizeCollectorAuthAccepted(unsafe, 'request-1'), null);
+assert.deepEqual(normalizeCollectorAuthFailure({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.failure',
+  requestId: 'request-1',
+  generationId: 'generation_A_1234',
+  publicCode: 'WEB_LOGIN_REQUIRED',
+}, 'request-1'), {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.failure',
+  requestId: 'request-1',
+  generationId: 'generation_A_1234',
+  publicCode: 'WEB_LOGIN_REQUIRED',
+});
+for (const unsafe of [
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.failure', requestId: 'request-1', generationId: 'generation_A_1234', publicCode: 'RAW_SERVER_ERROR' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.failure', requestId: 'wrong', generationId: 'generation_A_1234', publicCode: 'WEB_LOGIN_REQUIRED' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.failure', requestId: 'request-1', generationId: 'generation_A_1234', publicCode: 'WEB_LOGIN_REQUIRED', error: 'never' },
+]) assert.equal(normalizeCollectorAuthFailure(unsafe, 'request-1'), null);
 for (const unsafe of [
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready' },
   { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready', generationId: 'generation_A_1234', token: 'never' },

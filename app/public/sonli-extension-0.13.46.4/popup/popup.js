@@ -1008,6 +1008,33 @@
     && collectorAuthIdentity(latestCollectorAuthStatus) === activation.identity
   );
 
+  const rejectMainViewActivation = (activation) => {
+    if (!mainViewActivationIsCurrent(activation)) return;
+    collectorAuthStatusRevision += 1;
+    currentMainViewActivation = null;
+    initializedMainViewActivation = null;
+    latestCollectorAuthStatus = {
+      version: 1,
+      phase: "WAITING_FOR_WEB",
+      generationId: "",
+      startedAt: "",
+      updatedAt: "",
+      attemptNumber: 0,
+      nextRetryAt: "",
+      publicCode: "WEB_LOGIN_REQUIRED",
+      account: null,
+      expiresAt: "",
+    };
+    sellerStatusController.stop();
+    setLoginState(false);
+    showTip("等待 Web 端登录", "warning");
+    webLoginBtn.disabled = false;
+    webLoginLabel.textContent = "前往登录";
+    collectorAuthRecheckBtn.disabled = false;
+    collectorAuthRecheckLabel.textContent = "重新检查";
+    void sendMessage({ action: "retryCollectorAuth" }).catch(() => null);
+  };
+
   const ensureMainView = (status) => {
     const activation = Object.freeze({
       revision: collectorAuthStatusRevision,
@@ -1028,10 +1055,15 @@
       const auth = await fetchAuth();
       if (
         !mainViewActivationIsCurrent(activation)
-        || !auth.authenticated
+      ) return;
+      if (
+        !auth.authenticated
         || auth.account?.id !== activation.accountId
         || auth.expiresAt !== activation.expiresAt
-      ) return;
+      ) {
+        rejectMainViewActivation(activation);
+        return;
+      }
       await initMainView(auth, () => mainViewActivationIsCurrent(activation));
       if (mainViewActivationIsCurrent(activation)) {
         initializedMainViewActivation = activation;

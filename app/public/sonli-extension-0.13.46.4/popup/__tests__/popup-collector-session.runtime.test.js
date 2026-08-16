@@ -773,6 +773,34 @@ test("AUTH A stale async work cannot block or mutate AUTH B initialization", asy
   assert.equal(harness.createdTabs.at(-1)?.url, "http://127.0.0.1:3000/extension");
 });
 
+test("authoritative auth denial revokes the current activation for missing, mismatched, or expired credentials", async () => {
+  const cases = [
+    { authenticated: false, account: null, expiresAt: "" },
+    { authenticated: true, account: { id: "account-b", displayName: "账号 B" }, expiresAt: null },
+    { authenticated: true, account: { id: "account-a", displayName: "账号 A" }, expiresAt: "2035-01-01T00:00:00.000Z" },
+  ];
+  for (const auth of cases) {
+    const harness = createHarness({ delayedActions: ["getAuth"] });
+    await settle();
+    harness.emitStatus(harness.authenticatedStatus("account-a"));
+    assert.equal(harness.document.getElementById("main-view").classList.contains("active"), true);
+    harness.resolveAction("getAuth", {
+      ok: true,
+      data: {
+        ...auth,
+        expiresAt: auth.expiresAt === null ? harness.authExpiry : auth.expiresAt,
+        backendUrl: "http://127.0.0.1:3000/api",
+      },
+    });
+    await settle();
+    assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
+    assert.equal(harness.document.getElementById("login-view").style.display, "flex");
+    assert.match(harness.document.getElementById("login-tip").textContent, /等待 Web 端登录|正在检测 Web 登录状态/);
+    assert.equal(harness.messages.some(({ action }) => action === "retryCollectorAuth"), true);
+    harness.unload();
+  }
+});
+
 test("unload removes the one storage listener and clears authentication display timers", async () => {
   const harness = createHarness();
   await settle();

@@ -744,7 +744,11 @@ export function AppShell({ initialState = null }) {
         accountId: collectorAuthAccountId,
         generationId: transition.generationId,
         isLoggedIn: () => true,
-        requestTicket: () => apiRequest("/extension/collector-auth/ticket", { method: "POST" }),
+        requestTicket: ({ signal }) => apiRequest("/extension/collector-auth/ticket", {
+          method: "POST",
+          signal,
+          timeoutMs: 28_000,
+        }),
         announceReady: transition.announceReady,
       }),
     });

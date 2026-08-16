@@ -160,14 +160,85 @@ test('projects every authentication phase through the closed status contract', a
   assert.deepEqual(Object.keys(authenticated.account).sort(), ['displayName', 'id']);
 });
 
+test('coordinator-owned no-ack watchdog closes an accepted Web request gap', async () => {
+  const harness = createHarness();
+  await harness.coordinator.begin({ generationId: G1 });
+  const watchdog = harness.timers.find(({ milliseconds }) => milliseconds === 2_500);
+  assert.ok(watchdog, 'begin must arm the coordinator no-ack watchdog');
+
+  watchdog.callback();
+  await waitFor(async () => (await harness.coordinator.getStatus()).phase === 'WAITING_FOR_WEB');
+  const failed = await harness.coordinator.getStatus();
+  assert.equal(failed.publicCode, 'WEB_LOGIN_REQUIRED');
+
+  await harness.coordinator.begin({ generationId: G1 });
+  const acceptedWatchdog = harness.timers.at(-1);
+  await harness.coordinator.accept({ requestId: 'request-1', generationId: G1 });
+  assert.equal(acceptedWatchdog.cancelled, true);
+});
+
+test('coordinator watchdog releases a hanging Web discovery so a later request can recover', async () => {
+  const hung = deferred();
+  let requests = 0;
+  const harness = createHarness({
+    requestAuth: () => {
+      requests += 1;
+      return requests === 1
+        ? hung.promise
+        : { requested: false, publicCode: 'WEB_TAB_UNAVAILABLE' };
+    },
+  });
+
+  const first = harness.coordinator.retryNow();
+  await waitFor(async () => (await harness.coordinator.getStatus()).phase === 'DISCOVERING_WEB');
+  await waitFor(() => harness.timers.some(({ milliseconds }) => milliseconds === 2_500));
+  const watchdog = harness.timers.find(({ milliseconds }) => milliseconds === 2_500);
+  assert.ok(watchdog, 'discovery must arm the watchdog before awaiting the Web transport');
+  watchdog.callback();
+
+  const timedOut = await first;
+  assert.equal(timedOut.requested, false);
+  assert.equal(timedOut.status.phase, 'WAITING_FOR_WEB');
+  assert.equal(timedOut.status.publicCode, 'WEB_LOGIN_REQUIRED');
+  const recovered = await harness.coordinator.retryNow();
+  assert.equal(requests, 2, 'the hung transport must not retain the coordinator single-flight');
+  assert.equal(recovered.requested, false);
+  assert.equal(recovered.status.publicCode, 'WEB_TAB_UNAVAILABLE');
+});
+
+test('cold start projects a valid session only with its verified generation and timeline', async () => {
+  const harness = createHarness({
+    session: {
+      generationId: G1,
+      account: { id: 'account-a', displayName: 'Account A' },
+      permissions: ['collector.upload'],
+      expiresAt: '2030-01-02T00:00:00.000Z',
+    },
+  });
+  const resumed = await harness.coordinator.resume();
+  assert.equal(resumed.phase, 'AUTHENTICATED');
+  assert.equal(resumed.generationId, G1);
+  assert.equal(resumed.startedAt, '2030-01-01T00:00:00.000Z');
+  assert.equal(resumed.updatedAt, '2030-01-01T00:00:00.000Z');
+
+  const missingGeneration = createHarness({
+    session: {
+      account: { id: 'account-a', displayName: 'Account A' },
+      expiresAt: '2030-01-02T00:00:00.000Z',
+    },
+  });
+  assert.equal((await missingGeneration.coordinator.resume()).phase, 'WAITING_FOR_WEB');
+});
+
 test('maps every public condition exactly and retries only transient failures', async () => {
   const cases = [
     [{ code: 'WEB_AUTH_REQUIRED' }, 'WAITING_FOR_WEB', 'WEB_LOGIN_REQUIRED', false],
     [{ code: 'WEB_TAB_UNAVAILABLE' }, 'WAITING_FOR_WEB', 'WEB_TAB_UNAVAILABLE', false],
     [{ code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' }, 'RETRY_WAIT', 'LOCAL_SERVICE_UNAVAILABLE', true],
     [{ code: 'COLLECTOR_AUTH_PERSISTENCE_FAILED' }, 'RETRY_WAIT', 'LOCAL_SERVICE_UNAVAILABLE', true],
-    [{ code: 'COLLECTOR_ACCOUNT_INACTIVE', status: 403 }, 'ACTION_REQUIRED', 'ACCOUNT_DISABLED', false],
-    [{ code: 'COLLECTOR_PARENT_SESSION_EXPIRED', status: 401 }, 'ACTION_REQUIRED', 'ACCOUNT_EXPIRED', false],
+    [{ code: 'COLLECTOR_ACCOUNT_DISABLED', status: 403 }, 'ACTION_REQUIRED', 'ACCOUNT_DISABLED', false],
+    [{ code: 'COLLECTOR_ACCOUNT_EXPIRED', status: 403 }, 'ACTION_REQUIRED', 'ACCOUNT_EXPIRED', false],
+    [{ code: 'COLLECTOR_PARENT_SESSION_EXPIRED', status: 401 }, 'WAITING_FOR_WEB', 'WEB_LOGIN_REQUIRED', false],
     [{ code: 'COLLECTOR_PERMISSION_DENIED', status: 403 }, 'ACTION_REQUIRED', 'PERMISSION_DENIED', false],
     [{ code: 'PORTAL_BRIDGE_FORBIDDEN', status: 403 }, 'ACTION_REQUIRED', 'TRUST_BOUNDARY_REJECTED', false],
     [{ code: 'COLLECTOR_AUTH_CONTRACT_UNSUPPORTED', status: 426 }, 'ACTION_REQUIRED', 'SERVER_UPGRADE_REQUIRED', false],
@@ -230,9 +301,9 @@ test('sub-thirty-second retry uses an exact in-memory timer and a durable thirty
   });
 
   assert.equal(Date.parse(status.nextRetryAt), start + 1_000);
-  assert.equal(harness.timers.length, 1);
-  assert.equal(harness.timers[0].milliseconds, 1_000);
-  assert.equal(harness.timers[0].cancelled, false);
+  const activeTimers = harness.timers.filter(({ cancelled }) => !cancelled);
+  assert.equal(activeTimers.length, 1);
+  assert.equal(activeTimers[0].milliseconds, 1_000);
   assert.deepEqual(harness.createdAlarms.at(-1), {
     name: ALARM_NAME,
     options: { when: start + 30_000 },
@@ -656,7 +727,8 @@ test('an old negative acknowledgement cannot release a replacement same-generati
   failNextStatusRead = true;
   oldWebRequest.resolve({ requested: false, publicCode: 'WEB_TAB_UNAVAILABLE' });
   await oldRetry;
-  assert.equal(failNextStatusRead, false);
+  assert.equal(failNextStatusRead, true, 'the fenced old request must not read replacement state');
+  harness.storageSession.get = originalGet;
 
   const resumed = await harness.coordinator.resume();
   assert.deepEqual(plain(resumed), plain(replacement));
@@ -840,6 +912,7 @@ test('a restarted coordinator resumes one due retry, restores a future alarm, or
   const authenticated = createHarness({
     initial: { [STORAGE_KEY]: retryStatus },
     session: {
+      generationId: G1,
       collectorToken: 'cst_credential_read_only_by_session_manager_123456789',
       account: { id: 'account-a', displayName: 'Account A', token: 'never' },
       permissions: ['collector.upload'],

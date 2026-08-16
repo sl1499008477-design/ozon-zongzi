@@ -323,7 +323,7 @@ test("inactive accounts are rejected before ticket issuance and during collector
       account: disabledAccount,
       parentSessionToken: PARENT_TOKEN,
     }),
-    (error) => error?.status === 403 && error?.code === "COLLECTOR_ACCOUNT_INACTIVE",
+    (error) => error?.status === 403 && error?.code === "COLLECTOR_ACCOUNT_DISABLED",
   );
 
   const harness = createHarness();
@@ -340,7 +340,32 @@ test("inactive accounts are rejected before ticket issuance and during collector
       collectorToken: exchanged.collectorToken,
       requiredPermission: "collector.upload",
     }),
-    (error) => error?.status === 403 && error?.code === "COLLECTOR_ACCOUNT_INACTIVE",
+    (error) => error?.status === 403 && error?.code === "COLLECTOR_ACCOUNT_DISABLED",
+  );
+});
+
+test("expired accounts and expired parent Web sessions retain distinct stable codes", async () => {
+  const expiredAccount = { ...ACTIVE_ACCOUNT, expiresAt: "2026-07-28T23:59:59.000Z" };
+  const accountHarness = createHarness({
+    repository: createFakeRepository({ account: expiredAccount }),
+  });
+  await assert.rejects(
+    accountHarness.service.issueTicket({
+      account: expiredAccount,
+      parentSessionToken: PARENT_TOKEN,
+    }),
+    (error) => error?.status === 403 && error?.code === "COLLECTOR_ACCOUNT_EXPIRED",
+  );
+
+  const parentHarness = createHarness();
+  const issued = await parentHarness.service.issueTicket({
+    account: ACTIVE_ACCOUNT,
+    parentSessionToken: PARENT_TOKEN,
+  });
+  parentHarness.repository.parentSessions.get(PARENT_TOKEN).expiresAt = "2026-07-28T23:59:59.000Z";
+  await assert.rejects(
+    parentHarness.service.exchangeTicket({ ticket: issued.ticket }),
+    (error) => error?.status === 401 && error?.code === "COLLECTOR_PARENT_SESSION_EXPIRED",
   );
 });
 
@@ -1037,12 +1062,16 @@ test("PostgreSQL session creation atomically inserts and supersedes only an exac
     created_at: START.toISOString(),
     superseded_count: "1",
   };
-  const pool = {
-    async query(sql, values) {
+  const client = {
+    async query(sql, values = []) {
       calls.push({ sql, values });
-      return { rows: [{ ...row }], rowCount: 1 };
+      if (/INSERT\s+INTO\s+collector_sessions/i.test(sql)) return { rows: [{ ...row }], rowCount: 1 };
+      if (/UPDATE\s+collector_sessions/i.test(sql)) return { rows: [{ id: "session_pg_old" }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
     },
+    release() { calls.push({ sql: "RELEASE", values: [] }); },
   };
+  const pool = { connect: async () => client, query: client.query.bind(client) };
   const repository = createPostgresCollectorAuthRepository({ pool });
 
   const result = await repository.createSession({
@@ -1060,19 +1089,18 @@ test("PostgreSQL session creation atomically inserts and supersedes only an exac
     createdAt: row.created_at,
   });
 
-  assert.equal(calls.length, 1);
-  assert.match(calls[0].sql, /WITH\s+inserted\s+AS\s*\([\s\S]*INSERT\s+INTO\s+collector_sessions/i);
-  assert.match(calls[0].sql, /superseded\s+AS\s*\([\s\S]*UPDATE\s+collector_sessions/i);
-  assert.match(calls[0].sql, /account_id\s*=\s*\$3/i);
-  assert.match(calls[0].sql, /device_fingerprint\s*=\s*\$5/i);
-  assert.match(calls[0].sql, /\$5\s*<>\s*''/i);
-  assert.match(calls[0].sql, /id\s*<>\s*\$1/i);
-  assert.match(calls[0].sql, /revoked_at\s+IS\s+NULL/i);
-  assert.doesNotMatch(calls[0].sql, /\bI?LIKE\b/i);
-  assert.equal(calls[0].values[0], row.id);
-  assert.equal(calls[0].values[2], ACTIVE_ACCOUNT.id);
-  assert.equal(calls[0].values[4], row.device_fingerprint);
-  assert.equal(calls[0].values[12], "SESSION_SUPERSEDED");
+  assert.deepEqual(calls.map(({ sql }) => sql.trim().split(/\s+/)[0]), [
+    "BEGIN", "SELECT", "INSERT", "UPDATE", "COMMIT", "RELEASE",
+  ]);
+  assert.match(calls[1].sql, /pg_advisory_xact_lock/i);
+  assert.equal(calls[1].values[0], `${ACTIVE_ACCOUNT.id}\u0000${row.device_fingerprint}`);
+  assert.match(calls[2].sql, /account\.status='active'/i);
+  assert.match(calls[3].sql, /account_id\s*=\s*\$1/i);
+  assert.match(calls[3].sql, /device_fingerprint\s*=\s*\$2/i);
+  assert.match(calls[3].sql, /id\s*<>\s*\$3/i);
+  assert.match(calls[3].sql, /revoked_at\s+IS\s+NULL/i);
+  assert.doesNotMatch(calls[3].sql, /\bI?LIKE\b/i);
+  assert.equal(calls[3].values[4], "SESSION_SUPERSEDED");
   assert.equal(result.session.id, row.id);
   assert.equal(result.supersededCount, 1);
 });
@@ -1084,19 +1112,18 @@ test("PostgreSQL zero-row insert cannot supersede an existing device session", a
     revokedReason: "",
   };
   const calls = [];
-  const pool = {
-    async query(sql, values) {
+  const client = {
+    async query(sql, values = []) {
       calls.push({ sql, values });
-      const supersededCte = sql.match(
-        /superseded\s+AS\s*\(([\s\S]*?)RETURNING\s+previous\.id\s*\)/i,
-      )?.[1] || "";
-      if (!/FROM\s+inserted\s+WHERE/i.test(supersededCte)) {
+      if (/UPDATE\s+collector_sessions/i.test(sql)) {
         existing.revokedAt = String(values[11]);
         existing.revokedReason = values[12];
       }
       return { rows: [], rowCount: 0 };
     },
+    release() { calls.push({ sql: "RELEASE", values: [] }); },
   };
+  const pool = { connect: async () => client, query: client.query.bind(client) };
   const repository = createPostgresCollectorAuthRepository({ pool });
 
   const result = await repository.createSession({
@@ -1114,19 +1141,107 @@ test("PostgreSQL zero-row insert cannot supersede an existing device session", a
     createdAt: START.toISOString(),
   });
 
-  assert.equal(calls.length, 1);
-  const supersededCte = calls[0].sql.match(
-    /superseded\s+AS\s*\(([\s\S]*?)RETURNING\s+previous\.id\s*\)/i,
-  )?.[1] || "";
-  assert.match(supersededCte, /UPDATE\s+collector_sessions\s+AS\s+previous/i);
-  assert.match(supersededCte, /FROM\s+inserted\s+WHERE/i);
-  assert.match(calls[0].sql, /SELECT\s+inserted\.\*[\s\S]*FROM\s+inserted\s*$/i);
+  assert.deepEqual(calls.map(({ sql }) => sql.trim().split(/\s+/)[0]), [
+    "BEGIN", "SELECT", "INSERT", "COMMIT", "RELEASE",
+  ]);
   assert.equal(result, null);
   assert.deepEqual(existing, {
     id: "session_pg_existing",
     revokedAt: null,
     revokedReason: "",
   });
+});
+
+test("PostgreSQL same-account/device concurrent session transactions serialize on one advisory lock", async () => {
+  const rows = [];
+  let lockTail = Promise.resolve();
+  const makeClient = () => {
+    let releaseLock = null;
+    return {
+      async query(sql, values = []) {
+        if (/^BEGIN/i.test(sql.trim())) return { rows: [] };
+        if (/pg_advisory_xact_lock/i.test(sql)) {
+          const predecessor = lockTail;
+          lockTail = new Promise((resolve) => { releaseLock = resolve; });
+          await predecessor;
+          return { rows: [] };
+        }
+        if (/INSERT\s+INTO\s+collector_sessions/i.test(sql)) {
+          const row = {
+            id: values[0], token_hash: values[1], account_id: values[2],
+            parent_session_token: values[3], device_fingerprint: values[4],
+            extension_version: values[5], permissions: JSON.parse(values[6]),
+            expires_at: values[7], revoked_at: null, revoked_reason: "",
+            last_seen_at: values[10], created_at: values[11],
+          };
+          rows.push(row);
+          return { rows: [row], rowCount: 1 };
+        }
+        if (/UPDATE\s+collector_sessions/i.test(sql)) {
+          const revoked = rows.filter((row) => row.account_id === values[0]
+            && row.device_fingerprint === values[1] && row.id !== values[2] && !row.revoked_at);
+          revoked.forEach((row) => { row.revoked_at = values[3]; row.revoked_reason = values[4]; });
+          return { rows: revoked.map(({ id }) => ({ id })), rowCount: revoked.length };
+        }
+        if (/^(COMMIT|ROLLBACK)/i.test(sql.trim())) {
+          releaseLock?.();
+          return { rows: [] };
+        }
+        throw new Error(`unexpected SQL ${sql}`);
+      },
+      release() {},
+    };
+  };
+  const pool = { connect: async () => makeClient(), query: async () => ({ rows: [] }) };
+  const repository = createPostgresCollectorAuthRepository({ pool });
+  const input = (id) => ({
+    id,
+    tokenHash: hashCollectorSecret(`cst_${id}_transaction_fixture`),
+    accountId: ACTIVE_ACCOUNT.id,
+    parentSessionToken: PARENT_TOKEN,
+    deviceFingerprint: "device-concurrent",
+    extensionVersion: "3.0.0",
+    permissions: [...COLLECTOR_PERMISSIONS],
+    expiresAt: "2026-07-29T08:00:00.000Z",
+    lastSeenAt: START.toISOString(),
+    createdAt: START.toISOString(),
+  });
+  const [first, second] = await Promise.all([
+    repository.createSession(input("session_concurrent_a")),
+    repository.createSession(input("session_concurrent_b")),
+  ]);
+  assert.deepEqual([first.supersededCount, second.supersededCount], [0, 1]);
+  assert.equal(rows.filter((row) => !row.revoked_at).length, 1);
+  assert.equal(rows.find((row) => row.revoked_at)?.revoked_reason, "SESSION_SUPERSEDED");
+});
+
+test("PostgreSQL session transaction rolls back and releases its fixed connection after failure", async () => {
+  const calls = [];
+  const client = {
+    async query(sql) {
+      calls.push(sql.trim().split(/\s+/)[0]);
+      if (/INSERT\s+INTO\s+collector_sessions/i.test(sql)) throw new Error("raw database detail");
+      return { rows: [], rowCount: 0 };
+    },
+    release() { calls.push("RELEASE"); },
+  };
+  const repository = createPostgresCollectorAuthRepository({
+    pool: { connect: async () => client, query: client.query.bind(client) },
+  });
+  await assert.rejects(repository.createSession({
+    id: "session_rollback",
+    tokenHash: hashCollectorSecret("cst_transaction_rollback_fixture"),
+    accountId: ACTIVE_ACCOUNT.id,
+    parentSessionToken: PARENT_TOKEN,
+    deviceFingerprint: "device-rollback",
+    extensionVersion: "3.0.0",
+    permissions: [...COLLECTOR_PERMISSIONS],
+    expiresAt: "2026-07-29T08:00:00.000Z",
+    lastSeenAt: START.toISOString(),
+    createdAt: START.toISOString(),
+  }), (error) => error?.code === "COLLECTOR_AUTH_PERSISTENCE_FAILED"
+    && !error.message.includes("raw database detail"));
+  assert.deepEqual(calls, ["BEGIN", "SELECT", "INSERT", "ROLLBACK", "RELEASE"]);
 });
 
 test("formal state mirroring ignores plaintext collector secret fields", async () => {
@@ -1352,10 +1467,12 @@ test("PostgreSQL repository redacts collector secrets from session metadata and 
   assert.equal(serializedParameters.includes(ticket), false);
   assert.equal(serializedParameters.includes(collectorToken), false);
   assert.equal(serializedParameters.includes("[REDACTED]"), true);
-  assert.equal(calls[0].values[4].includes(PARENT_TOKEN), false);
-  assert.equal(calls[0].values[5].includes(PARENT_TOKEN), false);
-  assert.equal(calls[0].values[9], "PARENT_SESSION_REVOKED");
-  assert.equal(calls[1].values[2], "PARENT_SESSION_REVOKED");
+  const insertCall = calls.find(({ sql }) => /INSERT\s+INTO\s+collector_sessions/i.test(sql));
+  const revokeCall = calls.find(({ sql }) => /WHERE\s+parent_session_token=\$1/i.test(sql));
+  assert.equal(insertCall.values[4].includes(PARENT_TOKEN), false);
+  assert.equal(insertCall.values[5].includes(PARENT_TOKEN), false);
+  assert.equal(insertCall.values[9], "PARENT_SESSION_REVOKED");
+  assert.equal(revokeCall.values[2], "PARENT_SESSION_REVOKED");
 });
 
 test("formal mirroring replaces database errors that contain collector-related secrets", async () => {

@@ -456,7 +456,7 @@ test("responds only to an exact same-window, same-origin request while logged in
   assert.equal(harness.hasListener(), false);
 });
 
-test("responds with the generation captured by the bridge that received the request", async () => {
+test("uninstall fences the late ticket result from the retired bridge generation", async () => {
   const harness = createWindowHarness();
   const responses = [];
   let resolveTicket;
@@ -487,7 +487,7 @@ test("responds with the generation captured by the bridge that received the requ
   await pendingResponse;
 
   const ticketResponse = responses.find((payload) => payload.action === COLLECTOR_AUTH_ACTIONS.response);
-  assert.equal(ticketResponse.generationId, "generation_A_1234");
+  assert.equal(ticketResponse, undefined);
 });
 
 test("does not request or post a ticket when the Web account is logged out", async () => {
@@ -604,6 +604,160 @@ test("shares one ticket request and one ticket response for equal active request
   ticket.resolve({ ticket: "ticket-one", expiresAt: "2099-01-01T00:00:00.000Z" });
   await Promise.all([firstResponse, secondResponse]);
   assert.equal(responses.filter(({ action }) => action === COLLECTOR_AUTH_ACTIONS.response).length, 1);
+});
+
+test("holds one global ticket lease across request IDs and keeps the completed identity for 30 seconds", async () => {
+  const harness = createWindowHarness();
+  const responses = [];
+  const timers = [];
+  let ticketRequests = 0;
+  installCollectorAuthBridge({
+    windowObject: harness.windowObject,
+    accountId: "account-a",
+    generationId: "generation_A_1234",
+    isLoggedIn: () => true,
+    requestTicket: async () => {
+      ticketRequests += 1;
+      return { ticket: "ticket-one", expiresAt: "2099-01-01T00:00:00.000Z" };
+    },
+    announceReady: false,
+    postResponse: (payload) => responses.push(payload),
+    setTimer(callback, delay) {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+
+  await harness.dispatch({
+    protocol: COLLECTOR_AUTH_PROTOCOL,
+    action: COLLECTOR_AUTH_ACTIONS.request,
+    requestId: "request-active",
+  });
+  await harness.dispatch({
+    protocol: COLLECTOR_AUTH_PROTOCOL,
+    action: COLLECTOR_AUTH_ACTIONS.request,
+    requestId: "request-ignored",
+  });
+  await harness.dispatch({
+    protocol: COLLECTOR_AUTH_PROTOCOL,
+    action: COLLECTOR_AUTH_ACTIONS.request,
+    requestId: "request-active",
+  });
+
+  assert.equal(ticketRequests, 1);
+  assert.equal(responses.filter(({ action }) => action === COLLECTOR_AUTH_ACTIONS.accepted).length, 1);
+  assert.equal(timers[0].delay, 30_000);
+  assert.equal(timers[0].cleared, false, "settlement must not erase the active lease identity");
+
+  timers[0].callback();
+  await harness.dispatch({
+    protocol: COLLECTOR_AUTH_PROTOCOL,
+    action: COLLECTOR_AUTH_ACTIONS.request,
+    requestId: "request-after-boundary",
+  });
+  assert.equal(ticketRequests, 2, "the exact 30-second boundary admits one new ticket promise");
+});
+
+test("an exact release closes the completed lease so exchange recovery can request a fresh ticket", async () => {
+  const harness = createWindowHarness();
+  let ticketRequests = 0;
+  installCollectorAuthBridge({
+    windowObject: harness.windowObject,
+    accountId: "account-a",
+    generationId: "generation_A_1234",
+    isLoggedIn: () => true,
+    requestTicket: async () => ({
+      ticket: `ticket-${++ticketRequests}`,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    }),
+    announceReady: false,
+    postResponse() {},
+  });
+  await harness.dispatch({
+    protocol: COLLECTOR_AUTH_PROTOCOL,
+    action: COLLECTOR_AUTH_ACTIONS.request,
+    requestId: "request-one",
+  });
+  await harness.dispatch({
+    protocol: COLLECTOR_AUTH_PROTOCOL,
+    action: "collector.auth.release",
+    requestId: "request-one",
+  });
+  await harness.dispatch({
+    protocol: COLLECTOR_AUTH_PROTOCOL,
+    action: COLLECTOR_AUTH_ACTIONS.request,
+    requestId: "request-two",
+  });
+  assert.equal(ticketRequests, 2);
+});
+
+test("posts a closed public failure envelope and aborts a hanging ticket request on uninstall", async () => {
+  const harness = createWindowHarness();
+  const responses = [];
+  let observedSignal = null;
+  const uninstall = installCollectorAuthBridge({
+    windowObject: harness.windowObject,
+    accountId: "account-a",
+    generationId: "generation_A_1234",
+    isLoggedIn: () => true,
+    requestTicket: ({ signal }) => {
+      observedSignal = signal;
+      return Promise.reject(Object.assign(new Error("ctt_secret raw failure"), {
+        code: "REQUEST_TIMEOUT",
+        status: 500,
+      }));
+    },
+    announceReady: false,
+    postResponse: (payload) => responses.push(payload),
+  });
+
+  await harness.dispatch({
+    protocol: COLLECTOR_AUTH_PROTOCOL,
+    action: COLLECTOR_AUTH_ACTIONS.request,
+    requestId: "request-failure",
+  });
+  assert.deepEqual(responses.at(-1), {
+    protocol: COLLECTOR_AUTH_PROTOCOL,
+    action: "collector.auth.failure",
+    requestId: "request-failure",
+    generationId: "generation_A_1234",
+    publicCode: "LOCAL_SERVICE_UNAVAILABLE",
+  });
+  assert.doesNotMatch(JSON.stringify(responses), /ctt_secret|raw failure/);
+  uninstall();
+  assert.equal(observedSignal.aborted, true);
+});
+
+test("maps parent-session expiry and account lifecycle failures to distinct public codes", async () => {
+  const cases = [
+    ["COLLECTOR_PARENT_SESSION_EXPIRED", 0, "WEB_LOGIN_REQUIRED"],
+    ["COLLECTOR_ACCOUNT_EXPIRED", 403, "ACCOUNT_EXPIRED"],
+    ["COLLECTOR_ACCOUNT_DISABLED", 403, "ACCOUNT_DISABLED"],
+  ];
+  for (const [code, status, publicCode] of cases) {
+    const harness = createWindowHarness();
+    const responses = [];
+    installCollectorAuthBridge({
+      windowObject: harness.windowObject,
+      accountId: "account-a",
+      generationId: "generation_A_1234",
+      isLoggedIn: () => true,
+      requestTicket: async () => {
+        throw Object.assign(new Error("private server detail"), { code, status });
+      },
+      announceReady: false,
+      postResponse: (payload) => responses.push(payload),
+    });
+    await harness.dispatch({
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: COLLECTOR_AUTH_ACTIONS.request,
+      requestId: `request-${publicCode}`,
+    });
+    assert.equal(responses.at(-1).publicCode, publicCode);
+    assert.doesNotMatch(JSON.stringify(responses), /private server detail/);
+  }
 });
 
 test("supersedes an expired request lease and ignores its late ticket result", async () => {

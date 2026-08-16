@@ -83,6 +83,7 @@ function loadServiceWorker({
   const alarmClears = [];
   const tabMessages = [];
   const importedEntries = [];
+  const scheduledTimeouts = [];
   const local = createStorageArea();
   const session = createStorageArea(initialSession);
   const sessionGet = session.get.bind(session);
@@ -169,7 +170,7 @@ function loadServiceWorker({
     btoa,
     chrome,
     clearInterval() {},
-    clearTimeout() {},
+    clearTimeout(timer) { if (timer) timer.cancelled = true; },
     console: { error() {}, info() {}, log() {}, warn() {} },
     crypto: webcrypto,
     fetch: async () => new Response(JSON.stringify({ ok: true }), {
@@ -184,7 +185,11 @@ function loadServiceWorker({
       userAgent: 'service-worker-collector-auth-test',
     },
     setInterval() { return 1; },
-    setTimeout() { return 1; },
+    setTimeout(callback, milliseconds) {
+      const timer = { callback, milliseconds, cancelled: false };
+      scheduledTimeouts.push(timer);
+      return timer;
+    },
   });
   context.globalThis = context;
   context.self = context;
@@ -233,6 +238,7 @@ function loadServiceWorker({
     runtimeOnMessage,
     runtimeOnStartup,
     session,
+    scheduledTimeouts,
     tabMessages,
   };
 }
@@ -496,6 +502,47 @@ test('trusted normalized accepted and existing begin/exchange routes update stat
   status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
   assert.equal(status.data.phase, 'WAITING_FOR_WEB');
   assert.equal(status.data.publicCode, 'WEB_LOGIN_REQUIRED');
+});
+
+test('closed Web failure reaches coordinator and exchange outer budget survives the 50-60 second window', async () => {
+  let resolveExchange;
+  const exchangeResult = new Promise((resolve) => { resolveExchange = resolve; });
+  const harness = loadServiceWorker({
+    activationResult: { changed: true, reused: false, authenticated: false },
+    exchangeResult,
+  });
+  await sendCollectorBegin(harness);
+  const failure = await sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.failure',
+    generationId: 'generation_A_1234',
+    publicCode: 'WEB_LOGIN_REQUIRED',
+  }, trustedSender);
+  assert.deepEqual(JSON.parse(JSON.stringify(failure)), { ok: true });
+  assert.equal((await sendRuntime(harness, { action: 'getCollectorAuthStatus' })).data.publicCode, 'WEB_LOGIN_REQUIRED');
+
+  await sendCollectorBegin(harness);
+  const timeoutCountBeforeExchange = harness.scheduledTimeouts.length;
+  const pending = sendRuntime(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'request-budget',
+    generationId: 'generation_A_1234',
+    ticket: 'ctt_budget_only_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedSender);
+  await waitFor(() => harness.exchangeCalls.length === 1);
+  const exchangeTimeouts = harness.scheduledTimeouts.slice(timeoutCountBeforeExchange);
+  const outerBudget = exchangeTimeouts.find(({ milliseconds }) => milliseconds >= 60_000);
+  assert.ok(outerBudget && outerBudget.milliseconds > 60_000);
+  assert.equal(exchangeTimeouts.some(({ milliseconds }) => milliseconds === 50_000), false);
+  resolveExchange({
+    collectorToken: 'cst_budget_only_123456789',
+    account: { id: 'account-a', displayName: 'Account A' },
+    permissions: ['collector.upload'],
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  });
+  assert.equal((await pending).ok, true);
 });
 
 test('transient exchange failure schedules retry and duplicate alarm resumes are single-flight', async () => {

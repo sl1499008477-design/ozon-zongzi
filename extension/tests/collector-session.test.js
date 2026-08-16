@@ -176,6 +176,25 @@ test('expired collector sessions are cleared from session storage', async () => 
   assert.equal(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
 });
 
+test('cold-start auth snapshot requires one valid generation and exposes no credential', async () => {
+  const harness = createHarness();
+  await harness.manager.setCollectorSession(validSession());
+  assert.equal(await harness.manager.getCollectorAuthSnapshot(), null);
+
+  await harness.manager.activateCollectorGeneration({
+    generationId: 'generation_snapshot_1234',
+    accountIdHint: 'account-a',
+  });
+  const snapshot = await harness.manager.getCollectorAuthSnapshot();
+  assert.deepEqual(snapshot, {
+    generationId: 'generation_snapshot_1234',
+    account: { id: 'account-a', displayName: 'A' },
+    permissions: [...COLLECTOR_PERMISSIONS],
+    expiresAt: '2030-01-01T01:00:00.000Z',
+  });
+  assert.equal(JSON.stringify(snapshot).includes('cst_collector_secret'), false);
+});
+
 test('activating a new Collector generation clears the previous session and is idempotent', async () => {
   const harness = createHarness();
   await harness.manager.setCollectorSession(validSession());

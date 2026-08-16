@@ -115,7 +115,7 @@ function postgresRuntimeHarness() {
       return { outcome: "consumed", ticket: contextFor(record) };
     },
     async createSession(record) {
-      return contextFor(record);
+      return { session: contextFor(record), supersededCount: 2 };
     },
     async findActiveSession() {
       return null;
@@ -408,9 +408,32 @@ test("PostgreSQL ticket issue and exchange use focused audits without legacy sta
   assert.match(harness.audits[0].entityId, /^ctkt_/);
   assert.match(harness.audits[1].entityId, /^csess_/);
   const serializedMetadata = JSON.stringify(harness.audits.map((event) => event.metadata));
+  assert.equal(harness.audits[1].metadata.superseded, 2);
   for (const secret of [issued.body.ticket, exchanged.body.collectorToken, WEB_TOKEN]) {
     assert.equal(serializedMetadata.includes(secret), false);
   }
+});
+
+test("JSON Collector exchange audit persists a numeric superseded count without credentials", async () => {
+  const state = initialState();
+  const runtime = jsonRuntime(state);
+  const issued = await request(runtime, "POST", "/extension/collector-auth/ticket", {
+    authorization: `Bearer ${WEB_TOKEN}`,
+  });
+  const exchanged = await request(runtime, "POST", "/extension/collector-auth/exchange", {
+    body: {
+      ticket: issued.body.ticket,
+      deviceFingerprint: "json-audit-device",
+      extensionVersion: "3.0.0-json-audit",
+    },
+  });
+  const audit = state.auditEvents.find((event) => event.action === "COLLECTOR_TICKET_EXCHANGED");
+  assert.equal(typeof audit.metadata.superseded, "number");
+  assert.equal(audit.metadata.superseded, 0);
+  const serialized = JSON.stringify(audit.metadata);
+  assert.equal(serialized.includes(issued.body.ticket), false);
+  assert.equal(serialized.includes(exchanged.body.collectorToken), false);
+  assert.equal(serialized.includes("json-audit-device"), false);
 });
 
 test("PostgreSQL repository initialization retries after failure and retains successful single-flight", async () => {
@@ -510,4 +533,47 @@ test("PostgreSQL repository initialization retries after failure and retains suc
   );
   assert.equal(retained.status, 200);
   assert.equal(initializationAttempts, 2);
+});
+
+test("default PostgreSQL first ticket loads legacy Web auth state once before focused repository work", async () => {
+  const state = initialState();
+  const phases = [];
+  let loadCalls = 0;
+  const pool = {
+    async query(sql, values) {
+      phases.push(/INSERT\s+INTO\s+collector_auth_tickets/i.test(sql) ? "ticket-insert" : "other-sql");
+      if (/INSERT\s+INTO\s+collector_auth_tickets/i.test(sql)) {
+        return {
+          rows: [{
+            id: values[0], ticket_hash: values[1], account_id: values[2],
+            parent_session_token: values[3], permissions: JSON.parse(values[4]),
+            expires_at: values[5], consumed_at: values[6], created_at: values[7],
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    },
+  };
+  const runtime = createCollectorAuthRuntime({
+    async loadState() {
+      loadCalls += 1;
+      phases.push("web-auth-state");
+      return structuredClone(state);
+    },
+    async saveState() {},
+    persistenceMode: () => "postgres",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => false }),
+    postgresPool: pool,
+    async insertAuditEvent() { phases.push("focused-audit"); },
+    readJson,
+    sendJson,
+  });
+
+  const issued = await request(runtime, "POST", "/extension/collector-auth/ticket", {
+    authorization: `Bearer ${WEB_TOKEN}`,
+  });
+  assert.equal(issued.status, 200);
+  assert.equal(loadCalls, 1);
+  assert.deepEqual(phases, ["web-auth-state", "ticket-insert", "focused-audit"]);
 });

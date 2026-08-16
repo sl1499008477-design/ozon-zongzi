@@ -55,6 +55,10 @@
       policy.createCollectorAuthRequest(requestId),
       window.location.origin,
     ),
+    releaseRequest: (requestId) => window.postMessage(
+      policy.createCollectorAuthRelease(requestId),
+      window.location.origin,
+    ),
     beginGeneration: (generationId, accountIdHint) => sendRuntime('collector.auth.begin', {
       generationId,
       ...(accountIdHint ? { accountIdHint } : {}),
@@ -65,6 +69,10 @@
     exchangeTicket: ({ requestId, generationId, ticket, expiresAt }) => sendRuntime(
       'collector.auth.exchange',
       { requestId, generationId, ticket, expiresAt },
+    ),
+    failAuthentication: ({ generationId, publicCode }) => sendRuntime(
+      'collector.auth.failure',
+      { generationId, publicCode },
     ),
     setTimer: (callback, milliseconds) => setTimeout(callback, milliseconds),
     clearTimer: (timer) => clearTimeout(timer),
@@ -95,6 +103,11 @@
     if (accepted) {
       const outcome = flow.handleAccepted(accepted);
       if (outcome?.accepted === true) void forwardAccepted(accepted);
+      return;
+    }
+    const failure = policy.normalizeCollectorAuthFailure(event.data);
+    if (failure) {
+      await flow.handleFailure(failure);
       return;
     }
     const response = policy.normalizeCollectorAuthResponse(event.data);
