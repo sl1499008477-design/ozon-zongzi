@@ -86,6 +86,85 @@ function jsonRuntime(state) {
   });
 }
 
+function postgresRuntimeHarness() {
+  const state = initialState();
+  const tickets = new Map();
+  const audits = [];
+  let initialized = false;
+  let legacyReadsAfterInitialization = 0;
+  let legacyWritesAfterInitialization = 0;
+
+  const contextFor = (record) => ({
+    ...record,
+    account: structuredClone(ACCOUNT),
+    parentSession: {
+      accountId: ACCOUNT.id,
+      expiresAt: state.sessions[WEB_TOKEN].expiresAt,
+      revokedAt: null,
+    },
+  });
+  const repository = {
+    async createTicket(record) {
+      tickets.set(record.ticketHash, structuredClone(record));
+      return contextFor(record);
+    },
+    async consumeTicketAtomically({ ticketHash, now }) {
+      const record = tickets.get(ticketHash);
+      if (!record) return { outcome: "not_found" };
+      record.consumedAt = now.toISOString();
+      return { outcome: "consumed", ticket: contextFor(record) };
+    },
+    async createSession(record) {
+      return contextFor(record);
+    },
+    async findActiveSession() {
+      return null;
+    },
+    async touchSession() {
+      return false;
+    },
+    async revokeSessions() {
+      return 0;
+    },
+  };
+
+  const runtime = createCollectorAuthRuntime({
+    async loadState() {
+      if (initialized) {
+        legacyReadsAfterInitialization += 1;
+        throw new Error("legacy state read after PostgreSQL repository initialization");
+      }
+      return structuredClone(state);
+    },
+    async saveState() {
+      if (initialized) {
+        legacyWritesAfterInitialization += 1;
+        throw new Error("legacy state write after PostgreSQL repository initialization");
+      }
+    },
+    persistenceMode: () => "postgres",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => false }),
+    async initializePostgresRepository() {
+      initialized = true;
+      return repository;
+    },
+    async insertAuditEvent(event) {
+      audits.push(structuredClone(event));
+    },
+    readJson,
+    sendJson,
+  });
+
+  return {
+    runtime,
+    audits,
+    legacyAttempts: () => ({
+      reads: legacyReadsAfterInitialization,
+      writes: legacyWritesAfterInitialization,
+    }),
+  };
+}
+
 test("authenticateSessionRequest returns the safe full session for Ozon reads without Collector or Web secrets", async () => {
   const state = initialState();
   const runtime = jsonRuntime(state);
@@ -282,6 +361,58 @@ test("shared JSON transaction preserves collector writes and background object c
   );
 });
 
+test("PostgreSQL ticket issue and exchange use focused audits without legacy state hydration", async () => {
+  const harness = postgresRuntimeHarness();
+  const issued = await request(
+    harness.runtime,
+    "POST",
+    "/extension/collector-auth/ticket",
+    { authorization: `Bearer ${WEB_TOKEN}` },
+  );
+  const exchanged = await request(
+    harness.runtime,
+    "POST",
+    "/extension/collector-auth/exchange",
+    {
+      body: {
+        ticket: issued.body.ticket,
+        deviceFingerprint: "postgres-device",
+        extensionVersion: "3.0.0-postgres",
+      },
+    },
+  );
+
+  assert.equal(issued.status, 200);
+  assert.equal(exchanged.status, 200);
+  assert.deepEqual(exchanged.body.account, {
+    id: ACCOUNT.id,
+    displayName: ACCOUNT.displayName,
+  });
+  assert.deepEqual(harness.legacyAttempts(), { reads: 0, writes: 0 });
+  assert.deepEqual(
+    harness.audits.map(({ action, status, accountId }) => ({ action, status, accountId })),
+    [{
+      action: "COLLECTOR_TICKET_ISSUED",
+      status: "SUCCESS",
+      accountId: ACCOUNT.id,
+    }, {
+      action: "COLLECTOR_TICKET_EXCHANGED",
+      status: "SUCCESS",
+      accountId: ACCOUNT.id,
+    }],
+  );
+  assert.deepEqual(
+    harness.audits.map(({ entityType }) => entityType),
+    ["collector_auth_ticket", "collector_auth_ticket"],
+  );
+  assert.match(harness.audits[0].entityId, /^ctkt_/);
+  assert.match(harness.audits[1].entityId, /^csess_/);
+  const serializedMetadata = JSON.stringify(harness.audits.map((event) => event.metadata));
+  for (const secret of [issued.body.ticket, exchanged.body.collectorToken, WEB_TOKEN]) {
+    assert.equal(serializedMetadata.includes(secret), false);
+  }
+});
+
 test("PostgreSQL repository initialization retries after failure and retains successful single-flight", async () => {
   const state = initialState();
   let loadCalls = 0;
@@ -340,6 +471,7 @@ test("PostgreSQL repository initialization retries after failure and retains suc
       enabled: () => false,
     }),
     initializePostgresRepository,
+    insertAuditEvent: async () => {},
     readJson,
     sendJson,
   });

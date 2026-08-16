@@ -91,6 +91,13 @@ function sessionRecord(value = {}) {
 function accountFrom(value = {}) {
   return {
     id: String(value.accountId ?? value.account_id ?? value.account?.id ?? ""),
+    displayName: String(
+      value.accountDisplayName
+      ?? value.account_display_name
+      ?? value.account?.displayName
+      ?? value.account?.username
+      ?? "",
+    ),
     status: String(value.accountStatus ?? value.account_status ?? value.account?.status ?? "active"),
     expiresAt: iso(value.accountExpiresAt ?? value.account_expires_at ?? value.account?.expiresAt),
   };
@@ -381,6 +388,7 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
         )
         SELECT consumed.*,
                account.status AS account_status,
+               account.display_name AS account_display_name,
                account.expires_at AS account_expires_at,
                parent.expires_at AS parent_session_expires_at,
                parent.revoked_at AS parent_session_revoked_at
@@ -400,6 +408,7 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
       `
         SELECT ticket.*,
                account.status AS account_status,
+               account.display_name AS account_display_name,
                account.expires_at AS account_expires_at,
                parent.expires_at AS parent_session_expires_at,
                parent.revoked_at AS parent_session_revoked_at

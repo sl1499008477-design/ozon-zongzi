@@ -116,6 +116,13 @@ function publicSession(record) {
   };
 }
 
+function publicAccount(account, accountId) {
+  return {
+    id: String(account?.id || accountId || ""),
+    displayName: String(account?.displayName || account?.username || ""),
+  };
+}
+
 export function createCollectorAuthService({
   repository,
   now = () => new Date(),
@@ -263,6 +270,7 @@ export function createCollectorAuthService({
     return {
       collectorToken,
       ...publicSession(sessionRecord),
+      account: publicAccount(ticketRecord.account, sessionRecord.accountId),
     };
   }
 

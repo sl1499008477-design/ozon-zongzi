@@ -5,7 +5,11 @@ import {
   isAccountExpired,
   requireAuth,
 } from "./account-context.mjs";
-import { appendAuditEvent } from "./audit-event.mjs";
+import {
+  appendAuditEvent,
+  createAuditEvent,
+  insertPostgresAuditEvent,
+} from "./audit-event.mjs";
 import {
   createJsonCollectorAuthRepository,
   createPostgresCollectorAuthRepository,
@@ -51,6 +55,7 @@ export function createCollectorAuthRuntime({
   persistenceMode,
   stateTransaction,
   initializePostgresRepository,
+  insertAuditEvent,
   readJson,
   sendJson,
 } = {}) {
@@ -94,6 +99,10 @@ export function createCollectorAuthRuntime({
     return postgresRepositoryPromise;
   }
 
+  const writePostgresAuditEvent = insertAuditEvent || (async (event) => (
+    insertPostgresAuditEvent(await getPostgresPool(), event)
+  ));
+
   async function callRepository(method, input) {
     if (persistenceMode() === "postgres") {
       return (await postgresRepository())[method](input);
@@ -119,25 +128,30 @@ export function createCollectorAuthRuntime({
   async function audit(event = {}) {
     const action = auditAction(event);
     if (!action) return;
-    await runStateTransaction(async (state) => {
-      appendAuditEvent(state, {
-        action,
-        status: action === "COLLECTOR_SESSION_REJECTED" ? "FAILED" : "SUCCESS",
-        accountId: String(event.accountId || ""),
-        source: "extension",
-        actorType: "collector_auth",
-        actorId: String(event.accountId || ""),
-        entityType: event.ticketId ? "collector_auth_ticket" : "collector_session",
-        entityId: String(event.collectorSessionId || event.ticketId || ""),
-        metadata: {
-          outcome: String(event.outcome || ""),
-          expiresAt: String(event.expiresAt || ""),
-          requiredPermission: String(event.requiredPermission || ""),
-          revoked: Number(event.revoked || 0),
-        },
-      });
-      await saveState(state);
+    const auditEvent = createAuditEvent({
+      action,
+      status: action === "COLLECTOR_SESSION_REJECTED" ? "FAILED" : "SUCCESS",
+      accountId: String(event.accountId || ""),
+      source: "extension",
+      actorType: "collector_auth",
+      actorId: String(event.accountId || ""),
+      entityType: event.ticketId ? "collector_auth_ticket" : "collector_session",
+      entityId: String(event.collectorSessionId || event.ticketId || ""),
+      metadata: {
+        outcome: String(event.outcome || ""),
+        expiresAt: String(event.expiresAt || ""),
+        requiredPermission: String(event.requiredPermission || ""),
+        revoked: Number(event.revoked || 0),
+      },
     });
+    if (persistenceMode() === "postgres") {
+      await writePostgresAuditEvent(auditEvent);
+    } else {
+      await runStateTransaction(async (state) => {
+        appendAuditEvent(state, auditEvent);
+        await saveState(state);
+      });
+    }
     if (
       event.action === "collector.session.authenticate"
       && event.outcome === "collector_account_inactive"
@@ -176,7 +190,7 @@ export function createCollectorAuthRuntime({
 
   const httpService = Object.freeze({
     issueTicket: (input) => service.issueTicket(input),
-    exchangeTicket: async (input) => withAccount(await service.exchangeTicket(input)),
+    exchangeTicket: (input) => service.exchangeTicket(input),
     authenticate: async (input) => withAccount(await service.authenticate(input)),
   });
   const handleHttpRoute = createCollectorAuthHttpHandler({

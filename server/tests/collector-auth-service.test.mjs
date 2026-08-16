@@ -199,6 +199,35 @@ test("collector session expires after eight hours when the parent session lasts 
   assert.equal(exchanged.expiresAt, "2026-07-29T08:00:00.000Z");
 });
 
+test("exchange returns only the public account projection from repository context", async () => {
+  const account = {
+    id: "account-a",
+    displayName: "账号 A",
+    username: "private-username",
+    role: "admin",
+    status: "active",
+    expiresAt: "2026-08-29T00:00:00.000Z",
+  };
+  const harness = createHarness({
+    repository: createFakeRepository({ account }),
+  });
+  const issued = await harness.service.issueTicket({
+    account,
+    parentSessionToken: PARENT_TOKEN,
+  });
+
+  const exchanged = await harness.service.exchangeTicket({
+    ticket: issued.ticket,
+    deviceFingerprint: "device-fingerprint",
+    extensionVersion: "3.0.0",
+  });
+
+  assert.deepEqual(exchanged.account, {
+    id: "account-a",
+    displayName: "账号 A",
+  });
+});
+
 test("a parent web session without an expiry still caps the collector session at eight hours", async () => {
   const harness = createHarness({ parentExpiresAt: null });
 
@@ -758,6 +787,7 @@ test("PostgreSQL repository lets the conditional UPDATE decide ticket consumptio
     consumed_at: null,
     created_at: START.toISOString(),
     account_status: "active",
+    account_display_name: "账号 A",
     account_expires_at: ACTIVE_ACCOUNT.expiresAt,
     parent_session_expires_at: "2026-07-30T00:00:00.000Z",
     parent_session_revoked_at: null,
@@ -783,6 +813,12 @@ test("PostgreSQL repository lets the conditional UPDATE decide ticket consumptio
   const second = await repository.consumeTicketAtomically({ ticketHash, now: START });
 
   assert.equal(first.outcome, "consumed");
+  assert.deepEqual(first.ticket.account, {
+    id: ACTIVE_ACCOUNT.id,
+    displayName: "账号 A",
+    status: "active",
+    expiresAt: ACTIVE_ACCOUNT.expiresAt,
+  });
   assert.equal(second.outcome, "used");
   assert.match(operations[0].sql, /UPDATE\s+collector_auth_tickets/i);
   assert.match(operations[0].sql, /consumed_at\s+IS\s+NULL/i);
