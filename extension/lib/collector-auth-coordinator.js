@@ -282,10 +282,11 @@
     }
 
     let operationPromise = null;
-    let activeRequestGenerationId = null;
+    let activeRequestLease = null;
     let requestFence = 0;
     let retryTimer = null;
     let statusMutationTail = Promise.resolve();
+    let transitionVersion = 0;
 
     const serializeStatusMutation = (operation) => {
       const run = statusMutationTail.then(operation, operation);
@@ -305,9 +306,8 @@
       }
       await clearRetryAlarm();
     };
-    const scheduleRetry = async (when) => {
+    const scheduleRetry = async (when, currentTime = Number(now())) => {
       await clearRetrySchedule();
-      const currentTime = Number(now());
       const delay = Math.max(0, when - currentTime);
       if (delay < 30_000) {
         retryTimer = setTimer(
@@ -339,13 +339,22 @@
     const fenceActiveRequest = (generationId, replace = false) => {
       const normalizedGenerationId = String(generationId || '');
       if (
-        activeRequestGenerationId !== null
-        && (replace || activeRequestGenerationId === normalizedGenerationId)
+        activeRequestLease !== null
+        && (replace || activeRequestLease.generationId === normalizedGenerationId)
       ) requestFence += 1;
     };
-    const releaseRequestLease = (generationId) => {
-      if (activeRequestGenerationId !== String(generationId || '')) return;
-      activeRequestGenerationId = null;
+    const replaceRequestLease = (generationId) => {
+      const lease = Object.freeze({ generationId: String(generationId || '') });
+      activeRequestLease = lease;
+      return lease;
+    };
+    const clearRequestLeaseForGeneration = (generationId) => {
+      if (activeRequestLease?.generationId !== String(generationId || '')) return;
+      activeRequestLease = null;
+    };
+    const releaseRequestLease = (lease) => {
+      if (activeRequestLease !== lease) return;
+      activeRequestLease = null;
       requestFence += 1;
     };
     const retryDelay = (attemptNumber) => {
@@ -381,7 +390,8 @@
           account: null,
           expiresAt: '',
         });
-        activeRequestGenerationId = normalizedGenerationId;
+        transitionVersion += 1;
+        replaceRequestLease(normalizedGenerationId);
         return status;
       });
     };
@@ -408,7 +418,8 @@
           account: null,
           expiresAt: '',
         });
-        activeRequestGenerationId = current.generationId;
+        transitionVersion += 1;
+        replaceRequestLease(current.generationId);
         return status;
       });
     };
@@ -428,7 +439,8 @@
           account: null,
           expiresAt: '',
         });
-        activeRequestGenerationId = current.generationId;
+        transitionVersion += 1;
+        replaceRequestLease(current.generationId);
         return status;
       });
     };
@@ -450,20 +462,22 @@
           account: safeAccount(account),
           expiresAt: safeIso(expiresAt),
         });
-        if (activeRequestGenerationId === current.generationId) {
-          activeRequestGenerationId = null;
-        }
+        transitionVersion += 1;
+        clearRequestLeaseForGeneration(current.generationId);
         return status;
       });
     };
 
-    const fail = ({ generationId, error } = {}) => {
-      fenceActiveRequest(generationId);
+    const applyFailure = ({ generationId, error } = {}, requestLease = null) => {
+      if (requestLease === null) fenceActiveRequest(generationId);
+      else if (activeRequestLease === requestLease) requestFence += 1;
       return serializeStatusMutation(async () => {
         const current = await readStatus();
+        if (requestLease !== null && activeRequestLease !== requestLease) return current;
         if (!generationIsCurrent(current, generationId)) return current;
         const classification = classifyFailure(error);
-        const timestamp = currentIso();
+        const transitionTime = Number(now());
+        const timestamp = new Date(transitionTime).toISOString();
         if (!classification.retry) {
           await clearRetrySchedule();
           const status = await writeStatus({
@@ -475,13 +489,12 @@
             account: null,
             expiresAt: '',
           });
-          if (activeRequestGenerationId === current.generationId) {
-            activeRequestGenerationId = null;
-          }
+          transitionVersion += 1;
+          clearRequestLeaseForGeneration(current.generationId);
           return status;
         }
         const attemptNumber = current.attemptNumber + 1;
-        const when = Number(now()) + retryDelay(attemptNumber);
+        const when = transitionTime + retryDelay(attemptNumber);
         const status = await writeStatus({
           ...current,
           phase: 'RETRY_WAIT',
@@ -492,15 +505,19 @@
           account: null,
           expiresAt: '',
         });
-        await scheduleRetry(when);
-        if (activeRequestGenerationId === current.generationId) {
-          activeRequestGenerationId = null;
-        }
+        transitionVersion += 1;
+        await scheduleRetry(when, transitionTime);
+        clearRequestLeaseForGeneration(current.generationId);
         return status;
       });
     };
+    const fail = (input) => applyFailure(input);
 
-    const runRequest = ({ expectedGenerationId = null, resumeOnly = false } = {}) => {
+    const runRequest = ({
+      expectedGenerationId = null,
+      expectedTransitionVersion = null,
+      resumeOnly = false,
+    } = {}) => {
       if (operationPromise) return operationPromise;
       const operation = (async () => {
         const start = await serializeStatusMutation(async () => {
@@ -509,6 +526,7 @@
             resumeOnly
             && (
               current.generationId !== expectedGenerationId
+              || transitionVersion !== expectedTransitionVersion
               || ![
                 'DISCOVERING_WEB',
                 'REQUESTING_TICKET',
@@ -518,7 +536,7 @@
             )
           ) return { shouldRequest: false, status: current };
           if (
-            activeRequestGenerationId === current.generationId
+            activeRequestLease?.generationId === current.generationId
             && ['DISCOVERING_WEB', 'REQUESTING_TICKET', 'EXCHANGING'].includes(current.phase)
           ) return { shouldRequest: false, status: current };
           const timestamp = currentIso();
@@ -534,11 +552,14 @@
             account: null,
             expiresAt: '',
           });
-          activeRequestGenerationId = status.generationId;
+          transitionVersion += 1;
+          const requestLease = replaceRequestLease(status.generationId);
           return {
             fence: requestFence,
+            requestLease,
             shouldRequest: true,
             status,
+            transitionVersion,
           };
         });
         if (!start.shouldRequest) return { requested: false, status: start.status };
@@ -546,8 +567,9 @@
         const authorized = await serializeStatusMutation(async () => {
           const latest = await readStatus();
           return {
-            allowed: activeRequestGenerationId === discovering.generationId
+            allowed: activeRequestLease === start.requestLease
               && requestFence === start.fence
+              && transitionVersion === start.transitionVersion
               && latest.generationId === discovering.generationId
               && latest.phase === 'DISCOVERING_WEB',
             status: latest,
@@ -556,7 +578,8 @@
         if (
           !authorized.allowed
           || requestFence !== start.fence
-          || activeRequestGenerationId !== discovering.generationId
+          || transitionVersion !== start.transitionVersion
+          || activeRequestLease !== start.requestLease
         ) {
           return { requested: false, status: authorized.status };
         }
@@ -566,10 +589,13 @@
         } catch (error) {
           let status = discovering;
           try {
-            status = await fail({ generationId: discovering.generationId, error });
+            status = await applyFailure({
+              generationId: discovering.generationId,
+              error,
+            }, start.requestLease);
           } catch {}
           finally {
-            releaseRequestLease(discovering.generationId);
+            releaseRequestLease(start.requestLease);
           }
           return { requested: false, status };
         }
@@ -577,13 +603,13 @@
         if (!requested) {
           let status = discovering;
           try {
-            status = await fail({
+            status = await applyFailure({
               generationId: discovering.generationId,
               error: { code: result?.publicCode || 'WEB_TAB_UNAVAILABLE' },
-            });
+            }, start.requestLease);
           } catch {}
           finally {
-            releaseRequestLease(discovering.generationId);
+            releaseRequestLease(start.requestLease);
           }
           return { requested: false, status };
         }
@@ -600,12 +626,19 @@
     const retryNow = () => runRequest();
 
     const resume = async () => {
-      const initial = await getStatus();
+      const initialSnapshot = await serializeStatusMutation(async () => ({
+        status: await readStatus(),
+        transitionVersion,
+      }));
+      const initial = initialSnapshot.status;
       let session = null;
       try { session = await getSession(); } catch {}
       const decision = await serializeStatusMutation(async () => {
         const latest = await readStatus();
-        if (latest.generationId !== initial.generationId) {
+        if (
+          transitionVersion !== initialSnapshot.transitionVersion
+          || latest.generationId !== initial.generationId
+        ) {
           return { request: false, status: latest };
         }
         const unchanged = JSON.stringify(latest) === JSON.stringify(initial);
@@ -624,9 +657,8 @@
             account: safeAccount(session.account),
             expiresAt: safeIso(session.expiresAt),
           });
-          if (activeRequestGenerationId === latest.generationId) {
-            activeRequestGenerationId = null;
-          }
+          transitionVersion += 1;
+          clearRequestLeaseForGeneration(latest.generationId);
           return { request: false, status };
         }
         if (latest.phase === 'ACTION_REQUIRED' || latest.phase === 'WAITING_FOR_WEB') {
@@ -644,15 +676,15 @@
             account: null,
             expiresAt: '',
           });
-          if (activeRequestGenerationId === latest.generationId) {
-            activeRequestGenerationId = null;
-          }
+          transitionVersion += 1;
+          clearRequestLeaseForGeneration(latest.generationId);
           return { request: false, status };
         }
         if (latest.phase === 'RETRY_WAIT') {
           const when = Date.parse(latest.nextRetryAt);
-          if (Number.isFinite(when) && when > Number(now())) {
-            await scheduleRetry(when);
+          const currentTime = Number(now());
+          if (Number.isFinite(when) && when > currentTime) {
+            await scheduleRetry(when, currentTime);
             return { request: false, status: latest };
           }
         }
@@ -663,14 +695,15 @@
           'RETRY_WAIT',
         ].includes(latest.phase)) return { request: false, status: latest };
         if (
-          activeRequestGenerationId === latest.generationId
+          activeRequestLease?.generationId === latest.generationId
           && ['DISCOVERING_WEB', 'REQUESTING_TICKET', 'EXCHANGING'].includes(latest.phase)
         ) return { request: false, status: latest };
-        return { request: true, status: latest };
+        return { request: true, status: latest, transitionVersion };
       });
       if (!decision.request) return decision.status;
       const result = await runRequest({
         expectedGenerationId: decision.status.generationId,
+        expectedTransitionVersion: decision.transitionVersion,
         resumeOnly: true,
       });
       return result.status;

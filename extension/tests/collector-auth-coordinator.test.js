@@ -35,6 +35,7 @@ const deferred = () => {
 function createHarness({
   getSession,
   initial = {},
+  now: suppliedNow,
   randomValues = [0.5],
   requestAuth,
   session = null,
@@ -64,7 +65,7 @@ function createHarness({
   const coordinator = createCollectorAuthCoordinator({
     alarms,
     getSession: async () => (getSession ? getSession() : session),
-    now: () => currentTime,
+    now: () => (suppliedNow ? suppliedNow() : currentTime),
     random: () => randomValues[Math.min(randomIndex++, randomValues.length - 1)],
     requestAuth: async (input) => {
       authRequests.push({ ...input });
@@ -267,6 +268,47 @@ test('a thirty-second retry uses only the durable alarm', async () => {
   assert.deepEqual(harness.createdAlarms.at(-1), {
     name: ALARM_NAME,
     options: { when: start + 30_000 },
+  });
+});
+
+test('a thirty-second retry uses one clock sample for its valid tuple and alarm', async () => {
+  const start = Date.parse('2030-01-01T00:00:00.000Z');
+  let currentSample = start;
+  const harness = createHarness({
+    initial: {
+      [STORAGE_KEY]: {
+        version: 1,
+        phase: 'EXCHANGING',
+        generationId: G1,
+        startedAt: '2030-01-01T00:00:00.000Z',
+        updatedAt: '2030-01-01T00:00:00.000Z',
+        attemptNumber: 4,
+        nextRetryAt: '',
+        publicCode: '',
+        account: null,
+        expiresAt: '',
+      },
+    },
+    now: () => {
+      const sampled = currentSample;
+      currentSample += 1;
+      return sampled;
+    },
+  });
+  const status = await harness.coordinator.fail({
+    generationId: G1,
+    error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
+  });
+
+  assert.equal(status.phase, 'RETRY_WAIT');
+  assert.equal(
+    Date.parse(status.nextRetryAt) - Date.parse(status.updatedAt),
+    30_000,
+  );
+  assert.equal(harness.timers.length, 0);
+  assert.deepEqual(harness.createdAlarms.at(-1), {
+    name: ALARM_NAME,
+    options: { when: Date.parse(status.nextRetryAt) },
   });
 });
 
@@ -488,6 +530,36 @@ for (const [name, transition] of [
   });
 }
 
+test('transition identity fences an identical same-clock repeated begin from delayed resume', async () => {
+  const sessionReadStarted = deferred();
+  const sessionRead = deferred();
+  const harness = createHarness({
+    getSession: async () => {
+      sessionReadStarted.resolve();
+      return sessionRead.promise;
+    },
+  });
+  const initial = await harness.coordinator.begin({ generationId: G1 });
+
+  const resumed = harness.coordinator.resume();
+  await sessionReadStarted.promise;
+  const repeated = await harness.coordinator.begin({ generationId: G1 });
+  assert.deepEqual(plain(repeated), plain(initial));
+  sessionRead.resolve({
+    collectorToken: 'cst_stale_identical_projection_123456789',
+    account: { id: 'account-a', displayName: 'Account A' },
+    permissions: ['collector.upload'],
+    expiresAt: '2031-01-01T00:00:00.000Z',
+  });
+  await resumed;
+
+  assert.deepEqual(
+    plain(await harness.coordinator.getStatus()),
+    plain(repeated),
+  );
+  assert.equal(harness.authRequests.length, 0);
+});
+
 test('startup and alarm resumes cannot duplicate a request after its Web acknowledgement', async () => {
   const harness = createHarness();
   await harness.coordinator.begin({ generationId: G1 });
@@ -549,6 +621,46 @@ test('a failed negative-ack projection releases its lease for one later retry', 
     expiresAt: '2031-01-01T00:00:00.000Z',
   });
   assert.equal((await harness.coordinator.getStatus()).phase, 'AUTHENTICATED');
+});
+
+test('an old negative acknowledgement cannot release a replacement same-generation lease', async () => {
+  const oldWebRequest = deferred();
+  let failNextStatusRead = false;
+  let webRequestNumber = 0;
+  const harness = createHarness({
+    requestAuth: async () => {
+      webRequestNumber += 1;
+      return webRequestNumber === 1
+        ? oldWebRequest.promise
+        : { requested: true };
+    },
+  });
+  const originalGet = harness.storageSession.get.bind(harness.storageSession);
+  harness.storageSession.get = async (key) => {
+    if (failNextStatusRead) {
+      failNextStatusRead = false;
+      throw new Error('old status projection read failed');
+    }
+    return originalGet(key);
+  };
+
+  await harness.coordinator.begin({ generationId: G1 });
+  await harness.coordinator.fail({
+    generationId: G1,
+    error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
+  });
+  const oldRetry = harness.coordinator.retryNow();
+  await waitFor(() => harness.authRequests.length === 1);
+
+  const replacement = await harness.coordinator.begin({ generationId: G1 });
+  failNextStatusRead = true;
+  oldWebRequest.resolve({ requested: false, publicCode: 'WEB_TAB_UNAVAILABLE' });
+  await oldRetry;
+  assert.equal(failNextStatusRead, false);
+
+  const resumed = await harness.coordinator.resume();
+  assert.deepEqual(plain(resumed), plain(replacement));
+  assert.equal(harness.authRequests.length, 1);
 });
 
 test('a terminal transition queued at the final status check wins before the Web request side effect', async () => {
