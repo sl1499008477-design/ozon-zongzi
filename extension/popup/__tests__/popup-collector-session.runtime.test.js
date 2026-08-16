@@ -165,13 +165,20 @@ const status = (phase, publicCode = "", overrides = {}) => ({
   ...overrides,
 });
 
-const authenticatedStatus = (accountId, generationId = `generation-${accountId}-1234`) => status(
+const AUTH_FIXTURE_TTL_MS = 60 * 60 * 1_000;
+const futureAuthExpiry = (nowMs) => new Date(nowMs + AUTH_FIXTURE_TTL_MS).toISOString();
+
+const authenticatedStatus = (
+  accountId,
+  generationId = `generation-${accountId}-1234`,
+  expiresAt,
+) => status(
   "AUTHENTICATED",
   "",
   {
     generationId,
     account: { id: accountId, displayName: `账号 ${accountId}` },
-    expiresAt: "2026-09-30T20:00:00.000Z",
+    expiresAt,
   },
 );
 
@@ -180,13 +187,29 @@ const settle = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-const createHarness = ({
-  initialStatus = status("WAITING_FOR_WEB", "WEB_LOGIN_REQUIRED"),
-  authenticated = false,
-  delayOpen = false,
-  delayStatus = false,
-  delayedActions = [],
-} = {}) => {
+const createFixtureDate = (nowMs) => class FixtureDate extends Date {
+  constructor(...args) {
+    super(...(args.length > 0 ? args : [nowMs]));
+  }
+
+  static now() {
+    return nowMs;
+  }
+};
+
+const createHarness = (options = {}) => {
+  const {
+    authenticated = false,
+    delayOpen = false,
+    delayStatus = false,
+    delayedActions = [],
+  } = options;
+  const hasFixedNow = Object.hasOwn(options, "nowMs");
+  const nowMs = hasFixedNow ? options.nowMs : Date.now();
+  const authExpiry = futureAuthExpiry(nowMs);
+  let initialStatus = typeof options.initialStatus === "function"
+    ? options.initialStatus({ authExpiry, nowMs })
+    : options.initialStatus || status("WAITING_FOR_WEB", "WEB_LOGIN_REQUIRED");
   const document = new FakeDocument();
   const messages = [];
   const intervals = [];
@@ -228,7 +251,7 @@ const createHarness = ({
             data: {
               authenticated,
               account: authenticated ? { id: "account-a", displayName: "账号 A" } : null,
-              expiresAt: authenticated ? "2026-09-30T20:00:00.000Z" : "",
+              expiresAt: authenticated ? authExpiry : "",
               backendUrl: "http://127.0.0.1:3000/api",
             },
           },
@@ -309,6 +332,7 @@ const createHarness = ({
     chrome,
     console,
     document,
+    authExpiry,
     Intl,
     navigator: {
       language: "zh-CN",
@@ -328,6 +352,7 @@ const createHarness = ({
     clearInterval(id) {
       clearedIntervals.push(id);
     },
+    Date: hasFixedNow ? createFixtureDate(nowMs) : Date,
     window: {
       screen: { width: 1440, height: 900, colorDepth: 24 },
       close() {},
@@ -343,6 +368,7 @@ const createHarness = ({
   vm.runInNewContext(popupSource, runtimeContext, { filename: "popup.js" });
 
   return {
+    authExpiry,
     document,
     intervals,
     clearedIntervals,
@@ -352,6 +378,9 @@ const createHarness = ({
     storageListeners,
     setSellerCompanyId(value) {
       sellerCompanyId = value;
+    },
+    authenticatedStatus(accountId, generationId) {
+      return authenticatedStatus(accountId, generationId, authExpiry);
     },
     emitStatus(nextStatus) {
       for (const listener of storageListeners) {
@@ -525,14 +554,14 @@ test("malformed tuples in every phase family fail closed and never authenticate"
       nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
     }),
     status("ACTION_REQUIRED", ""),
-    authenticatedStatus("account-a", "short"),
+    harness.authenticatedStatus("account-a", "short"),
     status("AUTHENTICATED", "SERVER_UPGRADE_REQUIRED", {
       account: { id: "account-a", displayName: "账号 A" },
-      expiresAt: "2026-09-30T20:00:00.000Z",
+      expiresAt: harness.authExpiry,
     }),
     status("AUTHENTICATED", "", {
       account: { id: "account-a", displayName: "账号 A", role: "owner" },
-      expiresAt: "2026-09-30T20:00:00.000Z",
+      expiresAt: harness.authExpiry,
     }),
     status("AUTHENTICATED", "", {
       account: { id: "account-a", displayName: "账号 A" },
@@ -553,18 +582,33 @@ test("malformed tuples in every phase family fail closed and never authenticate"
 });
 
 test("a malformed authenticated initial snapshot never initializes the main view", async (t) => {
-  const malformedAuth = {
-    ...authenticatedStatus("account-a"),
-    expiresAt: "not-an-expiry",
-    token: "collector-secret",
-  };
-  const harness = createHarness({ initialStatus: malformedAuth, authenticated: true });
+  const harness = createHarness({
+    authenticated: true,
+    initialStatus: ({ authExpiry }) => ({
+      ...authenticatedStatus("account-a", undefined, authExpiry),
+      expiresAt: "not-an-expiry",
+      token: "collector-secret",
+    }),
+  });
   t.after(() => harness.unload());
   await settle();
 
   assert.equal(harness.document.getElementById("login-tip").textContent, "本地服务暂时不可用，请稍后重试");
   assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
   assert.equal(harness.messages.some(({ action }) => action === "getAuth"), false);
+});
+
+test("authenticated fixtures remain valid when the injected clock passes the old fixed expiry", async (t) => {
+  const harness = createHarness({
+    authenticated: true,
+    initialStatus: ({ authExpiry }) => authenticatedStatus("account-a", undefined, authExpiry),
+    nowMs: Date.parse("2026-10-01T00:00:00.000Z"),
+  });
+  t.after(() => harness.unload());
+  await settle();
+
+  assert.equal(harness.document.getElementById("main-view").classList.contains("active"), true);
+  assert.equal(harness.messages.some(({ action }) => action === "getAuth"), true);
 });
 
 test("opening login disables the primary button and never asks to reopen the extension", async (t) => {
@@ -623,10 +667,7 @@ test("authenticated storage transition switches immediately and preserves the ma
   const harness = createHarness({ authenticated: true });
   t.after(() => harness.unload());
   await settle();
-  harness.emitStatus(status("AUTHENTICATED", "", {
-    account: { id: "account-a", displayName: "测试账号" },
-    expiresAt: "2026-09-30T20:00:00.000Z",
-  }));
+  harness.emitStatus(harness.authenticatedStatus("account-a"));
 
   assert.equal(harness.document.getElementById("login-view").style.display, "none");
   assert.equal(harness.document.getElementById("main-view").classList.contains("active"), true);
@@ -661,12 +702,9 @@ test("authenticated storage transition switches immediately and preserves the ma
 test("a late initialization snapshot cannot overwrite a newer live status", async (t) => {
   const harness = createHarness({ authenticated: true, delayStatus: true });
   t.after(() => harness.unload());
-  const authenticatedStatus = status("AUTHENTICATED", "", {
-    account: { id: "account-a", displayName: "测试账号" },
-    expiresAt: "2026-09-30T20:00:00.000Z",
-  });
+  const liveAuthStatus = harness.authenticatedStatus("account-a");
 
-  harness.emitStatus(authenticatedStatus);
+  harness.emitStatus(liveAuthStatus);
   assert.equal(harness.document.getElementById("main-view").classList.contains("active"), true);
   harness.resolveStatus({
     ok: true,
@@ -685,14 +723,14 @@ test("AUTH A stale async work cannot block or mutate AUTH B initialization", asy
   t.after(() => harness.unload());
   await settle();
 
-  harness.emitStatus(authenticatedStatus("account-a", "generation-account-a"));
+  harness.emitStatus(harness.authenticatedStatus("account-a", "generation-account-a"));
   assert.equal(harness.delayedCount("getAuth"), 1);
   harness.resolveAction("getAuth", {
     ok: true,
     data: {
       authenticated: true,
       account: { id: "account-a", displayName: "账号 A" },
-      expiresAt: "2026-09-30T20:00:00.000Z",
+      expiresAt: harness.authExpiry,
       backendUrl: "https://qh.jizhangerp.com/api",
     },
   });
@@ -701,14 +739,14 @@ test("AUTH A stale async work cannot block or mutate AUTH B initialization", asy
   assert.equal(harness.delayedCount("getProductStatusCounts"), 1);
 
   harness.emitStatus(status("WAITING_FOR_WEB", "WEB_LOGIN_REQUIRED"));
-  harness.emitStatus(authenticatedStatus("account-b", "generation-account-b"));
+  harness.emitStatus(harness.authenticatedStatus("account-b", "generation-account-b"));
   assert.equal(harness.delayedCount("getAuth"), 1, "AUTH B must start without waiting for AUTH A");
   harness.resolveAction("getAuth", {
     ok: true,
     data: {
       authenticated: true,
       account: { id: "account-b", displayName: "账号 B" },
-      expiresAt: "2026-09-30T20:00:00.000Z",
+      expiresAt: harness.authExpiry,
       backendUrl: "http://127.0.0.1:3000/api",
     },
   });
