@@ -326,14 +326,17 @@
       }
       await clearRetryAlarm();
     };
-    const clearNoAckWatchdog = ({ settleWaiter = true } = {}) => {
+    const clearNoAckWatchdog = ({
+      settleWaiter = true,
+      waiterOutcome = 'cancelled',
+    } = {}) => {
       if (noAckTimer !== null) {
         try { clearTimer(noAckTimer); } catch {}
         noAckTimer = null;
       }
       const cancelWaiter = cancelNoAckWaiter;
       cancelNoAckWaiter = null;
-      if (settleWaiter && cancelWaiter) cancelWaiter();
+      if (settleWaiter && cancelWaiter) cancelWaiter(waiterOutcome);
     };
     const clearResponseWatchdog = (requestId = '') => {
       if (requestId && responseWatchdog?.requestId !== requestId) return false;
@@ -483,7 +486,7 @@
           expiresAt: '',
         });
         transitionVersion += 1;
-        clearNoAckWatchdog({ settleWaiter: false });
+        clearNoAckWatchdog({ waiterOutcome: 'transitioned' });
         replaceRequestLease(normalizedRequestId, normalizedGenerationId);
         armResponseWatchdog(normalizedRequestId);
         return { accepted: true, status };
@@ -503,7 +506,7 @@
             && !generationIsCurrent(current, generationId))
         ) return current;
         await clearRetrySchedule();
-        clearNoAckWatchdog();
+        clearNoAckWatchdog({ waiterOutcome: 'transitioned' });
         const status = await writeStatus({
           ...current,
           phase: 'REQUESTING_TICKET',
@@ -713,7 +716,7 @@
           };
           armNoAckWatchdog(start.requestLease, {
             onTimeout: () => settle({ type: 'timeout' }),
-            onCancel: () => settle({ type: 'cancelled' }),
+            onCancel: (type = 'cancelled') => settle({ type }),
           });
           Promise.resolve(operation).then(
             (result) => settle({ type: 'result', result }),
@@ -783,7 +786,7 @@
           }
           return { requested: false, status };
         }
-        armNoAckWatchdog(start.requestLease);
+        if (result?.transitioned !== true) armNoAckWatchdog(start.requestLease);
         return { requested: true, status: discovering };
       })();
       operationPromise = operation;

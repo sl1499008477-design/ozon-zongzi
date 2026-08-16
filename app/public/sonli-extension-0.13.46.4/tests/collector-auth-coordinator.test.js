@@ -84,6 +84,7 @@ function createHarness({
       );
       if (outcome.type === 'result') return outcome.result;
       if (outcome.type === 'error') throw outcome.error;
+      if (outcome.type === 'transitioned') return { requested: true, transitioned: true };
       return { requested: false, publicCode: 'WEB_LOGIN_REQUIRED' };
     },
     setTimer(callback, milliseconds) {

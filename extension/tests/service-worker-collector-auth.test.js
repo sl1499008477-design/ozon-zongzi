@@ -1008,8 +1008,15 @@ test('selected-tab transport failure after begin fails the exact lease and sched
   });
 
   const response = await sendRuntime(harness, { action: 'retryCollectorAuth' });
-  assert.deepEqual(JSON.parse(JSON.stringify(response.data)), { requested: 0 });
+  assert.deepEqual(JSON.parse(JSON.stringify(response.data)), { requested: 1 });
+  assert.equal((await sendRuntime(
+    harness, { action: 'getCollectorAuthStatus' },
+  )).data.phase, 'REQUESTING_TICKET');
 
+  await clock.advance(31_000);
+  await waitFor(async () => (
+    await sendRuntime(harness, { action: 'getCollectorAuthStatus' })
+  ).data.phase === 'RETRY_WAIT');
   const status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
   assert.equal(status.data.phase, 'RETRY_WAIT');
   assert.equal(status.data.publicCode, 'LOCAL_SERVICE_UNAVAILABLE');
@@ -1053,6 +1060,103 @@ test('unresponsive first trusted tab times out once and the second tab succeeds'
   assert.deepEqual(JSON.parse(JSON.stringify((await pending).data)), { requested: 1 });
   const status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
   assert.equal(status.data.phase, 'DISCOVERING_WEB');
+});
+
+test('hung transport after begin settles so the 31-second watchdog can retry the next tab', async () => {
+  const clock = createFakeClock();
+  let harness;
+  harness = loadServiceWorker({
+    activationResult: { changed: true, reused: false, authenticated: false },
+    clock,
+    tabs: [
+      { id: 10, active: true, lastAccessed: 20, url: trustedSender.url },
+      { id: 11, active: false, lastAccessed: 10, url: trustedSender.url },
+    ],
+    tabMessage: async (tabId, message) => {
+      if (tabId === 11) {
+        return { ok: true, requested: true, requestId: message.requestId };
+      }
+      const begin = await sendRuntime(harness, {
+        portalProtocol: 'SONLI_COLLECTOR_AUTH',
+        action: 'collector.auth.begin',
+        requestId: message.requestId,
+        generationId: 'generation_hung_begin_1234',
+      }, { ...trustedSender, tab: { ...trustedSender.tab, id: tabId } });
+      assert.equal(begin.ok, true);
+      return new Promise(() => {});
+    },
+  });
+
+  const first = sendRuntime(harness, { action: 'retryCollectorAuth' });
+  await waitFor(() => harness.activationCalls.length === 1);
+  await clock.advance(31_000);
+  await waitFor(async () => (
+    await sendRuntime(harness, { action: 'getCollectorAuthStatus' })
+  ).data.phase === 'RETRY_WAIT');
+  await clock.advance(1_000);
+  await waitFor(() => harness.tabMessages.length === 2);
+
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10, 11]);
+  assert.deepEqual(JSON.parse(JSON.stringify((await first).data)), { requested: 1 });
+});
+
+test('accepted before tab acknowledgement is a successful transition, not a negative response', async () => {
+  let resolveTabResponse;
+  const tabResponse = new Promise((resolve) => { resolveTabResponse = resolve; });
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    tabs: [{ id: 10, active: true, lastAccessed: 20, url: trustedSender.url }],
+    tabMessage: () => tabResponse,
+  });
+
+  const pending = sendRuntime(harness, { action: 'retryCollectorAuth' });
+  await waitFor(() => harness.tabMessages.length === 1);
+  const requestId = harness.tabMessages[0].message.requestId;
+  const accepted = await sendRuntime(harness, {
+    protocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.accepted',
+    requestId,
+    generationId: 'generation_accepted_first_1234',
+  }, { ...trustedSender, tab: { ...trustedSender.tab, id: 10 } });
+  assert.deepEqual(JSON.parse(JSON.stringify(accepted)), { ok: true });
+  assert.deepEqual(JSON.parse(JSON.stringify((await pending).data)), { requested: 1 });
+  assert.equal((await sendRuntime(
+    harness, { action: 'getCollectorAuthStatus' },
+  )).data.phase, 'REQUESTING_TICKET');
+
+  resolveTabResponse({ ok: false, requested: false, requestId });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal((await sendRuntime(
+    harness, { action: 'getCollectorAuthStatus' },
+  )).data.phase, 'REQUESTING_TICKET');
+});
+
+test('two hung trusted tabs are each attempted once before terminal waiting', async () => {
+  const clock = createFakeClock();
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    clock,
+    tabs: [
+      { id: 10, active: true, lastAccessed: 20, url: trustedSender.url },
+      { id: 11, active: false, lastAccessed: 10, url: trustedSender.url },
+    ],
+    tabMessage: () => new Promise(() => {}),
+  });
+
+  const pending = sendRuntime(harness, { action: 'retryCollectorAuth' });
+  await waitFor(() => harness.tabMessages.length === 1);
+  await clock.advance(2_500);
+  await waitFor(() => harness.tabMessages.length === 2);
+  await clock.advance(2_500);
+
+  assert.deepEqual(JSON.parse(JSON.stringify((await pending).data)), { requested: 0 });
+  const status = await sendRuntime(harness, { action: 'getCollectorAuthStatus' });
+  assert.equal(status.data.phase, 'WAITING_FOR_WEB');
+  assert.equal(status.data.publicCode, 'WEB_TAB_UNAVAILABLE');
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10, 11]);
+  await clock.advance(60_000);
+  assert.equal(harness.tabMessages.length, 2);
 });
 
 test('transient exchange failure schedules retry and duplicate alarm resumes are single-flight', async () => {

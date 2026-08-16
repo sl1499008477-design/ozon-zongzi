@@ -530,6 +530,8 @@ try {
   ) => {
     if (!isCanonicalCollectorAuthRequestId(requestId)) return collectorAuthUnavailable();
     if (typeof awaitAcknowledgement !== 'function') return collectorAuthUnavailable(requestId);
+    const transitionedAcknowledgement = Object.freeze({});
+    const cancelledAcknowledgement = Object.freeze({});
     const tabs = await chrome.tabs.query({ url: TRUSTED_FRONTEND_TAB_URLS });
     for (const tab of orderedCollectorAuthTabs(tabs)) {
       const attempt = Object.freeze({ requestId, tabId: tab.id });
@@ -542,7 +544,8 @@ try {
         const outcome = await awaitAcknowledgement(sendRequest());
         if (outcome?.type === 'result') return outcome.result;
         if (outcome?.type === 'timeout') return null;
-        if (outcome?.type === 'cancelled') return undefined;
+        if (outcome?.type === 'transitioned') return transitionedAcknowledgement;
+        if (outcome?.type === 'cancelled') return cancelledAcknowledgement;
         throw outcome?.error || new Error('COLLECTOR_AUTH_TAB_TRANSPORT_FAILED');
       };
       let response;
@@ -552,7 +555,11 @@ try {
           if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
           continue;
         }
-        if (response === undefined) return collectorAuthUnavailable(requestId);
+        if (response === transitionedAcknowledgement) {
+          lastCollectorAuthTabId = tab.id;
+          return { requested: true, requestId, tabId: tab.id, transitioned: true };
+        }
+        if (response === cancelledAcknowledgement) return collectorAuthUnavailable(requestId);
       } catch (error) {
         if (!collectorAuthNoReceiverError(error)) {
           const began = activeCollectorAuthAttempt?.requestId === requestId
@@ -579,7 +586,11 @@ try {
             if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
             continue;
           }
-          if (response === undefined) return collectorAuthUnavailable(requestId);
+          if (response === transitionedAcknowledgement) {
+            lastCollectorAuthTabId = tab.id;
+            return { requested: true, requestId, tabId: tab.id, transitioned: true };
+          }
+          if (response === cancelledAcknowledgement) return collectorAuthUnavailable(requestId);
         } catch (retryError) {
           if (collectorAuthNoReceiverError(retryError)) {
             if (activeCollectorAuthAttempt === attempt) activeCollectorAuthAttempt = null;
