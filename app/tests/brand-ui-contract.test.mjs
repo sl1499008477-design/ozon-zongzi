@@ -13,6 +13,9 @@ const vite = await createServer({
   root: fileURLToPath(appRoot),
   server: { middlewareMode: true },
 });
+test.after(async () => {
+  await vite.close();
+});
 const appModule = await vite.ssrLoadModule("/src/App.jsx");
 const { App } = appModule;
 const { default: DataScreenPage } = await vite.ssrLoadModule("/src/DataScreenPage.jsx");
@@ -114,8 +117,4 @@ test("signed-in plugin wordmark renders in a contained horizontal presentation s
   const wordmark = pluginHero?.match(/<img[^>]*\/>/)?.[0];
   assert.ok(wordmark, "plugin hero must render its wordmark image");
   assert.match(wordmark, /style="width:auto;max-width:156px;height:36px;object-fit:contain"/);
-});
-
-test.after(async () => {
-  await vite.close();
 });

@@ -10,8 +10,8 @@ const vite = await createServer({
   root: fileURLToPath(appRoot),
   server: { middlewareMode: true, hmr: { port: 30_000 + (process.pid % 10_000) } },
 });
-const appModule = await vite.ssrLoadModule("/src/App.jsx");
 after(async () => { await vite.close(); });
+const appModule = await vite.ssrLoadModule("/src/App.jsx");
 
 const shared = {
   status: "ACTIVE",

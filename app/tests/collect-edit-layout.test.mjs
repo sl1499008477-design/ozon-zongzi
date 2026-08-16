@@ -14,11 +14,10 @@ const vite = await createServer({
     hmr: { port: 30_000 + (process.pid % 10_000) },
   },
 });
-const appModule = await vite.ssrLoadModule("/src/App.jsx");
-
 after(async () => {
   await vite.close();
 });
+const appModule = await vite.ssrLoadModule("/src/App.jsx");
 
 test("collection list renders account-shared category states with fixed safe copy", () => {
   assert.equal(typeof appModule.CollectPage, "function");

@@ -181,7 +181,9 @@ test("local state loads once and does not poll over an open store form", async (
     assert.equal(bindingSubmissions, 0, "the regression must never submit store credentials");
     assert.deepEqual(pageErrors, []);
   } finally {
-    await browser?.close();
-    await vite?.close();
+    await Promise.allSettled([
+      browser?.close(),
+      vite?.close(),
+    ]);
   }
 });
