@@ -3830,10 +3830,15 @@ try {
     const senderIsWebPortal = webBridgePolicy?.isTrustedWebBridgeSender(sender);
     const senderIsPrivilegedExtensionPage = (() => {
       if (sender?.id !== chrome.runtime.id || sender?.tab) return false;
-      if (!sender?.url) return true;
+      if (typeof sender?.url !== 'string' || !sender.url) return false;
       try {
         const url = new URL(sender.url);
-        return url.protocol === 'chrome-extension:' && url.hostname === chrome.runtime.id;
+        return url.protocol === 'chrome-extension:'
+          && url.hostname === chrome.runtime.id
+          && url.host === chrome.runtime.id
+          && !url.username
+          && !url.password
+          && !url.port;
       } catch {
         return false;
       }

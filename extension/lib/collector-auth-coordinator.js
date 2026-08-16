@@ -6,6 +6,7 @@
   const RETRY_BASE_DELAYS_MS = Object.freeze([1_000, 2_000, 5_000, 10_000, 30_000]);
   const MAX_RETRY_DELAY_MS = 30_000;
   const JITTER_RATIO = 0.1;
+  const DISCOVERY_GENERATION_ID = 'collector_discovery_pending';
   const GENERATION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
   const PUBLIC_PHASES = new Set([
     'WAITING_FOR_WEB',
@@ -21,6 +22,14 @@
     'WEB_LOGIN_REQUIRED',
     'WEB_TAB_UNAVAILABLE',
     'LOCAL_SERVICE_UNAVAILABLE',
+    'ACCOUNT_DISABLED',
+    'ACCOUNT_EXPIRED',
+    'PERMISSION_DENIED',
+    'TRUST_BOUNDARY_REJECTED',
+    'SERVER_UPGRADE_REQUIRED',
+  ]);
+  const WAITING_CODES = new Set(['', 'WEB_LOGIN_REQUIRED', 'WEB_TAB_UNAVAILABLE']);
+  const ACTION_CODES = new Set([
     'ACCOUNT_DISABLED',
     'ACCOUNT_EXPIRED',
     'PERMISSION_DENIED',
@@ -70,6 +79,9 @@
     'COLLECTOR_AUTH_CONTRACT_UNSUPPORTED',
     'COLLECTOR_SERVER_UPGRADE_REQUIRED',
     'COLLECTOR_AUTH_RESPONSE_INVALID',
+    'COLLECTOR_TICKET_EXPIRED',
+    'COLLECTOR_TICKET_USED',
+    'COLLECTOR_TICKET_INVALID',
   ]);
 
   const defaultStatus = () => ({
@@ -118,10 +130,10 @@
     };
   };
 
-  const projectStatus = (value) => {
+  const projectStatus = (value, currentTime = Date.now()) => {
     const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
     const attempt = Number(source.attemptNumber);
-    return {
+    const status = {
       version: 1,
       phase: PUBLIC_PHASES.has(source.phase) ? source.phase : 'WAITING_FOR_WEB',
       generationId: safeGenerationId(source.generationId),
@@ -133,6 +145,57 @@
       account: safeAccount(source.account),
       expiresAt: safeIso(source.expiresAt),
     };
+    const withoutCredentials = (phase, publicCode) => ({
+      ...status,
+      phase,
+      nextRetryAt: '',
+      publicCode,
+      account: null,
+      expiresAt: '',
+    });
+    if (status.phase === 'WAITING_FOR_WEB') {
+      return withoutCredentials(
+        'WAITING_FOR_WEB',
+        WAITING_CODES.has(status.publicCode) ? status.publicCode : '',
+      );
+    }
+    if (status.phase === 'ACTION_REQUIRED') {
+      return withoutCredentials(
+        'ACTION_REQUIRED',
+        ACTION_CODES.has(status.publicCode) ? status.publicCode : 'SERVER_UPGRADE_REQUIRED',
+      );
+    }
+    if (status.phase === 'AUTHENTICATED') {
+      if (
+        !status.account
+        || !status.expiresAt
+        || Date.parse(status.expiresAt) <= Number(currentTime)
+      ) return withoutCredentials('WAITING_FOR_WEB', 'WEB_LOGIN_REQUIRED');
+      return {
+        ...status,
+        nextRetryAt: '',
+        publicCode: '',
+      };
+    }
+    if (!status.generationId) {
+      return withoutCredentials('ACTION_REQUIRED', 'TRUST_BOUNDARY_REJECTED');
+    }
+    if (!status.startedAt || !status.updatedAt) {
+      return withoutCredentials('ACTION_REQUIRED', 'SERVER_UPGRADE_REQUIRED');
+    }
+    if (status.phase === 'RETRY_WAIT') {
+      if (
+        status.attemptNumber < 1
+        || status.publicCode !== 'LOCAL_SERVICE_UNAVAILABLE'
+        || !status.nextRetryAt
+      ) return withoutCredentials('ACTION_REQUIRED', 'SERVER_UPGRADE_REQUIRED');
+      return {
+        ...status,
+        account: null,
+        expiresAt: '',
+      };
+    }
+    return withoutCredentials(status.phase, '');
   };
 
   const errorFacts = (error) => {
@@ -192,6 +255,8 @@
     random = () => Math.random(),
     requestAuth,
     getSession = async () => null,
+    setTimer = root.setTimeout?.bind(root),
+    clearTimer = root.clearTimeout?.bind(root),
   } = {}) {
     if (!storageSession || typeof storageSession.get !== 'function'
       || typeof storageSession.set !== 'function') {
@@ -206,8 +271,14 @@
     if (typeof getSession !== 'function') {
       throw new TypeError('collector auth coordinator requires getSession');
     }
+    if (typeof setTimer !== 'function' || typeof clearTimer !== 'function') {
+      throw new TypeError('collector auth coordinator requires timer functions');
+    }
 
     let operationPromise = null;
+    let activeRequestGenerationId = null;
+    let requestFence = 0;
+    let retryTimer = null;
     let statusMutationTail = Promise.resolve();
 
     const serializeStatusMutation = (operation) => {
@@ -221,27 +292,51 @@
       if (typeof alarms.clear !== 'function') return;
       try { await alarms.clear(COLLECTOR_AUTH_RETRY_ALARM); } catch {}
     };
-    const scheduleRetryAlarm = async (when) => {
+    const clearRetrySchedule = async () => {
+      if (retryTimer !== null) {
+        try { clearTimer(retryTimer); } catch {}
+        retryTimer = null;
+      }
       await clearRetryAlarm();
-      await Promise.resolve(alarms.create(COLLECTOR_AUTH_RETRY_ALARM, { when }));
+    };
+    const scheduleRetry = async (when) => {
+      await clearRetrySchedule();
+      const currentTime = Number(now());
+      const delay = Math.max(0, when - currentTime);
+      if (delay < 30_000) {
+        retryTimer = setTimer(
+          () => Promise.resolve().then(() => resume()).catch(() => null),
+          delay,
+        );
+      }
+      await Promise.resolve(alarms.create(COLLECTOR_AUTH_RETRY_ALARM, {
+        when: Math.max(when, currentTime + 30_000),
+      }));
     };
     const readStatus = async () => {
       const stored = await storageSession.get(COLLECTOR_AUTH_STATUS_STORAGE_KEY);
       const raw = stored?.[COLLECTOR_AUTH_STATUS_STORAGE_KEY];
-      const status = raw === undefined ? defaultStatus() : projectStatus(raw);
+      const status = raw === undefined ? defaultStatus() : projectStatus(raw, Number(now()));
       if (raw !== undefined && JSON.stringify(raw) !== JSON.stringify(status)) {
         await storageSession.set({ [COLLECTOR_AUTH_STATUS_STORAGE_KEY]: status });
       }
       return status;
     };
     const writeStatus = async (value) => {
-      const status = projectStatus(value);
+      const status = projectStatus(value, Number(now()));
       await storageSession.set({ [COLLECTOR_AUTH_STATUS_STORAGE_KEY]: status });
       return status;
     };
     const generationIsCurrent = (status, generationId) => (
       status.generationId === String(generationId || '')
     );
+    const fenceActiveRequest = (generationId, replace = false) => {
+      const normalizedGenerationId = String(generationId || '');
+      if (
+        activeRequestGenerationId !== null
+        && (replace || activeRequestGenerationId === normalizedGenerationId)
+      ) requestFence += 1;
+    };
     const retryDelay = (attemptNumber) => {
       const base = RETRY_BASE_DELAYS_MS[Math.min(
         Math.max(attemptNumber - 1, 0),
@@ -257,12 +352,13 @@
     const begin = ({ generationId } = {}) => {
       const normalizedGenerationId = safeGenerationId(generationId);
       if (!normalizedGenerationId) return getStatus();
+      fenceActiveRequest(normalizedGenerationId, true);
       return serializeStatusMutation(async () => {
         const current = await readStatus();
         const changed = current.generationId !== normalizedGenerationId;
         const timestamp = currentIso();
-        if (changed) await clearRetryAlarm();
-        return writeStatus({
+        await clearRetrySchedule();
+        const status = await writeStatus({
           ...current,
           phase: 'REQUESTING_TICKET',
           generationId: normalizedGenerationId,
@@ -274,115 +370,185 @@
           account: null,
           expiresAt: '',
         });
+        activeRequestGenerationId = normalizedGenerationId;
+        return status;
       });
     };
 
-    const accept = ({ requestId, generationId } = {}) => serializeStatusMutation(async () => {
-      const current = await readStatus();
-      const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
-      if (
-        !generationIsCurrent(current, generationId)
-        || !['DISCOVERING_WEB', 'REQUESTING_TICKET'].includes(current.phase)
-        || !normalizedRequestId
-        || normalizedRequestId !== requestId
-        || normalizedRequestId.length > 128
-      ) return current;
-      return writeStatus({
-        ...current,
-        phase: 'REQUESTING_TICKET',
-        updatedAt: currentIso(),
-        nextRetryAt: '',
-        publicCode: '',
-        account: null,
-        expiresAt: '',
-      });
-    });
-
-    const exchange = ({ generationId } = {}) => serializeStatusMutation(async () => {
-      const current = await readStatus();
-      if (!generationIsCurrent(current, generationId)) return current;
-      return writeStatus({
-        ...current,
-        phase: 'EXCHANGING',
-        updatedAt: currentIso(),
-        nextRetryAt: '',
-        publicCode: '',
-        account: null,
-        expiresAt: '',
-      });
-    });
-
-    const succeed = ({ generationId, account, expiresAt } = {}) => serializeStatusMutation(async () => {
-      const current = await readStatus();
-      if (!generationIsCurrent(current, generationId)) return current;
-      const timestamp = currentIso();
-      await clearRetryAlarm();
-      return writeStatus({
-        ...current,
-        phase: 'AUTHENTICATED',
-        startedAt: current.startedAt || timestamp,
-        updatedAt: timestamp,
-        nextRetryAt: '',
-        publicCode: '',
-        account: safeAccount(account),
-        expiresAt: safeIso(expiresAt),
-      });
-    });
-
-    const fail = ({ generationId, error } = {}) => serializeStatusMutation(async () => {
-      const current = await readStatus();
-      if (!generationIsCurrent(current, generationId)) return current;
-      const classification = classifyFailure(error);
-      const timestamp = currentIso();
-      if (!classification.retry) {
-        await clearRetryAlarm();
-        return writeStatus({
+    const accept = ({ requestId, generationId } = {}) => {
+      fenceActiveRequest(generationId);
+      return serializeStatusMutation(async () => {
+        const current = await readStatus();
+        const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
+        if (
+          !generationIsCurrent(current, generationId)
+          || !['DISCOVERING_WEB', 'REQUESTING_TICKET'].includes(current.phase)
+          || !normalizedRequestId
+          || normalizedRequestId !== requestId
+          || normalizedRequestId.length > 128
+        ) return current;
+        await clearRetrySchedule();
+        const status = await writeStatus({
           ...current,
-          phase: classification.phase,
+          phase: 'REQUESTING_TICKET',
+          updatedAt: currentIso(),
+          nextRetryAt: '',
+          publicCode: '',
+          account: null,
+          expiresAt: '',
+        });
+        activeRequestGenerationId = current.generationId;
+        return status;
+      });
+    };
+
+    const exchange = ({ generationId } = {}) => {
+      fenceActiveRequest(generationId);
+      return serializeStatusMutation(async () => {
+        const current = await readStatus();
+        if (!generationIsCurrent(current, generationId)) return current;
+        await clearRetrySchedule();
+        const status = await writeStatus({
+          ...current,
+          phase: 'EXCHANGING',
+          updatedAt: currentIso(),
+          nextRetryAt: '',
+          publicCode: '',
+          account: null,
+          expiresAt: '',
+        });
+        activeRequestGenerationId = current.generationId;
+        return status;
+      });
+    };
+
+    const succeed = ({ generationId, account, expiresAt } = {}) => {
+      fenceActiveRequest(generationId);
+      return serializeStatusMutation(async () => {
+        const current = await readStatus();
+        if (!generationIsCurrent(current, generationId)) return current;
+        const timestamp = currentIso();
+        await clearRetrySchedule();
+        const status = await writeStatus({
+          ...current,
+          phase: 'AUTHENTICATED',
+          startedAt: current.startedAt || timestamp,
           updatedAt: timestamp,
           nextRetryAt: '',
+          publicCode: '',
+          account: safeAccount(account),
+          expiresAt: safeIso(expiresAt),
+        });
+        if (activeRequestGenerationId === current.generationId) {
+          activeRequestGenerationId = null;
+        }
+        return status;
+      });
+    };
+
+    const fail = ({ generationId, error } = {}) => {
+      fenceActiveRequest(generationId);
+      return serializeStatusMutation(async () => {
+        const current = await readStatus();
+        if (!generationIsCurrent(current, generationId)) return current;
+        const classification = classifyFailure(error);
+        const timestamp = currentIso();
+        if (!classification.retry) {
+          await clearRetrySchedule();
+          const status = await writeStatus({
+            ...current,
+            phase: classification.phase,
+            updatedAt: timestamp,
+            nextRetryAt: '',
+            publicCode: classification.publicCode,
+            account: null,
+            expiresAt: '',
+          });
+          if (activeRequestGenerationId === current.generationId) {
+            activeRequestGenerationId = null;
+          }
+          return status;
+        }
+        const attemptNumber = current.attemptNumber + 1;
+        const when = Number(now()) + retryDelay(attemptNumber);
+        const status = await writeStatus({
+          ...current,
+          phase: 'RETRY_WAIT',
+          updatedAt: timestamp,
+          attemptNumber,
+          nextRetryAt: new Date(when).toISOString(),
           publicCode: classification.publicCode,
           account: null,
           expiresAt: '',
         });
-      }
-      const attemptNumber = current.attemptNumber + 1;
-      const when = Number(now()) + retryDelay(attemptNumber);
-      const status = await writeStatus({
-        ...current,
-        phase: 'RETRY_WAIT',
-        updatedAt: timestamp,
-        attemptNumber,
-        nextRetryAt: new Date(when).toISOString(),
-        publicCode: classification.publicCode,
-        account: null,
-        expiresAt: '',
+        await scheduleRetry(when);
+        if (activeRequestGenerationId === current.generationId) {
+          activeRequestGenerationId = null;
+        }
+        return status;
       });
-      await scheduleRetryAlarm(when);
-      return status;
-    });
+    };
 
-    const retryNow = () => {
+    const runRequest = ({ expectedGenerationId = null, resumeOnly = false } = {}) => {
       if (operationPromise) return operationPromise;
       const operation = (async () => {
         const start = await serializeStatusMutation(async () => {
           const current = await readStatus();
+          if (
+            resumeOnly
+            && (
+              current.generationId !== expectedGenerationId
+              || ![
+                'DISCOVERING_WEB',
+                'REQUESTING_TICKET',
+                'EXCHANGING',
+                'RETRY_WAIT',
+              ].includes(current.phase)
+            )
+          ) return { shouldRequest: false, status: current };
+          if (
+            activeRequestGenerationId === current.generationId
+            && ['DISCOVERING_WEB', 'REQUESTING_TICKET', 'EXCHANGING'].includes(current.phase)
+          ) return { shouldRequest: false, status: current };
           const timestamp = currentIso();
-          await clearRetryAlarm();
+          await clearRetrySchedule();
+          const status = await writeStatus({
+            ...current,
+            phase: 'DISCOVERING_WEB',
+            generationId: current.generationId || DISCOVERY_GENERATION_ID,
+            startedAt: current.startedAt || timestamp,
+            updatedAt: timestamp,
+            nextRetryAt: '',
+            publicCode: '',
+            account: null,
+            expiresAt: '',
+          });
+          activeRequestGenerationId = status.generationId;
           return {
-            status: await writeStatus({
-              ...current,
-              phase: 'DISCOVERING_WEB',
-              startedAt: current.startedAt || timestamp,
-              updatedAt: timestamp,
-              nextRetryAt: '',
-              publicCode: '',
-              account: null,
-              expiresAt: '',
-            }),
+            fence: requestFence,
+            shouldRequest: true,
+            status,
           };
         });
+        if (!start.shouldRequest) return { requested: false, status: start.status };
         const discovering = start.status;
+        const authorized = await serializeStatusMutation(async () => {
+          const latest = await readStatus();
+          return {
+            allowed: activeRequestGenerationId === discovering.generationId
+              && requestFence === start.fence
+              && latest.generationId === discovering.generationId
+              && latest.phase === 'DISCOVERING_WEB',
+            status: latest,
+          };
+        });
+        if (
+          !authorized.allowed
+          || requestFence !== start.fence
+          || activeRequestGenerationId !== discovering.generationId
+        ) {
+          return { requested: false, status: authorized.status };
+        }
         let result;
         try {
           result = await requestAuth({ generationId: discovering.generationId });
@@ -411,43 +577,84 @@
       return operation;
     };
 
+    const retryNow = () => runRequest();
+
     const resume = async () => {
-      const current = await getStatus();
+      const initial = await getStatus();
       let session = null;
       try { session = await getSession(); } catch {}
-      if (session?.account && safeIso(session.expiresAt)) {
-        return succeed({
-          generationId: current.generationId,
-          account: session.account,
-          expiresAt: session.expiresAt,
-        });
-      }
-      if (current.phase === 'ACTION_REQUIRED') return current;
-      if (current.phase === 'AUTHENTICATED') {
-        return fail({
-          generationId: current.generationId,
-          error: { code: 'WEB_AUTH_REQUIRED' },
-        });
-      }
-      if (current.phase === 'RETRY_WAIT') {
-        const scheduled = await serializeStatusMutation(async () => {
-          const latest = await readStatus();
-          const when = Date.parse(latest.nextRetryAt);
-          if (latest.phase !== 'RETRY_WAIT' || !Number.isFinite(when) || when <= Number(now())) {
-            return { restored: false, status: latest };
+      const decision = await serializeStatusMutation(async () => {
+        const latest = await readStatus();
+        if (latest.generationId !== initial.generationId) {
+          return { request: false, status: latest };
+        }
+        const unchanged = JSON.stringify(latest) === JSON.stringify(initial);
+        if (session?.account && safeIso(session.expiresAt)) {
+          if (latest.phase === 'ACTION_REQUIRED' || (latest.phase === 'WAITING_FOR_WEB' && !unchanged)) {
+            return { request: false, status: latest };
           }
-          await scheduleRetryAlarm(when);
-          return { restored: true, status: latest };
-        });
-        if (scheduled.restored) return scheduled.status;
-      }
-      if (![
-        'DISCOVERING_WEB',
-        'REQUESTING_TICKET',
-        'EXCHANGING',
-        'RETRY_WAIT',
-      ].includes(current.phase)) return current;
-      const result = await retryNow();
+          const timestamp = currentIso();
+          await clearRetrySchedule();
+          const status = await writeStatus({
+            ...latest,
+            phase: 'AUTHENTICATED',
+            startedAt: latest.startedAt || timestamp,
+            updatedAt: timestamp,
+            nextRetryAt: '',
+            publicCode: '',
+            account: safeAccount(session.account),
+            expiresAt: safeIso(session.expiresAt),
+          });
+          if (activeRequestGenerationId === latest.generationId) {
+            activeRequestGenerationId = null;
+          }
+          return { request: false, status };
+        }
+        if (latest.phase === 'ACTION_REQUIRED' || latest.phase === 'WAITING_FOR_WEB') {
+          await clearRetrySchedule();
+          return { request: false, status: latest };
+        }
+        if (latest.phase === 'AUTHENTICATED') {
+          if (!unchanged) return { request: false, status: latest };
+          await clearRetrySchedule();
+          const status = await writeStatus({
+            ...latest,
+            phase: 'WAITING_FOR_WEB',
+            updatedAt: currentIso(),
+            nextRetryAt: '',
+            publicCode: 'WEB_LOGIN_REQUIRED',
+            account: null,
+            expiresAt: '',
+          });
+          if (activeRequestGenerationId === latest.generationId) {
+            activeRequestGenerationId = null;
+          }
+          return { request: false, status };
+        }
+        if (latest.phase === 'RETRY_WAIT') {
+          const when = Date.parse(latest.nextRetryAt);
+          if (Number.isFinite(when) && when > Number(now())) {
+            await scheduleRetry(when);
+            return { request: false, status: latest };
+          }
+        }
+        if (![
+          'DISCOVERING_WEB',
+          'REQUESTING_TICKET',
+          'EXCHANGING',
+          'RETRY_WAIT',
+        ].includes(latest.phase)) return { request: false, status: latest };
+        if (
+          activeRequestGenerationId === latest.generationId
+          && ['DISCOVERING_WEB', 'REQUESTING_TICKET', 'EXCHANGING'].includes(latest.phase)
+        ) return { request: false, status: latest };
+        return { request: true, status: latest };
+      });
+      if (!decision.request) return decision.status;
+      const result = await runRequest({
+        expectedGenerationId: decision.status.generationId,
+        resumeOnly: true,
+      });
       return result.status;
     };
 

@@ -110,6 +110,47 @@ test('collector token is persisted only in chrome.storage.session and unsafe fie
   assert.equal(JSON.stringify(harness.sessionState).includes('store-1'), false);
 });
 
+test('authentication storage set rejections expose only the stable persistence failure code', async () => {
+  const cases = [
+    {
+      area: 'session',
+      matches: (values) => Object.hasOwn(values, COLLECTOR_SESSION_STORAGE_KEY),
+      run: (manager) => manager.setCollectorSession(validSession()),
+    },
+    {
+      area: 'session',
+      matches: (values) => Object.hasOwn(values, COLLECTOR_AUTH_GENERATION_STORAGE_KEY),
+      run: (manager) => manager.activateCollectorGeneration('generation_A_1234'),
+    },
+    {
+      area: 'local',
+      matches: () => true,
+      run: (manager) => manager.setCollectorSession(validSession()),
+    },
+  ];
+
+  for (const { area, matches, run } of cases) {
+    const harness = createHarness();
+    const storage = harness.chromeApi.storage[area];
+    const originalSet = storage.set.bind(storage);
+    storage.set = async (values) => {
+      if (matches(values)) {
+        throw new Error('quota detail cst_storage_secret_must_not_escape_123456789');
+      }
+      return originalSet(values);
+    };
+
+    await assert.rejects(run(harness.manager), (error) => {
+      assert.equal(error?.code, 'COLLECTOR_AUTH_PERSISTENCE_FAILED');
+      assert.equal(error?.status, 0);
+      assert.equal(error?.message, 'COLLECTOR_AUTH_PERSISTENCE_FAILED');
+      assert.equal(String(error).includes('quota detail'), false);
+      assert.equal(String(error).includes('cst_storage_secret'), false);
+      return true;
+    });
+  }
+});
+
 test('safe session permission allowlist retains Ozon read and discards arbitrary permissions', async () => {
   const harness = createHarness();
   const saved = await harness.manager.setCollectorSession(validSession({
@@ -707,7 +748,8 @@ test('failed G2 marker write leaves no active generation and held G1 exchange ca
 
   await assert.rejects(
     harness.manager.activateCollectorGeneration('generation_G2_5678'),
-    /simulated generation activation failure/,
+    (error) => error?.code === 'COLLECTOR_AUTH_PERSISTENCE_FAILED'
+      && error?.message === 'COLLECTOR_AUTH_PERSISTENCE_FAILED',
   );
   assert.deepEqual(
     harness.calls

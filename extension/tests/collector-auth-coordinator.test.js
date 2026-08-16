@@ -33,6 +33,7 @@ const deferred = () => {
 };
 
 function createHarness({
+  getSession,
   initial = {},
   randomValues = [0.5],
   requestAuth,
@@ -44,6 +45,7 @@ function createHarness({
   const createdAlarms = [];
   const clearedAlarms = [];
   const authRequests = [];
+  const timers = [];
   let currentTime = start;
   let randomIndex = 0;
   const storageSession = {
@@ -61,12 +63,20 @@ function createHarness({
   };
   const coordinator = createCollectorAuthCoordinator({
     alarms,
-    getSession: async () => session,
+    getSession: async () => (getSession ? getSession() : session),
     now: () => currentTime,
     random: () => randomValues[Math.min(randomIndex++, randomValues.length - 1)],
     requestAuth: async (input) => {
       authRequests.push({ ...input });
       return requestAuth ? requestAuth(input) : { requested: true };
+    },
+    setTimer(callback, milliseconds) {
+      const timer = { callback, milliseconds, cancelled: false, fired: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer(timer) {
+      if (timer) timer.cancelled = true;
     },
     storageSession,
   });
@@ -79,6 +89,7 @@ function createHarness({
     setTime(value) { currentTime = value; },
     state,
     storageSession,
+    timers,
     writes,
   };
 }
@@ -153,6 +164,7 @@ test('maps every public condition exactly and retries only transient failures', 
     [{ code: 'WEB_AUTH_REQUIRED' }, 'WAITING_FOR_WEB', 'WEB_LOGIN_REQUIRED', false],
     [{ code: 'WEB_TAB_UNAVAILABLE' }, 'WAITING_FOR_WEB', 'WEB_TAB_UNAVAILABLE', false],
     [{ code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' }, 'RETRY_WAIT', 'LOCAL_SERVICE_UNAVAILABLE', true],
+    [{ code: 'COLLECTOR_AUTH_PERSISTENCE_FAILED' }, 'RETRY_WAIT', 'LOCAL_SERVICE_UNAVAILABLE', true],
     [{ code: 'COLLECTOR_ACCOUNT_INACTIVE', status: 403 }, 'ACTION_REQUIRED', 'ACCOUNT_DISABLED', false],
     [{ code: 'COLLECTOR_PARENT_SESSION_EXPIRED', status: 401 }, 'ACTION_REQUIRED', 'ACCOUNT_EXPIRED', false],
     [{ code: 'COLLECTOR_PERMISSION_DENIED', status: 403 }, 'ACTION_REQUIRED', 'PERMISSION_DENIED', false],
@@ -165,6 +177,9 @@ test('maps every public condition exactly and retries only transient failures', 
     [{ code: 'COLLECTOR_PERMISSION_DENIED', status: 503 }, 'ACTION_REQUIRED', 'PERMISSION_DENIED', false],
     [{ code: 'PORTAL_BRIDGE_FORBIDDEN', status: 503 }, 'ACTION_REQUIRED', 'TRUST_BOUNDARY_REJECTED', false],
     [{ code: 'COLLECTOR_AUTH_CONTRACT_UNSUPPORTED', status: 503 }, 'ACTION_REQUIRED', 'SERVER_UPGRADE_REQUIRED', false],
+    [{ code: 'COLLECTOR_TICKET_EXPIRED', status: 503 }, 'ACTION_REQUIRED', 'SERVER_UPGRADE_REQUIRED', false],
+    [{ code: 'COLLECTOR_TICKET_USED', status: 503 }, 'ACTION_REQUIRED', 'SERVER_UPGRADE_REQUIRED', false],
+    [{ code: 'COLLECTOR_TICKET_INVALID', status: 503 }, 'ACTION_REQUIRED', 'SERVER_UPGRADE_REQUIRED', false],
   ];
 
   for (const [error, phase, publicCode, retries] of cases) {
@@ -204,6 +219,114 @@ test('uses bounded jitter over 1/2/5/10/30 second backoff and never exceeds 30 s
   }
 });
 
+test('sub-thirty-second retry uses an exact in-memory timer and a durable thirty-second alarm', async () => {
+  const start = Date.parse('2030-01-01T00:00:00.000Z');
+  const harness = createHarness({ start });
+  await harness.coordinator.begin({ generationId: G1 });
+  const status = await harness.coordinator.fail({
+    generationId: G1,
+    error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
+  });
+
+  assert.equal(Date.parse(status.nextRetryAt), start + 1_000);
+  assert.equal(harness.timers.length, 1);
+  assert.equal(harness.timers[0].milliseconds, 1_000);
+  assert.equal(harness.timers[0].cancelled, false);
+  assert.deepEqual(harness.createdAlarms.at(-1), {
+    name: ALARM_NAME,
+    options: { when: start + 30_000 },
+  });
+});
+
+test('a thirty-second retry uses only the durable alarm', async () => {
+  const start = Date.parse('2030-01-01T00:00:00.000Z');
+  const harness = createHarness({
+    initial: {
+      [STORAGE_KEY]: {
+        version: 1,
+        phase: 'EXCHANGING',
+        generationId: G1,
+        startedAt: '2030-01-01T00:00:00.000Z',
+        updatedAt: '2030-01-01T00:00:00.000Z',
+        attemptNumber: 4,
+        nextRetryAt: '',
+        publicCode: '',
+        account: null,
+        expiresAt: '',
+      },
+    },
+    start,
+  });
+  const status = await harness.coordinator.fail({
+    generationId: G1,
+    error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
+  });
+
+  assert.equal(Date.parse(status.nextRetryAt), start + 30_000);
+  assert.equal(harness.timers.length, 0);
+  assert.deepEqual(harness.createdAlarms.at(-1), {
+    name: ALARM_NAME,
+    options: { when: start + 30_000 },
+  });
+});
+
+test('short timer and alarm overlap converge on one due request and cancel their schedule', async () => {
+  const start = Date.parse('2030-01-01T00:00:00.000Z');
+  const pendingRequest = deferred();
+  const harness = createHarness({
+    requestAuth: () => pendingRequest.promise,
+    start,
+  });
+  await harness.coordinator.begin({ generationId: G1 });
+  await harness.coordinator.fail({
+    generationId: G1,
+    error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
+  });
+  const timer = harness.timers[0];
+  harness.setTime(start + 30_000);
+
+  const timerRetry = timer.callback();
+  const alarmRetry = harness.coordinator.resume();
+  await waitFor(() => harness.authRequests.length === 1);
+  assert.equal(harness.authRequests.length, 1);
+  assert.equal(timer.cancelled, true);
+  assert.ok(harness.clearedAlarms.includes(ALARM_NAME));
+  pendingRequest.resolve({ requested: true });
+  await Promise.all([timerRetry, alarmRetry]);
+  assert.equal(harness.authRequests.length, 1);
+});
+
+test('restart restores a short timer with a durable fallback and a suspended worker resumes at the alarm', async () => {
+  const start = Date.parse('2030-01-01T00:00:00.000Z');
+  const retryStatus = {
+    version: 1,
+    phase: 'RETRY_WAIT',
+    generationId: G1,
+    startedAt: '2030-01-01T00:00:00.000Z',
+    updatedAt: '2030-01-01T00:00:00.000Z',
+    attemptNumber: 1,
+    nextRetryAt: '2030-01-01T00:00:01.000Z',
+    publicCode: 'LOCAL_SERVICE_UNAVAILABLE',
+    account: null,
+    expiresAt: '',
+  };
+  const live = createHarness({
+    initial: { [STORAGE_KEY]: retryStatus },
+    start,
+  });
+  await live.coordinator.resume();
+  assert.equal(live.authRequests.length, 0);
+  assert.equal(live.timers[0].milliseconds, 1_000);
+  assert.equal(live.createdAlarms.at(-1).options.when, start + 30_000);
+
+  const restarted = createHarness({
+    initial: { [STORAGE_KEY]: retryStatus },
+    start: start + 30_000,
+  });
+  await restarted.coordinator.resume();
+  assert.equal(restarted.authRequests.length, 1);
+});
+
 test('manual and alarm retries join one in-memory request for the active generation', async () => {
   const pendingRequest = deferred();
   const harness = createHarness({ requestAuth: () => pendingRequest.promise });
@@ -223,6 +346,142 @@ test('manual and alarm retries join one in-memory request for the active generat
   pendingRequest.resolve({ requested: true });
   await Promise.all([manual, alarm, duplicate]);
   assert.equal(harness.authRequests.length, 1);
+});
+
+test('resume cannot regress a concurrent successful authentication after a delayed session read', async () => {
+  const sessionReadStarted = deferred();
+  const sessionRead = deferred();
+  const harness = createHarness({
+    getSession: async () => {
+      sessionReadStarted.resolve();
+      return sessionRead.promise;
+    },
+  });
+  await harness.coordinator.begin({ generationId: G1 });
+  await harness.coordinator.exchange({ generationId: G1 });
+
+  const resumed = harness.coordinator.resume();
+  await sessionReadStarted.promise;
+  await harness.coordinator.succeed({
+    generationId: G1,
+    account: { id: 'account-a', displayName: 'Account A' },
+    expiresAt: '2031-01-01T00:00:00.000Z',
+  });
+  sessionRead.resolve(null);
+  await resumed;
+
+  const status = await harness.coordinator.getStatus();
+  assert.equal(status.phase, 'AUTHENTICATED');
+  assert.equal(status.account.id, 'account-a');
+  assert.equal(harness.authRequests.length, 0);
+});
+
+test('resume cannot request for an older generation after a delayed session read', async () => {
+  const sessionReadStarted = deferred();
+  const sessionRead = deferred();
+  const harness = createHarness({
+    getSession: async () => {
+      sessionReadStarted.resolve();
+      return sessionRead.promise;
+    },
+  });
+  await harness.coordinator.begin({ generationId: G1 });
+  await harness.coordinator.exchange({ generationId: G1 });
+
+  const resumed = harness.coordinator.resume();
+  await sessionReadStarted.promise;
+  await harness.coordinator.begin({ generationId: G2 });
+  sessionRead.resolve(null);
+  await resumed;
+
+  const status = await harness.coordinator.getStatus();
+  assert.equal(status.generationId, G2);
+  assert.equal(status.phase, 'REQUESTING_TICKET');
+  assert.equal(harness.authRequests.length, 0);
+});
+
+test('resume cannot regress action-required or logout state after a delayed session read', async () => {
+  for (const [error, expectedPhase, expectedCode] of [
+    [{ code: 'COLLECTOR_ACCOUNT_DISABLED' }, 'ACTION_REQUIRED', 'ACCOUNT_DISABLED'],
+    [{ code: 'WEB_AUTH_REQUIRED' }, 'WAITING_FOR_WEB', 'WEB_LOGIN_REQUIRED'],
+  ]) {
+    const sessionReadStarted = deferred();
+    const sessionRead = deferred();
+    const harness = createHarness({
+      getSession: async () => {
+        sessionReadStarted.resolve();
+        return sessionRead.promise;
+      },
+    });
+    await harness.coordinator.begin({ generationId: G1 });
+    await harness.coordinator.exchange({ generationId: G1 });
+
+    const resumed = harness.coordinator.resume();
+    await sessionReadStarted.promise;
+    await harness.coordinator.fail({ generationId: G1, error });
+    sessionRead.resolve(null);
+    await resumed;
+
+    const status = await harness.coordinator.getStatus();
+    assert.equal(status.phase, expectedPhase);
+    assert.equal(status.publicCode, expectedCode);
+    assert.equal(harness.authRequests.length, 0);
+  }
+});
+
+test('startup and alarm resumes cannot duplicate a request after its Web acknowledgement', async () => {
+  const harness = createHarness();
+  await harness.coordinator.begin({ generationId: G1 });
+  await harness.coordinator.fail({
+    generationId: G1,
+    error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
+  });
+
+  const requested = await harness.coordinator.retryNow();
+  assert.equal(requested.requested, true);
+  assert.equal(harness.authRequests.length, 1);
+  await Promise.all([
+    harness.coordinator.resume(),
+    harness.coordinator.resume(),
+  ]);
+
+  assert.equal((await harness.coordinator.getStatus()).phase, 'DISCOVERING_WEB');
+  assert.equal(harness.authRequests.length, 1);
+});
+
+test('a terminal transition queued at the final status check wins before the Web request side effect', async () => {
+  const harness = createHarness();
+  await harness.coordinator.begin({ generationId: G1 });
+  await harness.coordinator.fail({
+    generationId: G1,
+    error: { code: 'COLLECTOR_EXCHANGE_NETWORK_ERROR' },
+  });
+  const finalReadCaptured = deferred();
+  const releaseFinalRead = deferred();
+  const originalGet = harness.storageSession.get.bind(harness.storageSession);
+  let held = false;
+  harness.storageSession.get = async (key) => {
+    const snapshot = await originalGet(key);
+    if (!held && snapshot?.[STORAGE_KEY]?.phase === 'DISCOVERING_WEB') {
+      held = true;
+      finalReadCaptured.resolve();
+      await releaseFinalRead.promise;
+    }
+    return snapshot;
+  };
+
+  const retry = harness.coordinator.retryNow();
+  await finalReadCaptured.promise;
+  const succeeded = harness.coordinator.succeed({
+    generationId: G1,
+    account: { id: 'account-a', displayName: 'Account A' },
+    expiresAt: '2031-01-01T00:00:00.000Z',
+  });
+  releaseFinalRead.resolve();
+  await Promise.all([retry, succeeded]);
+
+  assert.equal((await harness.coordinator.getStatus()).phase, 'AUTHENTICATED');
+  assert.equal(harness.authRequests.length, 0);
 });
 
 test('manual retry authoritatively rediscovers Web even when the stored status is authenticated', async () => {
@@ -360,8 +619,9 @@ test('a restarted coordinator resumes one due retry, restores a future alarm, or
   assert.equal(future.authRequests.length, 0);
   assert.deepEqual(future.createdAlarms, [{
     name: ALARM_NAME,
-    options: { when: Date.parse('2030-01-01T00:00:06.000Z') },
+    options: { when: Date.parse('2030-01-01T00:00:35.000Z') },
   }]);
+  assert.equal(future.timers[0].milliseconds, 1_000);
 
   const authenticated = createHarness({
     initial: { [STORAGE_KEY]: retryStatus },
@@ -413,6 +673,130 @@ test('a restarted coordinator resumes one due retry, restores a future alarm, or
   const resumedInterrupted = await interrupted.coordinator.resume();
   assert.equal(resumedInterrupted.phase, 'DISCOVERING_WEB');
   assert.equal(interrupted.authRequests.length, 1);
+});
+
+test('impossible persisted states rewrite to a safe terminal status without cold-start discovery', async () => {
+  const base = {
+    version: 1,
+    phase: 'WAITING_FOR_WEB',
+    generationId: G1,
+    startedAt: '2030-01-01T00:00:00.000Z',
+    updatedAt: '2030-01-01T00:00:00.000Z',
+    attemptNumber: 1,
+    nextRetryAt: '',
+    publicCode: '',
+    account: null,
+    expiresAt: '',
+  };
+  const cases = [
+    [
+      { ...base, phase: 'REQUESTING_TICKET', generationId: '' },
+      'ACTION_REQUIRED',
+      'TRUST_BOUNDARY_REJECTED',
+    ],
+    [
+      { ...base, phase: 'DISCOVERING_WEB', generationId: '' },
+      'ACTION_REQUIRED',
+      'TRUST_BOUNDARY_REJECTED',
+    ],
+    [
+      {
+        ...base,
+        phase: 'RETRY_WAIT',
+        publicCode: 'ACCOUNT_DISABLED',
+        nextRetryAt: '2030-01-01T00:00:01.000Z',
+      },
+      'ACTION_REQUIRED',
+      'SERVER_UPGRADE_REQUIRED',
+    ],
+    [
+      {
+        ...base,
+        phase: 'RETRY_WAIT',
+        publicCode: 'LOCAL_SERVICE_UNAVAILABLE',
+        nextRetryAt: 'not-a-date',
+      },
+      'ACTION_REQUIRED',
+      'SERVER_UPGRADE_REQUIRED',
+    ],
+    [
+      {
+        ...base,
+        phase: 'RETRY_WAIT',
+        attemptNumber: 0,
+        publicCode: 'LOCAL_SERVICE_UNAVAILABLE',
+        nextRetryAt: '2030-01-01T00:00:01.000Z',
+      },
+      'ACTION_REQUIRED',
+      'SERVER_UPGRADE_REQUIRED',
+    ],
+    [
+      { ...base, phase: 'EXCHANGING', startedAt: '' },
+      'ACTION_REQUIRED',
+      'SERVER_UPGRADE_REQUIRED',
+    ],
+    [
+      {
+        ...base,
+        phase: 'AUTHENTICATED',
+        account: null,
+        expiresAt: '2031-01-01T00:00:00.000Z',
+      },
+      'WAITING_FOR_WEB',
+      'WEB_LOGIN_REQUIRED',
+    ],
+    [
+      {
+        ...base,
+        phase: 'AUTHENTICATED',
+        account: { id: 'account-a', displayName: 'Account A' },
+        expiresAt: '2029-12-31T23:59:59.000Z',
+      },
+      'WAITING_FOR_WEB',
+      'WEB_LOGIN_REQUIRED',
+    ],
+  ];
+
+  for (const [raw, phase, publicCode] of cases) {
+    const harness = createHarness({ initial: { [STORAGE_KEY]: raw } });
+    const status = await harness.coordinator.getStatus();
+    assert.equal(status.phase, phase);
+    assert.equal(status.publicCode, publicCode);
+    assert.equal(status.nextRetryAt, '');
+    assert.equal(status.account, null);
+    assert.equal(status.expiresAt, '');
+    assert.deepEqual(plain(harness.state[STORAGE_KEY]), plain(status));
+
+    await harness.coordinator.resume();
+    assert.equal(harness.authRequests.length, 0);
+    assert.ok(harness.clearedAlarms.includes(ALARM_NAME));
+  }
+});
+
+test('persisted status projection clears fields that are incoherent for its phase', async () => {
+  const harness = createHarness({
+    initial: {
+      [STORAGE_KEY]: {
+        version: 1,
+        phase: 'WAITING_FOR_WEB',
+        generationId: G1,
+        startedAt: '2030-01-01T00:00:00.000Z',
+        updatedAt: '2030-01-01T00:00:00.000Z',
+        attemptNumber: 7,
+        nextRetryAt: '2030-01-01T00:00:01.000Z',
+        publicCode: 'ACCOUNT_DISABLED',
+        account: { id: 'account-a', displayName: 'Account A' },
+        expiresAt: '2031-01-01T00:00:00.000Z',
+      },
+    },
+  });
+
+  const status = await harness.coordinator.getStatus();
+  assert.equal(status.phase, 'WAITING_FOR_WEB');
+  assert.equal(status.publicCode, '');
+  assert.equal(status.nextRetryAt, '');
+  assert.equal(status.account, null);
+  assert.equal(status.expiresAt, '');
 });
 
 test('stored and returned status never contains credential keys, credential values, request IDs, or raw errors', async () => {

@@ -373,6 +373,27 @@ test('service worker imports the coordinator before session code and exposes onl
     )),
     { ok: false },
   );
+  for (const sender of [
+    { id: 'service-worker-collector-auth-test' },
+    { id: 'service-worker-collector-auth-test', url: 'not a URL' },
+    {
+      id: 'service-worker-collector-auth-test',
+      url: 'chrome-extension://different-extension/popup.html',
+    },
+  ]) {
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(
+        await sendRuntime(harness, { action: 'getCollectorAuthStatus' }, sender),
+      )),
+      { ok: false },
+    );
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(
+        await sendRuntime(harness, { action: 'retryCollectorAuth' }, sender),
+      )),
+      { ok: false },
+    );
+  }
 });
 
 test('manual collector auth retry discovers one authoritative Web tab or publishes WEB_TAB_UNAVAILABLE', async () => {

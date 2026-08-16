@@ -270,6 +270,17 @@
       sessionMutationTail = run.catch(() => {});
       return run;
     };
+    const setCollectorAuthStorage = async (storageArea, values) => {
+      try {
+        await storageArea.set(values);
+      } catch {
+        throw collectorError(
+          'COLLECTOR_AUTH_PERSISTENCE_FAILED',
+          0,
+          'COLLECTOR_AUTH_PERSISTENCE_FAILED',
+        );
+      }
+    };
     const captureStoredCollectorActivation = async (generationId, secret) => {
       const stored = await chromeApi.storage.session.get([
         COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
@@ -354,7 +365,7 @@
               ...publicSessionFields(storedSession),
             };
           }
-          await chromeApi.storage.session.set({
+          await setCollectorAuthStorage(chromeApi.storage.session, {
             [COLLECTOR_AUTH_GENERATION_STORAGE_KEY]: generationId,
             [COLLECTOR_AUTH_INCARNATION_STORAGE_KEY]: createGenerationIncarnation(),
           });
@@ -374,7 +385,7 @@
           COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
         ]);
         const incarnation = createGenerationIncarnation();
-        await chromeApi.storage.session.set({
+        await setCollectorAuthStorage(chromeApi.storage.session, {
           [COLLECTOR_AUTH_GENERATION_STORAGE_KEY]: generationId,
           [COLLECTOR_AUTH_INCARNATION_STORAGE_KEY]: incarnation,
         });
@@ -519,8 +530,11 @@
           session?.collectorToken,
         ]);
       }
-      await chromeApi.storage.session.set({ [COLLECTOR_SESSION_STORAGE_KEY]: safe });
-      await chromeApi.storage.local.set({
+      await setCollectorAuthStorage(
+        chromeApi.storage.session,
+        { [COLLECTOR_SESSION_STORAGE_KEY]: safe },
+      );
+      await setCollectorAuthStorage(chromeApi.storage.local, {
         [COLLECTOR_LAST_OWNER_KEY]: {
           accountId: accountIdOf(safe),
           sessionIdentity: sessionIdentityOf(safe),
