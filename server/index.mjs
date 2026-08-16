@@ -2659,7 +2659,7 @@ export function createHttpHandler({
     sendJson(res, 200, {
       ok: true,
       service: "qh-local-api",
-      version: "0.13.46.3-local",
+      version: "0.13.46.4-local",
       persistence: persistenceMode(),
     });
     return;
@@ -5068,7 +5068,7 @@ export function createHttpHandler({
   }
 
   if (req.method === "GET" && url.pathname === "/extension/latest") {
-    sendJson(res, 200, { version: "0.13.46.3", latestVersion: "0.13.46.3", downloadUrl: "/sonli-extension-0.13.46.3.zip" });
+    sendJson(res, 200, { version: "0.13.46.4", latestVersion: "0.13.46.4", downloadUrl: "/sonli-extension-0.13.46.4.zip" });
     return;
   }
 

@@ -12,9 +12,9 @@ const rootDir = fileURLToPath(new URL("..", import.meta.url));
 const localExtensionDir = path.join(rootDir, "extension");
 
 test("upstream parity accepts a newer local patch but rejects older or cross-line versions", () => {
-  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.3", "0.13.46.2"));
-  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.3", "0.13.46.3"));
-  assert.throws(() => assertCompatibleExtensionVersions("0.13.46.2", "0.13.46.3"), /older than upstream/);
+  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.4", "0.13.46.3"));
+  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.4", "0.13.46.4"));
+  assert.throws(() => assertCompatibleExtensionVersions("0.13.46.3", "0.13.46.4"), /older than upstream/);
   assert.throws(() => assertCompatibleExtensionVersions("0.14.0", "0.13.46.1"), /release line/);
 });
 
@@ -47,10 +47,14 @@ test("source parity accepts exactly the reviewed Collector auth opener files abs
   const upstreamDir = path.join(fixtureRoot, "upstream");
   cpSync(localExtensionDir, upstreamDir, { recursive: true });
   const reviewedLocalOnly = [
+    "lib/collector-auth-coordinator.js",
     "lib/collector-auth-flow.js",
     "lib/frontend-tab-opener.js",
+    "tests/collector-auth-acceptance.test.js",
+    "tests/collector-auth-coordinator.test.js",
     "tests/collector-auth-flow.test.js",
     "tests/frontend-tab-opener.test.js",
+    "tests/service-worker-collector-auth.test.js",
   ];
   for (const relativePath of reviewedLocalOnly) rmSync(path.join(upstreamDir, relativePath));
 

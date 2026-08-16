@@ -22,7 +22,11 @@ const storage = () => ({
 });
 const event = { addListener() {}, removeListener() {} };
 const chrome = {
-  alarms: { onAlarm: event },
+  alarms: {
+    async clear() { return true; },
+    create() {},
+    onAlarm: event,
+  },
   contextMenus: { removeAll(callback) { callback?.(); }, create() {}, onClicked: event },
   cookies: { getAll: async () => [] },
   notifications: { create() {}, clear() {}, onClicked: event },
