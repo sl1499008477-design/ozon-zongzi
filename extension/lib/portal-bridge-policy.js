@@ -15,6 +15,7 @@
       'ticket',
     ]),
   });
+  const collectorHintedBeginKeys = Object.freeze(['accountIdHint', 'action', 'generationId']);
   const collectorGenerationPattern = /^[A-Za-z0-9_-]{16,128}$/;
   const nativeObjectConstructorSource = Function.prototype.toString.call(Object);
   const isPlainRecord = (value) => {
@@ -41,7 +42,10 @@
     if (!trusted(senderUrl)) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
     if (!isPlainRecord(message)) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
     if (protocol === 'SONLI_COLLECTOR_AUTH') {
-      const expectedKeys = collectorKeys[message.action];
+      const expectedKeys = message.action === 'collector.auth.begin'
+        && Object.hasOwn(message, 'accountIdHint')
+        ? collectorHintedBeginKeys
+        : collectorKeys[message.action];
       if (!expectedKeys || !hasExactKeys(message, expectedKeys)) {
         throw new Error('PORTAL_BRIDGE_FORBIDDEN');
       }
@@ -51,7 +55,23 @@
       if (!collectorGenerationPattern.test(generationId)) {
         throw new Error('PORTAL_BRIDGE_FORBIDDEN');
       }
-      if (message.action === 'collector.auth.begin' || message.action === 'collector.auth.logout') {
+      if (message.action === 'collector.auth.begin') {
+        if (!Object.hasOwn(message, 'accountIdHint')) {
+          return { protocol, action: message.action, generationId };
+        }
+        const accountIdHint = typeof message.accountIdHint === 'string'
+          ? message.accountIdHint.trim()
+          : '';
+        if (
+          !accountIdHint
+          || accountIdHint.length > 128
+          || accountIdHint !== message.accountIdHint
+        ) {
+          throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+        }
+        return { protocol, action: message.action, generationId, accountIdHint };
+      }
+      if (message.action === 'collector.auth.logout') {
         return { protocol, action: message.action, generationId };
       }
       const requestId = typeof message.requestId === 'string' ? message.requestId.trim() : '';

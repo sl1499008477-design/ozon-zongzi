@@ -16,6 +16,19 @@ const collectorMessages = [
     },
   },
   {
+    input: {
+      action: 'collector.auth.begin',
+      generationId: 'generation_A_1234',
+      accountIdHint: 'account-a',
+    },
+    expected: {
+      protocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.begin',
+      generationId: 'generation_A_1234',
+      accountIdHint: 'account-a',
+    },
+  },
+  {
     input: { action: 'collector.auth.logout', generationId: 'generation_A_1234' },
     expected: {
       protocol: 'SONLI_COLLECTOR_AUTH',
@@ -54,6 +67,27 @@ assert.deepEqual(normalizePortalBridgeMessage({
   senderUrl,
   message: nullPrototypeBegin,
 }), collectorMessages[0].expected, 'null-prototype Collector records remain valid');
+const nullPrototypeHintedBegin = Object.assign(Object.create(null), collectorMessages[1].input);
+assert.deepEqual(normalizePortalBridgeMessage({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  senderUrl,
+  message: nullPrototypeHintedBegin,
+}), collectorMessages[1].expected, 'null-prototype hinted begin records remain valid');
+
+assert.deepEqual(normalizePortalBridgeMessage({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  senderUrl,
+  message: {
+    action: 'collector.auth.begin',
+    generationId: 'generation_A_1234',
+    accountIdHint: 'a'.repeat(128),
+  },
+}), {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.begin',
+  generationId: 'generation_A_1234',
+  accountIdHint: 'a'.repeat(128),
+});
 
 const inheritedDirectExtra = Object.assign(
   Object.create({ token: 'inherited-web-bearer' }),
@@ -99,6 +133,12 @@ assert.deepEqual(normalizePortalBridgeMessage({ protocol: 'JZ_ERP', senderUrl, m
 for (const bad of [
   { protocol: 'SONLI_WEB_CONTROL', message: { action: 'syncAuthFromWeb', token: 't' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', token: 'web-bearer' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: '' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: ' account-a ' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: 'a'.repeat(129) } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: 123 } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: 'account-a', token: 'web-bearer' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', accountIdHint: 'account-a', ticket: 'unexpected' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.logout', generationId: 'generation_A_1234', storeId: 'store-1' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.exchange', requestId: 'request-1', generationId: 'generation_A_1234', ticket: 'ctt_ticket_secret_123456789', expiresAt: '2030-01-01T00:01:00.000Z', accountId: 'account-attacker' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin' } },
@@ -118,6 +158,28 @@ assert.throws(() => normalizePortalBridgeMessage({
 assert.deepEqual(sanitizePortalBridgeResponse({ data: { token: 'secret', ok: true } }), { data: { ok: true } });
 
 assert.equal(typeof routePortalRuntimeMessage, 'function', 'portal policy must expose executable runtime routing');
+assert.deepEqual(
+  routePortalRuntimeMessage({
+    senderUrl,
+    message: {
+      portalProtocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.begin',
+      generationId: 'generation_A_1234',
+      accountIdHint: 'account-a',
+    },
+  }),
+  {
+    source: 'PORTAL',
+    route: 'SONLI_COLLECTOR_AUTH',
+    message: {
+      protocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.begin',
+      generationId: 'generation_A_1234',
+      accountIdHint: 'account-a',
+    },
+  },
+  'the real normalized begin route must preserve the bounded account hint',
+);
 assert.deepEqual(
   routePortalRuntimeMessage({
     senderUrl,
