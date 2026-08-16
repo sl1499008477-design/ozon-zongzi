@@ -95,3 +95,72 @@ git revert <task-3-commit-hash>
 ```
 
 That restores the prior lock and invalidation behavior. No generated package, database, or production-data restoration is required.
+
+---
+
+# Task 3 Fix Round 1 — make account revocation a required authentication side effect
+
+## Parent commit and fix scope
+
+- Parent Task 3 commit: `6b2b340b0cbddc077acf37b9628b012b6e2b8947`.
+- Fix commit subject: `fix: make collector account revocation mandatory`.
+- The final fix commit hash is reported in the handoff because a commit cannot embed its own stable Git object hash.
+
+The review identified that disabled/expired account revocation ran inside runtime `audit()`, while service `writeAudit()` intentionally swallows logging failures. An audit save or revoke save error therefore returned the ordinary account-status code without proving the old token had been durably revoked.
+
+## Contract and file changes
+
+- `server/collector-auth-service.mjs`
+  - Disabled/expired authentication now calls `repository.revokeSessions({ accountId, reason, now })` before best-effort audit logging.
+  - Exact reasons are `ACCOUNT_DISABLED` and `ACCOUNT_EXPIRED`.
+  - A successful required revoke preserves the exact public disabled/expired code even if audit logging fails.
+  - A required revoke failure becomes the authentication failure; logging is still attempted best-effort and cannot replace that security failure.
+- `server/collector-auth-repository.mjs`
+  - Existing `revokeSessions` treats an absent/empty parent-session token as account-wide while preserving the existing explicit-parent scope.
+  - JSON revocation remains atomic through the existing persist/rollback boundary.
+  - PostgreSQL account-wide revocation updates active rows by `account_id` only; explicit-parent SQL remains unchanged.
+- `server/collector-auth-runtime.mjs`
+  - Removes the duplicate security revocation from the audit sink. Runtime audit returns to logging only.
+- `server/tests/collector-auth-service.test.mjs`
+  - Adds service-level audit-failure recovery coverage and the PostgreSQL account-wide SQL/parameter contract.
+- `server/tests/collector-auth-runtime.test.mjs`
+  - Injects JSON audit-save and revoke-save failures at the real runtime/repository boundary.
+
+No outbox, schema, migration, framework, extension, generated package, dependency, ledger, production configuration, or external integration changed.
+
+## RED / GREEN evidence
+
+Focused command:
+
+```bash
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-name-pattern='required expired-account revocation|revokes every active Collector session|audit save failure after required account revocation|required account revocation save failure' server/tests/collector-auth-service.test.mjs server/tests/collector-auth-runtime.test.mjs
+```
+
+RED result: 0 passed, 4 failed.
+
+- Audit-save failure left `revokedAt` empty.
+- Revoke-save failure was swallowed and surfaced as `COLLECTOR_ACCOUNT_DISABLED` instead of a persistence failure.
+- The pure service path did not revoke when its audit sink failed.
+- PostgreSQL still emitted the parent-token predicate for an account-wide call.
+
+GREEN result: 4 passed, 0 failed after moving required revocation into service authentication, adding account-wide repository behavior, and removing the runtime audit duplicate.
+
+Recovery evidence:
+
+- Audit save failure occurs only after the required revoke is durably saved; authentication returns `COLLECTOR_ACCOUNT_DISABLED`, and recovery still returns `COLLECTOR_SESSION_REVOKED` for the old token.
+- A first revoke save failure returns sanitized `COLLECTOR_AUTH_PERSISTENCE_FAILED` with no raw error, account ID, or Collector token. With the account still disabled, a second authentication retries and persists `ACCOUNT_DISABLED`; recovery then rejects the old token as revoked.
+- The service-level expired case proves an unavailable best-effort audit sink cannot undo `ACCOUNT_EXPIRED` or revive the old token.
+
+## Regression, unverified scope, and rollback
+
+Fresh Task 3 service/runtime/routes regression: 72 passed, 0 failed. Modified source/tests pass `node --check`; `git diff --check` and the post-stage `git diff --cached --check` are the final diff gates.
+
+- No real PostgreSQL instance or real account was used. PostgreSQL behavior is verified at emitted SQL/parameters and existing deterministic fixtures only.
+- The full unrelated repository suite is outside this fix round; the requested Task 3 narrow regression is the verification boundary.
+- Account-wide revoke is intentionally bounded by the already-authorized internal `accountId`; explicit parent-token revocation remains available for logout and other parent-scoped flows.
+
+This fix has no migration or external side effect. Revert the final fix hash from the handoff to return to parent commit `6b2b340b0cbddc077acf37b9628b012b6e2b8947`:
+
+```bash
+git revert <task-3-fix-round-1-hash>
+```

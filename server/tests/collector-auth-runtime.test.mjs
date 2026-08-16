@@ -75,10 +75,12 @@ function collectorRequest(token) {
   return req;
 }
 
-function jsonRuntime(state) {
+function jsonRuntime(state, {
+  saveState = async (nextState) => Object.assign(state, structuredClone(nextState)),
+} = {}) {
   return createCollectorAuthRuntime({
     loadState: async () => structuredClone(state),
-    saveState: async (nextState) => Object.assign(state, structuredClone(nextState)),
+    saveState,
     persistenceMode: () => "json",
     stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
     readJson,
@@ -278,6 +280,111 @@ test("disabled and expired account authentication persistently revokes old Colle
       }
     });
   }
+});
+
+test("audit save failure after required account revocation cannot revive the old Collector token", async () => {
+  const state = initialState();
+  let failNextAuditSave = false;
+  const runtime = jsonRuntime(state, {
+    async saveState(nextState) {
+      const addsAudit = nextState.auditEvents.length > state.auditEvents.length;
+      if (failNextAuditSave && addsAudit) {
+        failNextAuditSave = false;
+        throw new Error("audit save unavailable");
+      }
+      Object.assign(state, structuredClone(nextState));
+    },
+  });
+  const issued = await request(runtime, "POST", "/extension/collector-auth/ticket", {
+    authorization: `Bearer ${WEB_TOKEN}`,
+  });
+  const exchanged = await request(runtime, "POST", "/extension/collector-auth/exchange", {
+    body: { ticket: issued.body.ticket, deviceFingerprint: "audit-failure-device" },
+  });
+  const collectorToken = exchanged.body.collectorToken;
+
+  state.accounts[0].status = "disabled";
+  failNextAuditSave = true;
+  await assert.rejects(
+    runtime.authenticateSessionRequest(
+      collectorRequest(collectorToken),
+      "collector.config.read",
+    ),
+    (error) => error?.code === "COLLECTOR_ACCOUNT_DISABLED",
+  );
+  assert.ok(state.collectorSessions[0].revokedAt);
+  assert.equal(state.collectorSessions[0].revokedReason, "ACCOUNT_DISABLED");
+
+  state.accounts[0].status = "active";
+  await assert.rejects(
+    runtime.authenticateSessionRequest(
+      collectorRequest(collectorToken),
+      "collector.config.read",
+    ),
+    (error) => error?.code === "COLLECTOR_SESSION_REVOKED",
+  );
+});
+
+test("required account revocation save failure is surfaced and can be retried before recovery", async () => {
+  const state = initialState();
+  let failNextRevokeSave = false;
+  let collectorToken = "";
+  const runtime = jsonRuntime(state, {
+    async saveState(nextState) {
+      const addsRevocation = Boolean(nextState.collectorSessions[0]?.revokedAt)
+        && !state.collectorSessions[0]?.revokedAt;
+      if (failNextRevokeSave && addsRevocation) {
+        failNextRevokeSave = false;
+        throw new Error(`raw revoke failure ${ACCOUNT.id} ${collectorToken}`);
+      }
+      Object.assign(state, structuredClone(nextState));
+    },
+  });
+  const issued = await request(runtime, "POST", "/extension/collector-auth/ticket", {
+    authorization: `Bearer ${WEB_TOKEN}`,
+  });
+  const exchanged = await request(runtime, "POST", "/extension/collector-auth/exchange", {
+    body: { ticket: issued.body.ticket, deviceFingerprint: "revoke-failure-device" },
+  });
+  collectorToken = exchanged.body.collectorToken;
+
+  state.accounts[0].status = "disabled";
+  failNextRevokeSave = true;
+  let revokeError;
+  await assert.rejects(
+    runtime.authenticateSessionRequest(
+      collectorRequest(collectorToken),
+      "collector.config.read",
+    ),
+    (error) => {
+      revokeError = error;
+      return error?.code === "COLLECTOR_AUTH_PERSISTENCE_FAILED";
+    },
+  );
+  assert.equal(state.collectorSessions[0].revokedAt, null);
+  const publicError = `${revokeError?.code} ${revokeError?.message}`;
+  for (const secret of ["raw revoke failure", ACCOUNT.id, collectorToken]) {
+    assert.equal(publicError.includes(secret), false);
+  }
+
+  await assert.rejects(
+    runtime.authenticateSessionRequest(
+      collectorRequest(collectorToken),
+      "collector.config.read",
+    ),
+    (error) => error?.code === "COLLECTOR_ACCOUNT_DISABLED",
+  );
+  assert.ok(state.collectorSessions[0].revokedAt);
+  assert.equal(state.collectorSessions[0].revokedReason, "ACCOUNT_DISABLED");
+
+  state.accounts[0].status = "active";
+  await assert.rejects(
+    runtime.authenticateSessionRequest(
+      collectorRequest(collectorToken),
+      "collector.config.read",
+    ),
+    (error) => error?.code === "COLLECTOR_SESSION_REVOKED",
+  );
 });
 
 test("authenticateSessionRequest returns the safe full session for Ozon reads without Collector or Web secrets", async () => {

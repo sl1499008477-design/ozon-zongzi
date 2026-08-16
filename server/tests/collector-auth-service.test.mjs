@@ -73,11 +73,11 @@ function createFakeRepository({
       const record = [...sessions.values()].find((item) => item.id === sessionId);
       if (record) record.lastSeenAt = now.toISOString();
     },
-    async revokeSessions({ parentSessionToken, accountId, reason, now }) {
+    async revokeSessions({ parentSessionToken = "", accountId, reason, now }) {
       let revoked = 0;
       for (const record of sessions.values()) {
         if (
-          record.parentSessionToken === parentSessionToken
+          (!parentSessionToken || record.parentSessionToken === parentSessionToken)
           && record.accountId === accountId
           && !record.revokedAt
         ) {
@@ -100,7 +100,7 @@ function createHarness(options = {}) {
     repository,
     now: () => new Date(current),
     randomBytes: (size) => Buffer.alloc(size, ++randomCall),
-    audit: async (event) => audits.push(structuredClone(event)),
+    audit: options.audit || (async (event) => audits.push(structuredClone(event))),
   });
   return {
     service,
@@ -341,6 +341,36 @@ test("inactive accounts are rejected before ticket issuance and during collector
       requiredPermission: "collector.upload",
     }),
     (error) => error?.status === 403 && error?.code === "COLLECTOR_ACCOUNT_DISABLED",
+  );
+});
+
+test("required expired-account revocation survives a best-effort audit failure and recovery", async () => {
+  const account = { ...ACTIVE_ACCOUNT };
+  const harness = createHarness({
+    repository: createFakeRepository({ account }),
+    audit: async () => { throw new Error("audit sink unavailable"); },
+  });
+  const { exchanged } = await issueAndExchange(harness);
+  const [session] = harness.repository.sessions.values();
+
+  account.expiresAt = "2026-07-28T23:59:59.000Z";
+  await assert.rejects(
+    harness.service.authenticate({
+      collectorToken: exchanged.collectorToken,
+      requiredPermission: "collector.upload",
+    }),
+    (error) => error?.code === "COLLECTOR_ACCOUNT_EXPIRED",
+  );
+  assert.ok(session.revokedAt);
+  assert.equal(session.revokedReason, "ACCOUNT_EXPIRED");
+
+  account.expiresAt = "2026-08-29T00:00:00.000Z";
+  await assert.rejects(
+    harness.service.authenticate({
+      collectorToken: exchanged.collectorToken,
+      requiredPermission: "collector.upload",
+    }),
+    (error) => error?.code === "COLLECTOR_SESSION_REVOKED",
   );
 });
 
@@ -1433,6 +1463,30 @@ test("PostgreSQL repository errors never expose a parent-session secret", async 
       && !error.message.includes(PARENT_TOKEN)
     ),
   );
+});
+
+test("PostgreSQL repository revokes every active Collector session for an account without a parent token", async () => {
+  const calls = [];
+  const repository = createPostgresCollectorAuthRepository({
+    pool: {
+      async query(sql, values) {
+        calls.push({ sql, values });
+        return { rows: [], rowCount: 2 };
+      },
+    },
+  });
+
+  const revoked = await repository.revokeSessions({
+    accountId: ACTIVE_ACCOUNT.id,
+    reason: "ACCOUNT_DISABLED",
+    now: START,
+  });
+
+  assert.equal(revoked, 2);
+  assert.match(calls[0].sql, /WHERE\s+account_id=\$1/i);
+  assert.doesNotMatch(calls[0].sql, /parent_session_token/i);
+  assert.match(calls[0].sql, /revoked_at\s+IS\s+NULL/i);
+  assert.deepEqual(calls[0].values, [ACTIVE_ACCOUNT.id, "ACCOUNT_DISABLED", START]);
 });
 
 test("PostgreSQL repository redacts collector secrets from session metadata and revoke reasons", async () => {

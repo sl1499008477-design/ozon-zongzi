@@ -323,13 +323,30 @@ export function createCollectorAuthService({
         throw serviceError("采集会话权限不足", 403, "COLLECTOR_PERMISSION_DENIED");
       }
     } catch (error) {
+      const accountRevocationReason = error?.code === "COLLECTOR_ACCOUNT_DISABLED"
+        ? "ACCOUNT_DISABLED"
+        : error?.code === "COLLECTOR_ACCOUNT_EXPIRED"
+          ? "ACCOUNT_EXPIRED"
+          : "";
+      let rejection = error;
+      if (accountRevocationReason) {
+        try {
+          await repository.revokeSessions({
+            accountId: String(record.accountId || ""),
+            reason: accountRevocationReason,
+            now: at,
+          });
+        } catch (revokeError) {
+          rejection = revokeError;
+        }
+      }
       await writeAudit({
         action: "collector.session.authenticate",
         accountId: record.accountId,
         collectorSessionId: record.id,
         outcome: String(error?.code || "COLLECTOR_AUTH_REJECTED").toLowerCase(),
       });
-      throw error;
+      throw rejection;
     }
 
     await repository.touchSession({ sessionId: record.id, now: at });

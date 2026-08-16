@@ -155,23 +155,6 @@ export function createCollectorAuthRuntime({
         await saveState(state);
       });
     }
-    const accountRevocationReason = event.outcome === "collector_account_disabled"
-      ? "ACCOUNT_DISABLED"
-      : event.outcome === "collector_account_expired"
-        ? "ACCOUNT_EXPIRED"
-        : "";
-    if (
-      event.action === "collector.session.authenticate"
-      && accountRevocationReason
-      && event.accountId
-    ) {
-      const state = await loadState();
-      await revokeAccountSessions({
-        state,
-        accountId: event.accountId,
-        reason: accountRevocationReason,
-      });
-    }
   }
 
   const service = createCollectorAuthService({ repository, audit });

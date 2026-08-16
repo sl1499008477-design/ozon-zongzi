@@ -298,13 +298,14 @@ export function createJsonCollectorAuthRepository({
     });
   }
 
-  async function revokeSessions({ parentSessionToken, accountId, reason, now }) {
+  async function revokeSessions({ parentSessionToken = "", accountId, reason, now }) {
     return serializeJsonOperation(async () => {
+      const normalizedParentSessionToken = String(parentSessionToken || "");
       state.collectorSessions = Array.isArray(state.collectorSessions)
         ? state.collectorSessions
         : [];
       const targets = state.collectorSessions.filter((record) => (
-        record?.parentSessionToken === parentSessionToken
+        (!normalizedParentSessionToken || record?.parentSessionToken === normalizedParentSessionToken)
         && record?.accountId === accountId
         && !record.revokedAt
       ));
@@ -313,13 +314,13 @@ export function createJsonCollectorAuthRepository({
         let revoked = 0;
         for (const record of state.collectorSessions) {
           if (
-            record?.parentSessionToken === parentSessionToken
+            (!normalizedParentSessionToken || record?.parentSessionToken === normalizedParentSessionToken)
             && record?.accountId === accountId
             && !record.revokedAt
           ) {
             record.revokedAt = now.toISOString();
             record.revokedReason = normalizeCollectorRevokeReason(reason, {
-              secrets: [parentSessionToken],
+              secrets: [normalizedParentSessionToken],
             });
             revoked += 1;
           }
@@ -561,7 +562,20 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
     return Number(result.rowCount || 0) > 0;
   }
 
-  async function revokeSessions({ parentSessionToken, accountId, reason, now }) {
+  async function revokeSessions({ parentSessionToken = "", accountId, reason, now }) {
+    const normalizedParentSessionToken = String(parentSessionToken || "");
+    if (!normalizedParentSessionToken) {
+      const accountResult = await query(
+        `
+          UPDATE collector_sessions
+          SET revoked_at=$3, revoked_reason=$2
+          WHERE account_id=$1
+            AND revoked_at IS NULL
+        `,
+        [accountId, normalizeCollectorRevokeReason(reason), now],
+      );
+      return Number(accountResult.rowCount || 0);
+    }
     const result = await query(
       `
         UPDATE collector_sessions
@@ -571,9 +585,9 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
           AND revoked_at IS NULL
       `,
       [
-        parentSessionToken,
+        normalizedParentSessionToken,
         accountId,
-        normalizeCollectorRevokeReason(reason, { secrets: [parentSessionToken] }),
+        normalizeCollectorRevokeReason(reason, { secrets: [normalizedParentSessionToken] }),
         now,
       ],
     );
