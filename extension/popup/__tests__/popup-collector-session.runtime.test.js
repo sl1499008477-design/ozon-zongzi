@@ -109,7 +109,19 @@ class FakeDocument {
         : id.endsWith("-btn")
           ? "button"
           : "div";
-      this.elements.set(id, new FakeElement(tagName, id));
+      const element = new FakeElement(tagName, id);
+      this.elements.set(id, element);
+      if (id === "web-login-btn" || id === "collector-auth-recheck-btn") {
+        const svg = new FakeElement("svg");
+        const labelId = id === "web-login-btn"
+          ? "web-login-label"
+          : "collector-auth-recheck-label";
+        const label = new FakeElement("span", labelId);
+        label.textContent = id === "web-login-btn" ? "前往登录" : "重新检查";
+        this.elements.set(labelId, label);
+        element.appendChild(svg);
+        element.appendChild(label);
+      }
     }
     return this.elements.get(id);
   }
@@ -153,6 +165,16 @@ const status = (phase, publicCode = "", overrides = {}) => ({
   ...overrides,
 });
 
+const authenticatedStatus = (accountId, generationId = `generation-${accountId}-1234`) => status(
+  "AUTHENTICATED",
+  "",
+  {
+    generationId,
+    account: { id: accountId, displayName: `账号 ${accountId}` },
+    expiresAt: "2026-09-30T20:00:00.000Z",
+  },
+);
+
 const settle = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -163,6 +185,7 @@ const createHarness = ({
   authenticated = false,
   delayOpen = false,
   delayStatus = false,
+  delayedActions = [],
 } = {}) => {
   const document = new FakeDocument();
   const messages = [];
@@ -171,6 +194,9 @@ const createHarness = ({
   const storageListeners = [];
   const removedStorageListeners = [];
   const windowListeners = new Map();
+  const delayedActionSet = new Set(delayedActions);
+  const delayedCallbacks = new Map();
+  const createdTabs = [];
   let sellerCompanyId = "2681910";
   let openCallback = null;
   let statusCallback = null;
@@ -188,6 +214,12 @@ const createHarness = ({
           statusCallback = callback;
           return;
         }
+        if (delayedActionSet.has(payload.action)) {
+          const callbacks = delayedCallbacks.get(payload.action) || [];
+          callbacks.push(callback);
+          delayedCallbacks.set(payload.action, callbacks);
+          return;
+        }
         const responses = {
           getCollectorAuthStatus: { ok: true, data: initialStatus },
           retryCollectorAuth: { ok: true, data: { requested: 1 } },
@@ -195,7 +227,7 @@ const createHarness = ({
             ok: true,
             data: {
               authenticated,
-              accountId: authenticated ? "account-a" : "",
+              account: authenticated ? { id: "account-a", displayName: "账号 A" } : null,
               expiresAt: authenticated ? "2026-09-30T20:00:00.000Z" : "",
               backendUrl: "http://127.0.0.1:3000/api",
             },
@@ -241,7 +273,9 @@ const createHarness = ({
       async sendMessage() {
         return { ok: true };
       },
-      async create() {},
+      async create(input) {
+        createdTabs.push(input);
+      },
       async update() {},
     },
     windows: {
@@ -312,6 +346,7 @@ const createHarness = ({
     document,
     intervals,
     clearedIntervals,
+    createdTabs,
     messages,
     removedStorageListeners,
     storageListeners,
@@ -338,6 +373,14 @@ const createHarness = ({
       statusCallback = null;
       callback(response);
     },
+    delayedCount(action) {
+      return delayedCallbacks.get(action)?.length || 0;
+    },
+    resolveAction(action, response) {
+      const callbacks = delayedCallbacks.get(action) || [];
+      assert.ok(callbacks.length > 0, `${action} must be pending`);
+      callbacks.shift()(response);
+    },
     unload() {
       windowListeners.get("unload")?.();
     },
@@ -349,6 +392,8 @@ test("login progress is a polite live region", () => {
     popupHtml,
     /<div class="login-tip" id="login-tip" aria-live="polite"><\/div>/,
   );
+  assert.match(popupHtml, /<span id="web-login-label">前往登录<\/span>/);
+  assert.match(popupHtml, /<span id="collector-auth-recheck-label">重新检查<\/span>/);
 });
 
 test("popup initializes from the privileged status and subscribes once", async (t) => {
@@ -364,6 +409,10 @@ test("popup initializes from the privileged status and subscribes once", async (
   assert.equal(harness.document.getElementById("login-tip").textContent, "等待 Web 端登录");
   assert.equal(harness.document.getElementById("web-login-btn").textContent, "前往登录");
   assert.equal(harness.document.getElementById("collector-auth-recheck-btn").textContent, "重新检查");
+  assert.equal(
+    harness.document.getElementById("web-login-btn").children.some(({ tagName }) => tagName === "SVG"),
+    true,
+  );
   assert.equal(
     harness.messages.some(({ action }) => action === "requestCollectorAuth"),
     false,
@@ -389,6 +438,9 @@ test("all in-progress phases render exact closed copy and button states", async 
     assert.equal(loginButton.disabled, buttonsDisabled);
     assert.equal(retryButton.disabled, buttonsDisabled);
   }
+
+  harness.emitStatus(status("WAITING_FOR_WEB", "WEB_TAB_UNAVAILABLE"));
+  assert.equal(tip.textContent, "未检测到 Web 管理后台，请先打开登录页");
 });
 
 test("retry wait counts down and immediate retry dispatches only the privileged action", async (t) => {
@@ -405,6 +457,9 @@ test("retry wait counts down and immediate retry dispatches only the privileged 
   assert.equal(tip.textContent, "连接暂时不稳定，将在 5 秒后自动重试");
   assert.equal(retryButton.textContent, "立即重试");
   assert.equal(retryButton.disabled, false);
+
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  assert.equal(tip.textContent, "连接暂时不稳定，将在 4 秒后自动重试");
 
   await retryButton.listeners.get("click")();
   assert.equal(
@@ -430,11 +485,7 @@ test("action-required public codes map to Chinese copy without raw-field leakage
     ["SERVER_UPGRADE_REQUIRED", "当前版本暂不兼容，请更新本地服务和扩展"],
   ];
   for (const [publicCode, expectedCopy] of cases) {
-    harness.emitStatus(status("ACTION_REQUIRED", publicCode, {
-      rawError: "Bearer secret-should-never-render",
-      serverCode: "INTERNAL_DATABASE_FAILURE",
-      account: { id: "account-secret", displayName: "private name", role: "owner" },
-    }));
+    harness.emitStatus(status("ACTION_REQUIRED", publicCode));
     assert.equal(tip.textContent, expectedCopy);
     assert.doesNotMatch(
       harness.document.body.textContent + tip.textContent,
@@ -449,6 +500,73 @@ test("action-required public codes map to Chinese copy without raw-field leakage
   assert.doesNotMatch(tip.textContent, /RAW_SERVER_FAILURE|database|password/);
 });
 
+test("malformed tuples in every phase family fail closed and never authenticate", async (t) => {
+  const harness = createHarness({ authenticated: true });
+  t.after(() => harness.unload());
+  await settle();
+  const tip = harness.document.getElementById("login-tip");
+  const authCallsBefore = harness.messages.filter(({ action }) => action === "getAuth").length;
+  const malformed = [
+    status("WAITING_FOR_WEB", "LOCAL_SERVICE_UNAVAILABLE"),
+    status("DISCOVERING_WEB", "WEB_LOGIN_REQUIRED"),
+    status("REQUESTING_TICKET", "", { generationId: "short" }),
+    status("EXCHANGING", "", { startedAt: "not-a-date" }),
+    status("RETRY_WAIT", "LOCAL_SERVICE_UNAVAILABLE", {
+      attemptNumber: 0,
+      nextRetryAt: new Date(Date.now() + 4_500).toISOString(),
+    }),
+    status("RETRY_WAIT", "LOCAL_SERVICE_UNAVAILABLE", {
+      attemptNumber: 1,
+      nextRetryAt: "invalid-countdown",
+    }),
+    status("RETRY_WAIT", "LOCAL_SERVICE_UNAVAILABLE", {
+      attemptNumber: 1,
+      updatedAt: new Date(Date.now() - 2_000).toISOString(),
+      nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+    }),
+    status("ACTION_REQUIRED", ""),
+    authenticatedStatus("account-a", "short"),
+    status("AUTHENTICATED", "SERVER_UPGRADE_REQUIRED", {
+      account: { id: "account-a", displayName: "账号 A" },
+      expiresAt: "2026-09-30T20:00:00.000Z",
+    }),
+    status("AUTHENTICATED", "", {
+      account: { id: "account-a", displayName: "账号 A", role: "owner" },
+      expiresAt: "2026-09-30T20:00:00.000Z",
+    }),
+    status("AUTHENTICATED", "", {
+      account: { id: "account-a", displayName: "账号 A" },
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    }),
+    { ...status("DISCOVERING_WEB"), rawError: "Bearer secret" },
+  ];
+
+  for (const malformedStatus of malformed) {
+    harness.emitStatus(malformedStatus);
+    assert.equal(tip.textContent, "本地服务暂时不可用，请稍后重试");
+    assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
+  }
+  assert.equal(
+    harness.messages.filter(({ action }) => action === "getAuth").length,
+    authCallsBefore,
+  );
+});
+
+test("a malformed authenticated initial snapshot never initializes the main view", async (t) => {
+  const malformedAuth = {
+    ...authenticatedStatus("account-a"),
+    expiresAt: "not-an-expiry",
+    token: "collector-secret",
+  };
+  const harness = createHarness({ initialStatus: malformedAuth, authenticated: true });
+  t.after(() => harness.unload());
+  await settle();
+
+  assert.equal(harness.document.getElementById("login-tip").textContent, "本地服务暂时不可用，请稍后重试");
+  assert.equal(harness.document.getElementById("main-view").classList.contains("active"), false);
+  assert.equal(harness.messages.some(({ action }) => action === "getAuth"), false);
+});
+
 test("opening login disables the primary button and never asks to reopen the extension", async (t) => {
   const harness = createHarness({ delayOpen: true });
   t.after(() => harness.unload());
@@ -458,14 +576,47 @@ test("opening login disables the primary button and never asks to reopen the ext
 
   assert.equal(button.disabled, true);
   assert.equal(button.textContent, "正在打开 Web 登录页…");
+  assert.equal(button.children.some(({ tagName }) => tagName === "SVG"), true);
   assert.equal(harness.document.getElementById("login-tip").textContent, "正在打开 Web 登录页…");
   harness.resolveOpen();
   await click;
 
   assert.equal(button.disabled, false);
   assert.equal(button.textContent, "前往登录");
+  assert.equal(button.children.some(({ tagName }) => tagName === "SVG"), true);
   assert.equal(harness.document.getElementById("login-tip").textContent, "等待 Web 端登录");
   assert.doesNotMatch(harness.document.getElementById("login-tip").textContent, /重新打开扩展/);
+});
+
+test("a newer storage status wins over a late open failure", async (t) => {
+  const harness = createHarness({ delayOpen: true });
+  t.after(() => harness.unload());
+  await settle();
+  const button = harness.document.getElementById("web-login-btn");
+  const click = button.listeners.get("click")();
+  harness.emitStatus(status("REQUESTING_TICKET"));
+  harness.resolveOpen({ ok: false });
+  await click;
+
+  assert.equal(harness.document.getElementById("login-tip").textContent, "正在获取登录授权");
+  assert.equal(button.disabled, true);
+  assert.equal(button.children.some(({ tagName }) => tagName === "SVG"), true);
+  assert.doesNotMatch(harness.document.getElementById("login-tip").textContent, /无法打开/);
+});
+
+test("an open failure after unload cannot mutate DOM or restart lifecycle work", async () => {
+  const harness = createHarness({ delayOpen: true });
+  await settle();
+  const click = harness.document.getElementById("web-login-btn").listeners.get("click")();
+  harness.unload();
+  const copyAtUnload = harness.document.getElementById("login-tip").textContent;
+  const labelAtUnload = harness.document.getElementById("web-login-label").textContent;
+  harness.resolveOpen({ ok: false });
+  await click;
+
+  assert.equal(harness.document.getElementById("login-tip").textContent, copyAtUnload);
+  assert.equal(harness.document.getElementById("web-login-label").textContent, labelAtUnload);
+  assert.equal(harness.intervals.length, 0);
 });
 
 test("authenticated storage transition switches immediately and preserves the main view", async (t) => {
@@ -525,6 +676,63 @@ test("a late initialization snapshot cannot overwrite a newer live status", asyn
 
   assert.equal(harness.document.getElementById("main-view").classList.contains("active"), true);
   assert.equal(harness.document.getElementById("login-view").style.display, "none");
+});
+
+test("AUTH A stale async work cannot block or mutate AUTH B initialization", async (t) => {
+  const harness = createHarness({
+    delayedActions: ["getAuth", "getCollectCount", "getProductStatusCounts"],
+  });
+  t.after(() => harness.unload());
+  await settle();
+
+  harness.emitStatus(authenticatedStatus("account-a", "generation-account-a"));
+  assert.equal(harness.delayedCount("getAuth"), 1);
+  harness.resolveAction("getAuth", {
+    ok: true,
+    data: {
+      authenticated: true,
+      account: { id: "account-a", displayName: "账号 A" },
+      expiresAt: "2026-09-30T20:00:00.000Z",
+      backendUrl: "https://qh.jizhangerp.com/api",
+    },
+  });
+  await settle();
+  assert.equal(harness.delayedCount("getCollectCount"), 1);
+  assert.equal(harness.delayedCount("getProductStatusCounts"), 1);
+
+  harness.emitStatus(status("WAITING_FOR_WEB", "WEB_LOGIN_REQUIRED"));
+  harness.emitStatus(authenticatedStatus("account-b", "generation-account-b"));
+  assert.equal(harness.delayedCount("getAuth"), 1, "AUTH B must start without waiting for AUTH A");
+  harness.resolveAction("getAuth", {
+    ok: true,
+    data: {
+      authenticated: true,
+      account: { id: "account-b", displayName: "账号 B" },
+      expiresAt: "2026-09-30T20:00:00.000Z",
+      backendUrl: "http://127.0.0.1:3000/api",
+    },
+  });
+  await settle();
+  assert.equal(harness.delayedCount("getCollectCount"), 2);
+  assert.equal(harness.delayedCount("getProductStatusCounts"), 2);
+
+  harness.resolveAction("getCollectCount", { ok: true, data: { total: 99 } });
+  harness.resolveAction("getProductStatusCounts", { ok: true, data: { ALL: 99 } });
+  await settle();
+  assert.notEqual(harness.document.getElementById("nav-badge-collect").textContent, "99");
+  assert.notEqual(harness.document.getElementById("nav-badge-products").textContent, "99");
+
+  harness.resolveAction("getCollectCount", { ok: true, data: { total: 0 } });
+  harness.resolveAction("getProductStatusCounts", { ok: true, data: {} });
+  await settle();
+  assert.equal(harness.intervals.length, 1, "only AUTH B may start Seller polling");
+  assert.equal(
+    harness.messages.filter(({ action }) => action === "getSellerContextStatus").length,
+    1,
+  );
+
+  harness.document.getElementById("download-update-btn").listeners.get("click")();
+  assert.equal(harness.createdTabs.at(-1)?.url, "http://127.0.0.1:3000/extension");
 });
 
 test("unload removes the one storage listener and clears authentication display timers", async () => {

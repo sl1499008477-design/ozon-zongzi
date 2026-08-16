@@ -38,7 +38,9 @@
   const mainView = document.getElementById("main-view");
   const loginTip = document.getElementById("login-tip");
   const webLoginBtn = document.getElementById("web-login-btn");
+  const webLoginLabel = document.getElementById("web-login-label");
   const collectorAuthRecheckBtn = document.getElementById("collector-auth-recheck-btn");
+  const collectorAuthRecheckLabel = document.getElementById("collector-auth-recheck-label");
   const logoutBtn = document.getElementById("logout-btn");
   const serverStatus = document.getElementById("server-status");
   const COLLECTOR_AUTH_STATUS_STORAGE_KEY = "sonliCollectorAuthStatus";
@@ -46,10 +48,11 @@
   let collectorAuthStatusRevision = 0;
   let collectorAuthDisplayTimer = null;
   let collectorAuthStorageListener = null;
-  let collectorAuthenticated = false;
-  let mainViewInitialized = false;
-  let mainViewInitPromise = null;
+  let currentMainViewActivation = null;
+  let initializedMainViewActivation = null;
+  const mainViewInitPromises = new Map();
   let webLoginOpening = false;
+  let webLoginAttempt = 0;
   let popupDisposed = false;
 
   const connectionStatus = document.getElementById("connection-status");
@@ -458,18 +461,26 @@
   };
 
   // ─── Build signals (priority-ordered) ───
-  const buildSignals = async () => {
+  const buildSignals = async (isCurrent = () => true) => {
     const [ctxTab, followSig] = await Promise.all([
       detectOzonProductTab(),
       loadFollowSellSignal(),
     ]);
+    if (!isCurrent()) return;
     const counts = await loadCounts();
+    if (!isCurrent()) return;
     renderNavBadges(counts);
 
     const signals = [];
 
     // 1. context: 当前 ozon 商品页（30 分钟内已采集过的不再重复显示）
-    if (ctxTab && !(await isUrlCollected(ctxTab.url))) {
+    let currentUrlCollected = false;
+    if (ctxTab) {
+      if (!isCurrent()) return;
+      currentUrlCollected = await isUrlCollected(ctxTab.url);
+      if (!isCurrent()) return;
+    }
+    if (ctxTab && !currentUrlCollected) {
       const previewUrl =
         ctxTab.url.replace(/^https?:\/\//, "").slice(0, 38) +
         (ctxTab.url.length > 45 ? "..." : "");
@@ -540,8 +551,10 @@
     const ORDER = { bad: 0, context: 1, warn: 2, neutral: 3 };
     signals.sort((a, b) => ORDER[a.variant] - ORDER[b.variant]);
 
-    renderToday(signals);
-    renderSignals(signals);
+    if (isCurrent()) {
+      renderToday(signals);
+      renderSignals(signals);
+    }
   };
 
   // ─── Action: context-tab collect ───
@@ -595,10 +608,10 @@
   };
 
   // ─── Update banner ───
-  const checkUpdateBanner = async () => {
+  const checkUpdateBanner = async (isCurrent = () => true) => {
     try {
       const resp = await sendMessage({ action: "getUpdateInfo" });
-      if (resp?.ok && resp.data) {
+      if (isCurrent() && resp?.ok && resp.data) {
         const { hasUpdate, currentVersion, latestVersion, downloadUrl } =
           resp.data;
         if (headerVersion) headerVersion.textContent = `v${currentVersion}`;
@@ -629,20 +642,23 @@
   });
 
   // ─── Init / lifecycle ───
-  const initMainView = async (auth, shouldStartSeller = () => true) => {
-    FRONTEND_BASE_URL =
+  const initMainView = async (auth, isCurrent = () => true) => {
+    if (!isCurrent()) return;
+    const frontendBaseUrl =
       auth.backendUrl && isLocalBackendUrl(auth.backendUrl)
         ? LOCAL_FRONTEND_BASE_URL
         : "https://" + BRAND_WEB_HOST;
+    if (!isCurrent()) return;
+    FRONTEND_BASE_URL = frontendBaseUrl;
     setConnectionState("ok", "采集会话已连接");
-    await Promise.all([buildSignals(), checkUpdateBanner()]);
-    if (shouldStartSeller()) sellerStatusController.start();
+    await Promise.all([buildSignals(isCurrent), checkUpdateBanner(isCurrent)]);
+    if (isCurrent()) sellerStatusController.start();
   };
 
   logoutBtn.addEventListener("click", async () => {
     await sendMessage({ action: "logout" });
-    collectorAuthenticated = false;
-    mainViewInitialized = false;
+    currentMainViewActivation = null;
+    initializedMainViewActivation = null;
     sellerStatusController.stop();
     setLoginState(false);
     showTip("采集会话已清除，请在 Web 管理后台保持登录", "warning");
@@ -650,6 +666,9 @@
 
   window.addEventListener?.("unload", () => {
     popupDisposed = true;
+    currentMainViewActivation = null;
+    webLoginOpening = false;
+    webLoginAttempt += 1;
     clearTimeout(collectorAuthDisplayTimer);
     collectorAuthDisplayTimer = null;
     if (collectorAuthStorageListener) {
@@ -822,38 +841,218 @@
     SERVER_UPGRADE_REQUIRED: "当前版本暂不兼容，请更新本地服务和扩展",
   });
   const SAFE_LOCAL_SERVICE_COPY = "本地服务暂时不可用，请稍后重试";
+  const COLLECTOR_AUTH_STATUS_KEYS = Object.freeze([
+    "account",
+    "attemptNumber",
+    "expiresAt",
+    "generationId",
+    "nextRetryAt",
+    "phase",
+    "publicCode",
+    "startedAt",
+    "updatedAt",
+    "version",
+  ]);
+  const COLLECTOR_AUTH_ACCOUNT_KEYS = Object.freeze(["displayName", "id"]);
+  const COLLECTOR_AUTH_PHASES = new Set([
+    "WAITING_FOR_WEB",
+    "DISCOVERING_WEB",
+    "REQUESTING_TICKET",
+    "EXCHANGING",
+    "RETRY_WAIT",
+    "AUTHENTICATED",
+    "ACTION_REQUIRED",
+  ]);
+  const COLLECTOR_AUTH_PUBLIC_CODES = new Set([
+    "",
+    "WEB_LOGIN_REQUIRED",
+    "WEB_TAB_UNAVAILABLE",
+    "LOCAL_SERVICE_UNAVAILABLE",
+    ...Object.keys(ACTION_REQUIRED_COPY),
+  ]);
+  const GENERATION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+  const SENSITIVE_STATUS_VALUE = /(?:ctt|cst|csess)_[A-Za-z0-9_-]+|bearer\s+|authorization|fingerprint/i;
+
+  const hasExactKeys = (value, expectedKeys) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const keys = Object.keys(value).sort();
+    return keys.length === expectedKeys.length
+      && keys.every((key, index) => key === expectedKeys[index]);
+  };
+
+  const isCanonicalIso = (value, { allowEmpty = true } = {}) => {
+    if (typeof value !== "string") return false;
+    if (!value) return allowEmpty;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+  };
+
+  const isSafeAccountText = (value, { required = false } = {}) => (
+    typeof value === "string"
+    && value.trim() === value
+    && value.length <= 128
+    && (!required || value.length > 0)
+    && !SENSITIVE_STATUS_VALUE.test(value)
+  );
+
+  const normalizeCollectorAuthStatus = (value, currentTime = Date.now()) => {
+    if (!hasExactKeys(value, COLLECTOR_AUTH_STATUS_KEYS)) return null;
+    if (
+      value.version !== 1
+      || !COLLECTOR_AUTH_PHASES.has(value.phase)
+      || !COLLECTOR_AUTH_PUBLIC_CODES.has(value.publicCode)
+      || !Number.isSafeInteger(value.attemptNumber)
+      || value.attemptNumber < 0
+      || typeof value.generationId !== "string"
+      || (value.generationId !== "" && !GENERATION_PATTERN.test(value.generationId))
+      || SENSITIVE_STATUS_VALUE.test(value.generationId)
+      || !isCanonicalIso(value.startedAt)
+      || !isCanonicalIso(value.updatedAt)
+      || !isCanonicalIso(value.nextRetryAt)
+      || !isCanonicalIso(value.expiresAt)
+    ) return null;
+
+    let account = null;
+    if (value.account !== null) {
+      if (
+        !hasExactKeys(value.account, COLLECTOR_AUTH_ACCOUNT_KEYS)
+        || !isSafeAccountText(value.account.id, { required: true })
+        || !isSafeAccountText(value.account.displayName)
+      ) return null;
+      account = { id: value.account.id, displayName: value.account.displayName };
+    }
+
+    const startedAt = value.startedAt ? Date.parse(value.startedAt) : NaN;
+    const updatedAt = value.updatedAt ? Date.parse(value.updatedAt) : NaN;
+    const nextRetryAt = value.nextRetryAt ? Date.parse(value.nextRetryAt) : NaN;
+    const expiresAt = value.expiresAt ? Date.parse(value.expiresAt) : NaN;
+    const hasTimeline = Number.isFinite(startedAt) && Number.isFinite(updatedAt);
+    const hasPartialTimeline = Boolean(value.startedAt) !== Boolean(value.updatedAt);
+    if (
+      hasPartialTimeline
+      || (hasTimeline && (startedAt > updatedAt || updatedAt > currentTime))
+    ) return null;
+
+    const noCredentialProjection = account === null && value.expiresAt === "";
+    const noRetry = value.nextRetryAt === "";
+    if (value.phase === "WAITING_FOR_WEB") {
+      if (
+        !["", "WEB_LOGIN_REQUIRED", "WEB_TAB_UNAVAILABLE"].includes(value.publicCode)
+        || !noCredentialProjection
+        || !noRetry
+      ) return null;
+    } else if (value.phase === "ACTION_REQUIRED") {
+      if (!ACTION_REQUIRED_COPY[value.publicCode] || !noCredentialProjection || !noRetry) {
+        return null;
+      }
+    } else if (value.phase === "AUTHENTICATED") {
+      if (
+        value.publicCode !== ""
+        || !account
+        || !GENERATION_PATTERN.test(value.generationId)
+        || !hasTimeline
+        || !noRetry
+        || !Number.isFinite(expiresAt)
+        || expiresAt <= currentTime
+      ) return null;
+    } else if (value.phase === "RETRY_WAIT") {
+      if (
+        value.publicCode !== "LOCAL_SERVICE_UNAVAILABLE"
+        || !noCredentialProjection
+        || !GENERATION_PATTERN.test(value.generationId)
+        || !hasTimeline
+        || value.attemptNumber < 1
+        || !Number.isFinite(nextRetryAt)
+        || updatedAt >= nextRetryAt
+        || nextRetryAt <= currentTime
+        || nextRetryAt - updatedAt > 30_000
+      ) return null;
+    } else if (
+      value.publicCode !== ""
+      || !noCredentialProjection
+      || !noRetry
+      || !GENERATION_PATTERN.test(value.generationId)
+      || !hasTimeline
+    ) return null;
+
+    return {
+      version: 1,
+      phase: value.phase,
+      generationId: value.generationId,
+      startedAt: value.startedAt,
+      updatedAt: value.updatedAt,
+      attemptNumber: value.attemptNumber,
+      nextRetryAt: value.nextRetryAt,
+      publicCode: value.publicCode,
+      account,
+      expiresAt: value.expiresAt,
+    };
+  };
 
   const clearCollectorAuthDisplayTimer = () => {
     clearTimeout(collectorAuthDisplayTimer);
     collectorAuthDisplayTimer = null;
   };
 
-  const ensureMainView = () => {
-    collectorAuthenticated = true;
+  const collectorAuthIdentity = (status) => [
+    status.generationId,
+    status.account.id,
+    status.expiresAt,
+  ].join("|");
+
+  const mainViewActivationIsCurrent = (activation) => (
+    !popupDisposed
+    && currentMainViewActivation === activation
+    && collectorAuthStatusRevision === activation.revision
+    && latestCollectorAuthStatus?.phase === "AUTHENTICATED"
+    && collectorAuthIdentity(latestCollectorAuthStatus) === activation.identity
+  );
+
+  const ensureMainView = (status) => {
+    const activation = Object.freeze({
+      revision: collectorAuthStatusRevision,
+      identity: collectorAuthIdentity(status),
+      accountId: status.account.id,
+      expiresAt: status.expiresAt,
+    });
+    currentMainViewActivation = activation;
     setLoginState(true);
-    if (mainViewInitialized || mainViewInitPromise) return;
-    mainViewInitPromise = (async () => {
+    if (
+      initializedMainViewActivation
+      && initializedMainViewActivation.identity === activation.identity
+    ) {
+      initializedMainViewActivation = activation;
+      return;
+    }
+    const initPromise = (async () => {
       const auth = await fetchAuth();
-      if (!collectorAuthenticated || popupDisposed || !auth.authenticated) return;
-      await initMainView(
-        auth,
-        () => collectorAuthenticated && !popupDisposed,
-      );
-      if (collectorAuthenticated && !popupDisposed) mainViewInitialized = true;
+      if (
+        !mainViewActivationIsCurrent(activation)
+        || !auth.authenticated
+        || auth.account?.id !== activation.accountId
+        || auth.expiresAt !== activation.expiresAt
+      ) return;
+      await initMainView(auth, () => mainViewActivationIsCurrent(activation));
+      if (mainViewActivationIsCurrent(activation)) {
+        initializedMainViewActivation = activation;
+      }
     })().catch(() => {
-      if (!collectorAuthenticated || popupDisposed) return;
-      collectorAuthenticated = false;
+      if (!mainViewActivationIsCurrent(activation)) return;
+      currentMainViewActivation = null;
       setLoginState(false);
       showTip(SAFE_LOCAL_SERVICE_COPY, "error");
     }).finally(() => {
-      mainViewInitPromise = null;
+      if (mainViewInitPromises.get(activation.revision) === initPromise) {
+        mainViewInitPromises.delete(activation.revision);
+      }
     });
+    mainViewInitPromises.set(activation.revision, initPromise);
   };
 
   const renderCollectorAuthStatus = (status) => {
     if (popupDisposed) return;
     clearCollectorAuthDisplayTimer();
-    latestCollectorAuthStatus = status && typeof status === "object" ? status : null;
+    latestCollectorAuthStatus = status;
     const phase = latestCollectorAuthStatus?.phase;
     const publicCode = latestCollectorAuthStatus?.publicCode;
     const now = Date.now();
@@ -912,19 +1111,19 @@
       tone = "error";
     } else if (phase === "AUTHENTICATED") {
       showTip("采集会话已连接", "progress");
-      ensureMainView();
+      ensureMainView(latestCollectorAuthStatus);
       return;
     }
 
-    collectorAuthenticated = false;
-    mainViewInitialized = false;
+    currentMainViewActivation = null;
+    initializedMainViewActivation = null;
     sellerStatusController.stop();
     setLoginState(false);
     showTip(copy, tone);
     webLoginBtn.disabled = webLoginOpening || disableWebLogin;
-    webLoginBtn.textContent = webLoginOpening ? "正在打开 Web 登录页…" : "前往登录";
+    webLoginLabel.textContent = webLoginOpening ? "正在打开 Web 登录页…" : "前往登录";
     collectorAuthRecheckBtn.disabled = disableRetry;
-    collectorAuthRecheckBtn.textContent = retryLabel;
+    collectorAuthRecheckLabel.textContent = retryLabel;
 
     if (refreshDisplay) {
       collectorAuthDisplayTimer = setTimeout(() => {
@@ -937,7 +1136,7 @@
 
   const refreshCollectorAuthStatus = async () => {
     const expectedRevision = collectorAuthStatusRevision;
-    const status = await fetchCollectorAuthStatus();
+    const status = normalizeCollectorAuthStatus(await fetchCollectorAuthStatus());
     if (expectedRevision === collectorAuthStatusRevision) {
       renderCollectorAuthStatus(status);
     }
@@ -955,7 +1154,9 @@
       const statusChange = changes[COLLECTOR_AUTH_STATUS_STORAGE_KEY];
       if (statusChange && Object.hasOwn(statusChange, "newValue")) {
         collectorAuthStatusRevision += 1;
-        renderCollectorAuthStatus(statusChange.newValue);
+        webLoginOpening = false;
+        webLoginAttempt += 1;
+        renderCollectorAuthStatus(normalizeCollectorAuthStatus(statusChange.newValue));
       }
     };
     chrome.storage.onChanged.addListener(collectorAuthStorageListener);
@@ -963,17 +1164,29 @@
 
   webLoginBtn.addEventListener("click", async () => {
     if (webLoginOpening) return;
+    const attempt = ++webLoginAttempt;
+    const expectedRevision = collectorAuthStatusRevision;
     webLoginOpening = true;
     clearCollectorAuthDisplayTimer();
     webLoginBtn.disabled = true;
-    webLoginBtn.textContent = "正在打开 Web 登录页…";
+    webLoginLabel.textContent = "正在打开 Web 登录页…";
     showTip("正在打开 Web 登录页…", false);
     try {
       const response = await sendMessage({ action: "openFrontend", path: "/login" });
       if (response?.data?.opened !== true) throw new Error("frontend-not-opened");
+      if (
+        popupDisposed
+        || attempt !== webLoginAttempt
+        || expectedRevision !== collectorAuthStatusRevision
+      ) return;
       webLoginOpening = false;
       renderCollectorAuthStatus(latestCollectorAuthStatus);
     } catch {
+      if (
+        popupDisposed
+        || attempt !== webLoginAttempt
+        || expectedRevision !== collectorAuthStatusRevision
+      ) return;
       webLoginOpening = false;
       renderCollectorAuthStatus(latestCollectorAuthStatus);
       showTip("无法打开 Web 登录页，请确认本地服务已启动", "error");
@@ -988,7 +1201,7 @@
   collectorAuthRecheckBtn.addEventListener("click", async () => {
     if (collectorAuthRecheckBtn.disabled) return;
     collectorAuthRecheckBtn.disabled = true;
-    collectorAuthRecheckBtn.textContent = "正在检查…";
+    collectorAuthRecheckLabel.textContent = "正在检查…";
     showTip("正在检测 Web 登录状态", "progress");
     await sendMessage({ action: "retryCollectorAuth" });
     await refreshCollectorAuthStatus();
