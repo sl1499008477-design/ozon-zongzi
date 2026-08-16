@@ -65,6 +65,7 @@ function loadServiceWorker({
   initialSession = {},
   statusFailure = null,
   tabs = [],
+  tabGet,
   tabMessage,
 } = {}) {
   const workerPath = path.join(extensionRoot, manifest.background.service_worker);
@@ -83,6 +84,7 @@ function loadServiceWorker({
   const alarmClears = [];
   const tabMessages = [];
   const tabQueries = [];
+  const tabGets = [];
   const importedEntries = [];
   const scriptExecutions = [];
   const scheduledTimeouts = [];
@@ -146,7 +148,12 @@ function loadServiceWorker({
     storage: { local, session, sync },
     tabs: {
       create: async () => ({ id: 1 }),
-      get: async (tabId) => ({ id: tabId, url: 'https://seller.ozon.ru/app' }),
+      get: async (tabId) => {
+        tabGets.push(tabId);
+        return tabGet
+          ? tabGet(tabId)
+          : { id: tabId, url: 'https://seller.ozon.ru/app' };
+      },
       onCreated: tabsOnCreated,
       onRemoved: tabsOnRemoved,
       onUpdated: tabsOnUpdated,
@@ -253,6 +260,7 @@ function loadServiceWorker({
     scheduledTimeouts,
     scriptExecutions,
     tabMessages,
+    tabGets,
     tabQueries,
   };
 }
@@ -433,7 +441,7 @@ test('one retry selects only one trusted Web tab', async () => {
   assert.match(harness.tabMessages[0].message.requestId, /^collector-/);
 });
 
-test('a disconnected first trusted tab falls through to the next tab once', async () => {
+test('an ambiguous connection error from the first trusted tab fails closed', async () => {
   const harness = loadServiceWorker({
     activationResult: { changed: false },
     tabs: [
@@ -446,10 +454,50 @@ test('a disconnected first trusted tab falls through to the next tab once', asyn
     },
   });
 
-  await sendRuntime(harness, { action: 'retryCollectorAuth' });
+  const response = await sendRuntime(harness, { action: 'requestCollectorAuth' });
 
-  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10, 11]);
-  assert.equal(harness.tabMessages[0].message.requestId, harness.tabMessages[1].message.requestId);
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10]);
+  assert.deepEqual(harness.scriptExecutions, []);
+});
+
+test('only the exact no-receiver error can recover or fall through', async (t) => {
+  for (const errorMessage of [
+    'The message port closed before a response was received.',
+    'could not establish connection. receiving end does not exist.',
+    'Could not establish connection. Receiving end does not exist. Retry later.',
+    'Receiving end does not exist.',
+  ]) {
+    await t.test(errorMessage, async () => {
+      const harness = loadServiceWorker({
+        activationResult: { changed: false },
+        tabs: [
+          { id: 10, url: 'http://127.0.0.1:3000/login', active: true, lastAccessed: 200 },
+          { id: 11, url: 'http://127.0.0.1:3000/login', active: false, lastAccessed: 100 },
+        ],
+        tabGet: async (tabId) => ({
+          id: tabId,
+          url: 'http://127.0.0.1:3000/login',
+        }),
+        tabMessage: async () => {
+          throw new Error(errorMessage);
+        },
+      });
+
+      const response = await sendRuntime(harness, { action: 'requestCollectorAuth' });
+
+      assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+        ok: true,
+        data: { requested: 0 },
+      });
+      assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10]);
+      assert.deepEqual(harness.tabGets, []);
+      assert.deepEqual(harness.scriptExecutions, []);
+    });
+  }
 });
 
 test('a negative response from the first trusted tab fails closed without trying another tab', async () => {

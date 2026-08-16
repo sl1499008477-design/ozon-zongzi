@@ -301,6 +301,8 @@ function safeStatus(status) {
 }
 
 function createBrowserHarness({
+  contentOrigin = 'http://127.0.0.1:3000',
+  expectedContentListenerCount = 1,
   initialSession = null,
   exchangeResponses = [],
 } = {}) {
@@ -464,7 +466,7 @@ function createBrowserHarness({
   vm.runInContext(fs.readFileSync(workerPath, 'utf8'), context, { filename: workerPath });
   assert.equal(workerOnMessage.listeners.length, 1);
 
-  const pageWindow = new FakePageWindow();
+  const pageWindow = new FakePageWindow(contentOrigin);
   const contentChrome = {
     runtime: {
       lastError: null,
@@ -490,7 +492,7 @@ function createBrowserHarness({
   vm.runInContext(fs.readFileSync(syncAuthPath, 'utf8'), contentContext, {
     filename: syncAuthPath,
   });
-  assert.equal(contentOnMessage.listeners.length, 1);
+  assert.equal(contentOnMessage.listeners.length, expectedContentListenerCount);
 
   const popupDocument = new FakeDocument();
   const popupWindowListeners = new Map();
@@ -602,6 +604,8 @@ function createBrowserHarness({
     alarmCreates,
     alarmOnAlarm,
     clock,
+    contentInstallGuard: contentContext.__JZ_COLLECTOR_SYNC_AUTH_INSTALLED__,
+    contentListenerCount: () => contentOnMessage.listeners.length,
     exchangeCalls,
     importedEntries,
     pageWindow,
@@ -665,6 +669,40 @@ test('content script does not discover Web auth until selected by the worker', a
   });
   await flush();
   assert.deepEqual(runtime.pageRequests, ['collector-attempt-1']);
+});
+
+test('content script installs no guard or runtime listener on an untrusted origin', async (t) => {
+  for (const contentOrigin of [
+    'https://attacker.example',
+    'http://qh.jizhangerp.com',
+    'https://sub.qh.jizhangerp.com',
+    'http://127.0.0.1:3001',
+  ]) {
+    await t.test(contentOrigin, async (subtest) => {
+      const runtime = createBrowserHarness({
+        contentOrigin,
+        expectedContentListenerCount: 0,
+      });
+      subtest.after(() => runtime.unloadPopup());
+
+      assert.equal(runtime.contentInstallGuard, undefined);
+      assert.equal(runtime.contentListenerCount(), 0);
+      assert.equal(await runtime.receiveContent({
+        action: 'collector.auth.request',
+        requestId: 'collector-untrusted-origin-attempt',
+      }), null);
+      assert.deepEqual(runtime.pageRequests, []);
+    });
+  }
+});
+
+test('content script installs on the exact HTTPS brand origin', (t) => {
+  const runtime = createBrowserHarness({ contentOrigin: 'https://qh.jizhangerp.com' });
+  t.after(() => runtime.unloadPopup());
+
+  assert.equal(runtime.contentInstallGuard, true);
+  assert.equal(runtime.contentListenerCount(), 1);
+  assert.deepEqual(runtime.pageRequests, []);
 });
 
 test('real Web→sync-auth→service-worker wiring reuses a same-account session within fake 500 ms', async (t) => {

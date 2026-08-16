@@ -455,14 +455,29 @@ try {
     tabId: null,
     publicCode: 'WEB_TAB_UNAVAILABLE',
   });
-  const collectorAuthConnectionError = (error) => (
-    /Could not establish connection|Receiving end does not exist|message port closed before a response was received/i
-      .test(String(error?.message || error || ''))
-  );
   const collectorAuthNoReceiverError = (error) => (
-    /Receiving end does not exist/i.test(String(error?.message || error || ''))
+    String(error?.message || error || '')
+      === 'Could not establish connection. Receiving end does not exist.'
   );
+  const isTrustedFrontendTabUrl = (value) => {
+    try {
+      const url = new URL(String(value || ''));
+      if (url.username || url.password) return false;
+      if (url.protocol === 'https:') {
+        return url.hostname === BRAND_WEB_HOST && url.port === '';
+      }
+      return url.protocol === 'http:'
+        && url.port === '3000'
+        && ['localhost', '127.0.0.1', 'store.localhost'].includes(url.hostname);
+    } catch {
+      return false;
+    }
+  };
   const injectCollectorAuthIntoTab = async (tabId) => {
+    const currentTab = await chrome.tabs.get(tabId);
+    if (!isTrustedFrontendTabUrl(currentTab?.url)) {
+      throw new Error('COLLECTOR_AUTH_TAB_NOT_TRUSTED');
+    }
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ['lib/web-bridge-policy.js'],
@@ -510,8 +525,7 @@ try {
       try {
         response = await sendRequest();
       } catch (error) {
-        if (!collectorAuthConnectionError(error)) return collectorAuthUnavailable(requestId);
-        if (!collectorAuthNoReceiverError(error)) continue;
+        if (!collectorAuthNoReceiverError(error)) return collectorAuthUnavailable(requestId);
         try {
           await injectCollectorAuthIntoTab(tab.id);
         } catch {
@@ -520,7 +534,7 @@ try {
         try {
           response = await sendRequest();
         } catch (retryError) {
-          if (collectorAuthConnectionError(retryError)) continue;
+          if (collectorAuthNoReceiverError(retryError)) continue;
           return collectorAuthUnavailable(requestId);
         }
       }

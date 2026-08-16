@@ -201,6 +201,7 @@ function loadServiceWorker({
   sellerCapture = false,
   executeScriptImpl,
   tabCreateImpl,
+  tabGetImpl,
   tabQueryImpl,
   tabSendMessageImpl,
   tabUpdateImpl,
@@ -224,6 +225,7 @@ function loadServiceWorker({
   const reloadedTabs = [];
   const createdTabs = [];
   const sentTabMessages = [];
+  const tabGetCalls = [];
   const tabQueryCalls = [];
   const updatedTabs = [];
   const updatedWindows = [];
@@ -338,7 +340,12 @@ function loadServiceWorker({
         createdTabs.push(options);
         return tabCreateImpl ? tabCreateImpl(options) : { id: 1 };
       },
-      get: async (tabId) => ({ id: tabId, url: 'https://seller.ozon.ru/app' }),
+      get: async (tabId) => {
+        tabGetCalls.push(tabId);
+        return tabGetImpl
+          ? tabGetImpl(tabId)
+          : { id: tabId, url: 'https://seller.ozon.ru/app' };
+      },
       onCreated: event,
       onRemoved: event,
       onUpdated: event,
@@ -468,6 +475,7 @@ function loadServiceWorker({
     runtimeSendMessageCalls,
     sentTabMessages,
     session,
+    tabGetCalls,
     tabQueryCalls,
     updatedTabs,
     updatedWindows,
@@ -758,9 +766,10 @@ test('requestCollectorAuth chooses one authoritative trusted Web tab determinist
 test('requestCollectorAuth falls through when the authoritative tab has no receiver', async () => {
   const harness = loadServiceWorker({
     tabQueryImpl: async () => [
-      { id: 19, active: true, lastAccessed: 100 },
-      { id: 17, active: false, lastAccessed: 900 },
+      { id: 19, url: 'http://127.0.0.1:3000/login', active: true, lastAccessed: 100 },
+      { id: 17, url: 'http://127.0.0.1:3000/login', active: false, lastAccessed: 900 },
     ],
+    tabGetImpl: async (tabId) => ({ id: tabId, url: 'http://127.0.0.1:3000/login' }),
     tabSendMessageImpl: async (tabId, message) => {
       if (tabId === 19) {
         throw new Error('Could not establish connection. Receiving end does not exist.');
@@ -780,6 +789,7 @@ test('requestCollectorAuth falls through when the authoritative tab has no recei
     harness.sentTabMessages[0].message.requestId,
     harness.sentTabMessages[1].message.requestId,
   );
+  assert.deepEqual(harness.tabGetCalls, [19]);
   assert.deepEqual(
     JSON.parse(
       JSON.stringify(harness.executeScriptCalls.map(({ target, files }) => ({ target, files }))),
@@ -790,6 +800,54 @@ test('requestCollectorAuth falls through when the authoritative tab has no recei
       { target: { tabId: 19 }, files: ['content/sync-auth.js'] },
     ],
   );
+});
+
+test('no-receiver recovery stops before injection when the selected tab navigated away', async () => {
+  const harness = loadServiceWorker({
+    tabQueryImpl: async () => [
+      { id: 19, url: 'http://127.0.0.1:3000/login', active: true, lastAccessed: 100 },
+      { id: 17, url: 'http://127.0.0.1:3000/login', active: false, lastAccessed: 900 },
+    ],
+    tabGetImpl: async (tabId) => ({ id: tabId, url: 'https://attacker.example/login' }),
+    tabSendMessageImpl: async () => {
+      throw new Error('Could not establish connection. Receiving end does not exist.');
+    },
+  });
+
+  const response = await sendRuntimeMessage(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19]);
+  assert.deepEqual(harness.tabGetCalls, [19]);
+  assert.deepEqual(harness.executeScriptCalls, []);
+});
+
+test('no-receiver recovery stops before injection when the selected tab lookup fails', async () => {
+  const harness = loadServiceWorker({
+    tabQueryImpl: async () => [
+      { id: 19, url: 'http://127.0.0.1:3000/login', active: true, lastAccessed: 100 },
+      { id: 17, url: 'http://127.0.0.1:3000/login', active: false, lastAccessed: 900 },
+    ],
+    tabGetImpl: async () => {
+      throw new Error('No tab with id: 19');
+    },
+    tabSendMessageImpl: async () => {
+      throw new Error('Could not establish connection. Receiving end does not exist.');
+    },
+  });
+
+  const response = await sendRuntimeMessage(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19]);
+  assert.deepEqual(harness.tabGetCalls, [19]);
+  assert.deepEqual(harness.executeScriptCalls, []);
 });
 
 test('production requestCollectorAuth routes recovery through only one real content flow', async () => {
@@ -872,6 +930,10 @@ test('openFrontend injects collector auth into the same worker-selected no-recei
   const webTab = createInjectedWebTabHarness();
   const harness = loadServiceWorker({
     executeScriptImpl: (input) => webTab.executeScript(input),
+    tabGetImpl: async (tabId) => ({
+      id: tabId,
+      url: 'http://127.0.0.1:3000/ozon/dashboard',
+    }),
     tabQueryImpl: async () => [{
       id: 17,
       windowId: 8,

@@ -6,6 +6,15 @@
  * the service worker. Authentication-cycle state lives in collector-auth-flow.
  */
 (() => {
+  const isTrustedCollectorAuthOrigin = (value) => {
+    if (value === 'https://qh.jizhangerp.com') return true;
+    return [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://store.localhost:3000',
+    ].includes(value);
+  };
+  if (!isTrustedCollectorAuthOrigin(window.location.origin)) return;
   const INSTALL_GUARD = '__JZ_COLLECTOR_SYNC_AUTH_INSTALLED__';
   if (globalThis[INSTALL_GUARD]) return;
   const policy = globalThis.JzWebBridgePolicy;
