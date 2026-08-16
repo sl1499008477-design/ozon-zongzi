@@ -574,6 +574,50 @@ test("successful exchange audits the repository supersession count without devic
   assert.equal(serialized.includes(PARENT_TOKEN), false);
 });
 
+test("a rejected session insert fails the exchange without revoking the existing device session", async () => {
+  const repository = createFakeRepository();
+  const oldTokenHash = hashCollectorSecret("cst_existing-device-session");
+  await repository.createSession({
+    id: "session_existing_device",
+    tokenHash: oldTokenHash,
+    accountId: ACTIVE_ACCOUNT.id,
+    parentSessionToken: PARENT_TOKEN,
+    deviceFingerprint: "device-fingerprint",
+    extensionVersion: "2.9.0",
+    permissions: [...COLLECTOR_PERMISSIONS],
+    expiresAt: "2026-07-29T08:00:00.000Z",
+    revokedAt: null,
+    revokedReason: "",
+    lastSeenAt: "2026-07-28T23:59:00.000Z",
+    createdAt: "2026-07-28T23:59:00.000Z",
+  });
+  repository.createSession = async () => null;
+  const harness = createHarness({ repository });
+  const issued = await harness.service.issueTicket({
+    account: ACTIVE_ACCOUNT,
+    parentSessionToken: PARENT_TOKEN,
+  });
+
+  await assert.rejects(
+    harness.service.exchangeTicket({
+      ticket: issued.ticket,
+      deviceFingerprint: "device-fingerprint",
+      extensionVersion: "3.0.0",
+    }),
+    (error) => error?.status === 401 && error?.code === "COLLECTOR_SESSION_CREATE_FAILED",
+  );
+
+  const existing = repository.sessions.get(oldTokenHash);
+  assert.equal(existing.revokedAt, null);
+  assert.equal(existing.revokedReason, "");
+  assert.ok(harness.audits.some((event) => (
+    event.action === "collector.ticket.exchange"
+    && event.outcome === "session_create_failed"
+    && event.accountId === ACTIVE_ACCOUNT.id
+  )));
+  assert.equal(harness.audits.some((event) => event.outcome === "exchanged"), false);
+});
+
 test("JSON repository serializes same-process ticket consumption and stores hashes only", async () => {
   const ticket = "ctt_json-plaintext-ticket";
   const collectorToken = "cst_json-plaintext-token";
@@ -1031,6 +1075,58 @@ test("PostgreSQL session creation atomically inserts and supersedes only an exac
   assert.equal(calls[0].values[12], "SESSION_SUPERSEDED");
   assert.equal(result.session.id, row.id);
   assert.equal(result.supersededCount, 1);
+});
+
+test("PostgreSQL zero-row insert cannot supersede an existing device session", async () => {
+  const existing = {
+    id: "session_pg_existing",
+    revokedAt: null,
+    revokedReason: "",
+  };
+  const calls = [];
+  const pool = {
+    async query(sql, values) {
+      calls.push({ sql, values });
+      const supersededCte = sql.match(
+        /superseded\s+AS\s*\(([\s\S]*?)RETURNING\s+previous\.id\s*\)/i,
+      )?.[1] || "";
+      if (!/FROM\s+inserted\s+WHERE/i.test(supersededCte)) {
+        existing.revokedAt = String(values[11]);
+        existing.revokedReason = values[12];
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+  const repository = createPostgresCollectorAuthRepository({ pool });
+
+  const result = await repository.createSession({
+    id: "session_pg_rejected",
+    tokenHash: hashCollectorSecret("cst_postgres-rejected-session"),
+    accountId: ACTIVE_ACCOUNT.id,
+    parentSessionToken: PARENT_TOKEN,
+    deviceFingerprint: "device-pg-exact",
+    extensionVersion: "3.0.0",
+    permissions: [...COLLECTOR_PERMISSIONS],
+    expiresAt: "2026-07-29T08:00:00.000Z",
+    revokedAt: null,
+    revokedReason: "",
+    lastSeenAt: START.toISOString(),
+    createdAt: START.toISOString(),
+  });
+
+  assert.equal(calls.length, 1);
+  const supersededCte = calls[0].sql.match(
+    /superseded\s+AS\s*\(([\s\S]*?)RETURNING\s+previous\.id\s*\)/i,
+  )?.[1] || "";
+  assert.match(supersededCte, /UPDATE\s+collector_sessions\s+AS\s+previous/i);
+  assert.match(supersededCte, /FROM\s+inserted\s+WHERE/i);
+  assert.match(calls[0].sql, /SELECT\s+inserted\.\*[\s\S]*FROM\s+inserted\s*$/i);
+  assert.equal(result, null);
+  assert.deepEqual(existing, {
+    id: "session_pg_existing",
+    revokedAt: null,
+    revokedReason: "",
+  });
 });
 
 test("formal state mirroring ignores plaintext collector secret fields", async () => {
