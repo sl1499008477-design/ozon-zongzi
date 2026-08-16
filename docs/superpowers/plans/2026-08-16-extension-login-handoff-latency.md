@@ -23,7 +23,7 @@
 - Modify: `extension/lib/frontend-tab-opener.js`
 - Modify: `extension/tests/frontend-tab-opener.test.js`
 - Modify: `extension/popup/popup.js`
-- Modify: `extension/popup/__tests__/popup-routing.smoke.test.js`
+- Modify: `extension/popup/__tests__/popup-collector-session.runtime.test.js`
 
 **Interfaces:**
 - Consumes: existing `createFrontendTabOpener` dependencies and popup `openFrontend` runtime action.
@@ -49,7 +49,7 @@ Start `requestAuthBestEffort(tabId, reused)` without awaiting it in `openedResul
 
 - [ ] **Step 4: Add and verify popup copy**
 
-First extend the popup smoke contract to require `Web 登录页已打开，请完成登录后重新打开扩展` after a successful open response. Run it RED, add the copy after the exact `{ opened: true }` check, then run both tests GREEN.
+First extend the popup runtime harness so an unauthenticated login button receives an exact successful `openFrontend` response and visibly renders `Web 登录页已打开，请完成登录后重新打开扩展`. Run it RED, add the copy after the exact `{ opened: true }` check, then run both tests GREEN.
 
 ---
 
@@ -116,4 +116,3 @@ Review permissions, origin boundaries, timeout error redaction, packaged parity,
 ```bash
 git commit -m "fix: accelerate extension login handoff"
 ```
-
