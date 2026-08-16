@@ -194,6 +194,46 @@
     && value.length <= 128
     && value.trim() === value;
 
+  const nativeObjectConstructorSource = Function.prototype.toString.call(Object);
+  const isPlainRecord = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    try {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype === null) return true;
+      const constructor = Object.getOwnPropertyDescriptor(prototype, 'constructor')?.value;
+      return Object.getPrototypeOf(prototype) === null
+        && typeof constructor === 'function'
+        && constructor.prototype === prototype
+        && Function.prototype.toString.call(constructor) === nativeObjectConstructorSource;
+    } catch {
+      return false;
+    }
+  };
+
+  const isCanonicalCollectorToken = (value) => typeof value === 'string'
+    && value.length > 0
+    && value.trim() === value
+    && !/\s/.test(value);
+
+  const isValidRawCollectorSession = (session, currentTime) => {
+    if (!isPlainRecord(session) || !isPlainRecord(session.account)) return false;
+    const accountId = session.account.id;
+    const expiresAt = session.expiresAt;
+    if (
+      !isCanonicalCollectorToken(session.collectorToken)
+      || typeof accountId !== 'string'
+      || accountId.length === 0
+      || accountId.trim() !== accountId
+      || typeof expiresAt !== 'string'
+      || expiresAt.length === 0
+      || expiresAt.trim() !== expiresAt
+    ) {
+      return false;
+    }
+    const expiry = Date.parse(expiresAt);
+    return Number.isFinite(expiry) && expiry > currentTime;
+  };
+
   function createCollectorSessionManager({
     chromeApi = root.chrome,
     backendUrl,
@@ -295,13 +335,7 @@
           return { changed: false };
         }
         const storedSession = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
-        const storedExpiry = Date.parse(storedSession?.expiresAt || '');
-        const validStoredSession = Boolean(
-          storedSession?.collectorToken
-          && accountIdOf(storedSession)
-          && Number.isFinite(storedExpiry)
-          && storedExpiry > now()
-        );
+        const validStoredSession = isValidRawCollectorSession(storedSession, now());
         if (
           !legacyActivation
           && validStoredSession
@@ -377,13 +411,7 @@
         const stored = await chromeApi.storage.session.get(COLLECTOR_SESSION_STORAGE_KEY);
         const session = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
         if (!session) return null;
-        const expiresAt = Date.parse(session.expiresAt || '');
-        if (
-          !session.collectorToken
-          || !accountIdOf(session)
-          || !Number.isFinite(expiresAt)
-          || expiresAt <= now()
-        ) {
+        if (!isValidRawCollectorSession(session, now())) {
           await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
           return null;
         }

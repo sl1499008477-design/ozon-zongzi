@@ -255,6 +255,106 @@ test('account mismatch, missing or malformed hints, and expired sessions clear c
   }
 });
 
+test('corrupted raw stored sessions cannot be reused as authenticated', async (t) => {
+  const malformedAccountArray = [];
+  malformedAccountArray.id = 'account-a';
+  malformedAccountArray.displayName = 'Malformed';
+  const malformedSessionArray = Object.assign([], validSession());
+  const cases = [
+    {
+      name: 'object Collector token',
+      session: validSession({ collectorToken: { bad: true } }),
+    },
+    {
+      name: 'numeric Collector token',
+      session: validSession({ collectorToken: 123 }),
+    },
+    {
+      name: 'padded Collector token',
+      session: validSession({ collectorToken: ' cst_collector_secret_123456789 ' }),
+    },
+    {
+      name: 'object account ID',
+      accountIdHint: '[object Object]',
+      session: validSession({
+        account: { id: { bad: true }, displayName: 'Malformed' },
+      }),
+    },
+    {
+      name: 'numeric account ID',
+      accountIdHint: '123',
+      session: validSession({ account: { id: 123, displayName: 'Malformed' } }),
+    },
+    {
+      name: 'padded account ID',
+      session: validSession({ account: { id: ' account-a ', displayName: 'Malformed' } }),
+    },
+    {
+      name: 'non-record account',
+      session: validSession({ account: malformedAccountArray }),
+    },
+    {
+      name: 'non-record session',
+      session: malformedSessionArray,
+    },
+    {
+      name: 'non-string expiry',
+      session: validSession({ expiresAt: new Date('2030-01-01T01:00:00.000Z') }),
+    },
+    {
+      name: 'malformed expiry',
+      session: validSession({ expiresAt: 'not-a-date' }),
+    },
+    {
+      name: 'padded expiry',
+      session: validSession({ expiresAt: ' 2030-01-01T01:00:00.000Z ' }),
+    },
+  ];
+
+  for (const [index, scenario] of cases.entries()) {
+    await t.test(scenario.name, async () => {
+      const harness = createHarness();
+      harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY] = scenario.session;
+
+      assert.deepEqual(
+        await harness.manager.activateCollectorGeneration({
+          generationId: `generation_corrupt_${index}_1234`,
+          accountIdHint: scenario.accountIdHint || 'account-a',
+        }),
+        {
+          changed: true,
+          reused: false,
+          authenticated: false,
+          account: null,
+          permissions: [],
+          expiresAt: '',
+        },
+      );
+      assert.equal(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
+    });
+  }
+});
+
+test('malformed permission entries cannot expand a reused session permission set', async () => {
+  const harness = createHarness();
+  harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY] = validSession({
+    permissions: [
+      'collector.upload',
+      { toString: () => 'collector.job.read' },
+      123,
+      'collector.admin',
+    ],
+  });
+
+  const result = await harness.manager.activateCollectorGeneration({
+    generationId: 'generation_permissions_1234',
+    accountIdHint: 'account-a',
+  });
+
+  assert.equal(result.reused, true);
+  assert.deepEqual(result.permissions, ['collector.upload']);
+});
+
 test('same-account rebinding still fences a stale generation exchange', async () => {
   const staleResponse = deferred();
   const originalSession = validSession({
