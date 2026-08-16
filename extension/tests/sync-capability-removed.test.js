@@ -775,7 +775,21 @@ test('requestCollectorAuth falls through when the authoritative tab has no recei
     ok: true,
     data: { requested: 1 },
   });
-  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19, 17]);
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19, 19, 17]);
+  assert.equal(
+    harness.sentTabMessages[0].message.requestId,
+    harness.sentTabMessages[1].message.requestId,
+  );
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(harness.executeScriptCalls.map(({ target, files }) => ({ target, files }))),
+    ),
+    [
+      { target: { tabId: 19 }, files: ['lib/web-bridge-policy.js'] },
+      { target: { tabId: 19 }, files: ['lib/collector-auth-flow.js'] },
+      { target: { tabId: 19 }, files: ['content/sync-auth.js'] },
+    ],
+  );
 });
 
 test('production requestCollectorAuth routes recovery through only one real content flow', async () => {
@@ -854,7 +868,7 @@ test('production requestCollectorAuth routes recovery through only one real cont
   );
 });
 
-test('openFrontend leaves an unavailable worker-selected Web tab uninjected', async () => {
+test('openFrontend injects collector auth into the same worker-selected no-receiver tab once', async () => {
   const webTab = createInjectedWebTabHarness();
   const harness = loadServiceWorker({
     executeScriptImpl: (input) => webTab.executeScript(input),
@@ -875,13 +889,33 @@ test('openFrontend leaves an unavailable worker-selected Web tab uninjected', as
     ok: true,
     data: { opened: true, reused: true, tabId: 17 },
   });
-  assert.equal(webTab.listenerCount(), 0);
-  assert.equal(webTab.runtimeMessages.length, 1);
+  assert.equal(webTab.listenerCount(), 1);
+  assert.equal(webTab.runtimeMessages.length, 2);
   assert.equal(webTab.runtimeMessages[0].action, 'collector.auth.request');
   assert.match(webTab.runtimeMessages[0].requestId, /^collector-/);
-  assert.equal(webTab.posts.length, 0);
-  assert.deepEqual(webTab.executedFiles, []);
-  assert.deepEqual(harness.executeScriptCalls, []);
+  assert.equal(webTab.runtimeMessages[1].requestId, webTab.runtimeMessages[0].requestId);
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [17, 17]);
+  assert.equal(new Set(webTab.runtimeMessages.map(({ requestId }) => requestId)).size, 1);
+  assert.equal(webTab.posts.length, 1, 'only the injected selected flow requests a ticket');
+  assert.deepEqual(webTab.executedFiles, [
+    'lib/web-bridge-policy.js',
+    'lib/collector-auth-flow.js',
+    'content/sync-auth.js',
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.executeScriptCalls)), [
+    {
+      target: { tabId: 17 },
+      files: ['lib/web-bridge-policy.js'],
+    },
+    {
+      target: { tabId: 17 },
+      files: ['lib/collector-auth-flow.js'],
+    },
+    {
+      target: { tabId: 17 },
+      files: ['content/sync-auth.js'],
+    },
+  ]);
 });
 
 test('install and startup never reload or remove user-owned Seller tabs', async () => {

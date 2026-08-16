@@ -444,6 +444,38 @@ try {
       return `collector-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
   };
+  const isCanonicalCollectorAuthRequestId = (requestId) => (
+    typeof requestId === 'string'
+    && /^collector-[a-zA-Z0-9-]+$/.test(requestId)
+    && requestId.length <= 128
+  );
+  const collectorAuthUnavailable = (requestId = '') => ({
+    requested: false,
+    requestId,
+    tabId: null,
+    publicCode: 'WEB_TAB_UNAVAILABLE',
+  });
+  const collectorAuthConnectionError = (error) => (
+    /Could not establish connection|Receiving end does not exist|message port closed before a response was received/i
+      .test(String(error?.message || error || ''))
+  );
+  const collectorAuthNoReceiverError = (error) => (
+    /Receiving end does not exist/i.test(String(error?.message || error || ''))
+  );
+  const injectCollectorAuthIntoTab = async (tabId) => {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['lib/web-bridge-policy.js'],
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['lib/collector-auth-flow.js'],
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content/sync-auth.js'],
+    });
+  };
   const compareCollectorAuthTabs = (left, right) => {
     const activeOrder = Number(right.active === true) - Number(left.active === true);
     if (activeOrder !== 0) return activeOrder;
@@ -467,29 +499,42 @@ try {
       : [...ordered.slice(previous + 1), ...ordered.slice(0, previous + 1)];
   };
   const requestCollectorAuthFromWeb = async (requestId = newCollectorAuthRequestId()) => {
+    if (!isCanonicalCollectorAuthRequestId(requestId)) return collectorAuthUnavailable();
     const tabs = await chrome.tabs.query({ url: TRUSTED_FRONTEND_TAB_URLS });
     for (const tab of orderedCollectorAuthTabs(tabs)) {
+      const sendRequest = () => chrome.tabs.sendMessage(tab.id, {
+        action: 'collector.auth.request',
+        requestId,
+      });
+      let response;
       try {
-        const response = await chrome.tabs.sendMessage(tab.id, {
-          action: 'collector.auth.request',
-          requestId,
-        });
-        if (
-          response?.ok === true
-          && response?.requested === true
-          && response?.requestId === requestId
-        ) {
-          lastCollectorAuthTabId = tab.id;
-          return { requested: true, requestId, tabId: tab.id };
+        response = await sendRequest();
+      } catch (error) {
+        if (!collectorAuthConnectionError(error)) return collectorAuthUnavailable(requestId);
+        if (!collectorAuthNoReceiverError(error)) continue;
+        try {
+          await injectCollectorAuthIntoTab(tab.id);
+        } catch {
+          return collectorAuthUnavailable(requestId);
         }
-      } catch {}
+        try {
+          response = await sendRequest();
+        } catch (retryError) {
+          if (collectorAuthConnectionError(retryError)) continue;
+          return collectorAuthUnavailable(requestId);
+        }
+      }
+      if (
+        response?.ok === true
+        && response?.requested === true
+        && response?.requestId === requestId
+      ) {
+        lastCollectorAuthTabId = tab.id;
+        return { requested: true, requestId, tabId: tab.id };
+      }
+      return collectorAuthUnavailable(requestId);
     }
-    return {
-      requested: false,
-      requestId,
-      tabId: null,
-      publicCode: 'WEB_TAB_UNAVAILABLE',
-    };
+    return collectorAuthUnavailable(requestId);
   };
   const collectorAuthCoordinator =
     globalThis.JzCollectorAuthCoordinator.createCollectorAuthCoordinator({
@@ -4130,20 +4175,7 @@ try {
     updateWindow: (id, update) => chrome.windows.update(id, update),
     createTab: (options) => chrome.tabs.create(options),
     requestCollectorAuth: () => requestCollectorAuthFromWeb(),
-    injectCollectorAuth: async (tabId) => {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['lib/web-bridge-policy.js'],
-      });
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['lib/collector-auth-flow.js'],
-      });
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content/sync-auth.js'],
-      });
-    },
+    injectCollectorAuth: injectCollectorAuthIntoTab,
   });
 
     // Record the intent synchronously at message arrival. The runtime advances
@@ -4520,7 +4552,12 @@ try {
           };
         }
         case 'requestCollectorAuth': {
-          const result = await retryCollectorAuth();
+          const hasRequestId = Object.hasOwn(message, 'requestId');
+          const result = hasRequestId
+            ? isCanonicalCollectorAuthRequestId(message.requestId)
+              ? await requestCollectorAuthFromWeb(message.requestId)
+              : collectorAuthUnavailable()
+            : await retryCollectorAuth();
           return {
             ok: true,
             data: { requested: result?.requested === true ? 1 : 0 },

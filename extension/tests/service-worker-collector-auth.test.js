@@ -82,7 +82,9 @@ function loadServiceWorker({
   const alarmCreates = [];
   const alarmClears = [];
   const tabMessages = [];
+  const tabQueries = [];
   const importedEntries = [];
+  const scriptExecutions = [];
   const scheduledTimeouts = [];
   const local = createStorageArea();
   const session = createStorageArea(initialSession);
@@ -135,7 +137,12 @@ function loadServiceWorker({
       onStartup: runtimeOnStartup,
       sendMessage: async () => null,
     },
-    scripting: { executeScript: async () => [] },
+    scripting: {
+      executeScript: async (input) => {
+        scriptExecutions.push(JSON.parse(JSON.stringify(input)));
+        return [];
+      },
+    },
     storage: { local, session, sync },
     tabs: {
       create: async () => ({ id: 1 }),
@@ -143,7 +150,10 @@ function loadServiceWorker({
       onCreated: tabsOnCreated,
       onRemoved: tabsOnRemoved,
       onUpdated: tabsOnUpdated,
-      query: async () => tabs,
+      query: async (query) => {
+        tabQueries.push(JSON.parse(JSON.stringify(query || {})));
+        return tabs;
+      },
       reload() {},
       remove: async () => {},
       sendMessage: async (tabId, message) => {
@@ -241,7 +251,9 @@ function loadServiceWorker({
     runtimeOnStartup,
     session,
     scheduledTimeouts,
+    scriptExecutions,
     tabMessages,
+    tabQueries,
   };
 }
 
@@ -416,6 +428,7 @@ test('one retry selects only one trusted Web tab', async () => {
   await sendRuntime(harness, { action: 'retryCollectorAuth' });
 
   assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10]);
+  assert.deepEqual(harness.scriptExecutions, []);
   assert.equal(harness.tabMessages[0].message.action, 'collector.auth.request');
   assert.match(harness.tabMessages[0].message.requestId, /^collector-/);
 });
@@ -437,6 +450,155 @@ test('a disconnected first trusted tab falls through to the next tab once', asyn
 
   assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10, 11]);
   assert.equal(harness.tabMessages[0].message.requestId, harness.tabMessages[1].message.requestId);
+});
+
+test('a negative response from the first trusted tab fails closed without trying another tab', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    tabs: [
+      { id: 10, active: true, lastAccessed: 200 },
+      { id: 11, active: false, lastAccessed: 100 },
+    ],
+    tabMessage: async (_tabId, message) => ({
+      ok: false,
+      requested: true,
+      requestId: message.requestId,
+    }),
+  });
+
+  const response = await sendRuntime(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10]);
+  assert.deepEqual(harness.scriptExecutions, []);
+});
+
+test('a declined response from the first trusted tab fails closed without trying another tab', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    tabs: [
+      { id: 10, active: true, lastAccessed: 200 },
+      { id: 11, active: false, lastAccessed: 100 },
+    ],
+    tabMessage: async (_tabId, message) => ({
+      ok: true,
+      requested: false,
+      requestId: message.requestId,
+    }),
+  });
+
+  const response = await sendRuntime(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10]);
+  assert.deepEqual(harness.scriptExecutions, []);
+});
+
+test('a mismatched response ID from the first trusted tab fails closed without trying another tab', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    tabs: [
+      { id: 10, active: true, lastAccessed: 200 },
+      { id: 11, active: false, lastAccessed: 100 },
+    ],
+    tabMessage: async () => ({
+      ok: true,
+      requested: true,
+      requestId: 'collector-different-attempt',
+    }),
+  });
+
+  const response = await sendRuntime(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10]);
+  assert.deepEqual(harness.scriptExecutions, []);
+});
+
+test('a non-connection error from the first trusted tab fails closed without trying another tab', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    tabs: [
+      { id: 10, active: true, lastAccessed: 200 },
+      { id: 11, active: false, lastAccessed: 100 },
+    ],
+    tabMessage: async () => {
+      throw new Error('Tab access denied');
+    },
+  });
+
+  const response = await sendRuntime(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10]);
+  assert.deepEqual(harness.scriptExecutions, []);
+});
+
+test('explicit collector auth request IDs use the canonical content contract before tab discovery', async (t) => {
+  for (const requestId of [
+    '',
+    'request-without-prefix',
+    'collector-invalid_character',
+    `collector-${'a'.repeat(119)}`,
+  ]) {
+    await t.test(JSON.stringify(requestId), async () => {
+      const harness = loadServiceWorker({
+        activationResult: { changed: false },
+        tabs: [{ id: 10, active: true, lastAccessed: 200 }],
+      });
+      const queriesBefore = harness.tabQueries.length;
+
+      const response = await sendRuntime(harness, {
+        action: 'requestCollectorAuth',
+        requestId,
+      });
+
+      assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+        ok: true,
+        data: { requested: 0 },
+      });
+      assert.equal(harness.tabQueries.length, queriesBefore);
+      assert.deepEqual(harness.tabMessages, []);
+    });
+  }
+
+  await t.test('canonical explicit ID is forwarded unchanged', async () => {
+    const harness = loadServiceWorker({
+      activationResult: { changed: false },
+      tabs: [{ id: 10, active: true, lastAccessed: 200 }],
+    });
+    const queriesBefore = harness.tabQueries.length;
+
+    const response = await sendRuntime(harness, {
+      action: 'requestCollectorAuth',
+      requestId: 'collector-explicit-attempt-1',
+    });
+
+    assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+      ok: true,
+      data: { requested: 1 },
+    });
+    assert.equal(harness.tabQueries.length, queriesBefore + 1);
+    assert.deepEqual(harness.tabMessages, [{
+      tabId: 10,
+      message: {
+        action: 'collector.auth.request',
+        requestId: 'collector-explicit-attempt-1',
+      },
+    }]);
+  });
 });
 
 test('manual collector auth retry publishes WEB_TAB_UNAVAILABLE when no trusted Web tab exists', async () => {
