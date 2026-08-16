@@ -357,6 +357,41 @@ test('authoritative recheck rediscovers the current Web generation after authent
   assert.deepEqual(discoveryHarness.requests, ['request-1']);
 });
 
+test('authoritative recheck forwards the worker-owned request ID to the Web page', async () => {
+  const harness = createHarness();
+
+  assert.deepEqual(harness.flow.requestAuthoritatively('collector-attempt-1'), { requested: true });
+
+  assert.deepEqual(harness.requests, ['collector-attempt-1']);
+});
+
+test('authoritative recheck retains the cached Web account hint when it adopts a response', async () => {
+  const harness = createHarness();
+
+  assert.deepEqual(
+    harness.flow.requestAuthoritatively('collector-attempt-1', 'account-a'),
+    { requested: true },
+  );
+  await harness.flow.handleResponse(response('collector-attempt-1', G1));
+
+  assert.deepEqual(harness.beginHints, ['account-a']);
+});
+
+test('a worker-selected ready generation uses the worker-owned request ID', async () => {
+  const harness = createHarness();
+
+  assert.deepEqual(
+    await harness.flow.requestAuthoritatively('collector-attempt-1', 'account-a', {
+      generationId: G1,
+      accountIdHint: 'account-a',
+    }),
+    { accepted: true, requested: true },
+  );
+
+  assert.deepEqual(harness.requests, ['collector-attempt-1']);
+  assert.deepEqual(harness.beginHints, ['account-a']);
+});
+
 test('authoritative recheck never reactivates or exchanges a stale cached generation', async () => {
   const harness = createHarness();
 

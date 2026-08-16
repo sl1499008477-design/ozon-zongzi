@@ -146,10 +146,9 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth.js' });
 vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js' });
 
 (async () => {
-  assert.equal(posts.length, 1, 'installation starts exactly one discovery request');
-  assert.equal(timers.length, 1, 'installation starts exactly one bounded retry timer');
+  assert.equal(posts.length, 0, 'installation does not start discovery');
+  assert.equal(timers.length, 0, 'installation does not start a discovery retry timer');
   assert.equal(runtimeListeners.length, 1, 'reinjection does not duplicate runtime listeners');
-  assert.equal(posts[0].targetOrigin, windowObject.location.origin);
 
   for (const malformed of [
     messageEvent(ready(G1), { source: {} }),
@@ -163,9 +162,17 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
     await windowListeners.get('message')(malformed);
   }
   assert.equal(runtimeCalls.length, 0);
-  assert.equal(posts.length, 1);
+  assert.equal(posts.length, 0);
 
-  const g1Ready = emit(readyV2(G1, 'account-a'));
+  await emit(readyV2(G1, 'account-a'));
+  assert.equal(runtimeCalls.length, 0, 'an unselected ready message is cached without starting auth');
+
+  const initialSelectionResponse = {};
+  assert.equal(runtimeListeners[0](
+    { action: 'collector.auth.request', requestId: 'collector-runtime-initial' },
+    null,
+    (value) => Object.assign(initialSelectionResponse, value),
+  ), true);
   await tick();
   const beginG1 = findPendingRuntime('collector.auth.begin', G1);
   assert.deepEqual(asLocalRecord(beginG1.message), {
@@ -175,15 +182,22 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
     accountIdHint: 'account-a',
   });
   resolveRuntime('collector.auth.begin', G1, { ok: true });
-  await g1Ready;
-  assert.equal(posts.length, 2);
-  assert.equal(timers[0].cancelled, true, 'ready cancels discovery retry');
-  const g1Request = posts.at(-1).message;
+  await tick();
+  assert.deepEqual(initialSelectionResponse, {
+    ok: true,
+    requested: true,
+    requestId: 'collector-runtime-initial',
+  });
+  assert.equal(posts.length, 1, 'worker selection starts exactly one discovery request');
+  assert.equal(timers.length, 1, 'worker selection starts exactly one bounded retry timer');
+  assert.equal(posts[0].targetOrigin, windowObject.location.origin);
+
+  const g1Request = posts[0].message;
   const g1RetryTimer = timers.at(-1);
 
   await emit(ready(G1));
   assert.equal(runtimeCalls.length, 1, 'duplicate G1 does not begin twice');
-  assert.equal(posts.length, 2, 'duplicate G1 does not restart its request cycle');
+  assert.equal(posts.length, 1, 'duplicate G1 does not restart its request cycle');
 
   await emit(accepted(g1Request.requestId, G1));
   assert.equal(g1RetryTimer.cancelled, true, 'accepted cancels the one-second retry');
@@ -196,9 +210,9 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
     generationId: G1,
   });
   await advanceTime(29999);
-  assert.equal(posts.length, 2, 'watchdog does not request early');
+  assert.equal(posts.length, 1, 'watchdog does not request early');
   await advanceTime(1);
-  assert.equal(posts.length, 3, 'watchdog creates one fresh request');
+  assert.equal(posts.length, 2, 'watchdog creates one fresh request');
   const freshG1Request = posts.at(-1).message;
 
   const g1Exchange = emit(response(freshG1Request.requestId, G1, '1'));
@@ -218,12 +232,12 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
   assert.ok(findPendingRuntime('collector.auth.begin', G2), 'G2 enters the background fence during G1 exchange');
   resolveRuntime('collector.auth.begin', G2, { ok: true });
   await g2Ready;
-  assert.equal(posts.length, 3, 'G2 waits for the single in-flight exchange');
+  assert.equal(posts.length, 2, 'G2 waits for the single in-flight exchange');
   assert.equal(runtimeCalls.filter(({ message }) => message.action === 'collector.auth.exchange').length, 1);
 
   resolveRuntime('collector.auth.exchange', G1, { ok: true });
   await g1Exchange;
-  assert.equal(posts.length, 4, 'stale G1 success does not authenticate desired G2');
+  assert.equal(posts.length, 3, 'stale G1 success does not authenticate desired G2');
   const g2Request = posts.at(-1).message;
 
   const g2Exchange = emit(response(g2Request.requestId, G2, '2'));
@@ -253,7 +267,7 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
   resolveRuntime('collector.auth.logout', G1, { ok: true, data: { cleared: false } });
   await staleLogout;
   await emit(ready(G2));
-  assert.equal(posts.length, 4, 'stale G1 logout leaves authenticated G2 locally intact');
+  assert.equal(posts.length, 3, 'stale G1 logout leaves authenticated G2 locally intact');
 
   const matchingLogout = emit(logout(G2));
   await tick();
@@ -264,7 +278,7 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
   await tick();
   resolveRuntime('collector.auth.begin', G3, { ok: true });
   await g3Ready;
-  assert.equal(posts.length, 5, 'G3 relogin is accepted without reloading the page');
+  assert.equal(posts.length, 4, 'G3 relogin is accepted without reloading the page');
   const g3Request = posts.at(-1).message;
   const g3Exchange = emit(response(g3Request.requestId, G3, '3'));
   await tick();
@@ -277,19 +291,36 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
     null,
     (value) => Object.assign(authoritativeResponse, value),
   ), false);
-  assert.deepEqual(authoritativeResponse, { ok: true, requested: true });
-  assert.equal(posts.length, 6, 'authoritative recovery discovers the current Web generation');
+  assert.deepEqual(authoritativeResponse, { ok: false, requested: false, requestId: '' });
+  assert.equal(posts.length, 4, 'missing worker request IDs are rejected');
+
+  const selectedRecoveryResponse = {};
+  assert.equal(runtimeListeners[0](
+    { action: 'collector.auth.request', requestId: 'collector-runtime-recovery-1' },
+    null,
+    (value) => Object.assign(selectedRecoveryResponse, value),
+  ), false);
+  assert.deepEqual(selectedRecoveryResponse, {
+    ok: true,
+    requested: true,
+    requestId: 'collector-runtime-recovery-1',
+  });
+  assert.equal(posts.length, 5, 'authoritative recovery discovers the current Web generation');
 
   const recoveryRequest = posts.at(-1).message;
   const recoveryExchange = emit(response(recoveryRequest.requestId, G1, '4'));
   await tick();
   const blockedResponse = {};
   runtimeListeners[0](
-    { action: 'collector.auth.request' },
+    { action: 'collector.auth.request', requestId: 'collector-runtime-recovery-blocked' },
     null,
     (value) => Object.assign(blockedResponse, value),
   );
-  assert.deepEqual(blockedResponse, { ok: true, requested: false });
+  assert.deepEqual(blockedResponse, {
+    ok: true,
+    requested: false,
+    requestId: 'collector-runtime-recovery-blocked',
+  });
   assert.ok(
     findPendingRuntime('collector.auth.begin', G1),
     'authoritative discovery begins the current Web G1 before exchange',

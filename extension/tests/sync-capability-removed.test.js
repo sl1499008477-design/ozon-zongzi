@@ -132,14 +132,21 @@ function createInjectedWebTabHarness({ runtimeSendMessageImpl } = {}) {
       if (runtimeOnMessage.listeners.length === 0) {
         throw new Error('Could not establish connection. Receiving end does not exist.');
       }
-      let response;
-      for (const listener of runtimeOnMessage.listeners) {
-        listener(message, { url: windowObject.location.origin }, (value) => {
-          response = value;
-        });
-        if (response !== undefined) return response;
-      }
-      throw new Error('Could not establish connection. Receiving end does not exist.');
+      return new Promise((resolve, reject) => {
+        for (const listener of runtimeOnMessage.listeners) {
+          let responded = false;
+          const keepChannelOpen = listener(
+            message,
+            { url: windowObject.location.origin },
+            (value) => {
+              responded = true;
+              resolve(value);
+            },
+          );
+          if (responded || keepChannelOpen === true) return;
+        }
+        reject(new Error('Could not establish connection. Receiving end does not exist.'));
+      });
     },
     async emitWebMessage(data) {
       const listener = windowListeners.get('message');
@@ -608,7 +615,11 @@ test('openFrontend reuses a trusted Web tab only for the exact login path', asyn
       windowId: 8,
       url: 'http://127.0.0.1:3000/ozon/dashboard',
     }],
-    tabSendMessageImpl: async () => ({ ok: true, requested: true }),
+    tabSendMessageImpl: async (_tabId, message) => ({
+      ok: true,
+      requested: true,
+      requestId: message.requestId,
+    }),
   });
 
   const response = await sendRuntimeMessage(harness, {
@@ -629,10 +640,9 @@ test('openFrontend reuses a trusted Web tab only for the exact login path', asyn
     windowId: 8,
     update: { focused: true },
   }]);
-  assert.deepEqual(JSON.parse(JSON.stringify(harness.sentTabMessages)), [{
-    tabId: 17,
-    message: { action: 'collector.auth.request' },
-  }]);
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [17]);
+  assert.equal(harness.sentTabMessages[0].message.action, 'collector.auth.request');
+  assert.match(harness.sentTabMessages[0].message.requestId, /^collector-/);
 });
 
 test('openFrontend returns top-level failure when the login opener cannot open a tab', async () => {
@@ -662,6 +672,12 @@ test('Collector auth routes query HTTPS brand pages plus the explicit local HTTP
   assert.deepEqual(
     JSON.parse(JSON.stringify(harness.tabQueryCalls.map(({ url }) => url))),
     [
+      [
+        'https://qh.jizhangerp.com/*',
+        'http://localhost:3000/*',
+        'http://127.0.0.1:3000/*',
+        'http://store.localhost:3000/*',
+      ],
       [
         'https://qh.jizhangerp.com/*',
         'http://localhost:3000/*',
@@ -718,7 +734,11 @@ test('requestCollectorAuth chooses one authoritative trusted Web tab determinist
     await t.test(scenario.name, async () => {
       const harness = loadServiceWorker({
         tabQueryImpl: async () => scenario.tabs,
-        tabSendMessageImpl: async () => ({ ok: true, requested: true }),
+        tabSendMessageImpl: async (_tabId, message) => ({
+          ok: true,
+          requested: true,
+          requestId: message.requestId,
+        }),
       });
 
       const response = await sendRuntimeMessage(harness, { action: 'requestCollectorAuth' });
@@ -735,17 +755,17 @@ test('requestCollectorAuth chooses one authoritative trusted Web tab determinist
   }
 });
 
-test('requestCollectorAuth does not fall through when the authoritative tab has no receiver', async () => {
+test('requestCollectorAuth falls through when the authoritative tab has no receiver', async () => {
   const harness = loadServiceWorker({
     tabQueryImpl: async () => [
       { id: 19, active: true, lastAccessed: 100 },
       { id: 17, active: false, lastAccessed: 900 },
     ],
-    tabSendMessageImpl: async (tabId) => {
+    tabSendMessageImpl: async (tabId, message) => {
       if (tabId === 19) {
         throw new Error('Could not establish connection. Receiving end does not exist.');
       }
-      return { ok: true, requested: true };
+      return { ok: true, requested: true, requestId: message.requestId };
     },
   });
 
@@ -753,9 +773,9 @@ test('requestCollectorAuth does not fall through when the authoritative tab has 
 
   assert.deepEqual(JSON.parse(JSON.stringify(response)), {
     ok: true,
-    data: { requested: 0 },
+    data: { requested: 1 },
   });
-  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19]);
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19, 17]);
 });
 
 test('production requestCollectorAuth routes recovery through only one real content flow', async () => {
@@ -834,7 +854,7 @@ test('production requestCollectorAuth routes recovery through only one real cont
   );
 });
 
-test('openFrontend injects collector auth scripts in order before one no-receiver retry', async () => {
+test('openFrontend leaves an unavailable worker-selected Web tab uninjected', async () => {
   const webTab = createInjectedWebTabHarness();
   const harness = loadServiceWorker({
     executeScriptImpl: (input) => webTab.executeScript(input),
@@ -855,32 +875,13 @@ test('openFrontend injects collector auth scripts in order before one no-receive
     ok: true,
     data: { opened: true, reused: true, tabId: 17 },
   });
-  assert.equal(webTab.listenerCount(), 1);
-  assert.equal(webTab.runtimeMessages.length, 2);
-  assert.deepEqual(JSON.parse(JSON.stringify(webTab.runtimeMessages)), [
-    { action: 'collector.auth.request' },
-    { action: 'collector.auth.request' },
-  ]);
-  assert.equal(webTab.posts.length, 2, 'install discovery and retried recovery both request a ticket');
-  assert.deepEqual(webTab.executedFiles, [
-    'lib/web-bridge-policy.js',
-    'lib/collector-auth-flow.js',
-    'content/sync-auth.js',
-  ]);
-  assert.deepEqual(JSON.parse(JSON.stringify(harness.executeScriptCalls)), [
-    {
-      target: { tabId: 17 },
-      files: ['lib/web-bridge-policy.js'],
-    },
-    {
-      target: { tabId: 17 },
-      files: ['lib/collector-auth-flow.js'],
-    },
-    {
-      target: { tabId: 17 },
-      files: ['content/sync-auth.js'],
-    },
-  ]);
+  assert.equal(webTab.listenerCount(), 0);
+  assert.equal(webTab.runtimeMessages.length, 1);
+  assert.equal(webTab.runtimeMessages[0].action, 'collector.auth.request');
+  assert.match(webTab.runtimeMessages[0].requestId, /^collector-/);
+  assert.equal(webTab.posts.length, 0);
+  assert.deepEqual(webTab.executedFiles, []);
+  assert.deepEqual(harness.executeScriptCalls, []);
 });
 
 test('install and startup never reload or remove user-owned Seller tabs', async () => {
@@ -1208,6 +1209,10 @@ test('authoritative content recovery re-begins Web G1 after internal logout', as
   });
   const webTab = await loadCollectorAuthContent(worker);
 
+  await webTab.sendRuntimeMessage({
+    action: 'collector.auth.request',
+    requestId: 'collector-initial-recovery-g1',
+  });
   await webTab.emitWebMessage(collectorReady(G1));
   const firstRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(firstRequest.requestId, G1, 'g1-first'));
@@ -1223,7 +1228,14 @@ test('authoritative content recovery re-begins Web G1 after internal logout', as
 
   assert.deepEqual(
     JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({ action: 'collector.auth.request' }))),
-    { ok: true, requested: true },
+    { ok: false, requested: false, requestId: '' },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({
+      action: 'collector.auth.request',
+      requestId: 'collector-recovery-g1',
+    }))),
+    { ok: true, requested: true, requestId: 'collector-recovery-g1' },
   );
   const recoveryRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(recoveryRequest.requestId, G1, 'g1-recovery'));
@@ -1266,13 +1278,24 @@ test('authoritative content recovery adopts only current Web G2 over cached G1',
   });
   const webTab = await loadCollectorAuthContent(worker);
 
+  await webTab.sendRuntimeMessage({
+    action: 'collector.auth.request',
+    requestId: 'collector-initial-current-web-g1',
+  });
   await webTab.emitWebMessage(collectorReady(G1));
   const firstRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(firstRequest.requestId, G1, 'g1'));
 
   assert.deepEqual(
     JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({ action: 'collector.auth.request' }))),
-    { ok: true, requested: true },
+    { ok: false, requested: false, requestId: '' },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({
+      action: 'collector.auth.request',
+      requestId: 'collector-recovery-g2',
+    }))),
+    { ok: true, requested: true, requestId: 'collector-recovery-g2' },
   );
   const recoveryRequest = webTab.posts.at(-1).message;
   await webTab.emitWebMessage(collectorResponse(recoveryRequest.requestId, G2, 'g2'));
@@ -1312,6 +1335,10 @@ test('authoritative same-G1 recovery fences a logout-before deferred exchange in
   });
   const oldWebTab = await loadCollectorAuthContent(worker);
 
+  await oldWebTab.sendRuntimeMessage({
+    action: 'collector.auth.request',
+    requestId: 'collector-initial-old-incarnation-g1',
+  });
   await oldWebTab.emitWebMessage(collectorReady(G1));
   const oldRequest = oldWebTab.posts.at(-1).message;
   const oldFlowExchange = oldWebTab.emitWebMessage(
@@ -1333,7 +1360,18 @@ test('authoritative same-G1 recovery fences a logout-before deferred exchange in
     JSON.parse(JSON.stringify(await recoveryWebTab.sendRuntimeMessage({
       action: 'collector.auth.request',
     }))),
-    { ok: true, requested: true },
+    { ok: false, requested: false, requestId: '' },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await recoveryWebTab.sendRuntimeMessage({
+      action: 'collector.auth.request',
+      requestId: 'collector-recovery-g1-new-incarnation',
+    }))),
+    {
+      ok: true,
+      requested: true,
+      requestId: 'collector-recovery-g1-new-incarnation',
+    },
   );
   const recoveryRequest = recoveryWebTab.posts.at(-1).message;
   const newFlowExchange = recoveryWebTab.emitWebMessage(

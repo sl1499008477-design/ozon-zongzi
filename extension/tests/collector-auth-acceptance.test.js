@@ -496,6 +496,12 @@ function createBrowserHarness({
   const popupWindowListeners = new Map();
   const popupMessages = [];
   const popupResponses = [];
+  const pageRequests = [];
+  pageWindow.addEventListener('message', (event) => {
+    if (event.data?.action === 'collector.auth.request') {
+      pageRequests.push(event.data.requestId);
+    }
+  });
   const popupChrome = {
     runtime: {
       getURL: chrome.runtime.getURL,
@@ -599,11 +605,16 @@ function createBrowserHarness({
     exchangeCalls,
     importedEntries,
     pageWindow,
+    pageRequests,
     popupDocument,
     popupMessages,
     popupResponses,
     popupObservations,
     session,
+    receiveContent: sendContent,
+    requestCollectorAuth() {
+      return sendWorker({ action: 'requestCollectorAuth' }, extensionSender);
+    },
     sendWorker,
     tabMessages,
     workerMessages,
@@ -634,6 +645,28 @@ const validSession = () => ({
   permissions: [...COLLECTOR_PERMISSIONS],
 });
 
+test('content script does not discover Web auth until selected by the worker', async (t) => {
+  const runtime = createBrowserHarness();
+  t.after(() => runtime.unloadPopup());
+  const removeBridge = await runtime.installWebBridge({
+    requestTicket: async () => ({
+      ticket: 'ctt_acceptance_selected_123456789',
+      expiresAt: '2030-01-01T00:01:00.000Z',
+    }),
+  });
+  t.after(removeBridge);
+
+  await flush();
+  assert.deepEqual(runtime.pageRequests, []);
+
+  await runtime.receiveContent({
+    action: 'collector.auth.request',
+    requestId: 'collector-attempt-1',
+  });
+  await flush();
+  assert.deepEqual(runtime.pageRequests, ['collector-attempt-1']);
+});
+
 test('real Web→sync-auth→service-worker wiring reuses a same-account session within fake 500 ms', async (t) => {
   const runtime = createBrowserHarness({ initialSession: validSession() });
   t.after(() => runtime.unloadPopup());
@@ -649,6 +682,8 @@ test('real Web→sync-auth→service-worker wiring reuses a same-account session
     },
   });
   t.after(removeBridge);
+  await flush();
+  await runtime.requestCollectorAuth();
   await flush();
 
   assert.equal(ticketRequests, 0);
@@ -681,6 +716,8 @@ test('first real authentication emits exactly one accepted, ticket, and exchange
     },
   });
   t.after(removeBridge);
+  await flush();
+  await runtime.requestCollectorAuth();
   await flush(600);
 
   assert.equal(ticketRequests, 1);
@@ -705,6 +742,8 @@ test('real accepted route suppresses a second ticket until the exact 30,000 ms w
     requestTicket: () => tickets[ticketRequests++].promise,
   });
   t.after(removeBridge);
+  await flush();
+  await runtime.requestCollectorAuth();
   await flush();
 
   assert.equal(ticketRequests, 1);
@@ -746,6 +785,8 @@ test('real transient failure projects RETRY_WAIT and the coordinator resumes thr
     }),
   });
   t.after(removeBridge);
+  await flush();
+  await runtime.requestCollectorAuth();
   await flush(600);
 
   const retry = await runtime.status();
@@ -756,7 +797,7 @@ test('real transient failure projects RETRY_WAIT and the coordinator resumes thr
 
   await runtime.clock.advance(1_000);
   await flush(600);
-  assert.equal(runtime.tabMessages.length, 1, 'one coordinator resume reaches real sync-auth');
+  assert.equal(runtime.tabMessages.length, 2, 'one coordinator resume follows the initial worker selection');
   assert.equal(ticketRequests, 2);
   assert.equal(runtime.exchangeCalls.length, 2);
   assert.equal((await runtime.status()).phase, 'AUTHENTICATED');
@@ -775,6 +816,8 @@ test('real popup runtime consumes every credential-free privileged status throug
     }),
   });
   t.after(removeActionBridge);
+  await flush();
+  await actionRuntime.requestCollectorAuth();
   await flush(600);
   assert.equal((await actionRuntime.status()).phase, 'ACTION_REQUIRED');
 
@@ -796,6 +839,8 @@ test('real popup runtime consumes every credential-free privileged status throug
     }),
   });
   t.after(removeProgressBridge);
+  await flush();
+  await progressRuntime.requestCollectorAuth();
   await flush(600);
   await progressRuntime.clock.advance(1_000);
   await flush(600);

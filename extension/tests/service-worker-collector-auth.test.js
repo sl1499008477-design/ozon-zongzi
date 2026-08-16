@@ -148,7 +148,9 @@ function loadServiceWorker({
       remove: async () => {},
       sendMessage: async (tabId, message) => {
         tabMessages.push({ tabId, message: JSON.parse(JSON.stringify(message)) });
-        return tabMessage ? tabMessage(tabId, message) : { ok: true, requested: true };
+        return tabMessage
+          ? tabMessage(tabId, message)
+          : { ok: true, requested: true, requestId: message.requestId };
       },
       update: async () => ({}),
     },
@@ -402,7 +404,42 @@ test('service worker imports the coordinator before session code and exposes onl
   }
 });
 
-test('manual collector auth retry discovers one authoritative Web tab or publishes WEB_TAB_UNAVAILABLE', async () => {
+test('one retry selects only one trusted Web tab', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    tabs: [
+      { id: 10, active: true, lastAccessed: 200 },
+      { id: 11, active: false, lastAccessed: 100 },
+    ],
+  });
+
+  await sendRuntime(harness, { action: 'retryCollectorAuth' });
+
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10]);
+  assert.equal(harness.tabMessages[0].message.action, 'collector.auth.request');
+  assert.match(harness.tabMessages[0].message.requestId, /^collector-/);
+});
+
+test('a disconnected first trusted tab falls through to the next tab once', async () => {
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    tabs: [
+      { id: 10, active: true, lastAccessed: 200 },
+      { id: 11, active: false, lastAccessed: 100 },
+    ],
+    tabMessage: async (tabId, message) => {
+      if (tabId === 10) throw new Error('Could not establish connection');
+      return { ok: true, requested: true, requestId: message.requestId };
+    },
+  });
+
+  await sendRuntime(harness, { action: 'retryCollectorAuth' });
+
+  assert.deepEqual(harness.tabMessages.map(({ tabId }) => tabId), [10, 11]);
+  assert.equal(harness.tabMessages[0].message.requestId, harness.tabMessages[1].message.requestId);
+});
+
+test('manual collector auth retry publishes WEB_TAB_UNAVAILABLE when no trusted Web tab exists', async () => {
   const unavailable = loadServiceWorker({ activationResult: { changed: false } });
   const unavailableResponse = await sendRuntime(unavailable, { action: 'retryCollectorAuth' });
   assert.deepEqual(JSON.parse(JSON.stringify(unavailableResponse.data)), {
@@ -420,8 +457,12 @@ test('manual collector auth retry discovers one authoritative Web tab or publish
   assert.deepEqual(JSON.parse(JSON.stringify(availableResponse.data)), { requested: 1 });
   assert.deepEqual(available.tabMessages, [{
     tabId: 9,
-    message: { action: 'collector.auth.request' },
+    message: {
+      action: 'collector.auth.request',
+      requestId: available.tabMessages[0].message.requestId,
+    },
   }]);
+  assert.match(available.tabMessages[0].message.requestId, /^collector-/);
   const availableStatus = await sendRuntime(available, { action: 'getCollectorAuthStatus' });
   assert.equal(availableStatus.data.phase, 'DISCOVERING_WEB');
 });
@@ -621,9 +662,9 @@ test('a projection read failure after Web acknowledgement cannot duplicate the t
     activationResult: { changed: false },
     statusFailure,
     tabs: [{ id: 21, active: true, lastAccessed: 10 }],
-    tabMessage: async () => {
+    tabMessage: async (_tabId, message) => {
       statusFailure.get = true;
-      return { ok: true, requested: true };
+      return { ok: true, requested: true, requestId: message.requestId };
     },
   });
   const response = await sendRuntime(harness, { action: 'retryCollectorAuth' });

@@ -59,7 +59,12 @@
       result?.authenticated === true || result?.data?.authenticated === true
     );
 
-    const requestTicket = (generationId, accountIdHint, allowUnacceptedRetry = true) => {
+    const requestTicket = (
+      generationId,
+      accountIdHint,
+      allowUnacceptedRetry = true,
+      suppliedRequestId,
+    ) => {
       if (
         authenticated
         || exchangeInFlight
@@ -68,7 +73,9 @@
       if (generationId ? desiredGenerationId !== generationId : desiredGenerationId !== '') {
         return false;
       }
-      const requestId = String(newRequestId() || '').trim();
+      const requestId = String(suppliedRequestId === undefined
+        ? newRequestId()
+        : suppliedRequestId || '').trim();
       if (!requestId || requestId.length > 128) return false;
       const request = {
         requestId,
@@ -95,12 +102,12 @@
       return true;
     };
 
-    const restartRequestCycle = (generationId, accountIdHint) => {
+    const restartRequestCycle = (generationId, accountIdHint, suppliedRequestId) => {
       cancelRetry();
       activeRequest = null;
       attempts = 0;
       authenticated = false;
-      return requestTicket(generationId, accountIdHint);
+      return requestTicket(generationId, accountIdHint, true, suppliedRequestId);
     };
 
     const rollbackFailedBegin = (generationId) => {
@@ -182,7 +189,7 @@
       return { requested: restartRequestCycle('', '') };
     };
 
-    const handleReady = async (message) => {
+    const handleReady = async (message, suppliedRequestId) => {
       const generationId = String(message?.generationId || '');
       const accountIdHint = typeof message?.accountIdHint === 'string'
         && message.accountIdHint === message.accountIdHint.trim()
@@ -237,7 +244,7 @@
       if (pendingGenerationId === generationId) pendingGenerationId = '';
       return {
         accepted: true,
-        requested: restartRequestCycle(generationId, accountIdHint),
+        requested: restartRequestCycle(generationId, accountIdHint, suppliedRequestId),
       };
     };
 
@@ -284,7 +291,10 @@
         activeRequest = null;
         let result;
         try {
-          result = await queueTransition(() => beginGeneration(message.generationId, undefined));
+          result = await queueTransition(() => beginGeneration(
+            message.generationId,
+            request.accountIdHint || undefined,
+          ));
         } catch {
           result = null;
         }
@@ -354,11 +364,23 @@
       return { accepted: true };
     };
 
-    const requestAuthoritatively = () => {
+    const requestAuthoritatively = (requestId, accountIdHint, readyMessage) => {
       if (exchangeInFlight) return { requested: false };
       if (pendingGenerationId && pendingGenerationId === desiredGenerationId) {
         return { requested: false };
       }
+      const suppliedRequestId = requestId === undefined
+        ? undefined
+        : String(requestId || '').trim();
+      if (requestId !== undefined && (!suppliedRequestId || suppliedRequestId.length > 128)) {
+        return { requested: false };
+      }
+      const suppliedAccountIdHint = typeof accountIdHint === 'string'
+        && accountIdHint === accountIdHint.trim()
+        && accountIdHint.length <= 128
+        ? accountIdHint
+        : '';
+      if (readyMessage) return handleReady(readyMessage, suppliedRequestId);
       cancelRetry();
       desiredGenerationId = '';
       desiredAccountIdHint = '';
@@ -367,7 +389,9 @@
       activeRequest = null;
       attempts = 0;
       authenticated = false;
-      return startDiscovery();
+      return {
+        requested: requestTicket('', suppliedAccountIdHint, true, suppliedRequestId),
+      };
     };
 
     return Object.freeze({

@@ -20,6 +20,14 @@
       return `collector-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
   };
+  const isCanonicalRequestId = (requestId) => (
+    typeof requestId === 'string'
+    && /^collector-[a-zA-Z0-9-]+$/.test(requestId)
+    && requestId.length <= 128
+  );
+  let selectedByWorker = false;
+  let selectedRequestPending = false;
+  let latestReady = null;
 
   const sendRuntime = (action, fields) => new Promise((resolve) => {
     try {
@@ -86,11 +94,23 @@
 
     const readyV2 = policy.normalizeCollectorAuthReadyV2(event.data);
     if (readyV2) {
+      if (!selectedByWorker || selectedRequestPending) {
+        latestReady = readyV2;
+        return;
+      }
       await flow.handleReady(readyV2);
       return;
     }
     const ready = policy.normalizeCollectorAuthReady(event.data);
     if (ready) {
+      if (!selectedByWorker || selectedRequestPending) {
+        if (
+          !latestReady
+          || latestReady.generationId !== ready.generationId
+          || !latestReady.accountIdHint
+        ) latestReady = ready;
+        return;
+      }
       await flow.handleReady(ready);
       return;
     }
@@ -111,17 +131,42 @@
       return;
     }
     const response = policy.normalizeCollectorAuthResponse(event.data);
-    if (response) await flow.handleResponse(response);
+    if (response) {
+      selectedRequestPending = false;
+      if (latestReady?.generationId === response.generationId) latestReady = null;
+      await flow.handleResponse(response);
+    }
   });
 
   try {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.action !== 'collector.auth.request') return false;
-      const { requested } = flow.requestAuthoritatively();
-      sendResponse({ ok: true, requested });
-      return false;
+      if (!isCanonicalRequestId(message.requestId)) {
+        sendResponse({ ok: false, requested: false, requestId: '' });
+        return false;
+      }
+      selectedByWorker = true;
+      const readyForSelection = latestReady;
+      latestReady = null;
+      if (!readyForSelection) {
+        const { requested } = flow.requestAuthoritatively(message.requestId);
+        selectedRequestPending = requested;
+        sendResponse({ ok: true, requested, requestId: message.requestId });
+        return false;
+      }
+      void Promise.resolve(flow.requestAuthoritatively(
+        message.requestId,
+        readyForSelection.accountIdHint,
+        readyForSelection,
+      )).then((outcome) => {
+        const requested = outcome?.requested === true || outcome?.authenticated === true;
+        selectedRequestPending = outcome?.requested === true;
+        sendResponse({ ok: true, requested, requestId: message.requestId });
+      }).catch(() => {
+        selectedRequestPending = false;
+        sendResponse({ ok: true, requested: false, requestId: message.requestId });
+      });
+      return true;
     });
   } catch {}
-
-  flow.startDiscovery();
 })();

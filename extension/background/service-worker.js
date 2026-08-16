@@ -437,34 +437,59 @@ try {
     fetchImpl: (...args) => fetch(...args),
     logger: console,
   });
-  const selectAuthoritativeCollectorAuthTab = (tabs) => (
-    (Array.isArray(tabs) ? tabs : [])
-      .filter((tab) => Number.isInteger(tab?.id))
-      .sort((left, right) => {
-        const activeOrder = Number(right.active === true) - Number(left.active === true);
-        if (activeOrder !== 0) return activeOrder;
-        const leftLastAccessed = Number.isFinite(left.lastAccessed)
-          ? left.lastAccessed
-          : Number.NEGATIVE_INFINITY;
-        const rightLastAccessed = Number.isFinite(right.lastAccessed)
-          ? right.lastAccessed
-          : Number.NEGATIVE_INFINITY;
-        if (leftLastAccessed !== rightLastAccessed) return rightLastAccessed - leftLastAccessed;
-        return left.id - right.id;
-      })[0]
-  );
-  const requestCollectorAuthFromWeb = async () => {
-    const tabs = await chrome.tabs.query({ url: TRUSTED_FRONTEND_TAB_URLS });
-    const authoritativeTab = selectAuthoritativeCollectorAuthTab(tabs);
-    if (!authoritativeTab) return { requested: false, publicCode: 'WEB_TAB_UNAVAILABLE' };
+  const newCollectorAuthRequestId = () => {
     try {
-      const response = await chrome.tabs.sendMessage(authoritativeTab.id, {
-        action: 'collector.auth.request',
-      });
-      return { requested: response?.ok === true && response?.requested === true };
+      return `collector-${crypto.randomUUID()}`;
     } catch {
-      return { requested: false, publicCode: 'WEB_TAB_UNAVAILABLE' };
+      return `collector-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
+  };
+  const compareCollectorAuthTabs = (left, right) => {
+    const activeOrder = Number(right.active === true) - Number(left.active === true);
+    if (activeOrder !== 0) return activeOrder;
+    const leftLastAccessed = Number.isFinite(left.lastAccessed)
+      ? left.lastAccessed
+      : Number.NEGATIVE_INFINITY;
+    const rightLastAccessed = Number.isFinite(right.lastAccessed)
+      ? right.lastAccessed
+      : Number.NEGATIVE_INFINITY;
+    if (leftLastAccessed !== rightLastAccessed) return rightLastAccessed - leftLastAccessed;
+    return left.id - right.id;
+  };
+  let lastCollectorAuthTabId = null;
+  const orderedCollectorAuthTabs = (tabs) => {
+    const ordered = (Array.isArray(tabs) ? tabs : [])
+      .filter((tab) => Number.isInteger(tab?.id))
+      .sort(compareCollectorAuthTabs);
+    const previous = ordered.findIndex(({ id }) => id === lastCollectorAuthTabId);
+    return previous < 0
+      ? ordered
+      : [...ordered.slice(previous + 1), ...ordered.slice(0, previous + 1)];
+  };
+  const requestCollectorAuthFromWeb = async (requestId = newCollectorAuthRequestId()) => {
+    const tabs = await chrome.tabs.query({ url: TRUSTED_FRONTEND_TAB_URLS });
+    for (const tab of orderedCollectorAuthTabs(tabs)) {
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, {
+          action: 'collector.auth.request',
+          requestId,
+        });
+        if (
+          response?.ok === true
+          && response?.requested === true
+          && response?.requestId === requestId
+        ) {
+          lastCollectorAuthTabId = tab.id;
+          return { requested: true, requestId, tabId: tab.id };
+        }
+      } catch {}
+    }
+    return {
+      requested: false,
+      requestId,
+      tabId: null,
+      publicCode: 'WEB_TAB_UNAVAILABLE',
+    };
   };
   const collectorAuthCoordinator =
     globalThis.JzCollectorAuthCoordinator.createCollectorAuthCoordinator({
@@ -4104,9 +4129,7 @@ try {
     updateTab: (id, update) => chrome.tabs.update(id, update),
     updateWindow: (id, update) => chrome.windows.update(id, update),
     createTab: (options) => chrome.tabs.create(options),
-    requestCollectorAuth: (tabId) => chrome.tabs.sendMessage(tabId, {
-      action: 'collector.auth.request',
-    }),
+    requestCollectorAuth: () => requestCollectorAuthFromWeb(),
     injectCollectorAuth: async (tabId) => {
       await chrome.scripting.executeScript({
         target: { tabId },
