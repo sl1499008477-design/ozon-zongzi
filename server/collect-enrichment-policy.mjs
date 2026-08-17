@@ -29,6 +29,17 @@ function cleanText(value) {
   return String(value ?? "").trim();
 }
 
+function buyerCategoryUrl(value) {
+  if (typeof value !== "string" || value.length > 2048) return "";
+  let url;
+  try { url = new URL(value); } catch { return ""; }
+  if (url.origin !== "https://www.ozon.ru" || url.username || url.password
+    || !/^\/category\/[a-z0-9][a-z0-9-]*-[1-9][0-9]*\/$/iu.test(url.pathname)) return "";
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
 export function explicitOzonListingTarget(resolution, { targetStoreId = "" } = {}) {
   if (!plainObject(resolution) || resolution.status !== "MATCHED") return null;
   const method = cleanText(resolution.method);
@@ -165,6 +176,9 @@ function sourceCategoryEvidence(value = {}) {
 export function normalizeOzonCollectedSourceEvidence(payload = {}) {
   if (!plainObject(payload)) return {};
   const normalized = structuredClone(payload);
+  const normalizedBuyerCategoryUrl = buyerCategoryUrl(payload.buyerCategoryUrl);
+  if (normalizedBuyerCategoryUrl) normalized.buyerCategoryUrl = normalizedBuyerCategoryUrl;
+  else delete normalized.buyerCategoryUrl;
   const ingressEvidence = mergeEvidenceOnlyIntoBlanks(
     sourceCategoryEvidence(payload),
     {

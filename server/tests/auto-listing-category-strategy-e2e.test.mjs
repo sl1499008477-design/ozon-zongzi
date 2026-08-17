@@ -114,6 +114,7 @@ async function seedSource(client, { accountId, suffix, targetStoreId = `store-${
     [collectItemId, accountId, `sku-${suffix}`, `https://www.ozon.ru/product/${suffix}`]);
   const image = { assetId: `source-image-${suffix}`, contentHash: sha(`source-image-${suffix}`) };
   const listingDraft = { sku: "4862904234", offerId: `offer-${suffix}`, title: "Test product",
+    buyerCategoryUrl: "https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/",
     categoryResolution: { status: "MATCHED", method: "taxonomy",
       target: { storeId: targetStoreId, descriptionCategoryId: String(categoryScope.descriptionCategoryId),
         typeId: String(categoryScope.typeId) }, source: { path: ["root"] } },
@@ -448,6 +449,10 @@ if (!enabled) {
         { expectedDraftVersion: draft.draftVersion, idempotencyKey: `session-${suffix}`, correlationId: `session-corr-${suffix}` });
       assert.equal(sessionResponse.status, 201);
       const session = sessionResponse.payload.data;
+      assert.equal(
+        new URL(session.browserUrl).pathname,
+        "/category/nabory-skladnoy-mebeli-11504/",
+      );
       const extensionSession = await callExtension(runtime, actor, "GET",
         `/extension/auto-listing/category-strategy/sampling-sessions/${session.sessionId}`);
       assert.equal(extensionSession.status, 200);

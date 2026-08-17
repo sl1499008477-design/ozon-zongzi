@@ -144,15 +144,16 @@ function browserUrl(value) {
   if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 2048) throw invalid();
   let parsed;
   try { parsed = new URL(value); } catch { throw invalid(); }
-  const host = parsed.hostname.toLowerCase().replace(/\.$/u, "");
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash
-    || !(host === "ozon.ru" || host.endsWith(".ozon.ru"))) throw invalid();
+    || parsed.origin !== "https://www.ozon.ru"
+    || !(/^\/category\/[a-z0-9][a-z0-9-]*-[1-9][0-9]*\/$/iu.test(parsed.pathname)
+      || /^\/product\/[a-z0-9][a-z0-9-]*-[1-9][0-9]*\/$/iu.test(parsed.pathname))) throw invalid();
   parsed.search = "";
   return parsed.href;
 }
 
-function samplingBrowserUrl(descriptionCategoryId, sessionId) {
-  const url = new URL(`https://www.ozon.ru/category/${positive(descriptionCategoryId)}/`);
+function samplingBrowserUrl(value, sessionId) {
+  const url = new URL(browserUrl(value));
   url.searchParams.set("zongziCategoryStrategySession", identifier(sessionId));
   return url.href;
 }
@@ -367,7 +368,7 @@ function publicDraftDetail(raw, accountId) {
       const item = closed(value.session, new Set(["sessionId", "state", "expiresAt"]));
       if (item.state !== "ACTIVE") throw invalid();
       return Object.freeze({ sessionId: identifier(item.sessionId), expiresAt: exactIsoDate(item.expiresAt),
-        browserUrl: samplingBrowserUrl(draft.scope.descriptionCategoryId, item.sessionId),
+        browserUrl: samplingBrowserUrl(draft.browserUrl, item.sessionId),
         extensionMode: "CATEGORY_STRATEGY_SAMPLING", scope: publicScope(draft.scope), duplicate: false });
     })();
     const samples = closedArray(value.samples, 0, 20).map((entry) => {
@@ -843,7 +844,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
           } catch (error) { dependencyError(error); }
           replay.sessionSecret = null;
           const result = Object.freeze({ sessionId: row.sessionId, expiresAt: row.expiresAt,
-            browserUrl: samplingBrowserUrl(draft.scope.descriptionCategoryId, row.sessionId),
+            browserUrl: samplingBrowserUrl(draft.browserUrl, row.sessionId),
             extensionMode: "CATEGORY_STRATEGY_SAMPLING",
             scope: publicScope(draft.scope), duplicate: true });
           await observe({ metric: "category_strategy_sampling_started_total", accountId, draftId,
@@ -864,7 +865,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
           replay.sessionSecret = null;
         } catch (error) { dependencyError(error); }
         const result = Object.freeze({ sessionId: row.sessionId, expiresAt: row.expiresAt,
-          browserUrl: samplingBrowserUrl(draft.scope.descriptionCategoryId, row.sessionId),
+          browserUrl: samplingBrowserUrl(draft.browserUrl, row.sessionId),
           extensionMode: "CATEGORY_STRATEGY_SAMPLING",
           scope: publicScope(draft.scope), duplicate: row.duplicate });
         await observe({ metric: "category_strategy_sampling_started_total", accountId, draftId,

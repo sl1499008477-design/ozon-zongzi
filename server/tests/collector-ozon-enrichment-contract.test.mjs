@@ -136,6 +136,24 @@ test("Ozon ingress promotes legacy root category aliases into source evidence an
   }
 });
 
+test("Ozon ingress keeps only a canonical buyer category URL from the public product breadcrumb", () => {
+  const valid = normalizeOzonCollectedSourceEvidence({
+    buyerCategoryUrl: "https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/?at=tracking#fragment",
+  });
+  assert.equal(
+    valid.buyerCategoryUrl,
+    "https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/",
+  );
+  for (const buyerCategoryUrl of [
+    "https://www.ozon.ru/category/17029005/",
+    "https://attacker.test/category/nabory-skladnoy-mebeli-11504/",
+    "https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/mqouo-101091944/",
+  ]) {
+    const normalized = normalizeOzonCollectedSourceEvidence({ buyerCategoryUrl });
+    assert.equal(Object.hasOwn(normalized, "buyerCategoryUrl"), false, buyerCategoryUrl);
+  }
+});
+
 test("source-category merge replaces invalid IDs and deterministically extends partial evidence arrays", () => {
   const merged = mergeOzonEnrichmentResult({
     descriptionCategoryId: 700,

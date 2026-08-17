@@ -16,7 +16,7 @@ function draft(overrides = {}) {
     draftId: "draft-a", accountId: "account-a", scope: SCOPE,
     draftVersion: 1, status: "COLLECTING", sampleCount: 0,
     sourceCollectItemId: "collect-a", expectedSourceVersion: "draft:1",
-    browserUrl: "https://www.ozon.ru/category/17028922/",
+    browserUrl: "https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/",
     ...overrides,
   };
 }
@@ -450,9 +450,7 @@ test("administrator can list, read, and create exact account-scoped drafts", asy
 });
 
 test("sampling session uses DB-authoritative repository expiry and never returns its secret", async () => {
-  const h = harness({ currentDraft: draft({
-    browserUrl: "https://www.ozon.ru/product/mqouo-shkaf-skladnoy-turisticheskiy-1941181573/?at=tracking",
-  }) });
+  const h = harness();
   const result = await h.service.startSamplingSession({
     actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
     idempotencyKey: "session-a", correlationId: "correlation-a",
@@ -461,7 +459,7 @@ test("sampling session uses DB-authoritative repository expiry and never returns
     "sessionId", "expiresAt", "browserUrl", "extensionMode", "scope", "duplicate",
   ]);
   assert.equal(new URL(result.browserUrl).origin, "https://www.ozon.ru");
-  assert.equal(new URL(result.browserUrl).pathname, "/category/17028922/");
+  assert.equal(new URL(result.browserUrl).pathname, "/category/nabory-skladnoy-mebeli-11504/");
   assert.equal(new URL(result.browserUrl).searchParams.get("zongziCategoryStrategySession"),
     result.sessionId);
   assert.equal(result.extensionMode, "CATEGORY_STRATEGY_SAMPLING");
@@ -473,6 +471,20 @@ test("sampling session uses DB-authoritative repository expiry and never returns
     idempotencyKey: "session-a", correlationId: "correlation-a",
   }), result);
   assert.equal(h.calls.handoff, 1);
+});
+
+test("sampling session keeps the anchored product URL for a historical draft without buyer category evidence", async () => {
+  const h = harness({ currentDraft: draft({
+    browserUrl: "https://www.ozon.ru/product/mqouo-shkaf-skladnoy-turisticheskiy-1941181573/?at=tracking",
+  }) });
+  const result = await h.service.startSamplingSession({
+    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+    idempotencyKey: "legacy-session-a", correlationId: "correlation-a",
+  });
+  const url = new URL(result.browserUrl);
+  assert.equal(url.pathname, "/product/mqouo-shkaf-skladnoy-turisticheskiy-1941181573/");
+  assert.equal(url.searchParams.get("zongziCategoryStrategySession"), result.sessionId);
+  assert.equal(url.searchParams.has("at"), false);
 });
 
 test("sampling session handoff retry keeps the original secret identity without exposing it", async () => {
