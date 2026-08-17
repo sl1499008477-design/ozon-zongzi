@@ -19,6 +19,7 @@ const requiredRuntimeFiles = [
   "lib/collector-session.js",
   "lib/category-strategy-handoff.js",
   "lib/category-strategy-sampling.js",
+  "lib/ozon-buyer-category.js",
   "lib/ozon-collect-coordinator.js",
   "lib/ozon-enrichment-contract.js",
   "lib/seller-company-context.js",

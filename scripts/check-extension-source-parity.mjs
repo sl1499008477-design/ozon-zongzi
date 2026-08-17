@@ -41,12 +41,16 @@ const allowedDiffs = new Set([
   "icons/icon48.png",
   "lib/cn-source-panel.js",
   "lib/cn-source-scraper.js",
+  "lib/category-strategy-handoff.js",
   "lib/store-picker.js",
   "manifest.json",
   "popup/popup.html",
   "popup/popup.css",
   "popup/popup.js",
   "tests/fleet-collect-attrs-merge.test.js",
+  "tests/category-strategy-handoff.test.js",
+  "tests/jizhangerp-bridge-follow-sell.test.js",
+  "tests/ozon-product-complete-collection.test.js",
 ]);
 
 const allowedLocalOnly = new Set([
@@ -75,6 +79,7 @@ const allowedLocalOnly = new Set([
   "lib/collector-session.js",
   "lib/frontend-tab-opener.js",
   "lib/ozon-collect-coordinator.js",
+  "lib/ozon-buyer-category.js",
   "lib/ozon-enrichment-contract.js",
   "lib/fx-probe.js",
   "lib/fx-observation-replay.js",
@@ -101,6 +106,8 @@ const allowedLocalOnly = new Set([
   "tests/collector-session.test.js",
   "tests/collector-ozon-enrichment-client.test.js",
   "tests/ozon-collect-coordinator.test.js",
+  "tests/ozon-buyer-category.test.js",
+  "tests/category-strategy-product-fallback.test.js",
   "tests/collector-removed.test.js",
   "tests/data-panel-logistics.test.js",
   "tests/data-panel-visual-browser.test.js",

@@ -46,13 +46,17 @@ const reviewedChangedFiles = new Set([
   "icons/ozon-zongzi-symbol.svg",
   "lib/cn-source-panel.js",
   "lib/cn-source-scraper.js",
+  "lib/category-strategy-handoff.js",
   "lib/store-picker.js",
   "manifest.json",
   "popup/popup.css",
   "popup/popup.html",
   "popup/popup.js",
   "tests/fleet-collect-attrs-merge.test.js",
+  "tests/category-strategy-handoff.test.js",
+  "tests/jizhangerp-bridge-follow-sell.test.js",
   "tests/no-unreachable-local-functions.test.js",
+  "tests/ozon-product-complete-collection.test.js",
 ]);
 
 const walk = (root, current = "") => {

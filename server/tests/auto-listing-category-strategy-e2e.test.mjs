@@ -54,7 +54,7 @@ test("Task 11 delivery pins the executable composition suite and rollout invaria
   ]) assert.match(runbook, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   const migrations = (await readdir(migrationsDir)).filter((name) => /^\d{3}_.+\.sql$/u.test(name)).sort();
   assert.equal(migrations.at(-1), "076_auto_listing_category_strategy_analysis_edits.sql");
-  assert.equal(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version, "0.13.46.4-local");
+  assert.equal(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version, "0.13.46.5-local");
 });
 
 function memoryObjectStorage() {
@@ -215,7 +215,7 @@ async function callAdmin(runtime, actor, method, pathname, body = null) {
   return response;
 }
 
-async function callExtension(runtime, actor, method, pathname, body = null, extensionVersion = "0.13.46.3") {
+async function callExtension(runtime, actor, method, pathname, body = null, extensionVersion = "0.13.46.5") {
   let response;
   const handler = createAutoListingCategoryStrategyExtensionHttpHandler({
     authenticateExtension: async () => actor, getService: runtime.getService,

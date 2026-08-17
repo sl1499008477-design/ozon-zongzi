@@ -1,6 +1,6 @@
 {
   "name": "sonli-ozon-local-clone",
-  "version": "0.13.46.4-local",
+  "version": "0.13.46.5-local",
   "private": true,
   "type": "module",
   "scripts": {
