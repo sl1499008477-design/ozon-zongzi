@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "0.13.46.11";
+export const EXTENSION_VERSION = "0.13.46.12";
 export const EXTENSION_DOWNLOAD_PATH =
   `/sonli-extension-${EXTENSION_VERSION}.zip`;
 export const EXTENSION_POPUP_PREVIEW_PATH =

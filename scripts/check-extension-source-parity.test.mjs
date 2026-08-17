@@ -12,9 +12,9 @@ const rootDir = fileURLToPath(new URL("..", import.meta.url));
 const localExtensionDir = path.join(rootDir, "extension");
 
 test("upstream parity accepts a newer local patch but rejects older or cross-line versions", () => {
-  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.11", "0.13.46.6"));
-  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.11", "0.13.46.11"));
-  assert.throws(() => assertCompatibleExtensionVersions("0.13.46.10", "0.13.46.11"), /older than upstream/);
+  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.12", "0.13.46.6"));
+  assert.doesNotThrow(() => assertCompatibleExtensionVersions("0.13.46.12", "0.13.46.12"));
+  assert.throws(() => assertCompatibleExtensionVersions("0.13.46.11", "0.13.46.12"), /older than upstream/);
   assert.throws(() => assertCompatibleExtensionVersions("0.14.0", "0.13.46.1"), /release line/);
 });
 
