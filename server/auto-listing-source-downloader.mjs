@@ -12,6 +12,7 @@ export const AUTO_LISTING_SOURCE_DOWNLOAD_POLICY = Object.freeze({
 });
 const DOWNLOAD_INPUT_KEYS = new Set(["sourceUrl", "timeoutMs", "maxBytes", "maxPixels", "maxRedirects", "forbidHttpsDowngrade"]);
 const DOWNLOAD_REQUIRED_KEYS = Object.freeze(["sourceUrl", "timeoutMs", "maxBytes", "maxRedirects", "forbidHttpsDowngrade"]);
+const OZON_IMAGE_HOST = /^(?:ir(?:-\d+)?|cdn\d+)\.ozone\.ru$/u;
 
 function sourceDownloadError(code, retryable = false) {
   const value = new Error("自动上架来源图片暂时无法读取");
@@ -44,7 +45,13 @@ function assertInput(input) {
     || !positiveInteger(maxPixels, { min: 1, max: AUTO_LISTING_SOURCE_DOWNLOAD_POLICY.maxPixels })
     || !positiveInteger(input.maxRedirects, { min: 0, max: AUTO_LISTING_SOURCE_DOWNLOAD_POLICY.maxRedirects })
     || input.forbidHttpsDowngrade !== true) throw sourceDownloadError("AUTO_LISTING_SOURCE_DOWNLOAD_INPUT_INVALID");
-  return { sourceUrl: parsed.href, maxPixels };
+  return {
+    sourceUrl: parsed.href,
+    maxPixels,
+    allowBenchmarkAddressHost: parsed.protocol === "https:" && OZON_IMAGE_HOST.test(parsed.hostname)
+      ? parsed.hostname
+      : "",
+  };
 }
 
 function normalizeDownloadFailure(error) {
@@ -82,6 +89,7 @@ export function createAutoListingSourceImageDownloader({
           forbidHttpsDowngrade: true,
           imageDnsLookup: lookupHost,
           imageRequest: requestImage,
+          allowBenchmarkAddressHost: validated.allowBenchmarkAddressHost,
         });
       } catch (error) {
         throw normalizeDownloadFailure(error);

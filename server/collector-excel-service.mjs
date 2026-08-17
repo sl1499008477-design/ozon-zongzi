@@ -193,6 +193,11 @@ function isBlockedIpv4(address) {
   return false;
 }
 
+function isBenchmarkIpv4(address) {
+  const octets = ipv4Octets(address);
+  return Boolean(octets && octets[0] === 198 && [18, 19].includes(octets[1]));
+}
+
 function ipv6Groups(address) {
   if (isIP(address) !== 6) return null;
   let normalized = address.toLowerCase().split("%")[0];
@@ -285,7 +290,11 @@ async function promiseBeforeDeadline(promise, deadline) {
   }
 }
 
-async function resolveAllowedAddresses(hostname, { lookupHost = dnsLookup, deadline }) {
+async function resolveAllowedAddresses(hostname, {
+  lookupHost = dnsLookup,
+  deadline,
+  allowBenchmarkAddressHost = "",
+}) {
   if (isIP(hostname)) return [{ address: hostname, family: isIP(hostname) }];
   let resolved;
   try {
@@ -305,7 +314,9 @@ async function resolveAllowedAddresses(hostname, { lookupHost = dnsLookup, deadl
   if (!entries.length || entries.some(({ address, family }) => ![4, 6].includes(family) || isIP(address) !== family)) {
     throw errorWithStatus("图片主机没有可用的 IP 地址", "COLLECTOR_EXCEL_IMAGE_DNS_INVALID", 502);
   }
-  if (entries.some(({ address }) => isBlockedIpAddress(address))) {
+  const benchmarkHostAllowed = normalizeHostname(allowBenchmarkAddressHost) === hostname;
+  if (entries.some(({ address }) => isBlockedIpAddress(address)
+    && !(benchmarkHostAllowed && isBenchmarkIpv4(address)))) {
     throw errorWithStatus("图片主机 DNS 解析到了本机、私网、链路本地或保留 IP", "COLLECTOR_EXCEL_IMAGE_PRIVATE_ADDRESS");
   }
   return entries;
@@ -559,9 +570,19 @@ function headerValue(value) {
   return Array.isArray(value) ? value[0] : String(value || "");
 }
 
-async function requestImageOnce(target, { deadline, limits, lookupHost, requestImage }) {
+async function requestImageOnce(target, {
+  deadline,
+  limits,
+  lookupHost,
+  requestImage,
+  allowBenchmarkAddressHost,
+}) {
   const hostname = assertAllowedHostname(target.hostname);
-  const addresses = await resolveAllowedAddresses(hostname, { lookupHost, deadline });
+  const addresses = await resolveAllowedAddresses(hostname, {
+    lookupHost,
+    deadline,
+    allowBenchmarkAddressHost,
+  });
   const selected = addresses[0];
   const transport = target.protocol === "https:" ? https : http;
   const requestTimeout = remainingTimeout(deadline);
@@ -713,6 +734,7 @@ export async function downloadCollectorExcelImage(url, options = {}) {
       limits,
       lookupHost,
       requestImage: options.imageRequest,
+      allowBenchmarkAddressHost: options.allowBenchmarkAddressHost,
     });
     if (!result.redirect) {
       result.buffer = assertImageBufferSize(result.buffer, limits.maxImageBytes, "下载");

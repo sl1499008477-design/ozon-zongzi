@@ -104,6 +104,53 @@ test("source downloader rejects private or mixed DNS answers and pins the valida
   }));
 });
 
+test("source downloader accepts Ozon image CDN through benchmark-range proxy DNS only", async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  const png = await sharp({ create: { width: 2, height: 3, channels: 4, background: "red" } }).png().toBuffer();
+  const benchmarkDns = async () => [{ address: "198.18.0.13", family: 4 }];
+  const downloader = createAutoListingSourceImageDownloader({
+    lookupHost: benchmarkDns,
+    requestImage: fakeRequester([{
+      headers: { "content-type": "image/png", "content-length": String(png.length) },
+      chunks: [png],
+    }]),
+  });
+
+  const downloaded = await downloader.downloadSourceImage({
+    sourceUrl: "https://ir-20.ozone.ru/s3/multimedia-1-5/wc1000/example.png",
+    timeoutMs: 10_000,
+    maxBytes: 1024,
+    maxRedirects: 3,
+    forbidHttpsDowngrade: true,
+  });
+  assert.deepEqual(
+    { contentType: downloaded.contentType, width: downloaded.width, height: downloaded.height },
+    { contentType: "image/png", width: 2, height: 3 },
+  );
+
+  for (const [sourceUrl, address] of [
+    ["https://images.example.test/a.png", "198.18.0.13"],
+    ["https://ir-20.ozone.ru.evil.test/a.png", "198.18.0.13"],
+    ["http://ir-20.ozone.ru/a.png", "198.18.0.13"],
+    ["https://ir-20.ozone.ru/a.png", "10.0.0.9"],
+  ]) {
+    const blocked = createAutoListingSourceImageDownloader({
+      lookupHost: async () => [{ address, family: 4 }],
+      requestImage() { throw new Error("must not request"); },
+    });
+    await assert.rejects(
+      blocked.downloadSourceImage({
+        sourceUrl,
+        timeoutMs: 10_000,
+        maxBytes: 1024,
+        maxRedirects: 3,
+        forbidHttpsDowngrade: true,
+      }),
+      (error) => error?.code === "AUTO_LISTING_SOURCE_DOWNLOAD_BLOCKED",
+    );
+  }
+});
+
 test("source downloader rejects IPv6 benchmark and ORCHID special-purpose DNS answers before requesting", async () => {
   const { createAutoListingSourceImageDownloader } = await load();
   for (const address of ["2001:2::1", "2001:20::1"]) {
