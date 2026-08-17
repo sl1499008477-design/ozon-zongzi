@@ -230,6 +230,7 @@
     let reason = 'NO_SESSION';
     let page = null;
     let currentPageUrl = null;
+    let confirmOwner = null;
     const selected = new Map();
 
     function clear(nextReason = 'NO_SESSION') {
@@ -249,7 +250,8 @@
         expiresAt: activeSession ? activeSession.expiresAt : null,
         selectedCount: selected.size,
         selectedSkus: [...selected.keys()],
-        canConfirm: stateMode === MODE && selected.size >= 5 && selected.size <= 20,
+        canConfirm: confirmOwner === null && stateMode === MODE
+          && selected.size >= 5 && selected.size <= 20,
       });
     }
 
@@ -371,6 +373,7 @@
     }
 
     async function confirm() {
+      if (confirmOwner) return confirmOwner;
       if (stateMode !== MODE || !activeSession || selected.size < 5 || selected.size > 20) {
         throw failure('CATEGORY_STRATEGY_SAMPLING_COUNT_INVALID');
       }
@@ -378,13 +381,20 @@
         clear('SESSION_EXPIRED');
         throw failure('CATEGORY_STRATEGY_SAMPLING_SESSION_EXPIRED');
       }
-      const result = await options.confirmSamples({
-        sessionId: activeSession.sessionId,
-        pageFact: page,
-        samples: freeze([...selected.values()]),
-      });
-      clear('COMPLETED');
-      return freeze({ ...snapshot(), result });
+      confirmOwner = (async () => {
+        const result = await options.confirmSamples({
+          sessionId: activeSession.sessionId,
+          pageFact: page,
+          samples: freeze([...selected.values()]),
+        });
+        clear('COMPLETED');
+        return freeze({ ...snapshot(), result });
+      })();
+      try {
+        return await confirmOwner;
+      } finally {
+        confirmOwner = null;
+      }
     }
 
     async function cancel() {

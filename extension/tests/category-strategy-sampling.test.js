@@ -61,7 +61,8 @@ function productFact(index = 1, overrides = {}) {
   };
 }
 
-function harness({ currentSession = session(), capturedPage = pageFact(), capturedCard } = {}) {
+function harness({ currentSession = session(), capturedPage = pageFact(), capturedCard,
+  confirmSamples = async () => ({ accepted: true }) } = {}) {
   const calls = { getSession: 0, page: 0, card: 0, confirm: 0, cancel: 0, ordinary: 0 };
   const confirmed = [];
   const controller = createCategoryStrategySamplingController({
@@ -74,7 +75,11 @@ function harness({ currentSession = session(), capturedPage = pageFact(), captur
       return capturedCard ? capturedCard(input) : productFact(index, { sku: input.sku,
         sourceProductId: Number(input.sku), sourceProductRef: `product-${input.sku}` });
     },
-    async confirmSamples(input) { calls.confirm += 1; confirmed.push(input); return { accepted: true }; },
+    async confirmSamples(input) {
+      calls.confirm += 1;
+      confirmed.push(input);
+      return confirmSamples(input);
+    },
     async cancelSession() { calls.cancel += 1; return { cancelled: true }; },
   });
   return { calls, confirmed, controller };
@@ -183,6 +188,35 @@ test('selection deduplicates SKU, stops at twenty, and confirms only five to twe
   assert.equal(h.calls.confirm, 1);
   assert.equal(h.confirmed[0].samples.length, 20);
   assert.equal(h.calls.ordinary, 0);
+});
+
+test('confirmation is single-flight and disables confirmation until the request settles', async () => {
+  let releaseConfirm;
+  let markConfirmStarted;
+  const confirmGate = new Promise((resolve) => { releaseConfirm = resolve; });
+  const confirmStarted = new Promise((resolve) => { markConfirmStarted = resolve; });
+  const h = harness({
+    async confirmSamples() {
+      markConfirmStarted();
+      await confirmGate;
+      return { accepted: true };
+    },
+  });
+  await h.controller.refresh({ pageUrl: 'https://www.ozon.ru/category/17028922/' });
+  for (let index = 1; index <= 5; index += 1) {
+    const sku = String(4_862_904_233 + index);
+    await h.controller.select({ sku, productUrl: `https://www.ozon.ru/product/item-${sku}/` });
+  }
+
+  const first = h.controller.confirm();
+  await confirmStarted;
+  const second = h.controller.confirm();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(h.controller.snapshot().canConfirm, false);
+  assert.equal(h.calls.confirm, 1);
+  releaseConfirm();
+  assert.deepEqual(await second, await first);
 });
 
 test('captured image evidence is closed MAIN zero plus at most five contiguous DETAIL refs', () => {

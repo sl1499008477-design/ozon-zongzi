@@ -349,18 +349,25 @@ function categorySamplingFixtureHtml() {
           const state = {
             mode: 'CATEGORY_STRATEGY_SAMPLING',
             scope: { descriptionCategoryId: 17029005, typeId: 94453 },
-            selectedCount: 0,
+            selectedCount: 5,
             selectedSkus: [],
-            canConfirm: false,
+            canConfirm: true,
             expiresAt: '2099-01-01T00:00:00.000Z',
           };
+          let releaseConfirm;
+          window.__categoryConfirmCalls = 0;
+          window.__releaseCategoryConfirm = () => releaseConfirm?.();
           return {
             snapshot: () => state,
             refresh: async () => state,
             restoreSelections() {},
             select: async () => state,
             deselect() {},
-            confirm: async () => null,
+            confirm() {
+              window.__categoryConfirmCalls += 1;
+              state.canConfirm = false;
+              return new Promise((resolve) => { releaseConfirm = resolve; });
+            },
             cancel: async () => null,
           };
         },
@@ -628,6 +635,14 @@ test('category sampling controls survive Ozon cards without legacy selector clas
       3,
       'sampling controls must attach to the complete card instead of an image-link wrapper',
     );
+    const confirm = page.locator('[data-category-strategy-action="confirm"]');
+    await confirm.click();
+    await page.waitForTimeout(50);
+    assert.equal(await confirm.isDisabled(), true, 'confirmation must disable immediately');
+    await confirm.click({ force: true });
+    assert.equal(await page.evaluate(() => window.__categoryConfirmCalls), 1,
+      'a disabled confirmation button must not start another request');
+    await page.evaluate(() => window.__releaseCategoryConfirm());
     assert.equal(errors.length, 0, errors.join('\n'));
   } finally {
     await browser?.close();

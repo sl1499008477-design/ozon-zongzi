@@ -834,8 +834,9 @@
           if (!action) return;
           event.preventDefault();
           try {
-            if (action === 'cancel') await controller.cancel();
-            else await controller.confirm();
+            const operation = action === 'cancel' ? controller.cancel() : controller.confirm();
+            render();
+            await operation;
           } catch (error) {
             samplingFeedback = safeFeedback(error?.code);
           }
