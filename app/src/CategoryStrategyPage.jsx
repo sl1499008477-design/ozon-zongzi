@@ -42,6 +42,7 @@ import {
   CATEGORY_STRATEGY_ROLES,
   categoryStrategyCountdown,
   categoryStrategyPageModel,
+  clearStrategyResumeDraft,
   readStrategyResumeDraft,
   updateStrategyResumeState,
 } from "./category-strategy-model.js";
@@ -126,9 +127,10 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
   const client = useMemo(() => createCategoryStrategyClient(), []);
   const extensionBridge = useMemo(() => createCategoryStrategyExtensionBridge(), []);
   const accountId = String(account?.id || "").trim();
+  const [resumeRevision, setResumeRevision] = useState(0);
   const resume = useMemo(() => readStrategyResumeDraft(globalThis.sessionStorage, accountId, {
     sourceVersionOf: (collectItemId) => currentCollectSourceVersion(localData, collectItemId),
-  }), [accountId, localData]);
+  }), [accountId, localData, resumeRevision]);
   const intents = useMemo(() => createCategoryStrategyIntentStore({
     storage: globalThis.sessionStorage, accountId,
   }), [accountId]);
@@ -374,6 +376,18 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     }),
   });
 
+  const returnToStrategyList = () => {
+    loadRequestRef.current += 1;
+    actionRequestRef.current = null;
+    setAction("");
+    setLoading(false);
+    setError("");
+    clearStrategyResumeDraft(globalThis.sessionStorage, accountId);
+    setResumeRevision((current) => current + 1);
+    clearBundle();
+    navigate("/ozon/tools/category-strategies");
+  };
+
   const returnToCreate = () => {
     if (resume) updateStrategyResumeState(globalThis.sessionStorage, resume, "READY_TO_CONTINUE");
     navigate("/ozon/tools/auto-listing?strategy=ready");
@@ -396,6 +410,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     <header className="category-strategy-header">
       <div><h1>类目图片策略</h1><p>查看证据、编辑规则并发布账号级精确类目策略。</p></div>
       <Space wrap>
+        {detail ? <Button icon={<ArrowLeftOutlined />} onClick={returnToStrategyList}>返回策略列表</Button> : null}
         {resume ? <Button icon={<ArrowLeftOutlined />} onClick={() => navigate("/ozon/tools/auto-listing")}>返回自动上架</Button> : null}
         <Button icon={<ReloadOutlined />} loading={loading} onClick={() => load(detail?.draftId)}>刷新</Button>
       </Space>

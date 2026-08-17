@@ -96,6 +96,14 @@ test("removing the draft query clears the prior detail and returns to the strate
   assert.match(page, /loadRequestRef\.current \+= 1;[\s\S]*setStrategies\(\[\]\);[\s\S]*clearBundle\(\)/u);
 });
 
+test("detail view returns to the list without restoring the old draft", () => {
+  assert.match(page, /clearStrategyResumeDraft/u);
+  assert.match(page, /const \[resumeRevision, setResumeRevision\] = useState\(0\)/u);
+  assert.match(page, /readStrategyResumeDraft[\s\S]*\[accountId, localData, resumeRevision\]/u);
+  assert.match(page, /const returnToStrategyList = \(\) => \{[\s\S]*loadRequestRef\.current \+= 1;[\s\S]*actionRequestRef\.current = null;[\s\S]*clearStrategyResumeDraft\(globalThis\.sessionStorage, accountId\);[\s\S]*setResumeRevision\(\(current\) => current \+ 1\);[\s\S]*clearBundle\(\);[\s\S]*navigate\("\/ozon\/tools\/category-strategies"\);[\s\S]*\};/u);
+  assert.match(page, /detail \? <Button[\s\S]*onClick=\{returnToStrategyList\}[\s\S]*返回策略列表/u);
+});
+
 test("all write commands reuse a durable logical intent until the response is confirmed", () => {
   assert.match(page, /createCategoryStrategyIntentStore/u);
   const writeFlow = `${page}\n${bootstrap}`;

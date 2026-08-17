@@ -4,7 +4,7 @@
 
 **Goal:** 在类目图片策略详情页提供可靠的“返回策略列表”入口，并阻止自动恢复状态重新打开原草稿。
 
-**Architecture:** 复用 `category-strategy-model.js` 已有的 `clearStrategyResumeDraft(storage, accountId)`，由 `CategoryStrategyPage` 的一个本地点击处理函数协调请求失效、详情清理和无查询参数导航。不新增路由、共享状态层或依赖。
+**Architecture:** 复用 `category-strategy-model.js` 已有的 `clearStrategyResumeDraft(storage, accountId)`，由 `CategoryStrategyPage` 的一个本地点击处理函数协调请求失效、恢复快照刷新、详情清理和无查询参数导航。不新增路由、共享状态层或依赖。
 
 **Tech Stack:** React 19、Ant Design、React Router 风格 `navigate` 回调、Node.js test runner。
 
@@ -65,6 +65,7 @@ const returnToStrategyList = () => {
   loadRequestRef.current += 1;
   actionRequestRef.current = null;
   clearStrategyResumeDraft(globalThis.sessionStorage, accountId);
+  setResumeRevision((current) => current + 1);
   clearBundle();
   navigate("/ozon/tools/category-strategies");
 };
