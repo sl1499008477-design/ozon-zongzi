@@ -73,7 +73,6 @@
         if (!sku || cardsBySku.has(sku)) return;
         const boundary = link.closest('[data-widget*="searchResults"]');
         let card = link.parentElement;
-        let candidateCard = null;
         while (card && card !== boundary) {
           if (card.querySelector('img')) {
             const productSkus = new Set(Array.from(card.querySelectorAll('a[href*="/product/"]'))
@@ -81,15 +80,17 @@
                 candidate.getAttribute('href') || candidate.href || '',
               ))
               .filter(Boolean));
-            if (productSkus.size === 1 && productSkus.has(sku)) {
-              candidateCard = card;
-            } else if (productSkus.size > 1) {
+            if (productSkus.size === 1 && productSkus.has(sku)
+              && String(card.textContent || '').trim()) {
+              addCard(card);
+              break;
+            }
+            if (productSkus.size > 1) {
               break;
             }
           }
           card = card.parentElement;
         }
-        if (candidateCard) addCard(candidateCard);
       });
     return Array.from(cardsBySku.values());
   }

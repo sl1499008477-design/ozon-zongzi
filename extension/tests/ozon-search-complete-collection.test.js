@@ -319,14 +319,6 @@ function categorySamplingFixtureHtml() {
     <div data-widget="searchResultsV2">
       <section class="obfuscated-grid">
         <article class="obfuscated-card">
-          <div><img src="https://cdn.test/card-8123456789.jpg" alt="first card"></div>
-          <div><a href="/product/first-card-8123456789/" aria-label="first card">first card</a></div>
-        </article>
-        <article class="obfuscated-card">
-          <div><img src="https://cdn.test/card-8987654321.jpg" alt="second card"></div>
-          <div><a href="/product/second-card-8987654321/" aria-label="second card">second card</a></div>
-        </article>
-        <article class="obfuscated-card">
           <div class="image-link-wrapper">
             <a href="/product/third-card-8877665544/"><img src="https://cdn.test/card-8877665544.jpg" alt="third card"></a>
           </div>
@@ -381,6 +373,13 @@ function categorySamplingFixtureHtml() {
       window.jzStripPromo = (value) => value;
       window.jzIsTranslated = () => false;
       window.sendMessage = async (action) => action === 'CATEGORY_STRATEGY_SELECTIONS_GET' ? [] : {};
+      window.__addMoreCategoryCards = () => document.querySelector('.obfuscated-grid').insertAdjacentHTML(
+        'beforeend',
+        '<article class="obfuscated-card"><div><img src="https://cdn.test/card-8123456789.jpg" alt="first card"></div>'
+          + '<div><a href="/product/first-card-8123456789/" aria-label="first card">first card</a></div></article>'
+          + '<article class="obfuscated-card"><div><img src="https://cdn.test/card-8987654321.jpg" alt="second card"></div>'
+          + '<div><a href="/product/second-card-8987654321/" aria-label="second card">second card</a></div></article>',
+      );
     </script>
     <script src="/extension/content/ozon-search.js"></script>
   </body></html>`;
@@ -607,6 +606,13 @@ test('category sampling controls survive Ozon cards without legacy selector clas
     const address = server.address();
     await page.goto(`http://127.0.0.1:${address.port}/category-sampling-fixture`
       + '?zongziCategoryStrategySession=session-current');
+    await page.waitForTimeout(200);
+    assert.equal(
+      await page.locator('.obfuscated-card > .zongzi-category-strategy-sampling-control').count(),
+      1,
+      'the first control must attach to the complete card before sibling cards load',
+    );
+    await page.evaluate(() => window.__addMoreCategoryCards());
     await page.waitForTimeout(200);
     assert.equal(
       await page.locator('.zongzi-category-strategy-sampling-control').count(),
