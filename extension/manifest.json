@@ -127,6 +127,7 @@
         "lib/ozon-video-extract.js",
         "lib/sku-collect.js",
         "lib/title-quality.js",
+        "lib/ozon-buyer-category.js",
         "lib/ozon-enrichment-contract.js",
         "lib/ozon-collect-coordinator.js",
         "content/ozon-product.js"

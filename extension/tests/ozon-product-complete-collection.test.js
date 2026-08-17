@@ -61,6 +61,12 @@ function fixtureHtml(mode) {
     <script type="application/ld+json">${JSON.stringify(productJsonLd)}</script>
   </head><body>
     ${states}
+    <div data-widget="breadCrumbs">
+      <a href="/category/turizm-i-otdyh-na-prirode-11424/">Туризм и отдых на природе</a>
+      <a href="/category/skladnaya-pohodnaya-mebel-32938/">Туристическая мебель</a>
+      <a href="/category/nabory-skladnoy-mebeli-11504/">Столы и наборы мебели</a>
+      <a href="/category/nabory-skladnoy-mebeli-11504/mqouo-101091944/">MQOUO</a>
+    </div>
     <div data-widget="webStickyColumn"></div>
     <div data-widget="webStickyColumn"></div>
     <div data-widget="webStickyColumn"><div><div data-widget="webSale"></div></div></div>
@@ -307,6 +313,7 @@ function fixtureHtml(mode) {
           || '',
       });
     </script>
+    <script src="/extension/lib/ozon-buyer-category.js"></script>
     <script src="/extension/lib/ozon-enrichment-contract.js"></script>
     <script src="/extension/content/ozon-product.js"></script>
   </body></html>`;
@@ -390,6 +397,10 @@ test('product page delegates public-first single and multivariant collection wit
     );
     assert.equal(state.collectCalls[0].raw.sellerName, 'Fixture seller');
     assert.equal(state.collectCalls[0].raw.sellerLink, 'https://www.ozon.ru/seller/fixture/');
+    assert.equal(
+      state.collectCalls[0].raw.buyerCategoryUrl,
+      'https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/',
+    );
     assert.deepEqual(state.collectCalls[0].raw.variantData.hashtags, ['#fixture', '#complete']);
     assert.equal(state.collectCalls[0].raw.variantData.description, 'Fixture description');
     assert.ok(state.collectCalls[0].raw.variantData.attributes.some(({ key }) => String(key) === '11254'));
@@ -456,6 +467,10 @@ test('product page delegates public-first single and multivariant collection wit
     assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
     assert.equal(state.collectCalls[0].sku, SKU);
     assert.deepEqual(state.collectCalls[0].raw.variantData.variants.map(({ sku }) => sku), [SKU, OTHER_SKU]);
+    assert.equal(
+      state.collectCalls[0].raw.buyerCategoryUrl,
+      'https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/',
+    );
     assert.deepEqual(state.skuCollectCalls, []);
     assert.deepEqual(
       state.collectCalls[0].raw.variantData.variants.map((row) => ({

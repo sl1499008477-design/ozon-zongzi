@@ -1031,6 +1031,14 @@
     return [];
   }
 
+  function currentBuyerCategoryUrl() {
+    try {
+      return window.JzOzonBuyerCategory?.findLeafCategoryUrl(document) || '';
+    } catch {
+      return '';
+    }
+  }
+
   // Extract category IDs embedded in breadcrumb link URLs
   // e.g. /category/kostyumy-sportivnye-93221/ → 93221
   function extractBreadcrumbCategoryIds() {
@@ -1690,9 +1698,11 @@
     const collectAllHashtags = extractKeywords();
     contentCopy?.mergeSourceHashtagsIntoVariant?.(variantData, collectAllHashtags);
     const s = anchorProduct?.statistics || {};
+    const buyerCategoryUrl = currentBuyerCategoryUrl();
     const payload = {
       sku: String(anchorRow.sku),
       url: window.location.href,
+      ...(buyerCategoryUrl ? { buyerCategoryUrl } : {}),
       name: anchorRow.name || undefined,
       price: anchorRow.price,
       priceCurrency: anchorRow.priceCurrency,
@@ -1911,9 +1921,11 @@
     mergeMarketingPriceIntoVariantData(collectVariantData, product);
     const collectHashtags = extractKeywords();
     contentCopy?.mergeSourceHashtagsIntoVariant?.(collectVariantData, collectHashtags);
+    const buyerCategoryUrl = currentBuyerCategoryUrl();
     const collectPayload = {
       sku: product.sku,
       url: product.url,
+      ...(buyerCategoryUrl ? { buyerCategoryUrl } : {}),
       name: collectName || product.title,
       price: product.price != null ? String(product.price) : undefined,
       // 页面币种(CNY/RUB)随价上传 — 后端 provider 据此决定是否 ×汇率,
