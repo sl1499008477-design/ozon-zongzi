@@ -55,16 +55,19 @@ assert.match(cardCapture, /expectedBuyerCategoryId/);
 assert.ok(cardCapture.includes('const buyerCategoryMatch = /-([1-9][0-9]*)\\/$/.exec'));
 assert.match(cardCapture, /productScope: captured\.scope \|\| pageFact\.pageScope/);
 
+const categoryLongAction = worker.indexOf('const CATEGORY_STRATEGY_LONG_ACTIONS');
+const handlerTimeout = worker.indexOf('const handlerPromise', categoryLongAction);
+const categoryTimeoutPolicy = worker.slice(categoryLongAction, handlerTimeout);
 assert.match(
-  worker,
+  categoryTimeoutPolicy,
   /const CATEGORY_STRATEGY_LONG_ACTIONS = new Set\(\['CATEGORY_STRATEGY_SAMPLES_CONFIRM'\]\)/,
 );
 assert.match(
-  worker,
+  categoryTimeoutPolicy,
   /CATEGORY_STRATEGY_LONG_ACTIONS\.has\(message\?\.action\)[\s\S]*?\? 150_000/,
 );
 assert.match(
-  worker,
+  categoryTimeoutPolicy,
   /KEEP_ALIVE_ACTIONS\.has\(message\?\.action\)[\s\S]*?CATEGORY_STRATEGY_LONG_ACTIONS\.has\(message\?\.action\)/,
 );
 assert.match(

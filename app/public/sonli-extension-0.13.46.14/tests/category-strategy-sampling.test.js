@@ -219,6 +219,29 @@ test('confirmation is single-flight and disables confirmation until the request 
   assert.deepEqual(await second, await first);
 });
 
+test('a failed confirmation unlocks the same selection for one explicit retry', async () => {
+  let attempts = 0;
+  const h = harness({
+    async confirmSamples() {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error('temporary failure'), { code: 'TEMPORARY' });
+      return { accepted: true };
+    },
+  });
+  await h.controller.refresh({ pageUrl: 'https://www.ozon.ru/category/17028922/' });
+  for (let index = 1; index <= 5; index += 1) {
+    const sku = String(4_862_904_333 + index);
+    await h.controller.select({ sku, productUrl: `https://www.ozon.ru/product/item-${sku}/` });
+  }
+
+  await assert.rejects(h.controller.confirm(), { code: 'TEMPORARY' });
+  assert.equal(h.controller.snapshot().canConfirm, true);
+  assert.equal(h.calls.confirm, 1);
+  const retried = await h.controller.confirm();
+  assert.equal(h.calls.confirm, 2);
+  assert.equal(retried.reason, 'COMPLETED');
+});
+
 test('captured image evidence is closed MAIN zero plus at most five contiguous DETAIL refs', () => {
   assert.deepEqual(projectCapturedProductFact(productFact(1)), productFact(1));
   for (const invalid of [
