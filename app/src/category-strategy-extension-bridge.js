@@ -48,13 +48,13 @@ function samplingBrowserUrl(raw) {
 
 export function createCategoryStrategyExtensionBridge({
   windowObject = window,
-  timeoutMs = 1_500,
+  timeoutMs = 15_000,
 } = {}) {
   if (!windowObject || typeof windowObject.addEventListener !== "function"
     || typeof windowObject.removeEventListener !== "function"
     || typeof windowObject.postMessage !== "function"
     || typeof windowObject.location?.origin !== "string"
-    || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10_000) {
+    || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
     throw new TypeError("category strategy extension bridge dependencies are required");
   }
 

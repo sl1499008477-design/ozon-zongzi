@@ -62,6 +62,24 @@ test("readiness and open requests use exact same-origin messages and close their
   assert.equal(h.listenerCount(), 0);
 });
 
+test("default bridge accepts a valid readiness response after the legacy 1.5 second limit", async () => {
+  const h = fakeWindow();
+  const bridge = createCategoryStrategyExtensionBridge({ windowObject: h.windowObject });
+  const observed = bridge.ready().then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 1_800));
+  h.dispatch({
+    __jz: "v1", kind: "category-strategy.readiness.response",
+    reqId: h.posted[0].message.reqId, ok: true, ready: true, version: "0.13.46.7",
+  });
+
+  assert.deepEqual(await observed, { value: { ready: true, version: "0.13.46.7" } });
+  assert.equal(h.listenerCount(), 0);
+});
+
 test("foreign and open readiness responses are ignored until a closed response arrives", async () => {
   const h = fakeWindow();
   const bridge = createCategoryStrategyExtensionBridge({ windowObject: h.windowObject, timeoutMs: 50 });
