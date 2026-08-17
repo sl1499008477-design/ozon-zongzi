@@ -151,8 +151,8 @@ function browserUrl(value) {
   return parsed.href;
 }
 
-function samplingBrowserUrl(value, sessionId) {
-  const url = new URL(browserUrl(value));
+function samplingBrowserUrl(descriptionCategoryId, sessionId) {
+  const url = new URL(`https://www.ozon.ru/category/${positive(descriptionCategoryId)}/`);
   url.searchParams.set("zongziCategoryStrategySession", identifier(sessionId));
   return url.href;
 }
@@ -367,7 +367,7 @@ function publicDraftDetail(raw, accountId) {
       const item = closed(value.session, new Set(["sessionId", "state", "expiresAt"]));
       if (item.state !== "ACTIVE") throw invalid();
       return Object.freeze({ sessionId: identifier(item.sessionId), expiresAt: exactIsoDate(item.expiresAt),
-        browserUrl: samplingBrowserUrl(draft.browserUrl, item.sessionId),
+        browserUrl: samplingBrowserUrl(draft.scope.descriptionCategoryId, item.sessionId),
         extensionMode: "CATEGORY_STRATEGY_SAMPLING", scope: publicScope(draft.scope), duplicate: false });
     })();
     const samples = closedArray(value.samples, 0, 20).map((entry) => {
@@ -843,7 +843,8 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
           } catch (error) { dependencyError(error); }
           replay.sessionSecret = null;
           const result = Object.freeze({ sessionId: row.sessionId, expiresAt: row.expiresAt,
-            browserUrl: samplingBrowserUrl(draft.browserUrl, row.sessionId), extensionMode: "CATEGORY_STRATEGY_SAMPLING",
+            browserUrl: samplingBrowserUrl(draft.scope.descriptionCategoryId, row.sessionId),
+            extensionMode: "CATEGORY_STRATEGY_SAMPLING",
             scope: publicScope(draft.scope), duplicate: true });
           await observe({ metric: "category_strategy_sampling_started_total", accountId, draftId,
             sessionId: row.sessionId, scope: draft.scope, correlationId, outcome: "replay", startedAt });
@@ -863,7 +864,8 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
           replay.sessionSecret = null;
         } catch (error) { dependencyError(error); }
         const result = Object.freeze({ sessionId: row.sessionId, expiresAt: row.expiresAt,
-          browserUrl: samplingBrowserUrl(draft.browserUrl, row.sessionId), extensionMode: "CATEGORY_STRATEGY_SAMPLING",
+          browserUrl: samplingBrowserUrl(draft.scope.descriptionCategoryId, row.sessionId),
+          extensionMode: "CATEGORY_STRATEGY_SAMPLING",
           scope: publicScope(draft.scope), duplicate: row.duplicate });
         await observe({ metric: "category_strategy_sampling_started_total", accountId, draftId,
           sessionId: row.sessionId, scope: draft.scope, correlationId,

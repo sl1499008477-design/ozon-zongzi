@@ -451,7 +451,7 @@ test("administrator can list, read, and create exact account-scoped drafts", asy
 
 test("sampling session uses DB-authoritative repository expiry and never returns its secret", async () => {
   const h = harness({ currentDraft: draft({
-    browserUrl: "https://www.ozon.ru/category/17028922/?tracking=must-not-leak",
+    browserUrl: "https://www.ozon.ru/product/mqouo-shkaf-skladnoy-turisticheskiy-1941181573/?at=tracking",
   }) });
   const result = await h.service.startSamplingSession({
     actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
