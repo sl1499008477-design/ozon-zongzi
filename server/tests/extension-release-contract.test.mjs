@@ -24,7 +24,7 @@ async function requestJson(handle, pathname) {
   return { status: response.status, body: JSON.parse(response.body || "{}") };
 }
 
-test("0.13.46.12 release metadata and download endpoint stay aligned", async (context) => {
+test("0.13.46.13 release metadata and download endpoint stay aligned", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "sonli-release-contract-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
   process.env.QH_LOCAL_DATA_DIR = dataDir;
@@ -48,7 +48,7 @@ test("0.13.46.12 release metadata and download endpoint stay aligned", async (co
     requestJson(handle, "/extension/latest"),
   ]);
 
-  assert.equal(manifest.version, "0.13.46.12");
+  assert.equal(manifest.version, "0.13.46.13");
   assert.equal(extensionContract.EXTENSION_VERSION, manifest.version);
   assert.equal(extensionContract.EXTENSION_DOWNLOAD_PATH, `/sonli-extension-${manifest.version}.zip`);
   assert.equal(rootPackage.version, `${manifest.version}-local`);
