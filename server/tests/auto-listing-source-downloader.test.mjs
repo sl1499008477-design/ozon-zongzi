@@ -149,6 +149,26 @@ test("source downloader accepts Ozon image CDN through benchmark-range proxy DNS
       (error) => error?.code === "AUTO_LISTING_SOURCE_DOWNLOAD_BLOCKED",
     );
   }
+
+  for (const location of [
+    "https://images.example.test/redirected.png",
+    "http://ir-20.ozone.ru/redirected.png",
+  ]) {
+    const redirected = createAutoListingSourceImageDownloader({
+      lookupHost: benchmarkDns,
+      requestImage: fakeRequester([{ status: 302, headers: { location } }]),
+    });
+    await assert.rejects(
+      redirected.downloadSourceImage({
+        sourceUrl: "https://ir-20.ozone.ru/original.png",
+        timeoutMs: 10_000,
+        maxBytes: 1024,
+        maxRedirects: 3,
+        forbidHttpsDowngrade: true,
+      }),
+      (error) => error?.code === "AUTO_LISTING_SOURCE_DOWNLOAD_BLOCKED",
+    );
+  }
 });
 
 test("source downloader rejects IPv6 benchmark and ORCHID special-purpose DNS answers before requesting", async () => {
