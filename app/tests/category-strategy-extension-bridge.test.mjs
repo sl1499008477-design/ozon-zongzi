@@ -3,7 +3,10 @@ import test from "node:test";
 
 import { createCategoryStrategyExtensionBridge } from "../src/category-strategy-extension-bridge.js";
 
-const BROWSER_URL = "https://www.ozon.ru/category/17028922/"
+const BROWSER_URL = "https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/"
+  + "?zongziCategoryStrategySession=session-a";
+const LEGACY_PRODUCT_URL = "https://www.ozon.ru/product/"
+  + "mqouo-shkaf-skladnoy-turisticheskiy-1941181573/"
   + "?zongziCategoryStrategySession=session-a";
 
 function fakeWindow() {
@@ -103,10 +106,11 @@ test("missing extension and failed open return stable errors without leaking lis
 
 test("unsafe sampling URLs fail before any extension message", async () => {
   for (const browserUrl of [
-    "https://attacker.test/category/17028922/?zongziCategoryStrategySession=session-a",
+    "https://attacker.test/category/nabory-skladnoy-mebeli-11504/?zongziCategoryStrategySession=session-a",
+    "https://www.ozon.ru/category/17028922/?zongziCategoryStrategySession=session-a",
     "https://www.ozon.ru/product/17028922/?zongziCategoryStrategySession=session-a",
-    "https://www.ozon.ru/category/17028922/?zongziCategoryStrategySession=session-a&secret=x",
-    "https://www.ozon.ru/category/17028922/#zongziCategoryStrategySession=session-a",
+    "https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/?zongziCategoryStrategySession=session-a&secret=x",
+    "https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/#zongziCategoryStrategySession=session-a",
   ]) {
     const h = fakeWindow();
     const bridge = createCategoryStrategyExtensionBridge({ windowObject: h.windowObject, timeoutMs: 50 });
@@ -116,4 +120,16 @@ test("unsafe sampling URLs fail before any extension message", async () => {
     assert.equal(h.posted.length, 0, browserUrl);
     assert.equal(h.listenerCount(), 0, browserUrl);
   }
+});
+
+test("historical anchored product URLs cross the Web bridge without broadening the host or query", async () => {
+  const h = fakeWindow();
+  const bridge = createCategoryStrategyExtensionBridge({ windowObject: h.windowObject, timeoutMs: 50 });
+  const opening = bridge.open(LEGACY_PRODUCT_URL);
+  assert.equal(h.posted[0].message.browserUrl, LEGACY_PRODUCT_URL);
+  h.dispatch({
+    __jz: "v1", kind: "category-strategy.open.response",
+    reqId: h.posted[0].message.reqId, ok: true, opened: true,
+  });
+  assert.deepEqual(await opening, { opened: true });
 });

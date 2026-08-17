@@ -85,6 +85,34 @@
     /\/(category|search|search-by-image|seller|brand|highlight)\b/.test(
       window.location.pathname,
     );
+  const _JZ_CATEGORY_STRATEGY_PRODUCT_FALLBACK = _JZ_IS_PRODUCT_PAGE
+    && new URLSearchParams(window.location.search).has('zongziCategoryStrategySession');
+  if (_JZ_CATEGORY_STRATEGY_PRODUCT_FALLBACK) {
+    let observer = null;
+    let timeout = null;
+    const redirect = () => {
+      let target = '';
+      try {
+        target = window.JzOzonBuyerCategory?.samplingTargetForProductPage(
+          window.location.href,
+          document,
+        ) || '';
+      } catch {
+        return false;
+      }
+      if (!target) return false;
+      observer?.disconnect();
+      if (timeout) clearTimeout(timeout);
+      window.location.replace(target);
+      return true;
+    };
+    if (!redirect()) {
+      observer = new MutationObserver(() => redirect());
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      timeout = setTimeout(() => observer.disconnect(), 15_000);
+    }
+    return;
+  }
   if (!_JZ_IS_PRODUCT_PAGE && !_JZ_IS_LISTING_PAGE) {
     return;
   }

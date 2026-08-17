@@ -1,5 +1,7 @@
 const PROTOCOL = "v1";
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
+const CATEGORY_PATH = /^\/category\/[a-z0-9][a-z0-9-]*-[1-9][0-9]*\/$/iu;
+const PRODUCT_PATH = /^\/product\/[a-z0-9][a-z0-9-]*-[1-9][0-9]*\/$/iu;
 
 function failure(code) {
   return Object.assign(new Error(code), { code, status: 409 });
@@ -36,7 +38,7 @@ function samplingBrowserUrl(raw) {
   const parameters = [...url.searchParams.keys()];
   const sessions = url.searchParams.getAll("zongziCategoryStrategySession");
   if (url.origin !== "https://www.ozon.ru" || url.username || url.password || url.hash
-    || !/^\/category\/[1-9][0-9]*\/$/u.test(url.pathname)
+    || !(CATEGORY_PATH.test(url.pathname) || PRODUCT_PATH.test(url.pathname))
     || parameters.length !== 1 || parameters[0] !== "zongziCategoryStrategySession"
     || sessions.length !== 1 || !SAFE_ID.test(sessions[0])) {
     throw failure("AUTO_LISTING_CATEGORY_STRATEGY_BROWSER_OPEN_FAILED");

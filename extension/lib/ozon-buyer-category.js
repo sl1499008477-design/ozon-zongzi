@@ -6,6 +6,8 @@
   'use strict';
 
   const CATEGORY_PATH = /^\/category\/[a-z0-9][a-z0-9-]*-[1-9][0-9]*\/$/i;
+  const PRODUCT_PATH = /^\/product\/[a-z0-9][a-z0-9-]*-[1-9][0-9]*\/$/i;
+  const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 
   function invalid() {
     return Object.assign(new Error('OZON_BUYER_CATEGORY_URL_INVALID'), {
@@ -41,5 +43,30 @@
     return candidates.at(-1) || '';
   }
 
-  return Object.freeze({ findLeafCategoryUrl, projectCategoryUrl });
+  function samplingCategoryUrl(rawCategoryUrl, sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) throw invalid();
+    const url = new URL(projectCategoryUrl(rawCategoryUrl));
+    url.searchParams.set('zongziCategoryStrategySession', sessionId);
+    return url.href;
+  }
+
+  function samplingTargetForProductPage(rawPageUrl, root) {
+    let page;
+    try { page = new URL(rawPageUrl); } catch { throw invalid(); }
+    const keys = [...page.searchParams.keys()];
+    const sessions = page.searchParams.getAll('zongziCategoryStrategySession');
+    if (page.origin !== 'https://www.ozon.ru' || page.username || page.password || page.hash
+      || !PRODUCT_PATH.test(page.pathname)
+      || keys.length !== 1 || keys[0] !== 'zongziCategoryStrategySession'
+      || sessions.length !== 1 || !SESSION_ID.test(sessions[0])) throw invalid();
+    const categoryUrl = findLeafCategoryUrl(root);
+    return categoryUrl ? samplingCategoryUrl(categoryUrl, sessions[0]) : '';
+  }
+
+  return Object.freeze({
+    findLeafCategoryUrl,
+    projectCategoryUrl,
+    samplingCategoryUrl,
+    samplingTargetForProductPage,
+  });
 });

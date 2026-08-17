@@ -4,6 +4,8 @@ const test = require('node:test');
 const {
   findLeafCategoryUrl,
   projectCategoryUrl,
+  samplingCategoryUrl,
+  samplingTargetForProductPage,
 } = require('../lib/ozon-buyer-category.js');
 
 const LEAF = 'https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/';
@@ -41,3 +43,30 @@ test('rejects numeric Seller taxonomy paths and every authority/path escape', ()
   ]) assert.throws(() => projectCategoryUrl(value), { code: 'OZON_BUYER_CATEGORY_URL_INVALID' });
 });
 
+test('moves only the public sampling session onto the resolved buyer category URL', () => {
+  assert.equal(
+    samplingCategoryUrl(`${LEAF}?at=tracking`, 'session-a'),
+    `${LEAF}?zongziCategoryStrategySession=session-a`,
+  );
+  for (const sessionId of ['', '/unsafe', 'x'.repeat(241)]) {
+    assert.throws(() => samplingCategoryUrl(LEAF, sessionId), {
+      code: 'OZON_BUYER_CATEGORY_URL_INVALID',
+    });
+  }
+});
+
+test('resolves a historical anchored product session through its visible breadcrumb', () => {
+  const root = {
+    querySelectorAll() {
+      return [{ getAttribute: () => '/category/nabory-skladnoy-mebeli-11504/' }];
+    },
+  };
+  assert.equal(
+    samplingTargetForProductPage(
+      'https://www.ozon.ru/product/mqouo-shkaf-skladnoy-turisticheskiy-1941181573/'
+        + '?zongziCategoryStrategySession=session-a',
+      root,
+    ),
+    `${LEAF}?zongziCategoryStrategySession=session-a`,
+  );
+});

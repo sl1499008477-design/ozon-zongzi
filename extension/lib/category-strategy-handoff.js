@@ -6,6 +6,8 @@
   'use strict';
 
   const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
+  const CATEGORY_PATH = /^\/category\/[a-z0-9][a-z0-9-]*-[1-9][0-9]*\/$/i;
+  const PRODUCT_PATH = /^\/product\/[a-z0-9][a-z0-9-]*-[1-9][0-9]*\/$/i;
 
   function invalid() {
     return Object.assign(new Error('CATEGORY_STRATEGY_HANDOFF_URL_INVALID'), {
@@ -20,7 +22,7 @@
     const keys = [...url.searchParams.keys()];
     const sessions = url.searchParams.getAll('zongziCategoryStrategySession');
     if (url.origin !== 'https://www.ozon.ru' || url.username || url.password || url.hash
-      || !/^\/category\/[1-9][0-9]*\/$/.test(url.pathname)
+      || !(CATEGORY_PATH.test(url.pathname) || PRODUCT_PATH.test(url.pathname))
       || keys.length !== 1 || keys[0] !== 'zongziCategoryStrategySession'
       || sessions.length !== 1 || !SESSION_ID.test(sessions[0])) throw invalid();
     return url.href;
