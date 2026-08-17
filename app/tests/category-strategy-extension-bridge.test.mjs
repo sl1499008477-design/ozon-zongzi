@@ -73,10 +73,10 @@ test("default bridge accepts a valid readiness response after the legacy 1.5 sec
   await new Promise((resolve) => setTimeout(resolve, 1_800));
   h.dispatch({
     __jz: "v1", kind: "category-strategy.readiness.response",
-    reqId: h.posted[0].message.reqId, ok: true, ready: true, version: "0.13.46.8",
+    reqId: h.posted[0].message.reqId, ok: true, ready: true, version: "0.13.46.9",
   });
 
-  assert.deepEqual(await observed, { value: { ready: true, version: "0.13.46.8" } });
+  assert.deepEqual(await observed, { value: { ready: true, version: "0.13.46.9" } });
   assert.equal(h.listenerCount(), 0);
 });
 
