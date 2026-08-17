@@ -430,11 +430,15 @@ export function createCategoryStrategySampleStore(raw = {}) {
     const generation = crypto.randomUUID();
     const evidence = [];
     const assets = new Map();
-    for (const reference of context.sourceReferences) {
+    const preparedReferences = await Promise.all(context.sourceReferences.map(async (reference) => {
       const downloaded = await boundedFetch(factory.fetchImage, reference, context, factory.maxDownloadBytes);
       const sourceContentHash = sha256(downloaded.buffer);
       const normalized = await normalizeImage(downloaded);
       const keys = objectKeys(context, inputHash, generation, sourceContentHash, normalized);
+      return Object.freeze({ reference, sourceContentHash, normalized, keys });
+    }));
+    for (const prepared of preparedReferences) {
+      const { reference, sourceContentHash, normalized, keys } = prepared;
       for (const asset of [
         { key: keys.analysis, normalized: normalized.analysis },
         { key: keys.thumbnail, normalized: normalized.thumbnail },

@@ -224,6 +224,34 @@ test("stores only MAIN0 plus DETAIL1..5 as exact frozen Task3 evidence and dedup
   assert.equal(storage.calls.puts.filter((key) => key.endsWith(".webp")).length, 2);
 });
 
+test("downloads one sample's bounded image set concurrently without changing evidence order", async () => {
+  const storage = memoryStorage();
+  const references = sourceReferences("/normal.jpg", 6).map((reference, ordinal) => ({
+    ...reference,
+    sourceUrl: `https://cdn.example.test/normal.jpg?ordinal=${ordinal}`,
+  }));
+  const started = [];
+  let releaseDownloads;
+  const downloadGate = new Promise((resolve) => { releaseDownloads = resolve; });
+  const store = service(storage.api, async ({ sourceUrl }) => {
+    started.push(Number(new URL(sourceUrl).searchParams.get("ordinal")));
+    await downloadGate;
+    return { buffer: normalBytes, contentType: "image/jpeg" };
+  });
+
+  const pending = store.persistSampleImages(request({ sourceReferences: references }));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const startedBeforeRelease = [...started];
+  const putsBeforeRelease = storage.calls.puts.length;
+  releaseDownloads();
+  const evidence = await pending;
+  assert.deepEqual(startedBeforeRelease, [0, 1, 2, 3, 4, 5]);
+  assert.equal(putsBeforeRelease, 0, "storage must wait for the whole sample to prepare");
+  assert.deepEqual(evidence.map((entry) => entry.ordinal), [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(evidence.map((entry) => entry.imageId), references.map((entry) => entry.imageId));
+});
+
 test("maps SSRF, non-image, oversized, redirect, timeout, and decode failures to fixed safe codes", async () => {
   const cases = [
     ["AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_SSRF_BLOCKED", request({ sourceReferences: sourceReferences().map((entry) => ({ ...entry, sourceUrl: "http://127.0.0.1/private" })) })],
