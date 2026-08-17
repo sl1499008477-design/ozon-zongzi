@@ -100,7 +100,7 @@ test("detail view returns to the list without restoring the old draft", () => {
   assert.match(page, /clearStrategyResumeDraft/u);
   assert.match(page, /const \[resumeRevision, setResumeRevision\] = useState\(0\)/u);
   assert.match(page, /readStrategyResumeDraft[\s\S]*\[accountId, localData, resumeRevision\]/u);
-  assert.match(page, /const returnToStrategyList = \(\) => \{[\s\S]*loadRequestRef\.current \+= 1;[\s\S]*actionRequestRef\.current = null;[\s\S]*clearStrategyResumeDraft\(globalThis\.sessionStorage, accountId\);[\s\S]*setResumeRevision\(\(current\) => current \+ 1\);[\s\S]*clearBundle\(\);[\s\S]*navigate\("\/ozon\/tools\/category-strategies"\);[\s\S]*\};/u);
+  assert.match(page, /const returnToStrategyList = \(\) => \{[\s\S]*if \(!clearStrategyResumeDraft\(globalThis\.sessionStorage, accountId\)\)[\s\S]*无法清除自动恢复状态[\s\S]*loadRequestRef\.current \+= 1;[\s\S]*actionRequestRef\.current = null;[\s\S]*setResumeRevision\(\(current\) => current \+ 1\);[\s\S]*clearBundle\(\);[\s\S]*navigate\("\/ozon\/tools\/category-strategies"\);[\s\S]*\};/u);
   assert.match(page, /detail \? <Button[\s\S]*onClick=\{returnToStrategyList\}[\s\S]*返回策略列表/u);
 });
 

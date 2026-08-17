@@ -5,6 +5,7 @@ import {
   CATEGORY_STRATEGY_ROLES,
   categoryStrategyCountdown,
   categoryStrategyPageModel,
+  clearStrategyResumeDraft,
   projectCategoryStrategyAnalysis,
   projectCategoryStrategyDetail,
   projectCategoryStrategyDetailBundle,
@@ -205,6 +206,18 @@ test("resume drafts expire and fail closed when a current collect source version
     now: "2026-08-16T01:00:00.000Z",
     sourceVersionOf: () => "draft:3",
   }), null);
+});
+
+test("clearing a resume draft reports whether browser storage was actually cleared", () => {
+  const storage = memoryStorage();
+  storage.setItem("zongzi:auto-listing:category-strategy-resume:v1:account-a", "stored-resume");
+  assert.equal(clearStrategyResumeDraft(storage, "account-a"), true);
+  assert.equal(storage.getItem("zongzi:auto-listing:category-strategy-resume:v1:account-a"), null);
+  assert.equal(clearStrategyResumeDraft({
+    getItem: () => "stored-resume",
+    removeItem: () => { throw new DOMException("storage blocked", "SecurityError"); },
+  }, "account-a"), false);
+  assert.equal(clearStrategyResumeDraft({ removeItem: () => {} }, "account-a"), false);
 });
 
 test("logical write intents survive response loss and settle only after a confirmed response", async () => {

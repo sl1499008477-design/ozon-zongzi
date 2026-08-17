@@ -377,12 +377,15 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
   });
 
   const returnToStrategyList = () => {
+    if (!clearStrategyResumeDraft(globalThis.sessionStorage, accountId)) {
+      setError("无法清除自动恢复状态，请刷新页面后重试。");
+      return;
+    }
     loadRequestRef.current += 1;
     actionRequestRef.current = null;
     setAction("");
     setLoading(false);
     setError("");
-    clearStrategyResumeDraft(globalThis.sessionStorage, accountId);
     setResumeRevision((current) => current + 1);
     clearBundle();
     navigate("/ozon/tools/category-strategies");

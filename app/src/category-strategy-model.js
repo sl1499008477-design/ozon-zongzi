@@ -402,7 +402,14 @@ export function updateStrategyResumeState(storage, raw, state) {
 }
 
 export function clearStrategyResumeDraft(storage, accountId) {
-  try { storage?.removeItem?.(resumeStorageKey(accountId)); } catch { /* best-effort browser cleanup */ }
+  try {
+    if (!storage || typeof storage.removeItem !== "function" || typeof storage.getItem !== "function") return false;
+    const key = resumeStorageKey(accountId);
+    storage.removeItem(key);
+    return storage.getItem(key) === null;
+  } catch {
+    return false;
+  }
 }
 
 export function categoryStrategyCountdown({ expiresAt, now = new Date().toISOString() } = {}) {
