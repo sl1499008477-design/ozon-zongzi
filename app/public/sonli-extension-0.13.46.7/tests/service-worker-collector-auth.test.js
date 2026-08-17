@@ -103,6 +103,7 @@ function loadServiceWorker({
   clearResult,
   exchangeError = null,
   exchangeResult = null,
+  fetchImpl,
   initialSession = {},
   statusFailure = null,
   tabs = [],
@@ -234,10 +235,10 @@ function loadServiceWorker({
     console: { error() {}, info() {}, log() {}, warn() {} },
     crypto: webcrypto,
     Date: clock?.Date || Date,
-    fetch: async () => new Response(JSON.stringify({ ok: true }), {
+    fetch: fetchImpl || (async () => new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
-    }),
+    })),
     globalThis: null,
     Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
     navigator: {
@@ -496,6 +497,48 @@ test('one retry selects only one trusted Web tab', async () => {
   assert.deepEqual(harness.scriptExecutions, []);
   assert.equal(harness.tabMessages[0].message.action, 'collector.auth.request');
   assert.match(harness.tabMessages[0].message.requestId, /^collector-/);
+});
+
+test('category readiness recovers a collector session after an extension reload', async () => {
+  const clock = createFakeClock();
+  const harness = loadServiceWorker({
+    activationResult: { changed: false },
+    clock,
+    fetchImpl: async (_url, options) => {
+      assert.equal(options.method, 'POST');
+      return new Response(JSON.stringify({
+        ok: true,
+        data: { ready: true, minimumExtensionVersion: manifest.version },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+    tabs: [{ ...trustedSender.tab, active: true, lastAccessed: 10 }],
+  });
+
+  const pending = sendRuntime(harness, { action: 'CATEGORY_STRATEGY_READINESS' }, trustedSender);
+  await waitFor(() => harness.tabMessages.length === 1);
+  assert.equal(harness.tabMessages[0].message.action, 'collector.auth.request');
+
+  harness.session.state.sonliCollectorSession = {
+    collectorToken: 'cst_category_recovery_secret_123456789',
+    expiresAt: '2030-01-01T01:00:00.000Z',
+    account: { id: 'account-a', displayName: 'Account A' },
+    permissions: [
+      'collector.upload',
+      'collector.job.read',
+      'collector.config.read',
+      'collector.ozon.read',
+    ],
+  };
+  await clock.advance(250);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(await pending)), {
+    ok: true,
+    data: { ready: true, minimumExtensionVersion: manifest.version },
+  });
+  assert.equal(harness.tabMessages.length, 1);
 });
 
 test('worker attempt rejects a mismatched sender tab or request ID before activation', async () => {

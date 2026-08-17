@@ -653,6 +653,20 @@ try {
     if (coordinated) return coordinated;
     return { requested: false, status: null };
   };
+  const ensureCategoryStrategyCollectorAuth = async () => {
+    let operation = await collectorSessionManager.beginCollectorOperation();
+    if (operation) return operation;
+    const recovery = await retryCollectorAuth();
+    operation = await collectorSessionManager.beginCollectorOperation();
+    if (operation || recovery?.requested !== true) return operation;
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      operation = await collectorSessionManager.beginCollectorOperation();
+      if (operation) return operation;
+    }
+    return null;
+  };
   const resumeCollectorAuth = (source) => {
     void Promise.resolve()
       .then(() => collectorAuthCoordinator.resume())
@@ -718,6 +732,17 @@ try {
     return Object.keys(message).length === keys.length
       && keys.every((key) => Object.hasOwn(message, key));
   };
+  const CATEGORY_STRATEGY_AUTH_ACTIONS = new Set([
+    'CATEGORY_STRATEGY_READINESS',
+    'CATEGORY_STRATEGY_SESSION_START',
+    'CATEGORY_STRATEGY_SESSION_GET',
+    'CATEGORY_STRATEGY_PAGE_FACTS_CAPTURE',
+    'CATEGORY_STRATEGY_CARD_FACTS_CAPTURE',
+    'CATEGORY_STRATEGY_SELECTIONS_GET',
+    'CATEGORY_STRATEGY_SELECTION_REMOVE',
+    'CATEGORY_STRATEGY_SAMPLES_CONFIRM',
+    'CATEGORY_STRATEGY_SESSION_CANCEL',
+  ]);
   const ozonRuntimeErrorEnvelope = (error) => ({
     ok: false,
     status: Number.isInteger(Number(error?.status)) ? Number(error.status) : 0,
@@ -4291,6 +4316,10 @@ try {
       : null;
 
     const handle = async () => {
+      if (CATEGORY_STRATEGY_AUTH_ACTIONS.has(message?.action)) {
+        const operation = await ensureCategoryStrategyCollectorAuth();
+        if (!operation) throw categoryStrategyError('COLLECTOR_AUTH_REQUIRED');
+      }
       switch (message?.action) {
         case 'CATEGORY_STRATEGY_READINESS': {
           if (!exactRuntimeMessage(message, ['action'])) {
