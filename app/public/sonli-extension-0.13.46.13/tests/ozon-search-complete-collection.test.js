@@ -326,6 +326,12 @@ function categorySamplingFixtureHtml() {
           <div><img src="https://cdn.test/card-8987654321.jpg" alt="second card"></div>
           <div><a href="/product/second-card-8987654321/" aria-label="second card">second card</a></div>
         </article>
+        <article class="obfuscated-card">
+          <div class="image-link-wrapper">
+            <a href="/product/third-card-8877665544/"><img src="https://cdn.test/card-8877665544.jpg" alt="third card"></a>
+          </div>
+          <div><a href="/product/third-card-8877665544/" aria-label="third card">third card</a></div>
+        </article>
       </section>
     </div>
     <script>
@@ -604,12 +610,17 @@ test('category sampling controls survive Ozon cards without legacy selector clas
     await page.waitForTimeout(200);
     assert.equal(
       await page.locator('.zongzi-category-strategy-sampling-control').count(),
-      2,
+      3,
       'each product card must receive a sampling control',
     );
     assert.deepEqual(
       await page.locator('.zongzi-category-strategy-sampling-control').allTextContents(),
-      ['＋ 选为样品', '＋ 选为样品'],
+      ['＋ 选为样品', '＋ 选为样品', '＋ 选为样品'],
+    );
+    assert.equal(
+      await page.locator('.obfuscated-card > .zongzi-category-strategy-sampling-control').count(),
+      3,
+      'sampling controls must attach to the complete card instead of an image-link wrapper',
     );
     assert.equal(errors.length, 0, errors.join('\n'));
   } finally {
