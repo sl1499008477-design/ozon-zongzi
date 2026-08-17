@@ -13,6 +13,11 @@ export const AUTO_LISTING_SOURCE_DOWNLOAD_POLICY = Object.freeze({
 const DOWNLOAD_INPUT_KEYS = new Set(["sourceUrl", "timeoutMs", "maxBytes", "maxPixels", "maxRedirects", "forbidHttpsDowngrade"]);
 const DOWNLOAD_REQUIRED_KEYS = Object.freeze(["sourceUrl", "timeoutMs", "maxBytes", "maxRedirects", "forbidHttpsDowngrade"]);
 const OZON_IMAGE_HOST = /^(?:ir(?:-\d+)?|cdn\d+)\.ozone\.ru$/u;
+const RETRYABLE_DOWNLOAD_CODES = new Set([
+  "COLLECTOR_EXCEL_IMAGE_DNS_FAILED",
+  "COLLECTOR_EXCEL_IMAGE_DOWNLOAD_FAILED",
+  "COLLECTOR_EXCEL_IMAGE_TIMEOUT",
+]);
 
 function sourceDownloadError(code, retryable = false) {
   const value = new Error("自动上架来源图片暂时无法读取");
@@ -68,7 +73,7 @@ function normalizeDownloadFailure(error) {
   if (code === "COLLECTOR_EXCEL_IMAGE_URL_INVALID" || code === "COLLECTOR_EXCEL_IMAGE_URL_TOO_LONG") {
     return sourceDownloadError("AUTO_LISTING_SOURCE_DOWNLOAD_BLOCKED");
   }
-  return sourceDownloadError("AUTO_LISTING_SOURCE_DOWNLOAD_FAILED", true);
+  return sourceDownloadError("AUTO_LISTING_SOURCE_DOWNLOAD_FAILED", RETRYABLE_DOWNLOAD_CODES.has(code));
 }
 
 export function createAutoListingSourceImageDownloader({
@@ -81,18 +86,24 @@ export function createAutoListingSourceImageDownloader({
     async downloadSourceImage(input = {}) {
       const validated = assertInput(input);
       let downloaded;
-      try {
-        downloaded = await downloadImage(validated.sourceUrl, {
-          timeoutMs: input.timeoutMs,
-          maxImageBytes: input.maxBytes,
-          maxImageRedirects: input.maxRedirects,
-          forbidHttpsDowngrade: true,
-          imageDnsLookup: lookupHost,
-          imageRequest: requestImage,
-          allowBenchmarkAddressHost: validated.allowBenchmarkAddressHost,
-        });
-      } catch (error) {
-        throw normalizeDownloadFailure(error);
+      for (let attempt = 1; attempt <= AUTO_LISTING_SOURCE_DOWNLOAD_POLICY.maxAttempts; attempt += 1) {
+        try {
+          downloaded = await downloadImage(validated.sourceUrl, {
+            timeoutMs: input.timeoutMs,
+            maxImageBytes: input.maxBytes,
+            maxImageRedirects: input.maxRedirects,
+            forbidHttpsDowngrade: true,
+            imageDnsLookup: lookupHost,
+            imageRequest: requestImage,
+            allowBenchmarkAddressHost: validated.allowBenchmarkAddressHost,
+          });
+          break;
+        } catch (error) {
+          const normalized = normalizeDownloadFailure(error);
+          if (!normalized.retryable || attempt === AUTO_LISTING_SOURCE_DOWNLOAD_POLICY.maxAttempts) {
+            throw normalized;
+          }
+        }
       }
       const bytes = Buffer.isBuffer(downloaded?.buffer) ? downloaded.buffer : Buffer.from(downloaded?.buffer || []);
       let inspected;

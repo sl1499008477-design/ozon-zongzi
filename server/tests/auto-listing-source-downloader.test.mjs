@@ -77,6 +77,89 @@ test("source downloader rejects unknown or secret-bearing Port fields before net
   assert.equal(requests, 0);
 });
 
+test("source downloader retries a transient download failure before returning a valid image", async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  const png = await sharp({ create: { width: 2, height: 3, channels: 4, background: "red" } }).png().toBuffer();
+  for (const sourceCode of [
+    "COLLECTOR_EXCEL_IMAGE_DNS_FAILED",
+    "COLLECTOR_EXCEL_IMAGE_DOWNLOAD_FAILED",
+    "COLLECTOR_EXCEL_IMAGE_TIMEOUT",
+  ]) {
+    let attempts = 0;
+    const downloader = createAutoListingSourceImageDownloader({
+      async downloadImage() {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = new Error("temporary network failure");
+          error.code = sourceCode;
+          throw error;
+        }
+        return { buffer: png, contentType: "image/png" };
+      },
+    });
+
+    const downloaded = await downloader.downloadSourceImage({
+      sourceUrl: "https://images.example.test/a.png",
+      timeoutMs: 10_000,
+      maxBytes: 1024,
+      maxRedirects: 3,
+      forbidHttpsDowngrade: true,
+    });
+
+    assert.equal(attempts, 2, sourceCode);
+    assert.equal(downloaded.contentType, "image/png");
+  }
+});
+
+test("source downloader caps transient retries and never retries deterministic or unknown failures", async () => {
+  const { AUTO_LISTING_SOURCE_DOWNLOAD_POLICY, createAutoListingSourceImageDownloader } = await load();
+  const input = {
+    sourceUrl: "https://images.example.test/a.png",
+    timeoutMs: 10_000,
+    maxBytes: 1024,
+    maxRedirects: 3,
+    forbidHttpsDowngrade: true,
+  };
+
+  let transientAttempts = 0;
+  const transientDownloader = createAutoListingSourceImageDownloader({
+    async downloadImage() {
+      transientAttempts += 1;
+      const error = new Error("temporary network failure");
+      error.code = "COLLECTOR_EXCEL_IMAGE_DOWNLOAD_FAILED";
+      throw error;
+    },
+  });
+  await assert.rejects(
+    transientDownloader.downloadSourceImage(input),
+    (error) => error?.code === "AUTO_LISTING_SOURCE_DOWNLOAD_FAILED" && error?.retryable === true,
+  );
+  assert.equal(transientAttempts, AUTO_LISTING_SOURCE_DOWNLOAD_POLICY.maxAttempts);
+
+  for (const [sourceCode, expectedCode] of [
+    ["COLLECTOR_EXCEL_IMAGE_PRIVATE_ADDRESS", "AUTO_LISTING_SOURCE_DOWNLOAD_BLOCKED"],
+    ["COLLECTOR_EXCEL_IMAGE_REDIRECT_INVALID", "AUTO_LISTING_SOURCE_DOWNLOAD_FAILED"],
+    ["COLLECTOR_EXCEL_IMAGE_REDIRECT_LIMIT", "AUTO_LISTING_SOURCE_DOWNLOAD_FAILED"],
+    ["COLLECTOR_EXCEL_IMAGE_DNS_INVALID", "AUTO_LISTING_SOURCE_DOWNLOAD_FAILED"],
+    ["UNEXPECTED_PROGRAMMER_ERROR", "AUTO_LISTING_SOURCE_DOWNLOAD_FAILED"],
+  ]) {
+    let attempts = 0;
+    const downloader = createAutoListingSourceImageDownloader({
+      async downloadImage() {
+        attempts += 1;
+        const error = new Error("deterministic failure");
+        error.code = sourceCode;
+        throw error;
+      },
+    });
+    await assert.rejects(
+      downloader.downloadSourceImage(input),
+      (error) => error?.code === expectedCode && error?.retryable === false,
+    );
+    assert.equal(attempts, 1, sourceCode);
+  }
+});
+
 test("source downloader rejects private or mixed DNS answers and pins the validated public address", async () => {
   const { createAutoListingSourceImageDownloader } = await load();
   let requests = 0;
