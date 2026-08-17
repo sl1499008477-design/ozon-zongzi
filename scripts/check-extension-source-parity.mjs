@@ -97,6 +97,7 @@ const allowedLocalOnly = new Set([
   "popup/__tests__/popup-collector-session.runtime.test.js",
   "tests/category-readiness.test.js",
   "tests/category-strategy-handoff.test.js",
+  "tests/category-strategy-service-worker-routing.test.js",
   "tests/category-strategy-sampling.test.js",
   "tests/chrome-storage-promises.test.js",
   "tests/collector-auth-acceptance.test.js",

@@ -4291,14 +4291,6 @@ try {
       : null;
 
     const handle = async () => {
-      const collectorOperation = await collectorSessionManager.beginCollectorOperation();
-      const collectorSession = collectorOperation;
-      // Legacy privileged actions are removed in Task 9. Until then they fail
-      // closed because a Collector credential must never be used as Web Bearer.
-      const token = null;
-      const storeId = null;
-      const backendUrl = await getBackendUrl();
-
       switch (message?.action) {
         case 'CATEGORY_STRATEGY_READINESS': {
           if (!exactRuntimeMessage(message, ['action'])) {
@@ -4379,6 +4371,19 @@ try {
           clearCategoryStrategyPageFacts(sessionId);
           return { ok: true, data: result };
         }
+        default:
+          break;
+      }
+
+      const collectorOperation = await collectorSessionManager.beginCollectorOperation();
+      const collectorSession = collectorOperation;
+      // Legacy privileged actions are removed in Task 9. Until then they fail
+      // closed because a Collector credential must never be used as Web Bearer.
+      const token = null;
+      const storeId = null;
+      const backendUrl = await getBackendUrl();
+
+      switch (message?.action) {
         case 'sellerCompanyContextObserved': {
           const observation = await sellerContextObservation;
           if (observation.ok) {
