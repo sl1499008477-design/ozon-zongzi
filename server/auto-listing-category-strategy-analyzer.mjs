@@ -180,6 +180,11 @@ function outputClosed(raw, keys) {
   return closed(raw, keys, outputError);
 }
 
+function bilingualText(raw) {
+  const value = outputClosed(raw, new Set(["ru", "zh"]));
+  return deepFreeze({ ru: outputText(value.ru), zh: outputText(value.zh) });
+}
+
 function evidenceReferences(raw, evidenceToSku, { aggregate }) {
   const ids = outputArray(raw, 1, 20).map((entry) => {
     try { return id(entry); } catch { throw outputError("AUTO_LISTING_CATEGORY_STRATEGY_AI_EVIDENCE_INVALID"); }
@@ -202,18 +207,26 @@ function projectAiOutput(raw, evidenceToSku) {
   const value = outputClosed(raw, new Set([
     "schemaVersion", "style", "roleGuidance", "commonPatterns", "differences", "cautions",
   ]));
-  if (value.schemaVersion !== 2) throw outputError();
+  if (value.schemaVersion !== 3) throw outputError();
   const roles = outputClosed(value.roleGuidance, new Set(ROLES));
-  const guidanceRoles = {};
+  const guidanceRolesRu = {};
+  const guidanceRolesZh = {};
   const roleEvidence = {};
   for (const roleName of ROLES) {
     const role = outputClosed(roles[roleName], new Set([
       "composition", "background", "textDensity", "layout", "evidenceIds", "confidence",
     ]));
     if (!TEXT_DENSITIES.has(role.textDensity)) throw outputError();
-    guidanceRoles[roleName] = {
-      composition: outputText(role.composition), background: outputText(role.background),
-      textDensity: role.textDensity, layout: outputText(role.layout),
+    const composition = bilingualText(role.composition);
+    const background = bilingualText(role.background);
+    const layout = bilingualText(role.layout);
+    guidanceRolesRu[roleName] = {
+      composition: composition.ru, background: background.ru,
+      textDensity: role.textDensity, layout: layout.ru,
+    };
+    guidanceRolesZh[roleName] = {
+      composition: composition.zh, background: background.zh,
+      textDensity: role.textDensity, layout: layout.zh,
     };
     roleEvidence[roleName] = {
       evidenceIds: evidenceReferences(role.evidenceIds, evidenceToSku, { aggregate: true }),
@@ -222,23 +235,43 @@ function projectAiOutput(raw, evidenceToSku) {
   }
   const commonPatterns = outputArray(value.commonPatterns, 0, 50).map((rawPattern) => {
     const pattern = outputClosed(rawPattern, new Set(["pattern", "evidenceIds", "confidence"]));
-    return deepFreeze({ pattern: outputText(pattern.pattern),
+    const localized = bilingualText(pattern.pattern);
+    return deepFreeze({ ru: localized.ru, zh: localized.zh,
       evidenceIds: evidenceReferences(pattern.evidenceIds, evidenceToSku, { aggregate: true }),
       confidence: confidence(pattern.confidence) });
   });
   const differences = outputArray(value.differences, 0, 50).map((rawDifference) => {
     const difference = outputClosed(rawDifference, new Set(["pattern", "evidenceIds"]));
-    return deepFreeze({ pattern: outputText(difference.pattern),
+    const localized = bilingualText(difference.pattern);
+    return deepFreeze({ ru: localized.ru, zh: localized.zh,
       evidenceIds: evidenceReferences(difference.evidenceIds, evidenceToSku, { aggregate: false }) });
   });
-  const cautions = outputArray(value.cautions, 0, 50).map(outputText);
+  const cautions = outputArray(value.cautions, 0, 50).map(bilingualText);
+  const style = bilingualText(value.style);
   let guidance;
+  let managementGuidance;
   try {
     guidance = projectCategoryStrategyGuidanceV2({
-      overallStyle: outputText(value.style), prohibitedPatterns: cautions, roles: guidanceRoles,
+      overallStyle: style.ru, prohibitedPatterns: cautions.map((entry) => entry.ru), roles: guidanceRolesRu,
+    });
+    managementGuidance = projectCategoryStrategyGuidanceV2({
+      overallStyle: style.zh, prohibitedPatterns: cautions.map((entry) => entry.zh), roles: guidanceRolesZh,
     });
   } catch { throw outputError(); }
-  return deepFreeze({ guidance, evidenceSummary: { roleEvidence, commonPatterns, differences, cautions } });
+  return deepFreeze({ guidance, evidenceSummary: {
+    roleEvidence,
+    commonPatterns: commonPatterns.map((entry) => ({
+      pattern: entry.ru, evidenceIds: entry.evidenceIds, confidence: entry.confidence,
+    })),
+    differences: differences.map((entry) => ({ pattern: entry.ru, evidenceIds: entry.evidenceIds })),
+    cautions: cautions.map((entry) => entry.ru),
+    managementZh: {
+      guidance: managementGuidance,
+      commonPatterns: commonPatterns.map((entry) => entry.zh),
+      differences: differences.map((entry) => entry.zh),
+      cautions: cautions.map((entry) => entry.zh),
+    },
+  } });
 }
 
 function cloneBounded(raw, state = { nodes: 0 }, depth = 0) {
@@ -435,7 +468,7 @@ export function createCategoryStrategyAnalyzer(rawOptions = {}) {
               productFacts: evidence.samples.map((sample) => ({ sampleId: sample.sampleId, sku: sample.sku })),
               images: loadedImages,
               contract: {
-                schemaVersion: 2, roles: [...ROLES],
+                schemaVersion: 3, roles: [...ROLES],
                 aggregateEvidenceMinimumDistinctSkus: 2,
                 prohibited: ["image counts", "role counts", "copying brand claims", "future generation references"],
               },

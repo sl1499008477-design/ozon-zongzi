@@ -9,6 +9,7 @@ import {
   List,
   Modal,
   Progress,
+  Segmented,
   Space,
   Spin,
   Table,
@@ -56,6 +57,7 @@ const STATUS_LABELS = Object.freeze({
   NOT_CONFIGURED: "未配置", COLLECTING: "选样中", SAMPLES_READY: "样本已就绪",
   ANALYZING: "分析中", DRAFT_READY: "草稿待审核", PUBLISHED: "已发布", NEEDS_REVIEW: "需要人工检查",
 });
+const TEXT_DENSITY_LABELS = Object.freeze({ NONE: "无", LIGHT: "少量", MEDIUM: "适中", HEAVY: "较多" });
 
 function queryDraftId(locationSearch = "") {
   const value = new URLSearchParams(locationSearch).get("draftId") || "";
@@ -141,6 +143,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
   const [samples, setSamples] = useState([]);
   const [session, setSession] = useState(null);
   const [analysis, setAnalysis] = useState(null);
+  const [guidanceLanguage, setGuidanceLanguage] = useState("ru");
   const [published, setPublished] = useState(null);
   const [versions, setVersions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -155,6 +158,17 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
 
   const currentPublished = versions.find((version) => version.status === "PUBLISHED") || published;
   const view = detail ? categoryStrategyPageModel({ detail, session, analysis, published, now }) : null;
+  const managementZh = analysis?.evidenceSummary?.managementZh || null;
+  const visibleCommonPatterns = guidanceLanguage === "zh" && managementZh
+    ? (analysis?.evidenceSummary?.commonPatterns || []).map((entry, index) => ({
+      ...entry, pattern: managementZh.commonPatterns[index],
+    })) : (analysis?.evidenceSummary?.commonPatterns || []);
+  const visibleDifferences = guidanceLanguage === "zh" && managementZh
+    ? (analysis?.evidenceSummary?.differences || []).map((entry, index) => ({
+      ...entry, pattern: managementZh.differences[index],
+    })) : (analysis?.evidenceSummary?.differences || []);
+  const visibleCautions = guidanceLanguage === "zh" && managementZh
+    ? managementZh.cautions : (analysis?.evidenceSummary?.cautions || []);
 
   const applyBundle = useCallback((bundle) => {
     setDetail(bundle.draft);
@@ -231,7 +245,11 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     const timer = window.setInterval(() => setNow(new Date().toISOString()), 1_000);
     return () => window.clearInterval(timer);
   }, [session]);
-  useEffect(() => { if (analysis) form.setFieldsValue(guidanceFormValues(analysis)); }, [analysis, form]);
+  useEffect(() => {
+    if (!analysis) return;
+    form.setFieldsValue(guidanceFormValues(analysis));
+    setGuidanceLanguage(analysis.evidenceSummary?.managementZh ? "zh" : "ru");
+  }, [analysis, form]);
 
   const isCurrentAction = (context) => context.accountId === currentAccountRef.current
     && context.requestId === loadRequestRef.current;
@@ -464,10 +482,38 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
           {!view?.canAnalyze ? <p role="status">需要 5～20 个有效样本，当前 {detail.sampleCount} 个。</p> : null}
         </Card>
 
-        <Card title="图片角色规则">
+        <Card title="图片角色规则" extra={analysis && view?.analysisIsCurrent && managementZh
+          ? <Segmented aria-label="策略说明语言" value={guidanceLanguage} onChange={setGuidanceLanguage}
+            options={[{ label: "中文管理说明", value: "zh" }, { label: "俄文执行规则", value: "ru" }]} />
+          : null}>
           {!analysis || !view?.analysisIsCurrent
             ? <Empty description={analysis ? "样本已变化，请重新生成策略草稿" : "生成草稿后可逐角色检查和编辑"} />
-            : <Form form={form} layout="vertical">
+            : guidanceLanguage === "zh" && managementZh ? <div className="category-strategy-management-guidance">
+              <Alert type={analysis.provenance === "MANUAL" ? "warning" : "info"} showIcon
+                title="中文管理说明（只读）" description={analysis.provenance === "MANUAL"
+                  ? "俄文执行规则已人工修改，中文仍是生成草稿时的说明，可能不再同步；发布以当前俄文为准。"
+                  : "用于审核和维护；发布及后续图片生成始终使用同次分析产出的俄文执行规则。"} />
+              <section><span>整体视觉风格</span><p>{managementZh.guidance.overallStyle}</p></section>
+              <section><span>注意事项</span>
+                <ul>{managementZh.guidance.prohibitedPatterns.map((entry) => <li key={entry}>{entry}</li>)}</ul>
+              </section>
+              <div className="category-strategy-role-grid">{CATEGORY_STRATEGY_ROLES.map((role) => {
+                const rule = managementZh.guidance.roles[role];
+                return <Card size="small" key={role} title={`${ROLE_LABELS[role]} · ${role}`}>
+                  <dl>
+                    <dt>构图</dt><dd>{rule.composition}</dd>
+                    <dt>背景</dt><dd>{rule.background}</dd>
+                    <dt>文字密度</dt><dd>{TEXT_DENSITY_LABELS[rule.textDensity] || rule.textDensity}</dd>
+                    <dt>布局</dt><dd>{rule.layout}</dd>
+                  </dl>
+                  <p>证据与置信度：{analysis.evidenceSummary?.roleEvidence?.[role]?.evidenceIds?.length || 0} 条，
+                    {Math.round((analysis.evidenceSummary?.roleEvidence?.[role]?.confidence || 0) * 100)}%</p>
+                </Card>;
+              })}</div>
+            </div> : <Form form={form} layout="vertical">
+            {!managementZh ? <Alert type="warning" showIcon title="旧草稿仅有俄文"
+              description="该草稿生成于双语说明上线前；仍可正常审核、编辑和发布，无需迁移。" /> : <Alert type="info"
+              showIcon title="俄文执行规则" description="此处内容会用于发布和后续图片生成，可进行人工编辑。" />}
             <Form.Item name="overallStyle" label="整体视觉风格" rules={[{ required: true }]}><Input.TextArea rows={2} /></Form.Item>
             <Form.Item name="prohibitedPatterns" label="注意事项（每行一条）" rules={[{ required: true }]}><Input.TextArea rows={3} /></Form.Item>
             <div className="category-strategy-role-grid">{CATEGORY_STRATEGY_ROLES.map((role) => <Card size="small" key={role}
@@ -485,13 +531,13 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
         </Card>
 
         <div className="category-strategy-evidence-grid">
-          <Card title="证据与置信度"><List dataSource={analysis?.evidenceSummary?.commonPatterns || []}
+          <Card title="证据与置信度"><List dataSource={visibleCommonPatterns}
             locale={{ emptyText: "暂无共同规律" }} renderItem={(item) => <List.Item>
               <Space direction="vertical"><span>{item.pattern}</span><Progress percent={Math.round(item.confidence * 100)} size="small" /></Space>
             </List.Item>} /></Card>
-          <Card title="样本差异"><List dataSource={analysis?.evidenceSummary?.differences || []}
+          <Card title="样本差异"><List dataSource={visibleDifferences}
             locale={{ emptyText: "暂无样本差异" }} renderItem={(item) => <List.Item>{item.pattern}</List.Item>} /></Card>
-          <Card title="注意事项"><List dataSource={analysis?.evidenceSummary?.cautions || []}
+          <Card title="注意事项"><List dataSource={visibleCautions}
             locale={{ emptyText: "暂无额外注意事项" }} renderItem={(item) => <List.Item>{item}</List.Item>} /></Card>
         </div>
 

@@ -571,7 +571,7 @@ export function createCategoryStrategyAnalysisConfigurationResolver({ pool } = {
       const row = result.rows[0];
       return Object.freeze({
         analyzerVersion: "category-strategy-v1",
-        promptVersion: "category-strategy-prompt-v1",
+        promptVersion: "category-strategy-prompt-v2",
         profileId: row.id,
         profileVersion: Number(row.config_version),
         model: row.text_model,

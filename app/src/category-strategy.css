@@ -31,6 +31,13 @@
 
 .category-strategy-facts span { color: #64748b; }
 .category-strategy-role-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.category-strategy-management-guidance { display: grid; gap: 16px; }
+.category-strategy-management-guidance section > span,
+.category-strategy-management-guidance dt { color: #64748b; font-weight: 600; }
+.category-strategy-management-guidance section p { margin: 6px 0 0; }
+.category-strategy-management-guidance section ul { margin-bottom: 0; }
+.category-strategy-management-guidance dl { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 10px; }
+.category-strategy-management-guidance dd { margin: 0; overflow-wrap: anywhere; }
 .category-strategy-evidence-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .category-strategy-samples { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 .category-strategy-samples article { display: grid; gap: 8px; overflow-wrap: anywhere; }

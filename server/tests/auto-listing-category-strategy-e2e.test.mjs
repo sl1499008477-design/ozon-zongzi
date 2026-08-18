@@ -172,12 +172,17 @@ async function seedPublishedV1(client, { accountId, suffix }) {
 
 function validAiOutput(request) {
   const evidenceIds = request.images.slice(0, 2).map((image) => image.evidenceId);
-  return { schemaVersion: 2, style: "reviewed clean catalogue", roleGuidance: Object.fromEntries(roles.map((role) => [role, {
-    composition: `${role} product focus`, background: "neutral", textDensity: role === "MAIN" ? "NONE" : "LIGHT",
-    layout: "clear hierarchy", evidenceIds, confidence: 0.91,
-  }])), commonPatterns: [{ pattern: "clear product focus", evidenceIds, confidence: 0.91 }],
-  differences: [{ pattern: "minor prop variation", evidenceIds: [evidenceIds[0]] }],
-  cautions: ["do not copy competitor branding"] };
+  return { schemaVersion: 3,
+    style: { ru: "чистый каталог", zh: "干净的目录风格" },
+    roleGuidance: Object.fromEntries(roles.map((role) => [role, {
+      composition: { ru: `${role} товар в фокусе`, zh: `${role} 商品突出` },
+      background: { ru: "нейтральный", zh: "中性背景" }, textDensity: role === "MAIN" ? "NONE" : "LIGHT",
+      layout: { ru: "ясная иерархия", zh: "清晰层级" }, evidenceIds, confidence: 0.91,
+    }])), commonPatterns: [{ pattern: { ru: "товар в фокусе", zh: "商品突出" },
+      evidenceIds, confidence: 0.91 }],
+    differences: [{ pattern: { ru: "небольшое различие реквизита", zh: "道具略有差异" },
+      evidenceIds: [evidenceIds[0]] }],
+    cautions: [{ ru: "не копировать брендинг конкурентов", zh: "不要复制竞品品牌标识" }] };
 }
 
 async function seedAutoListingInfrastructure(client, { accountId, suffix,
@@ -370,7 +375,7 @@ if (!enabled) {
         getPostgresPool: async () => pool, createObjectStorage: () => objectStorage.api,
         createAnalyzer(input) { return createCategoryStrategyAnalyzer({ ...input,
           configurationResolver: { async resolve() { return { analyzerVersion: "category-strategy-v1",
-            promptVersion: "category-strategy-prompt-v1", profileId: "fake-paid-ai", profileVersion: 1,
+            promptVersion: "category-strategy-prompt-v2", profileId: "fake-paid-ai", profileVersion: 1,
             model: "fake-vision-model" }; } } }); },
         analysisAiAdapter,
         downloadImage: async () => { const response = await fetch(`${origin}/image.jpg`);
@@ -572,6 +577,8 @@ if (!enabled) {
       const sourceCapture = { snapshot: graphItem.snapshot, snapshotHash: graphItem.snapshot_hash,
         rawResponseRef: graphItem.raw_response_ref };
       const publishedRule = bundle.rows[0].rule;
+      assert.equal(publishedRule.overallStyle, "чистый каталог");
+      assert.equal(JSON.stringify(publishedRule).includes("干净的目录风格"), false);
       const strategySnapshot = {
         strategyId: "default",
         strategyVersionId: graphItem.strategy_version_id,
@@ -711,7 +718,7 @@ if (!enabled) {
         extensionSessionChannel: expiryChannel, exactProductFacts: expiryChannel, now: () => expiryNow,
         createAnalyzer(input) { return createCategoryStrategyAnalyzer({ ...input,
           configurationResolver: { async resolve() { return { analyzerVersion: "category-strategy-v1",
-            promptVersion: "category-strategy-prompt-v1", profileId: "fake-paid-ai", profileVersion: 1,
+            promptVersion: "category-strategy-prompt-v2", profileId: "fake-paid-ai", profileVersion: 1,
             model: "fake-vision-model" }; } } }); },
         analysisAiAdapter,
         downloadImage: async () => { const response = await fetch(`${origin}/image.jpg`);

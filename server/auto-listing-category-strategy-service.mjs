@@ -305,7 +305,12 @@ function safeText(value, maximum = 4_000, nullable = false) {
 
 function publicEvidenceSummary(raw) {
   if (raw === null) return null;
-  const value = closed(raw, new Set(["roleEvidence", "commonPatterns", "differences", "cautions"]));
+  let value;
+  try {
+    value = closed(raw, new Set(["roleEvidence", "commonPatterns", "differences", "cautions", "managementZh"]));
+  } catch {
+    value = closed(raw, new Set(["roleEvidence", "commonPatterns", "differences", "cautions"]));
+  }
   const roles = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
   const roleInput = closed(value.roleEvidence, new Set(roles));
   const evidenceIds = (items, minimum = 0) => closedArray(items, minimum, 100).map(identifier);
@@ -326,7 +331,23 @@ function publicEvidenceSummary(raw) {
     return { pattern: safeText(item.pattern), evidenceIds: evidenceIds(item.evidenceIds, 1) };
   });
   const cautions = closedArray(value.cautions, 0, 50).map((entry) => safeText(entry));
-  return freeze({ roleEvidence, commonPatterns, differences, cautions });
+  let managementZh;
+  if (Object.hasOwn(value, "managementZh")) {
+    const management = closed(value.managementZh,
+      new Set(["guidance", "commonPatterns", "differences", "cautions"]));
+    const translatedCommonPatterns = closedArray(management.commonPatterns, 0, 50).map((entry) => safeText(entry));
+    const translatedDifferences = closedArray(management.differences, 0, 50).map((entry) => safeText(entry));
+    const translatedCautions = closedArray(management.cautions, 0, 50).map((entry) => safeText(entry));
+    if (translatedCommonPatterns.length !== commonPatterns.length
+      || translatedDifferences.length !== differences.length || translatedCautions.length !== cautions.length) {
+      throw invalid();
+    }
+    managementZh = freeze({ guidance: projectCategoryStrategyGuidanceV2(management.guidance),
+      commonPatterns: translatedCommonPatterns, differences: translatedDifferences,
+      cautions: translatedCautions });
+  }
+  return freeze({ roleEvidence, commonPatterns, differences, cautions,
+    ...(managementZh ? { managementZh } : {}) });
 }
 
 function publicReadAnalysis(raw) {

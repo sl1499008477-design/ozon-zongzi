@@ -24,7 +24,7 @@ test("analysis configuration resolver is account-scoped and requires exactly one
     },
   } });
   assert.deepEqual(await resolver.resolve({ accountId: "account-a" }), {
-    analyzerVersion: "category-strategy-v1", promptVersion: "category-strategy-prompt-v1",
+    analyzerVersion: "category-strategy-v1", promptVersion: "category-strategy-prompt-v2",
     profileId: "profile-a", profileVersion: 7, model: "vision-a",
   });
   assert.deepEqual(calls[0].parameters, ["account-a"]);
@@ -52,8 +52,8 @@ test("category strategy production adapter sends the exact account profile and i
   const queries = [];
   const gatewayCalls = [];
   const rawOutput = {
-    schemaVersion: 2,
-    style: "concise catalogue",
+    schemaVersion: 3,
+    style: { ru: "краткий каталог", zh: "简洁目录" },
     roleGuidance: {},
     commonPatterns: [],
     differences: [],
@@ -78,11 +78,11 @@ test("category strategy production adapter sends the exact account profile and i
   });
   const execution = {
     accountId: "account-a", analyzerVersion: "category-strategy-v1",
-    promptVersion: "category-strategy-prompt-v1", profileId: "profile-a",
+    promptVersion: "category-strategy-prompt-v2", profileId: "profile-a",
     profileVersion: 7, model: "vision-a",
   };
   await adapter.assertReady({ accountId: "account-a", configuration: {
-    analyzerVersion: "category-strategy-v1", promptVersion: "category-strategy-prompt-v1",
+    analyzerVersion: "category-strategy-v1", promptVersion: "category-strategy-prompt-v2",
     profileId: "profile-a", profileVersion: 7, model: "vision-a",
   } });
   assert.equal(gatewayCalls.length, 0);
@@ -99,7 +99,7 @@ test("category strategy production adapter sends the exact account profile and i
       { evidenceId: "evidence-b", sampleId: "sample-b", sku: "10002", role: "DETAIL", ordinal: 1,
         contentType: "image/jpeg", bytesBase64: Buffer.from("image-b").toString("base64") },
     ],
-    contract: { schemaVersion: 2,
+    contract: { schemaVersion: 3,
       roles: ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"],
       aggregateEvidenceMinimumDistinctSkus: 2,
       prohibited: ["image counts", "role counts", "copying brand claims", "future generation references"] },
@@ -122,6 +122,9 @@ test("category strategy production adapter sends the exact account profile and i
   assert.equal(gatewayCalls[0].requestKey, "a".repeat(64));
   assert.equal(gatewayCalls[0].correlationId, "attempt-a");
   assert.match(gatewayCalls[0].prompt, /evidence-a.+10001.+evidence-b.+10002/su);
+  assert.match(gatewayCalls[0].prompt, /Russian.+Simplified Chinese/su);
+  assert.equal(gatewayCalls[0].jsonSchema.properties.schemaVersion.const, 3);
+  assert.deepEqual(gatewayCalls[0].jsonSchema.properties.style.required, ["ru", "zh"]);
   assert.deepEqual(gatewayCalls[0].jsonSchema.properties.roleGuidance.required,
     ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
   assert.deepEqual(gatewayCalls[0].jsonSchema.properties.roleGuidance.properties.MAIN
@@ -140,12 +143,14 @@ test("category strategy production request is accepted by the strict multimodal 
   )).flat();
   const citedEvidenceIds = [evidenceIds[0], evidenceIds[6]];
   const roleGuidance = Object.fromEntries(CATEGORY_ROLES.map((role) => [role, {
-    composition: `${role} composition`, background: "clean", textDensity: "LIGHT",
-    layout: "centred", evidenceIds: citedEvidenceIds, confidence: 0.9,
+    composition: { ru: `${role} композиция`, zh: `${role} 构图` },
+    background: { ru: "чистый", zh: "干净" }, textDensity: "LIGHT",
+    layout: { ru: "по центру", zh: "居中" }, evidenceIds: citedEvidenceIds, confidence: 0.9,
   }]));
   const output = {
-    schemaVersion: 2, style: "concise catalogue", roleGuidance,
-    commonPatterns: [{ pattern: "clean layout", evidenceIds: citedEvidenceIds, confidence: 0.9 }],
+    schemaVersion: 3, style: { ru: "краткий каталог", zh: "简洁目录" }, roleGuidance,
+    commonPatterns: [{ pattern: { ru: "чистый макет", zh: "干净布局" },
+      evidenceIds: citedEvidenceIds, confidence: 0.9 }],
     differences: [], cautions: [],
   };
   const gateway = createSub2ApiAdapter({
@@ -176,7 +181,7 @@ test("category strategy production request is accepted by the strict multimodal 
     attemptId: "attempt-a", requestKey: "a".repeat(64),
     execution: {
       accountId: "account-a", analyzerVersion: "category-strategy-v1",
-      promptVersion: "category-strategy-prompt-v1", profileId: "profile-a",
+      promptVersion: "category-strategy-prompt-v2", profileId: "profile-a",
       profileVersion: 7, model: "vision-a",
     },
     scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 17029005, typeId: 94453 },
@@ -192,7 +197,7 @@ test("category strategy production request is accepted by the strict multimodal 
         contentType: "image/png", bytesBase64: PNG_1X1,
       };
     }),
-    contract: { schemaVersion: 2, roles: CATEGORY_ROLES,
+    contract: { schemaVersion: 3, roles: CATEGORY_ROLES,
       aggregateEvidenceMinimumDistinctSkus: 2,
       prohibited: ["image counts", "role counts", "copying brand claims", "future generation references"] },
   });
@@ -202,6 +207,7 @@ test("category strategy production request is accepted by the strict multimodal 
   assert.equal(requests[0].url, "https://gateway.example.test/v1/responses");
   assert.equal(requests[0].body.input[0].content.filter((part) => part.type === "input_image").length, 42);
   assert.deepEqual(requests[0].body.text.format.schema.properties.roleGuidance.required, CATEGORY_ROLES);
+  assert.equal(requests[0].body.text.format.schema.properties.schemaVersion.const, 3);
 });
 
 test("category strategy runtime lazily composes the production analysis adapter when none is injected", async () => {

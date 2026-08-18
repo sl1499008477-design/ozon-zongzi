@@ -93,11 +93,17 @@ test("closed UI projections cover list, detail, session, sample, analysis and pu
       commonPatterns: [{ pattern: "主体居中", evidenceIds: ["image-1", "image-2"], confidence: 0.82 }],
       differences: [{ pattern: "单个样本使用道具", evidenceIds: ["image-3"] }],
       cautions: ["避免复制品牌标识"],
+      managementZh: {
+        guidance: GUIDANCE,
+        commonPatterns: ["主体居中"], differences: ["单个样本使用道具"], cautions: ["避免复制品牌标识"],
+      },
     },
     provenance: "AI", editedAt: null, baseAnalysisAttemptId: null,
   });
   assert.equal(analysis.guidance.roles.MAIN.textDensity, "NONE");
   assert.equal(analysis.evidenceSummary.commonPatterns[0].confidence, 0.82);
+  assert.equal(analysis.evidenceSummary.managementZh.guidance.roles.MAIN.composition, "MAIN 构图");
+  assert.equal(analysis.evidenceSummary.managementZh.commonPatterns[0], "主体居中");
   const bundle = projectCategoryStrategyDetailBundle({ draft: detail, session,
     samples: Array.from({ length: 6 }, (_, index) => ({
       sampleId: `sample-${index}`, sku: `sku-${index}`, title: null,

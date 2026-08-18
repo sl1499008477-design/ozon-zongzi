@@ -46,21 +46,23 @@ function validOutput() {
   const roleGuidance = {};
   for (const role of ROLES) {
     roleGuidance[role] = {
-      composition: `${role} centered product`,
-      background: "clean neutral background",
+      composition: { ru: `${role} товар по центру`, zh: `${role} 商品居中` },
+      background: { ru: "чистый нейтральный фон", zh: "干净的中性背景" },
       textDensity: role === "MAIN" ? "NONE" : "LIGHT",
-      layout: "clear visual hierarchy",
+      layout: { ru: "ясная визуальная иерархия", zh: "清晰的视觉层级" },
       evidenceIds: ["image-1", "image-2"],
       confidence: 0.8,
     };
   }
   return {
-    schemaVersion: 2,
-    style: "clean commercial catalogue",
+    schemaVersion: 3,
+    style: { ru: "чистый коммерческий каталог", zh: "干净的商业目录风格" },
     roleGuidance,
-    commonPatterns: [{ pattern: "centered product", evidenceIds: ["image-1", "image-2"], confidence: 0.8 }],
-    differences: [{ pattern: "single prop variation", evidenceIds: ["image-3"] }],
-    cautions: ["avoid copying brand marks"],
+    commonPatterns: [{ pattern: { ru: "товар по центру", zh: "商品居中" },
+      evidenceIds: ["image-1", "image-2"], confidence: 0.8 }],
+    differences: [{ pattern: { ru: "вариант с одним реквизитом", zh: "单个道具变化" },
+      evidenceIds: ["image-3"] }],
+    cautions: [{ ru: "не копировать товарные знаки", zh: "不要复制品牌标识" }],
   };
 }
 
@@ -196,6 +198,14 @@ test("a paid call is made only after durable reservation with a frozen redacted 
     assert.equal(serialized.includes(forbidden), false);
   }
   assert.equal(calls.complete[0].outcome, "ACCEPTED");
+  assert.equal(request.contract.schemaVersion, 3);
+  assert.equal(calls.complete[0].guidance.overallStyle, "чистый коммерческий каталог");
+  assert.equal(calls.complete[0].guidance.roles.MAIN.composition, "MAIN товар по центру");
+  assert.equal(calls.complete[0].evidenceSummary.managementZh.guidance.overallStyle,
+    "干净的商业目录风格");
+  assert.equal(calls.complete[0].evidenceSummary.managementZh.guidance.roles.MAIN.composition,
+    "MAIN 商品居中");
+  assert.equal(calls.complete[0].evidenceSummary.managementZh.commonPatterns[0], "商品居中");
 });
 
 test("a standardized object hash/read failure records NEEDS_REVIEW without AI or a stuck attempt", async () => {
@@ -309,7 +319,7 @@ test("a single-SKU observation is accepted only in differences", async () => {
 test("missing, extra, count, unknown role, unknown evidence, and hostile outputs become fixed NEEDS_REVIEW", async () => {
   const hostile = {};
   let reads = 0;
-  Object.defineProperty(hostile, "schemaVersion", { enumerable: true, get() { reads += 1; return 2; } });
+  Object.defineProperty(hostile, "schemaVersion", { enumerable: true, get() { reads += 1; return 3; } });
   const cases = [
     { ...validOutput(), imageCount: 8 },
     (() => { const value = validOutput(); delete value.roleGuidance.INFOGRAPHIC; return value; })(),
@@ -444,13 +454,13 @@ test("manual edit appends provenance without reading images or calling AI", asyn
   const { analyzer, calls } = makeHarness();
   const output = validOutput();
   const guidance = {
-    overallStyle: output.style,
-    prohibitedPatterns: output.cautions,
+    overallStyle: output.style.ru,
+    prohibitedPatterns: output.cautions.map((entry) => entry.ru),
     roles: Object.fromEntries(ROLES.map((role) => [role, {
-      composition: output.roleGuidance[role].composition,
-      background: output.roleGuidance[role].background,
+      composition: output.roleGuidance[role].composition.ru,
+      background: output.roleGuidance[role].background.ru,
       textDensity: output.roleGuidance[role].textDensity,
-      layout: output.roleGuidance[role].layout,
+      layout: output.roleGuidance[role].layout.ru,
     }])),
   };
   const result = await analyzer.editGuidance({

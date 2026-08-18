@@ -202,7 +202,12 @@ function evidenceIds(raw, minimum = 0) {
 
 function evidenceSummary(raw) {
   if (raw === null) return null;
-  const value = closed(raw, new Set(["roleEvidence", "commonPatterns", "differences", "cautions"]));
+  let value;
+  try {
+    value = closed(raw, new Set(["roleEvidence", "commonPatterns", "differences", "cautions", "managementZh"]));
+  } catch {
+    value = closed(raw, new Set(["roleEvidence", "commonPatterns", "differences", "cautions"]));
+  }
   const roleValue = closed(value.roleEvidence, ROLE_SET);
   const roleEvidence = Object.fromEntries(CATEGORY_STRATEGY_ROLES.map((role) => {
     const item = closed(roleValue[role], new Set(["evidenceIds", "confidence"]));
@@ -221,7 +226,26 @@ function evidenceSummary(raw) {
     return { pattern: text(item.pattern, 4_000), evidenceIds: evidenceIds(item.evidenceIds, 1) };
   });
   const cautions = array(value.cautions, 0, 50).map((entry) => text(entry, 4_000));
-  return deepFreeze({ roleEvidence, commonPatterns, differences, cautions });
+  let managementZh;
+  if (Object.hasOwn(value, "managementZh")) {
+    const management = closed(value.managementZh,
+      new Set(["guidance", "commonPatterns", "differences", "cautions"]));
+    const translatedCommonPatterns = array(management.commonPatterns, 0, 50)
+      .map((entry) => text(entry, 4_000));
+    const translatedDifferences = array(management.differences, 0, 50)
+      .map((entry) => text(entry, 4_000));
+    const translatedCautions = array(management.cautions, 0, 50)
+      .map((entry) => text(entry, 4_000));
+    if (translatedCommonPatterns.length !== commonPatterns.length
+      || translatedDifferences.length !== differences.length || translatedCautions.length !== cautions.length) {
+      throw uiError();
+    }
+    managementZh = deepFreeze({ guidance: guidance(management.guidance),
+      commonPatterns: translatedCommonPatterns, differences: translatedDifferences,
+      cautions: translatedCautions });
+  }
+  return deepFreeze({ roleEvidence, commonPatterns, differences, cautions,
+    ...(managementZh ? { managementZh } : {}) });
 }
 
 export function projectCategoryStrategyAnalysis(raw) {

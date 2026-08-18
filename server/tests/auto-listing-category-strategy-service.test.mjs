@@ -333,7 +333,13 @@ test("durable detail read returns only the closed reloadable Web evidence bundle
     evidenceSummary: {
       roleEvidence: Object.fromEntries(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]
         .map((role) => [role, { evidenceIds: ["image-a"], confidence: 0.8 }])),
-      commonPatterns: [], differences: [], cautions: [],
+      commonPatterns: [{ pattern: "товар по центру", evidenceIds: ["image-a", "image-b"], confidence: 0.8 }],
+      differences: [{ pattern: "один образец использует реквизит", evidenceIds: ["image-a"] }],
+      cautions: ["не копировать товарные знаки"],
+      managementZh: {
+        guidance: guidance("中文管理"),
+        commonPatterns: ["主体居中"], differences: ["个别样本使用道具"], cautions: ["不要复制品牌标识"],
+      },
     },
     provenance: "MANUAL", editedAt: "2026-08-15T01:00:00.000Z", baseAnalysisAttemptId: "attempt-a",
   };
@@ -362,6 +368,8 @@ test("durable detail read returns only the closed reloadable Web evidence bundle
   assert.equal(result.samples[0].thumbnailUrl,
     "/api/admin/auto-listing/category-strategies/draft-a/samples/sample-a/images/image-a/thumbnail");
   assert.equal(result.analysis.provenance, "MANUAL");
+  assert.equal(result.analysis.evidenceSummary.managementZh.guidance.overallStyle, "中文管理 catalogue");
+  assert.equal(result.analysis.evidenceSummary.managementZh.commonPatterns[0], "主体居中");
   assert.equal(JSON.stringify(result).includes("account-a"), false);
   assert.doesNotMatch(JSON.stringify(result), /objectKey|rawResponse|editedBy|sourceUrl/u);
 });

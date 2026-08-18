@@ -73,14 +73,26 @@ function profile(row, expected) {
   return result;
 }
 
+function bilingualTextSchema() {
+  return {
+    type: "object",
+    properties: {
+      ru: { type: "string", minLength: 1, maxLength: 1_000 },
+      zh: { type: "string", minLength: 1, maxLength: 1_000 },
+    },
+    required: ["ru", "zh"],
+    additionalProperties: false,
+  };
+}
+
 function roleSchema(evidenceIds) {
   return {
     type: "object",
     properties: {
-      composition: { type: "string", minLength: 1, maxLength: 1_000 },
-      background: { type: "string", minLength: 1, maxLength: 1_000 },
+      composition: bilingualTextSchema(),
+      background: bilingualTextSchema(),
       textDensity: { type: "string", enum: ["NONE", "LIGHT", "MEDIUM", "HEAVY"] },
-      layout: { type: "string", minLength: 1, maxLength: 1_000 },
+      layout: bilingualTextSchema(),
       evidenceIds: { type: "array", minItems: 1, maxItems: 20,
         items: { type: "string", enum: evidenceIds } },
       confidence: { type: "number", minimum: 0, maximum: 1 },
@@ -94,8 +106,8 @@ function analysisSchema(evidenceIds) {
   return {
     type: "object",
     properties: {
-      schemaVersion: { type: "integer", const: 2 },
-      style: { type: "string", minLength: 1, maxLength: 1_000 },
+      schemaVersion: { type: "integer", const: 3 },
+      style: bilingualTextSchema(),
       roleGuidance: {
         type: "object",
         properties: Object.fromEntries(ROLES.map((role) => [role, roleSchema(evidenceIds)])),
@@ -107,7 +119,7 @@ function analysisSchema(evidenceIds) {
         items: {
           type: "object",
           properties: {
-            pattern: { type: "string", minLength: 1, maxLength: 1_000 },
+            pattern: bilingualTextSchema(),
             evidenceIds: { type: "array", minItems: 1, maxItems: 20,
               items: { type: "string", enum: evidenceIds } },
             confidence: { type: "number", minimum: 0, maximum: 1 },
@@ -121,7 +133,7 @@ function analysisSchema(evidenceIds) {
         items: {
           type: "object",
           properties: {
-            pattern: { type: "string", minLength: 1, maxLength: 1_000 },
+            pattern: bilingualTextSchema(),
             evidenceIds: { type: "array", minItems: 1, maxItems: 20,
               items: { type: "string", enum: evidenceIds } },
           },
@@ -130,7 +142,7 @@ function analysisSchema(evidenceIds) {
         },
       },
       cautions: { type: "array", maxItems: 50,
-        items: { type: "string", minLength: 1, maxLength: 1_000 } },
+        items: bilingualTextSchema() },
     },
     required: ["schemaVersion", "style", "roleGuidance", "commonPatterns", "differences", "cautions"],
     additionalProperties: false,
@@ -145,7 +157,9 @@ function promptFor(request) {
     "Analyze only the supplied product images for one exact Ozon category.",
     `Category scope: ${JSON.stringify(request.scope)}.`,
     `Evidence manifest: ${JSON.stringify(evidence)}.`,
-    "Return concise, actionable visual guidance in Russian for all six declared roles.",
+    "Return each concise, actionable recommendation as one paired object: Russian in ru and Simplified Chinese in zh.",
+    "The ru and zh values must express the same recommendation; do not create separate conclusions by language.",
+    "Russian is the marketplace execution language. Simplified Chinese is a read-only management explanation.",
     "Every role and every common pattern must cite evidenceIds belonging to at least two distinct SKUs.",
     "Use only declared evidenceIds. Describe patterns, not individual brands or copied claims.",
     "Do not recommend image counts, role counts, future generation steps, or copying competitor branding.",
