@@ -8,6 +8,12 @@ import {
   createCategoryStrategyAnalysisConfigurationResolver,
   createCategoryStrategyExtensionChannel,
 } from "../auto-listing-category-strategy-runtime.mjs";
+import { createSub2ApiAdapter } from "../sub2api-ai-adapter.mjs";
+
+const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const CATEGORY_ROLES = [
+  "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+];
 
 test("analysis configuration resolver is account-scoped and requires exactly one enabled profile", async () => {
   const calls = [];
@@ -38,6 +44,181 @@ test("analysis configuration resolver is account-scoped and requires exactly one
       status: 409,
     });
   }
+});
+
+test("category strategy production adapter sends the exact account profile and image evidence to the paid gateway", async () => {
+  const adapterModule = await import("../auto-listing-category-strategy-ai-adapter.mjs").catch(() => ({}));
+  assert.equal(typeof adapterModule.createCategoryStrategyAnalysisAiAdapter, "function");
+  const queries = [];
+  const gatewayCalls = [];
+  const rawOutput = {
+    schemaVersion: 2,
+    style: "concise catalogue",
+    roleGuidance: {},
+    commonPatterns: [],
+    differences: [],
+    cautions: [],
+  };
+  const adapter = adapterModule.createCategoryStrategyAnalysisAiAdapter({
+    pool: {
+      async query(sql, parameters) {
+        queries.push({ sql, parameters });
+        return { rows: [{
+          id: "profile-a", account_id: "account-a", config_version: 7,
+          base_url: "https://gateway.example.test/v1", api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+          text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_RESPONSES_IMAGE_TOOL",
+          text_model: "vision-a", image_model: "image-a", enabled: true,
+          connection_id: "connection-a", connection_version: 3,
+        }] };
+      },
+    },
+    async getGateway() {
+      return { async createTextResponse(input) { gatewayCalls.push(input); return { value: rawOutput }; } };
+    },
+  });
+  const execution = {
+    accountId: "account-a", analyzerVersion: "category-strategy-v1",
+    promptVersion: "category-strategy-prompt-v1", profileId: "profile-a",
+    profileVersion: 7, model: "vision-a",
+  };
+  await adapter.assertReady({ accountId: "account-a", configuration: {
+    analyzerVersion: "category-strategy-v1", promptVersion: "category-strategy-prompt-v1",
+    profileId: "profile-a", profileVersion: 7, model: "vision-a",
+  } });
+  assert.equal(gatewayCalls.length, 0);
+  assert.deepEqual(await adapter.analyze({
+    attemptId: "attempt-a", requestKey: "a".repeat(64), execution,
+    scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 17029005, typeId: 94453 },
+    productFacts: [
+      { sampleId: "sample-a", sku: "10001" },
+      { sampleId: "sample-b", sku: "10002" },
+    ],
+    images: [
+      { evidenceId: "evidence-a", sampleId: "sample-a", sku: "10001", role: "MAIN", ordinal: 0,
+        contentType: "image/webp", bytesBase64: Buffer.from("image-a").toString("base64") },
+      { evidenceId: "evidence-b", sampleId: "sample-b", sku: "10002", role: "DETAIL", ordinal: 1,
+        contentType: "image/jpeg", bytesBase64: Buffer.from("image-b").toString("base64") },
+    ],
+    contract: { schemaVersion: 2,
+      roles: ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"],
+      aggregateEvidenceMinimumDistinctSkus: 2,
+      prohibited: ["image counts", "role counts", "copying brand claims", "future generation references"] },
+  }), rawOutput);
+  assert.deepEqual(queries.map((entry) => entry.parameters), [
+    ["account-a", "profile-a", 7, "vision-a"],
+    ["account-a", "profile-a", 7, "vision-a"],
+  ]);
+  assert.match(queries[0].sql, /account_id=\$1.+id=\$2.+config_version=\$3.+text_model=\$4.+enabled IS TRUE/su);
+  assert.equal(gatewayCalls.length, 1);
+  assert.deepEqual(gatewayCalls[0].sourceImages.map((image) => ({
+    contentType: image.contentType, bytes: image.bytes.toString("utf8"),
+  })), [
+    { contentType: "image/webp", bytes: "image-a" },
+    { contentType: "image/jpeg", bytes: "image-b" },
+  ]);
+  assert.equal(gatewayCalls[0].profile.accountId, "account-a");
+  assert.equal(gatewayCalls[0].profile.connectionId, "connection-a");
+  assert.equal(gatewayCalls[0].model, "vision-a");
+  assert.equal(gatewayCalls[0].requestKey, "a".repeat(64));
+  assert.equal(gatewayCalls[0].correlationId, "attempt-a");
+  assert.match(gatewayCalls[0].prompt, /evidence-a.+10001.+evidence-b.+10002/su);
+  assert.deepEqual(gatewayCalls[0].jsonSchema.properties.roleGuidance.required,
+    ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
+  assert.deepEqual(gatewayCalls[0].jsonSchema.properties.roleGuidance.properties.MAIN
+    .properties.evidenceIds.items.enum, ["evidence-a", "evidence-b"]);
+  await assert.rejects(adapter.recover({
+    attemptId: "attempt-a", requestKey: "a".repeat(64), execution,
+  }), { code: "AI_RESPONSE_UNKNOWN", retryable: true });
+  assert.equal(gatewayCalls.length, 1);
+});
+
+test("category strategy production request is accepted by the strict multimodal gateway contract", async () => {
+  const { createCategoryStrategyAnalysisAiAdapter } = await import("../auto-listing-category-strategy-ai-adapter.mjs");
+  const requests = [];
+  const evidenceIds = ["evidence-a", "evidence-b"];
+  const roleGuidance = Object.fromEntries(CATEGORY_ROLES.map((role) => [role, {
+    composition: `${role} composition`, background: "clean", textDensity: "LIGHT",
+    layout: "centred", evidenceIds, confidence: 0.9,
+  }]));
+  const output = {
+    schemaVersion: 2, style: "concise catalogue", roleGuidance,
+    commonPatterns: [{ pattern: "clean layout", evidenceIds, confidence: 0.9 }],
+    differences: [], cautions: [],
+  };
+  const gateway = createSub2ApiAdapter({
+    async fetchImpl(url, init) {
+      requests.push({ url: String(url), body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({
+        model: "vision-a",
+        output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(output) }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+    readSecret() { throw new Error("legacy secret must not be used"); },
+    async resolveSecret() { return "test-encrypted-secret"; },
+    async resolveHostname() { return [{ address: "203.0.113.10", family: 4 }]; },
+    allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+  });
+  const adapter = createCategoryStrategyAnalysisAiAdapter({
+    pool: { async query() { return { rows: [{
+      id: "profile-a", account_id: "account-a", config_version: 7,
+      base_url: "https://gateway.example.test/v1", api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+      text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_RESPONSES_IMAGE_TOOL",
+      text_model: "vision-a", image_model: "image-a", enabled: true,
+      connection_id: "connection-a", connection_version: 3,
+    }] }; } },
+    async getGateway() { return gateway; },
+  });
+
+  const result = await adapter.analyze({
+    attemptId: "attempt-a", requestKey: "a".repeat(64),
+    execution: {
+      accountId: "account-a", analyzerVersion: "category-strategy-v1",
+      promptVersion: "category-strategy-prompt-v1", profileId: "profile-a",
+      profileVersion: 7, model: "vision-a",
+    },
+    scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 17029005, typeId: 94453 },
+    productFacts: [{ sampleId: "sample-a", sku: "10001" }, { sampleId: "sample-b", sku: "10002" }],
+    images: evidenceIds.map((evidenceId, index) => ({
+      evidenceId, sampleId: `sample-${index}`, sku: `${10001 + index}`,
+      role: "MAIN", ordinal: index, contentType: "image/png", bytesBase64: PNG_1X1,
+    })),
+    contract: { schemaVersion: 2, roles: CATEGORY_ROLES,
+      aggregateEvidenceMinimumDistinctSkus: 2,
+      prohibited: ["image counts", "role counts", "copying brand claims", "future generation references"] },
+  });
+
+  assert.deepEqual(result, output);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://gateway.example.test/v1/responses");
+  assert.equal(requests[0].body.input[0].content.filter((part) => part.type === "input_image").length, 2);
+  assert.deepEqual(requests[0].body.text.format.schema.properties.roleGuidance.required, CATEGORY_ROLES);
+});
+
+test("category strategy runtime lazily composes the production analysis adapter when none is injected", async () => {
+  let analyzerInput;
+  let adapterInput;
+  let gatewayPortCalls = 0;
+  const gateway = { createTextResponse() {} };
+  const productionAdapter = { assertReady() {}, analyze() {}, recover() {} };
+  const runtime = createAutoListingCategoryStrategyRuntime({
+    env: { AUTO_LISTING_ENABLED: "true",
+      APP_ENCRYPTION_KEY: "test-only-category-session-key-at-least-32-characters" },
+    async getPostgresPool() { return { async query() {}, async connect() {} }; },
+    createRepository() { return {}; }, createStrategyReadModel() { return {}; },
+    createSampleStore() { return {}; }, createObjectStorage() { return {}; },
+    createAnalyzer(input) { analyzerInput = input; return { analyze() {}, editGuidance() {} }; },
+    createAnalysisAiAdapter(input) { adapterInput = input; return productionAdapter; },
+    async createAnalysisGatewayPorts() { gatewayPortCalls += 1; return { gateway }; },
+    createPublicationRepository() { return {}; },
+    createAdminService() { return { publishCategoryStrategyDraft() {}, rollbackCategoryStrategyVersion() {} }; },
+    createService() { return { marker: "category-service" }; },
+  });
+  await runtime.getService();
+  assert.equal(analyzerInput.aiAdapter, productionAdapter);
+  assert.equal(gatewayPortCalls, 0);
+  assert.equal(await adapterInput.getGateway(), gateway);
+  assert.equal(await adapterInput.getGateway(), gateway);
+  assert.equal(gatewayPortCalls, 1);
 });
 import {
   createAutoListingCategoryStrategyExtensionHttpHandler,

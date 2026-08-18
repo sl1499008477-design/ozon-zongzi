@@ -3,6 +3,8 @@ import { types } from "node:util";
 
 import { createAutoListingAiAdminPostgres } from "./auto-listing-ai-admin-postgres.mjs";
 import { createAutoListingAiAdminService } from "./auto-listing-ai-admin-service.mjs";
+import { createDefaultAutoListingGatewayProductionPorts } from "./auto-listing-ai-runtime-composition.mjs";
+import { createCategoryStrategyAnalysisAiAdapter } from "./auto-listing-category-strategy-ai-adapter.mjs";
 import { createCategoryStrategyAnalyzer } from "./auto-listing-category-strategy-analyzer.mjs";
 import { createCategoryStrategyObservability } from "./auto-listing-category-strategy-observability.mjs";
 import { createAutoListingCategoryStrategyPostgres } from "./auto-listing-category-strategy-postgres.mjs";
@@ -578,13 +580,6 @@ export function createCategoryStrategyAnalysisConfigurationResolver({ pool } = {
   });
 }
 
-function absentAnalysisAiAdapter() {
-  const notReady = async () => {
-    throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_NOT_READY", 409, false);
-  };
-  return Object.freeze({ assertReady: notReady, analyze: notReady, recover: notReady });
-}
-
 export function createAutoListingCategoryStrategyRuntime({
   env = process.env,
   getPostgresPool: resolvePool = getPostgresPool,
@@ -594,6 +589,8 @@ export function createAutoListingCategoryStrategyRuntime({
   createObjectStorage = createExpectedHashObjectStorage,
   createAnalyzer = createCategoryStrategyAnalyzer,
   analysisAiAdapter = null,
+  createAnalysisAiAdapter = createCategoryStrategyAnalysisAiAdapter,
+  createAnalysisGatewayPorts = createDefaultAutoListingGatewayProductionPorts,
   createService = createAutoListingCategoryStrategyService,
   createPublicationRepository = createAutoListingAiAdminPostgres,
   createAdminService = createAutoListingAiAdminService,
@@ -611,6 +608,7 @@ export function createAutoListingCategoryStrategyRuntime({
     || typeof createRepository !== "function" || typeof createStrategyReadModel !== "function"
     || typeof createSampleStore !== "function" || typeof createObjectStorage !== "function"
     || typeof createAnalyzer !== "function"
+    || typeof createAnalysisAiAdapter !== "function" || typeof createAnalysisGatewayPorts !== "function"
     || !(analysisAiAdapter === null || (typeof analysisAiAdapter?.analyze === "function"
       && typeof analysisAiAdapter?.recover === "function"))
     || typeof createService !== "function" || typeof createPublicationRepository !== "function"
@@ -660,8 +658,29 @@ export function createAutoListingCategoryStrategyRuntime({
           const sampleStore = createSampleStore({
             fetchImage: sampleImageFetcher(downloadImage), objectStorage, now, maxDownloadBytes,
           });
+          let analysisGatewayPromise = null;
+          const getAnalysisGateway = () => {
+            if (!analysisGatewayPromise) {
+              const initialization = Promise.resolve(createAnalysisGatewayPorts({
+                env, resolvePool: async () => pool,
+              })).then((ports) => {
+                if (!ports || typeof ports.gateway?.createTextResponse !== "function") {
+                  throw runtimeError("AUTO_LISTING_CATEGORY_STRATEGY_ANALYSIS_NOT_READY");
+                }
+                return ports.gateway;
+              });
+              analysisGatewayPromise = initialization;
+              initialization.catch(() => {
+                if (analysisGatewayPromise === initialization) analysisGatewayPromise = null;
+              });
+            }
+            return analysisGatewayPromise;
+          };
+          const aiAdapter = analysisAiAdapter ?? createAnalysisAiAdapter({
+            pool, getGateway: getAnalysisGateway,
+          });
           const analyzer = createAnalyzer({ repository, objectStorage,
-            aiAdapter: analysisAiAdapter ?? absentAnalysisAiAdapter(),
+            aiAdapter,
             configurationResolver: createCategoryStrategyAnalysisConfigurationResolver({ pool }) });
           const publicationService = createPublicationService({ pool,
             createRepository: createPublicationRepository, createService: createAdminService });
