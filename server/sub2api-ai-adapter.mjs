@@ -23,6 +23,7 @@ const REQUEST_ID_HEADERS = ["x-request-id", "request-id", "openai-request-id"];
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_SOURCE_IMAGE_BYTES_TOTAL = 32 * 1024 * 1024;
+const MAX_SOURCE_IMAGES = 120;
 const MAX_REQUEST_BODY_BYTES = 48 * 1024 * 1024;
 const MAX_PROMPT_CHARACTERS = 100_000;
 const MAX_PROMPT_BYTES = 256 * 1024;
@@ -833,7 +834,7 @@ function sourceImageContent(
   maxSourceImageBytesTotal = MAX_SOURCE_IMAGE_BYTES_TOTAL,
 ) {
   if (!Array.isArray(sourceImages)) throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
-  if (sourceImages.length > 8) throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+  if (sourceImages.length > MAX_SOURCE_IMAGES) throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
   const prepared = [];
   let totalBytes = 0;
   for (const source of sourceImages) {

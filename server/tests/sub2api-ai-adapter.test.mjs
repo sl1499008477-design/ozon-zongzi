@@ -1395,6 +1395,22 @@ test("source-image aggregate raw bytes and exact encoded request body are bounde
   }
 });
 
+test("source-image count rejects one beyond the category evidence maximum before secret or fetch", async () => {
+  const bytes = Buffer.from(PNG_1X1, "base64");
+  const sourceImage = { bytes, contentType: "image/png" };
+  let reads = 0;
+  let fetches = 0;
+  const gateway = createSub2ApiAdapter({
+    readSecret: () => { reads += 1; return secret; },
+    fetchImpl: async () => { fetches += 1; throw new Error("must not fetch"); },
+  });
+  await assert.rejects(gateway.createTextResponse(textInput({
+    sourceImages: Array.from({ length: 121 }, () => sourceImage),
+  })), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID" && error?.retryable === false);
+  assert.equal(reads, 0);
+  assert.equal(fetches, 0);
+});
+
 test("OpenAI Images URL output downloads bytes without authorization inside the configured boundary", async () => {
   const requests = [];
   const gateway = adapter(async (url, init) => {

@@ -135,14 +135,17 @@ test("category strategy production adapter sends the exact account profile and i
 test("category strategy production request is accepted by the strict multimodal gateway contract", async () => {
   const { createCategoryStrategyAnalysisAiAdapter } = await import("../auto-listing-category-strategy-ai-adapter.mjs");
   const requests = [];
-  const evidenceIds = ["evidence-a", "evidence-b"];
+  const evidenceIds = Array.from({ length: 7 }, (_, sampleIndex) => (
+    Array.from({ length: 6 }, (_, imageIndex) => `evidence-${sampleIndex + 1}-${imageIndex + 1}`)
+  )).flat();
+  const citedEvidenceIds = [evidenceIds[0], evidenceIds[6]];
   const roleGuidance = Object.fromEntries(CATEGORY_ROLES.map((role) => [role, {
     composition: `${role} composition`, background: "clean", textDensity: "LIGHT",
-    layout: "centred", evidenceIds, confidence: 0.9,
+    layout: "centred", evidenceIds: citedEvidenceIds, confidence: 0.9,
   }]));
   const output = {
     schemaVersion: 2, style: "concise catalogue", roleGuidance,
-    commonPatterns: [{ pattern: "clean layout", evidenceIds, confidence: 0.9 }],
+    commonPatterns: [{ pattern: "clean layout", evidenceIds: citedEvidenceIds, confidence: 0.9 }],
     differences: [], cautions: [],
   };
   const gateway = createSub2ApiAdapter({
@@ -177,11 +180,18 @@ test("category strategy production request is accepted by the strict multimodal 
       profileVersion: 7, model: "vision-a",
     },
     scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 17029005, typeId: 94453 },
-    productFacts: [{ sampleId: "sample-a", sku: "10001" }, { sampleId: "sample-b", sku: "10002" }],
-    images: evidenceIds.map((evidenceId, index) => ({
-      evidenceId, sampleId: `sample-${index}`, sku: `${10001 + index}`,
-      role: "MAIN", ordinal: index, contentType: "image/png", bytesBase64: PNG_1X1,
+    productFacts: Array.from({ length: 7 }, (_, sampleIndex) => ({
+      sampleId: `sample-${sampleIndex + 1}`, sku: `${10001 + sampleIndex}`,
     })),
+    images: evidenceIds.map((evidenceId, index) => {
+      const sampleIndex = Math.floor(index / 6);
+      const imageIndex = index % 6;
+      return {
+        evidenceId, sampleId: `sample-${sampleIndex + 1}`, sku: `${10001 + sampleIndex}`,
+        role: imageIndex === 0 ? "MAIN" : "DETAIL", ordinal: imageIndex,
+        contentType: "image/png", bytesBase64: PNG_1X1,
+      };
+    }),
     contract: { schemaVersion: 2, roles: CATEGORY_ROLES,
       aggregateEvidenceMinimumDistinctSkus: 2,
       prohibited: ["image counts", "role counts", "copying brand claims", "future generation references"] },
@@ -190,7 +200,7 @@ test("category strategy production request is accepted by the strict multimodal 
   assert.deepEqual(result, output);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, "https://gateway.example.test/v1/responses");
-  assert.equal(requests[0].body.input[0].content.filter((part) => part.type === "input_image").length, 2);
+  assert.equal(requests[0].body.input[0].content.filter((part) => part.type === "input_image").length, 42);
   assert.deepEqual(requests[0].body.text.format.schema.properties.roleGuidance.required, CATEGORY_ROLES);
 });
 
