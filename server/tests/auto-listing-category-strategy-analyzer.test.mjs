@@ -7,7 +7,7 @@ const HASH = "a".repeat(64);
 const ACCOUNT = "account-a";
 const CONFIG = Object.freeze({
   analyzerVersion: "category-strategy-v1",
-  promptVersion: "category-strategy-prompt-v1",
+  promptVersion: "category-strategy-prompt-v2",
   profileId: "profile-a",
   profileVersion: 7,
   model: "vision-model-a",
