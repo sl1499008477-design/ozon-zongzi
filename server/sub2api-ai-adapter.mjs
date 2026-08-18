@@ -856,7 +856,7 @@ function binaryView(value) {
   return Buffer.from(value);
 }
 
-function sourceImageContent(
+async function sourceImageContent(
   sourceImages = [],
   maxImageBytes = MAX_IMAGE_BYTES,
   maxSourceImageBytesTotal = MAX_SOURCE_IMAGE_BYTES_TOTAL,
@@ -874,18 +874,24 @@ function sourceImageContent(
     totalBytes += length;
     prepared.push(source.bytes);
   }
-  return prepared.map((sourceBytes) => {
-    try {
-      const bytes = binaryView(sourceBytes);
-      const metadata = imageMetadata(bytes);
-      return { type: "input_image", image_url: `data:${metadata.contentType};base64,${bytes.toString("base64")}` };
-    } catch {
-      throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
-    }
-  });
+  const content = [];
+  for (let offset = 0; offset < prepared.length; offset += 4) {
+    const batch = await Promise.all(prepared.slice(offset, offset + 4).map(async (sourceBytes) => {
+      try {
+        const bytes = binaryView(sourceBytes);
+        const metadata = imageMetadata(bytes);
+        await sharp(bytes, { failOn: "error", limitInputPixels: 100_000_000 }).stats();
+        return { type: "input_image", image_url: `data:${metadata.contentType};base64,${bytes.toString("base64")}` };
+      } catch {
+        throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+      }
+    }));
+    content.push(...batch);
+  }
+  return content;
 }
 
-function responsesInput(
+async function responsesInput(
   prompt,
   sourceImages = [],
   maxImageBytes = MAX_IMAGE_BYTES,
@@ -895,7 +901,7 @@ function responsesInput(
     role: "user",
     content: [
       { type: "input_text", text: validatePrompt(prompt) },
-      ...sourceImageContent(sourceImages, maxImageBytes, maxSourceImageBytesTotal),
+      ...await sourceImageContent(sourceImages, maxImageBytes, maxSourceImageBytesTotal),
     ],
   }];
 }
@@ -1572,7 +1578,7 @@ export function createSub2ApiAdapter({
     const validate = compileJsonSchema(input.jsonSchema);
     const body = {
       model: normalizedProfile.textModel,
-      input: responsesInput(input.prompt, input.sourceImages, maxImageBytes, maxSourceImageBytesTotal),
+      input: await responsesInput(input.prompt, input.sourceImages, maxImageBytes, maxSourceImageBytesTotal),
       text: {
         format: {
           type: "json_schema",
@@ -1623,7 +1629,7 @@ export function createSub2ApiAdapter({
   async function generateResponsesImage(input, normalizedProfile, { allowDisabled = false } = {}) {
     const body = {
       model: normalizedProfile.textModel,
-      input: responsesInput(input.prompt, input.sourceImages, maxImageBytes, maxSourceImageBytesTotal),
+      input: await responsesInput(input.prompt, input.sourceImages, maxImageBytes, maxSourceImageBytesTotal),
       tools: [{
         type: "image_generation",
         model: normalizedProfile.imageModel,
@@ -1688,11 +1694,11 @@ export function createSub2ApiAdapter({
   }
 
   async function generateOpenAiImage(input, normalizedProfile, { allowDisabled = false } = {}) {
-    const sourceImages = sourceImageContent(
+    const sourceImages = (await sourceImageContent(
       input.sourceImages,
       maxImageBytes,
       maxSourceImageBytesTotal,
-    ).map((item) => ({ image_url: item.image_url }));
+    )).map((item) => ({ image_url: item.image_url }));
     const body = {
       model: normalizedProfile.imageModel,
       prompt: validatePrompt(input.prompt),

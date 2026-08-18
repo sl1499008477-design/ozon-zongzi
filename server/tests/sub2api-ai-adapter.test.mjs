@@ -1397,8 +1397,23 @@ test("Responses structured text accepts ordinary VP8 and VP8L WebP source eviden
   ]);
 });
 
-test("malformed VP8 and VP8L source evidence is rejected before secret or network access", async (t) => {
+test("malformed WebP source evidence is rejected before secret or network access", async (t) => {
+  const headerOnlyVp8 = Buffer.from(WEBP_VP8_3X2, "base64").subarray(0, 30);
+  headerOnlyVp8.writeUInt32LE(22, 4);
+  headerOnlyVp8.writeUInt32LE(10, 16);
+  headerOnlyVp8.writeUIntLE(headerOnlyVp8.readUIntLE(20, 3) & 0x1f, 20, 3);
+  const headerOnlyVp8l = Buffer.from(WEBP_VP8L_3X2, "base64").subarray(0, 30);
+  headerOnlyVp8l.writeUInt32LE(22, 4);
+  headerOnlyVp8l.writeUInt32LE(10, 16);
+  const headerOnlyVp8x = Buffer.alloc(30);
+  headerOnlyVp8x.write("RIFF", 0, "ascii");
+  headerOnlyVp8x.writeUInt32LE(22, 4);
+  headerOnlyVp8x.write("WEBPVP8X", 8, "ascii");
+  headerOnlyVp8x.writeUInt32LE(10, 16);
   const malformedCases = [
+    ["VP8 has a valid key-frame header but no decodable pixels", headerOnlyVp8.toString("base64"), () => {}],
+    ["VP8L has a valid image header but no decodable pixels", headerOnlyVp8l.toString("base64"), () => {}],
+    ["VP8X has a valid canvas header but no image frame", headerOnlyVp8x.toString("base64"), () => {}],
     ["VP8 RIFF boundary excludes the image chunk", WEBP_VP8_3X2, (bytes) => bytes.writeUInt32LE(20, 4)],
     ["VP8 chunk is shorter than its frame header", WEBP_VP8_3X2, (bytes) => bytes.writeUInt32LE(0, 16)],
     ["VP8 frame is not a key frame", WEBP_VP8_3X2, (bytes) => { bytes[20] |= 0x01; }],
@@ -1416,6 +1431,7 @@ test("malformed VP8 and VP8L source evidence is rejected before secret or networ
     await t.test(name, async () => {
       const bytes = Buffer.from(encoded, "base64");
       mutate(bytes);
+      let dnsReads = 0;
       let reads = 0;
       let fetches = 0;
       const gateway = adapter(async () => {
@@ -1424,12 +1440,15 @@ test("malformed VP8 and VP8L source evidence is rejected before secret or networ
           model: "gpt-text",
           output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
         });
-      }, { readSecret: () => { reads += 1; return secret; } });
+      }, {
+        readSecret: () => { reads += 1; return secret; },
+        resolveHostname: async () => { dnsReads += 1; return publicDns(); },
+      });
 
       await assert.rejects(gateway.createTextResponse(textInput({
         sourceImages: [{ bytes, contentType: "image/webp" }],
       })), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID" && error?.retryable === false);
-      assert.deepEqual({ reads, fetches }, { reads: 0, fetches: 0 });
+      assert.deepEqual({ dnsReads, reads, fetches }, { dnsReads: 0, reads: 0, fetches: 0 });
     });
   }
 });
