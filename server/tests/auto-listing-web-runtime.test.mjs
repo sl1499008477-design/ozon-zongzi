@@ -125,6 +125,10 @@ test("category strategy production adapter sends the exact account profile and i
   assert.match(gatewayCalls[0].prompt, /Russian.+Simplified Chinese/su);
   assert.equal(gatewayCalls[0].jsonSchema.properties.schemaVersion.const, 3);
   assert.deepEqual(gatewayCalls[0].jsonSchema.properties.style.required, ["ru", "zh"]);
+  assert.equal(gatewayCalls[0].jsonSchema.properties.style.properties.ru.maxLength, 500);
+  assert.equal(gatewayCalls[0].jsonSchema.properties.commonPatterns.maxItems, 10);
+  assert.equal(gatewayCalls[0].jsonSchema.properties.differences.maxItems, 10);
+  assert.equal(gatewayCalls[0].jsonSchema.properties.cautions.maxItems, 10);
   assert.deepEqual(gatewayCalls[0].jsonSchema.properties.roleGuidance.required,
     ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
   assert.deepEqual(gatewayCalls[0].jsonSchema.properties.roleGuidance.properties.MAIN

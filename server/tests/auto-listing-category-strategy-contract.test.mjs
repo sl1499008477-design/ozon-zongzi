@@ -4,6 +4,7 @@ import {
   CATEGORY_STRATEGY_DRAFT_STATES,
   projectCategoryStrategyDraft,
   projectCategoryStrategyGuidanceV2,
+  projectRussianCategoryStrategyGuidanceV2,
   projectCategoryStrategyScope,
   validateCategoryStrategySamples,
 } from "../auto-listing-category-strategy-contract.mjs";
@@ -167,6 +168,26 @@ test("guidance defines every role without image-count controls", () => {
   assert.throws(() => projectCategoryStrategyGuidanceV2({ ...guidance(), roles: {
     ...guidance().roles, MAIN: { ...guidance().roles.MAIN, imageCount: 1 },
   } }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_CONTRACT_INVALID" });
+});
+
+test("Russian execution guidance rejects English and Chinese before publication", () => {
+  const russian = {
+    overallStyle: "Чистая коммерческая подача товара",
+    prohibitedPatterns: ["Не копировать товарные знаки конкурентов"],
+    roles: Object.fromEntries(Object.keys(guidance().roles).map((role) => [role, {
+      composition: "Товар находится в центре кадра",
+      background: "Нейтральный светлый фон",
+      textDensity: role === "MAIN" ? "NONE" : "LIGHT",
+      layout: "Чёткая визуальная иерархия",
+    }])),
+  };
+  assert.equal(projectRussianCategoryStrategyGuidanceV2(russian).overallStyle,
+    "Чистая коммерческая подача товара");
+  for (const overallStyle of ["Clean commercial catalogue", "干净的商业目录风格", "Каталог 商品"]) {
+    assert.throws(() => projectRussianCategoryStrategyGuidanceV2({ ...russian, overallStyle }), {
+      code: "AUTO_LISTING_CATEGORY_STRATEGY_CONTRACT_INVALID",
+    });
+  }
 });
 
 test("public projectors freeze outputs and reject hostile carriers before user code runs", () => {

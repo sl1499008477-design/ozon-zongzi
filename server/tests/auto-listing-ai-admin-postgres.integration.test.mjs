@@ -43,15 +43,15 @@ const strategyRules = (ruleId) => [{
 }];
 
 const categoryGuidance = (label) => ({
-  overallStyle: `${label} overall`,
-  prohibitedPatterns: [`${label} prohibited`],
+  overallStyle: `Чистый коммерческий каталог ${label}`,
+  prohibitedPatterns: [`Не копировать брендинг конкурентов ${label}`],
   roles: Object.fromEntries([
     "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
   ].map((role) => [role, {
-    composition: `${label} ${role} composition`,
-    background: `${label} ${role} background`,
+    composition: `Товар находится в центре кадра ${label} ${role}`,
+    background: `Нейтральный светлый фон ${label} ${role}`,
     textDensity: role === "MAIN" ? "NONE" : "LIGHT",
-    layout: `${label} ${role} layout`,
+    layout: `Чёткая визуальная иерархия ${label} ${role}`,
   }])),
 });
 
@@ -2002,7 +2002,7 @@ if (!enabled) {
         accountId: accountA, suffix, descriptionCategoryId: 170, typeId: 99,
       });
       const manualResultId = `zz-manual-result-${suffix}`;
-      const manualGuidance = { ...draft.guidance, overallStyle: "manually reviewed category style" };
+      const manualGuidance = { ...draft.guidance, overallStyle: "Проверенный вручную стиль категории" };
       await admin.query(
         `INSERT INTO auto_listing_category_strategy_analysis_results
            (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
@@ -2037,7 +2037,7 @@ if (!enabled) {
           `manual-result-event-correlation-${suffix}`, crypto.createHash("sha256")
             .update(`manual-result-event-${suffix}`).digest("hex")],
       );
-      const unselectedGuidance = { ...manualGuidance, overallStyle: "unselected later row" };
+      const unselectedGuidance = { ...manualGuidance, overallStyle: "Невыбранная более поздняя строка" };
       await admin.query(
         `INSERT INTO auto_listing_category_strategy_analysis_results
            (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,attempt_id,sample_set_id,
@@ -2203,6 +2203,26 @@ if (!enabled) {
         "SELECT COUNT(*)::INTEGER AS count FROM ai_content_strategy_versions WHERE account_id=$1",
         [accountA],
       )).rows[0].count, before.rows[0].count);
+
+      const wrongLanguageGuidance = { ...manualGuidance, overallStyle: "中文整体风格" };
+      await pool.query(
+        `UPDATE auto_listing_category_strategy_analysis_results
+            SET guidance=$3::JSONB,guidance_hash=$4
+          WHERE account_id=$1 AND id=$2`,
+        [accountA, manualResultId, JSON.stringify(wrongLanguageGuidance),
+          crypto.createHash("sha256").update(JSON.stringify(wrongLanguageGuidance)).digest("hex")],
+      );
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        ...base, idempotencyKey: `wrong-language-${suffix}`,
+        correlationId: `wrong-language-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", status: 409 });
+      await pool.query(
+        `UPDATE auto_listing_category_strategy_analysis_results
+            SET guidance=$3::JSONB,guidance_hash=$4
+          WHERE account_id=$1 AND id=$2`,
+        [accountA, manualResultId, JSON.stringify(manualGuidance),
+          crypto.createHash("sha256").update(JSON.stringify(manualGuidance)).digest("hex")],
+      );
 
       const publishCollisionId = `publish-collision-${suffix}`;
       await pool.query(

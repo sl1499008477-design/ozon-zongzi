@@ -163,6 +163,21 @@ export function projectCategoryStrategyGuidanceV2(input) {
   });
 }
 
+export function projectRussianCategoryStrategyGuidanceV2(input) {
+  const guidance = projectCategoryStrategyGuidanceV2(input);
+  const russianText = (value) => {
+    if (!/\p{Script=Cyrillic}/u.test(value) || /\p{Script=Han}/u.test(value)) throw failure();
+  };
+  russianText(guidance.overallStyle);
+  guidance.prohibitedPatterns.forEach(russianText);
+  for (const role of Object.values(guidance.roles)) {
+    russianText(role.composition);
+    russianText(role.background);
+    russianText(role.layout);
+  }
+  return guidance;
+}
+
 export function projectCategoryStrategyDraft(input) {
   const value = safelyProject(input);
   const keys = ["draftId", "scope", "draftVersion", "status", "previousStatus", "sampleCount", "guidance"];

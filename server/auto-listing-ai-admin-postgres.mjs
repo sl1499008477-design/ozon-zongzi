@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 import { types } from "node:util";
 
-import { projectCategoryStrategyGuidanceV2 } from "./auto-listing-category-strategy-contract.mjs";
+import {
+  projectCategoryStrategyGuidanceV2,
+  projectRussianCategoryStrategyGuidanceV2,
+} from "./auto-listing-category-strategy-contract.mjs";
 
 const FACTORY_KEYS = new Set(["pool"]);
 const CATEGORY_STRATEGY_PUBLISH_KEYS = new Set([
@@ -2155,7 +2158,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         if (analysis.rows.length !== 1) throw repositoryError("AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", 409);
         let guidance;
         try {
-          guidance = projectCategoryStrategyGuidanceV2(analysis.rows[0].guidance);
+          guidance = projectRussianCategoryStrategyGuidanceV2(analysis.rows[0].guidance);
         } catch {
           throw repositoryError("AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", 409);
         }

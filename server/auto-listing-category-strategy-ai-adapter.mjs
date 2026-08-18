@@ -5,6 +5,8 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ROLES = Object.freeze([
   "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
 ]);
+const MAX_BILINGUAL_TEXT_LENGTH = 500;
+const MAX_PATTERN_ITEMS = 10;
 
 function failure(code, status = 503, retryable = false) {
   return Object.assign(new Error(code), { code, status, retryable });
@@ -77,8 +79,8 @@ function bilingualTextSchema() {
   return {
     type: "object",
     properties: {
-      ru: { type: "string", minLength: 1, maxLength: 1_000 },
-      zh: { type: "string", minLength: 1, maxLength: 1_000 },
+      ru: { type: "string", minLength: 1, maxLength: MAX_BILINGUAL_TEXT_LENGTH },
+      zh: { type: "string", minLength: 1, maxLength: MAX_BILINGUAL_TEXT_LENGTH },
     },
     required: ["ru", "zh"],
     additionalProperties: false,
@@ -115,7 +117,7 @@ function analysisSchema(evidenceIds) {
         additionalProperties: false,
       },
       commonPatterns: {
-        type: "array", maxItems: 50,
+        type: "array", maxItems: MAX_PATTERN_ITEMS,
         items: {
           type: "object",
           properties: {
@@ -129,7 +131,7 @@ function analysisSchema(evidenceIds) {
         },
       },
       differences: {
-        type: "array", maxItems: 50,
+        type: "array", maxItems: MAX_PATTERN_ITEMS,
         items: {
           type: "object",
           properties: {
@@ -141,7 +143,7 @@ function analysisSchema(evidenceIds) {
           additionalProperties: false,
         },
       },
-      cautions: { type: "array", maxItems: 50,
+      cautions: { type: "array", maxItems: MAX_PATTERN_ITEMS,
         items: bilingualTextSchema() },
     },
     required: ["schemaVersion", "style", "roleGuidance", "commonPatterns", "differences", "cautions"],

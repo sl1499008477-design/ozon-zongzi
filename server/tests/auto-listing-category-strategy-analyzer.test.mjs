@@ -316,6 +316,31 @@ test("a single-SKU observation is accepted only in differences", async () => {
   assert.equal(calls.complete[0].evidenceSummary.differences[0].evidenceIds.length, 1);
 });
 
+test("swapped AI languages and non-Russian manual execution rules never become publishable guidance", async () => {
+  const swapped = validOutput();
+  swapped.style = { ru: "中文整体风格", zh: "Русский общий стиль" };
+  const rejected = makeHarness({ aiOutput: swapped });
+  const result = await rejected.analyzer.analyze(command());
+  assert.equal(result.status, "NEEDS_REVIEW");
+  assert.equal(result.safeCode, "AUTO_LISTING_CATEGORY_STRATEGY_AI_OUTPUT_INVALID");
+
+  const manual = makeHarness();
+  const invalidGuidance = {
+    overallStyle: "中文整体风格",
+    prohibitedPatterns: ["不要复制品牌标识"],
+    roles: Object.fromEntries(ROLES.map((role) => [role, {
+      composition: "中文构图", background: "中文背景",
+      textDensity: role === "MAIN" ? "NONE" : "LIGHT", layout: "中文布局",
+    }])),
+  };
+  await assert.rejects(manual.analyzer.editGuidance({
+    accountId: ACCOUNT, actorId: ACCOUNT, draftId: "draft-a", expectedDraftVersion: 4,
+    baseAnalysisAttemptId: "attempt-a", guidance: invalidGuidance,
+    idempotencyKey: "edit-language-a", correlationId: "correlation-edit-language-a",
+  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_ANALYZER_INVALID" });
+  assert.equal(manual.calls.edit.length, 0);
+});
+
 test("missing, extra, count, unknown role, unknown evidence, and hostile outputs become fixed NEEDS_REVIEW", async () => {
   const hostile = {};
   let reads = 0;
@@ -325,6 +350,8 @@ test("missing, extra, count, unknown role, unknown evidence, and hostile outputs
     (() => { const value = validOutput(); delete value.roleGuidance.INFOGRAPHIC; return value; })(),
     (() => { const value = validOutput(); value.roleGuidance.UNKNOWN = value.roleGuidance.MAIN; return value; })(),
     (() => { const value = validOutput(); value.roleGuidance.MAIN.evidenceIds = ["image-1", "missing-image"]; return value; })(),
+    (() => { const value = validOutput(); value.commonPatterns = Array.from({ length: 11 },
+      () => value.commonPatterns[0]); return value; })(),
     hostile,
     new Proxy(validOutput(), { ownKeys() { reads += 1; return []; } }),
   ];
@@ -342,12 +369,37 @@ test("missing, extra, count, unknown role, unknown evidence, and hostile outputs
 
 test("oversized AI output retains only a bounded fixed backend rejection envelope", async () => {
   const output = validOutput();
-  output.cautions = ["x".repeat(300_000)];
+  output.cautions = [{ ru: "я".repeat(300_000), zh: "中" }];
   const { analyzer, calls } = makeHarness({ aiOutput: output });
   const result = await analyzer.analyze(command());
   assert.equal(result.status, "NEEDS_REVIEW");
   assert.equal(Buffer.byteLength(JSON.stringify(calls.complete[0].rawResponse)) <= 512, true);
   assert.equal(JSON.stringify(calls.complete[0].rawResponse).includes("xxx"), false);
+});
+
+test("the largest accepted bilingual response remains inside both durable 256 KiB boundaries", async () => {
+  const loaded = evidence({ count: 20 });
+  const evidenceIds = loaded.samples.map((sample, index) => {
+    const evidenceId = `image-${index}-${"x".repeat(220)}`;
+    sample.images[0].evidenceId = evidenceId;
+    return evidenceId;
+  });
+  const pair = { ru: "я".repeat(500), zh: "中".repeat(500) };
+  const output = {
+    schemaVersion: 3,
+    style: pair,
+    roleGuidance: Object.fromEntries(ROLES.map((role) => [role, {
+      composition: pair, background: pair, textDensity: role === "MAIN" ? "NONE" : "LIGHT",
+      layout: pair, evidenceIds, confidence: 0.8,
+    }])),
+    commonPatterns: Array.from({ length: 10 }, () => ({ pattern: pair, evidenceIds, confidence: 0.8 })),
+    differences: Array.from({ length: 10 }, () => ({ pattern: pair, evidenceIds })),
+    cautions: Array.from({ length: 10 }, () => pair),
+  };
+  const { analyzer, calls } = makeHarness({ loaded, aiOutput: output });
+  assert.equal((await analyzer.analyze(command())).status, "DRAFT_READY");
+  assert.equal(Buffer.byteLength(JSON.stringify(calls.complete[0].rawResponse)) <= 256 * 1024, true);
+  assert.equal(Buffer.byteLength(JSON.stringify(calls.complete[0].evidenceSummary)) <= 256 * 1024, true);
 });
 
 test("exact replay returns the durable result without analyze or recover", async () => {

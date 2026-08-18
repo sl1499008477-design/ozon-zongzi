@@ -3,6 +3,7 @@ import { types } from "node:util";
 
 import {
   projectCategoryStrategyGuidanceV2,
+  projectRussianCategoryStrategyGuidanceV2,
   projectCategoryStrategyScope,
 } from "./auto-listing-category-strategy-contract.mjs";
 
@@ -15,6 +16,8 @@ const TEXT_DENSITIES = new Set(["NONE", "LIGHT", "MEDIUM", "HEAVY"]);
 const MAX_RAW_BYTES = 256 * 1024;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const MAX_REQUEST_IMAGE_BYTES = 64 * 1024 * 1024;
+const MAX_AI_TEXT_LENGTH = 500;
+const MAX_AI_PATTERN_ITEMS = 10;
 
 function failure(code, status = 422, retryable = false) {
   return Object.assign(new Error(code), { code, status, retryable });
@@ -168,8 +171,8 @@ function outputError(code = "AUTO_LISTING_CATEGORY_STRATEGY_AI_OUTPUT_INVALID") 
   return failure(code, 422);
 }
 
-function outputText(value) {
-  try { return text(value); } catch { throw outputError(); }
+function outputText(value, maximum = 1_000) {
+  try { return text(value, maximum); } catch { throw outputError(); }
 }
 
 function outputArray(raw, minimum, maximum) {
@@ -182,7 +185,12 @@ function outputClosed(raw, keys) {
 
 function bilingualText(raw) {
   const value = outputClosed(raw, new Set(["ru", "zh"]));
-  return deepFreeze({ ru: outputText(value.ru), zh: outputText(value.zh) });
+  const ru = outputText(value.ru, MAX_AI_TEXT_LENGTH);
+  const zh = outputText(value.zh, MAX_AI_TEXT_LENGTH);
+  if (!/\p{Script=Cyrillic}/u.test(ru) || /\p{Script=Han}/u.test(ru) || !/\p{Script=Han}/u.test(zh)) {
+    throw outputError();
+  }
+  return deepFreeze({ ru, zh });
 }
 
 function evidenceReferences(raw, evidenceToSku, { aggregate }) {
@@ -233,25 +241,25 @@ function projectAiOutput(raw, evidenceToSku) {
       confidence: confidence(role.confidence),
     };
   }
-  const commonPatterns = outputArray(value.commonPatterns, 0, 50).map((rawPattern) => {
+  const commonPatterns = outputArray(value.commonPatterns, 0, MAX_AI_PATTERN_ITEMS).map((rawPattern) => {
     const pattern = outputClosed(rawPattern, new Set(["pattern", "evidenceIds", "confidence"]));
     const localized = bilingualText(pattern.pattern);
     return deepFreeze({ ru: localized.ru, zh: localized.zh,
       evidenceIds: evidenceReferences(pattern.evidenceIds, evidenceToSku, { aggregate: true }),
       confidence: confidence(pattern.confidence) });
   });
-  const differences = outputArray(value.differences, 0, 50).map((rawDifference) => {
+  const differences = outputArray(value.differences, 0, MAX_AI_PATTERN_ITEMS).map((rawDifference) => {
     const difference = outputClosed(rawDifference, new Set(["pattern", "evidenceIds"]));
     const localized = bilingualText(difference.pattern);
     return deepFreeze({ ru: localized.ru, zh: localized.zh,
       evidenceIds: evidenceReferences(difference.evidenceIds, evidenceToSku, { aggregate: false }) });
   });
-  const cautions = outputArray(value.cautions, 0, 50).map(bilingualText);
+  const cautions = outputArray(value.cautions, 0, MAX_AI_PATTERN_ITEMS).map(bilingualText);
   const style = bilingualText(value.style);
   let guidance;
   let managementGuidance;
   try {
-    guidance = projectCategoryStrategyGuidanceV2({
+    guidance = projectRussianCategoryStrategyGuidanceV2({
       overallStyle: style.ru, prohibitedPatterns: cautions.map((entry) => entry.ru), roles: guidanceRolesRu,
     });
     managementGuidance = projectCategoryStrategyGuidanceV2({
@@ -523,7 +531,7 @@ export function createCategoryStrategyAnalyzer(rawOptions = {}) {
       const accountId = id(input.accountId);
       if (id(input.actorId) !== accountId) throw invalid();
       let guidance;
-      try { guidance = projectCategoryStrategyGuidanceV2(input.guidance); } catch { throw invalid(); }
+      try { guidance = projectRussianCategoryStrategyGuidanceV2(input.guidance); } catch { throw invalid(); }
       try {
         return analysisResult(await repository.appendManualAnalysisResult({ accountId, actorId: accountId,
           draftId: id(input.draftId), expectedDraftVersion: positive(input.expectedDraftVersion),

@@ -523,7 +523,7 @@ if (!enabled) {
       assert.equal(aiRequests.length, 1);
       assert.equal(new Set(aiRequests[0].request.productFacts.map((fact) => fact.sku)).size, 6);
       const editedGuidance = structuredClone(analysis.payload.data.guidance);
-      editedGuidance.overallStyle = "human reviewed clean catalogue";
+      editedGuidance.overallStyle = "Проверенный вручную чистый каталог";
       const edit = await callAdmin(runtime, actor, "PATCH", `/admin/auto-listing/category-strategies/${draft.draftId}`,
         { expectedDraftVersion: analysis.payload.data.draftVersion,
           patch: { guidance: editedGuidance, baseAnalysisAttemptId: analysis.payload.data.attemptId },
@@ -542,7 +542,7 @@ if (!enabled) {
         WHERE version.account_id=$1 AND version.id=$2 AND rule.rule_kind='EXACT_CATEGORY'`,
       [accountId, published.payload.data.id]);
       assert.equal(bundle.rows.length, 1);
-      assert.equal(bundle.rows[0].rule.overallStyle, "human reviewed clean catalogue");
+      assert.equal(bundle.rows[0].rule.overallStyle, "Проверенный вручную чистый каталог");
       assert.equal(bundle.rows[0].rule.sampleSetHash, confirm.payload.data.sampleSetHash);
       assert.equal(samples.some((sample) => JSON.stringify(bundle.rows[0]).includes(sample.sourceReferences[0].sourceUrl)), false);
       assert.equal([...objectStorage.objects.keys()].some((key) => JSON.stringify(bundle.rows[0]).includes(key)), false);
@@ -577,7 +577,7 @@ if (!enabled) {
       const sourceCapture = { snapshot: graphItem.snapshot, snapshotHash: graphItem.snapshot_hash,
         rawResponseRef: graphItem.raw_response_ref };
       const publishedRule = bundle.rows[0].rule;
-      assert.equal(publishedRule.overallStyle, "чистый каталог");
+      assert.equal(publishedRule.overallStyle, "Проверенный вручную чистый каталог");
       assert.equal(JSON.stringify(publishedRule).includes("干净的目录风格"), false);
       const strategySnapshot = {
         strategyId: "default",
