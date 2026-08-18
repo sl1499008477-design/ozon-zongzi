@@ -2115,15 +2115,13 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
               AND shared.source_description_category_id=evidence.source_description_category_id
               AND shared.source_type_id=evidence.source_type_id
               AND shared.taxonomy_scope=evidence.taxonomy_scope
-              AND shared.current_description_category_id=evidence.source_description_category_id
-              AND shared.current_type_id=evidence.source_type_id
+              AND shared.current_description_category_id=$7
+              AND shared.current_type_id=$8
               AND shared.status='ACTIVE'
             WHERE item.account_id=$1 AND item.id=$2
               AND product_draft.id=$3 AND product_draft.version=$4
               AND $5='draft:' || product_draft.version::TEXT
               AND evidence.taxonomy_scope=$6
-              AND evidence.source_description_category_id=$7
-              AND evidence.source_type_id=$8
             FOR UPDATE OF item,product_draft,pointer,shared`,
           [input.accountId, draft.source_collect_item_id, draft.source_product_draft_id,
             draft.source_product_draft_version, draft.expected_source_version, draft.taxonomy_scope,

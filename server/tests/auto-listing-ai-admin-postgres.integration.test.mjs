@@ -9,6 +9,8 @@ import { createAutoListingAiAdminPostgres } from "../auto-listing-ai-admin-postg
 import { createAutoListingAiAdminService } from "../auto-listing-ai-admin-service.mjs";
 import { createAutoListingCategoryStrategyPostgres } from "../auto-listing-category-strategy-postgres.mjs";
 import { createAutoListingCategoryStrategyService } from "../auto-listing-category-strategy-service.mjs";
+import { createPostgresAccountSharedOzonCategoryRepository }
+  from "../account-shared-ozon-category-repository.mjs";
 import { createAiGatewayProfileService } from "../ai-gateway-profile-service.mjs";
 import { createAutoListingAiCapabilityCredentialResolver } from "../auto-listing-ai-credential-resolver.mjs";
 import { createAutoListingAiSettingsPostgres } from "../auto-listing-ai-settings-postgres.mjs";
@@ -55,7 +57,8 @@ const categoryGuidance = (label) => ({
   }])),
 });
 
-async function seedPublishableCategoryDraft(client, { accountId, suffix, descriptionCategoryId, typeId }) {
+async function seedPublishableCategoryDraft(client, { accountId, suffix, descriptionCategoryId, typeId,
+  sourceDescriptionCategoryId = descriptionCategoryId, sourceTypeId = typeId }) {
   const collectItemId = `category-source-${suffix}`;
   const productDraftId = `category-product-draft-${suffix}`;
   const rawId = `category-raw-${suffix}`;
@@ -91,7 +94,8 @@ async function seedPublishableCategoryDraft(client, { accountId, suffix, descrip
         source_description_category_id,source_type_id,taxonomy_scope,captured_at,raw_response_hash,
         raw_response_ref,product_raw_response_ref,provenance)
      VALUES ($1,$2,'PRODUCT_DRAFT',$3,'7',$4,$3,$5,$6,'OZON:DEFAULT',NOW(),$7,$8,$8,'{}'::JSONB)`,
-    [evidenceId, accountId, productDraftId, collectItemId, descriptionCategoryId, typeId, h(rawId), rawId],
+    [evidenceId, accountId, productDraftId, collectItemId,
+      sourceDescriptionCategoryId, sourceTypeId, h(rawId), rawId],
   );
   await client.query(
     `INSERT INTO collect_ozon_category_current_sources
@@ -104,8 +108,19 @@ async function seedPublishableCategoryDraft(client, { accountId, suffix, descrip
        (id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
         current_description_category_id,current_type_id,status,source,version,source_evidence_id,validated_at)
      VALUES ($1,$2,$3,$4,'OZON:DEFAULT',$3,$4,'ACTIVE','SOURCE_DIRECT',1,$5,NOW())`,
-    [`category-shared-${suffix}`, accountId, descriptionCategoryId, typeId, evidenceId],
+    [`category-shared-${suffix}`, accountId, sourceDescriptionCategoryId, sourceTypeId, evidenceId],
   );
+  if (sourceDescriptionCategoryId !== descriptionCategoryId || sourceTypeId !== typeId) {
+    await client.query(
+      `UPDATE account_ozon_shared_categories
+          SET current_description_category_id=$3,current_type_id=$4,source='OZON_REFRESH',
+              taxonomy_fingerprint=$5,validated_at=NOW(),version=version+1,
+              updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
+        WHERE account_id=$1 AND id=$2`,
+      [accountId, `category-shared-${suffix}`, descriptionCategoryId, typeId,
+        h(`taxonomy-${suffix}`)],
+    );
+  }
   await client.query(
     `INSERT INTO auto_listing_category_strategy_drafts
        (id,account_id,taxonomy_scope,description_category_id,type_id,draft_version,status,
@@ -169,7 +184,7 @@ async function seedPublishableCategoryDraft(client, { accountId, suffix, descrip
         attemptId, resultId }), `seed-result-event-key-${suffix}`, `seed-result-event-corr-${suffix}`,
       h(`seed-result-event-${suffix}`)],
   );
-  return { draftId, sampleSetHash, attemptId, resultId, guidance };
+  return { draftId, sampleSetHash, attemptId, resultId, guidance, evidenceId };
 }
 
 async function rawRejectsCode(operation, expectedCode) {
@@ -186,6 +201,123 @@ if (!enabled) {
     skip: "requires PostgreSQL opt-in and a dedicated disposable database URL",
   }, () => {});
 } else {
+  test("category publication accepts an active source-to-current category mapping", {
+    timeout: 90_000,
+  }, async () => {
+    const { Pool } = await import("pg");
+    const adminPool = new Pool({ connectionString, max: 1 });
+    const admin = await adminPool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schema = `category_publish_mapping_${suffix}`;
+    const schemaSql = quote(schema);
+    const accountId = `account-mapped-${suffix}`;
+    let pool;
+    try {
+      await admin.query(`CREATE SCHEMA ${schemaSql}`);
+      await admin.query(`SET search_path TO ${schemaSql}, public`);
+      const migrations = (await readdir(migrationsDir))
+        .filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
+      for (const migration of migrations) {
+        await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      }
+      await admin.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$1,$1,'admin','active')",
+        [accountId],
+      );
+      pool = new Pool({ connectionString, max: 4, options: `-c search_path=${schema},public` });
+      const categoryRepository = createAutoListingCategoryStrategyPostgres({ pool });
+      await categoryRepository.transitionAccountPolicy({
+        accountId, actorId: accountId, expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY",
+        idempotencyKey: `enable-mapped-${suffix}`,
+        correlationId: `enable-mapped-correlation-${suffix}`,
+      });
+      const draft = await seedPublishableCategoryDraft(admin, {
+        accountId, suffix, descriptionCategoryId: 170, typeId: 99,
+        sourceDescriptionCategoryId: 190, sourceTypeId: 109,
+      });
+      const currentId = `current-mapped-strategy-${suffix}`;
+      await admin.query(
+        `INSERT INTO ai_content_strategy_versions
+           (id,account_id,strategy_key,version,status,content,content_hash,created_by)
+         VALUES ($1,$2,'default',1,'DRAFT','{"schemaVersion":"V2"}'::JSONB,$3,$2)`,
+        [currentId, accountId, crypto.createHash("sha256").update(`current-${suffix}`).digest("hex")],
+      );
+      await admin.query(
+        `UPDATE ai_content_strategy_versions
+            SET status='PUBLISHED',published_at=NOW(),published_by=$2
+          WHERE account_id=$2 AND id=$1`,
+        [currentId, accountId],
+      );
+      const repository = createAutoListingAiAdminPostgres({ pool });
+      const sharedRepository = createPostgresAccountSharedOzonCategoryRepository({ pool });
+      const transitionTime = Date.now() + 10_000;
+
+      await sharedRepository.activateRefreshedCategory({
+        accountId, evidenceId: draft.evidenceId, expectedVersion: 2,
+        currentDescriptionCategoryId: 171, currentTypeId: 100,
+        taxonomyFingerprint: "b".repeat(64),
+        validatedAt: new Date(transitionTime).toISOString(),
+      });
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        accountId, actorId: accountId, draftId: draft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: currentId,
+        idempotencyKey: `publish-wrong-active-mapping-${suffix}`,
+        correlationId: `publish-wrong-active-mapping-correlation-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", status: 409 });
+      await sharedRepository.activateRefreshedCategory({
+        accountId, evidenceId: draft.evidenceId, expectedVersion: 3,
+        currentDescriptionCategoryId: 170, currentTypeId: 99,
+        taxonomyFingerprint: "c".repeat(64),
+        validatedAt: new Date(transitionTime + 1_000).toISOString(),
+      });
+      await sharedRepository.markSharedNeedsReview({
+        accountId, evidenceId: draft.evidenceId, expectedVersion: 4,
+        safeFailureCode: "OZON_CATEGORY_NEEDS_REVIEW",
+        transitionedAt: new Date(transitionTime + 2_000).toISOString(),
+      });
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        accountId, actorId: accountId, draftId: draft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: currentId,
+        idempotencyKey: `publish-disabled-mapping-${suffix}`,
+        correlationId: `publish-disabled-mapping-correlation-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", status: 409 });
+      await sharedRepository.activateRefreshedCategory({
+        accountId, evidenceId: draft.evidenceId, expectedVersion: 5,
+        currentDescriptionCategoryId: 170, currentTypeId: 99,
+        taxonomyFingerprint: "d".repeat(64),
+        validatedAt: new Date(transitionTime + 3_000).toISOString(),
+      });
+      await assert.rejects(repository.publishCategoryStrategyDraft({
+        accountId, actorId: accountId, draftId: draft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: `stale-${currentId}`,
+        idempotencyKey: `publish-stale-version-${suffix}`,
+        correlationId: `publish-stale-version-correlation-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_STRATEGY_VERSION_CONFLICT", status: 409 });
+
+      const published = await repository.publishCategoryStrategyDraft({
+        accountId, actorId: accountId, draftId: draft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: currentId,
+        idempotencyKey: `publish-mapped-${suffix}`,
+        correlationId: `publish-mapped-correlation-${suffix}`,
+      });
+
+      assert.equal(published.status, "PUBLISHED");
+      assert.equal(published.version, 2);
+      assert.deepEqual(published.rules.map((rule) => rule.scope), [{
+        taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99,
+      }]);
+    } finally {
+      try {
+        await pool?.end();
+        await admin.query("SET search_path TO public");
+        await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`);
+      } finally {
+        admin.release();
+        await adminPool.end();
+      }
+    }
+  });
+
   test("AI admin repository serializes publication, preserves immutable history, and enforces account boundaries", { timeout: 60_000 }, async () => {
     const { Pool } = await import("pg");
     const adminPool = new Pool({ connectionString, max: 1 });
