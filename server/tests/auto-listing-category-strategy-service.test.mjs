@@ -69,6 +69,7 @@ function guidance(label = "clean") {
 }
 
 function harness({ currentDraft = draft(), verify = factFor, persistFailure = null,
+  persistSampleImages = null,
   commitFailure = null, publicationExtra = false, repositoryTransform = (_method, value) => value,
   handoffFailure = null, handoffWait = null, handoffReadyFailure = null, sessionValidationFailure = null,
   draftReplay = null, sessionReplay = null, committedReplay = null,
@@ -181,6 +182,7 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
     async persistSampleImages(input) {
       calls.persist += 1;
       records.persist.push(input);
+      if (persistSampleImages) return persistSampleImages(input);
       if (persistFailure) throw persistFailure;
       return input.sourceReferences.map((entry) => imageEvidence(entry, input.sampleId, input.sampleSetId));
     },
@@ -595,6 +597,33 @@ test("sample confirmation revalidates every SKU before persistence and atomicall
     handoff: 0, publish: 0, rollback: 0 });
 });
 
+test("prepares at most eight samples concurrently and commits selected SKU order", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const h = harness({
+    async persistSampleImages(input) {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return input.sourceReferences.map((entry) => imageEvidence(entry, input.sampleId, input.sampleSetId));
+    },
+  });
+
+  await h.service.confirmSampleSet({
+    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+    sessionId: "session-a", sessionSecret: "secret-value-at-least-32-characters",
+    samples: selectedSamples(20), idempotencyKey: "bounded-samples", correlationId: "correlation-a",
+  });
+
+  assert.equal(maxActive, 8);
+  assert.equal(h.calls.persist, 20);
+  assert.deepEqual(h.records.commit[0].samples.map(({ sku }) => sku), [
+    "sku-1", "sku-2", "sku-3", "sku-4", "sku-5", "sku-6", "sku-7", "sku-8", "sku-9", "sku-10",
+    "sku-11", "sku-12", "sku-13", "sku-14", "sku-15", "sku-16", "sku-17", "sku-18", "sku-19", "sku-20",
+  ]);
+});
+
 test("durable repository replays bypass browser facts, object storage, and current draft state", async () => {
   const committedReplay = { sampleSetId: "sample-set-durable", draftId: "draft-a", accountId: "account-a",
     sampleSetHash: HASH, sampleCount: 5, draftVersion: 2, status: "SAMPLES_READY",
@@ -678,7 +707,7 @@ test("mixed category, duplicate SKU, expired secret, image failure, and reposito
       h: harness({ persistFailure: Object.assign(new Error("storage"), {
         code: "AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_STORAGE_FAILED", status: 503,
       }) }), input: { samples: selectedSamples() },
-      code: "AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_STORAGE_FAILED", want: { verify: 5, persist: 1, commit: 0 },
+      code: "AUTO_LISTING_CATEGORY_STRATEGY_IMAGE_STORAGE_FAILED", want: { verify: 5, persist: 5, commit: 0 },
     },
     {
       h: harness({ sessionValidationFailure: Object.assign(new Error("expired"), {

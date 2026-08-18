@@ -982,20 +982,24 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
           verified.push(verifiedFact(fact, selected, draft.scope));
         }
         const samples = [];
-        for (const [ordinal, fact] of verified.entries()) {
-          const sampleId = operationId("sample", accountId, draftId, idempotencyKey,
-            String(ordinal), fact.sku, String(fact.sourceProductId));
-          let images;
-          try {
-            images = await sampleStore.persistSampleImages({ accountId, draftId, sampleSetId, sampleId,
-              correlationId, sourceReferences: fact.sourceReferences });
-          } catch (error) { dependencyError(error); }
-          samples.push({ sampleSetId, sampleId, sku: fact.sku, sourceProductId: fact.sourceProductId,
-            sourceProductRef: fact.sourceProductRef,
-            sourceProductResponseHash: fact.sourceProductResponseHash,
-            taxonomyScope: draft.scope.taxonomyScope,
-            descriptionCategoryId: draft.scope.descriptionCategoryId,
-            typeId: draft.scope.typeId, images });
+        for (let offset = 0; offset < verified.length; offset += 8) {
+          const batch = await Promise.all(verified.slice(offset, offset + 8).map(async (fact, batchIndex) => {
+            const ordinal = offset + batchIndex;
+            const sampleId = operationId("sample", accountId, draftId, idempotencyKey,
+              String(ordinal), fact.sku, String(fact.sourceProductId));
+            let images;
+            try {
+              images = await sampleStore.persistSampleImages({ accountId, draftId, sampleSetId, sampleId,
+                correlationId, sourceReferences: fact.sourceReferences });
+            } catch (error) { dependencyError(error); }
+            return { sampleSetId, sampleId, sku: fact.sku, sourceProductId: fact.sourceProductId,
+              sourceProductRef: fact.sourceProductRef,
+              sourceProductResponseHash: fact.sourceProductResponseHash,
+              taxonomyScope: draft.scope.taxonomyScope,
+              descriptionCategoryId: draft.scope.descriptionCategoryId,
+              typeId: draft.scope.typeId, images };
+          }));
+          samples.push(...batch);
         }
         let row;
         try {
