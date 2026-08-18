@@ -381,9 +381,23 @@ function publicVersion(raw, { publishedOnly = false } = {}) {
     version: positive(value.version), status: value.status });
 }
 
+function publicCategoryPublication(raw) {
+  const value = closed(raw, new Set([
+    "eventId", "strategyVersionId", "strategyVersion", "publishedAt",
+  ]));
+  return Object.freeze({
+    eventId: identifier(value.eventId),
+    strategyVersionId: identifier(value.strategyVersionId),
+    strategyVersion: positive(value.strategyVersion),
+    publishedAt: exactIsoDate(value.publishedAt),
+  });
+}
+
 function publicDraftDetail(raw, accountId) {
   try {
-    const value = closed(raw, new Set(["draft", "session", "samples", "analysis", "published", "versions"]));
+    const value = closed(raw, new Set([
+      "draft", "session", "samples", "analysis", "published", "categoryPublications", "versions",
+    ]));
     const draft = readDraftRow(value.draft, accountId);
     const session = value.session === null ? null : (() => {
       const item = closed(value.session, new Set(["sessionId", "state", "expiresAt"]));
@@ -419,11 +433,13 @@ function publicDraftDetail(raw, accountId) {
     if (samples.length !== draft.sampleCount || new Set(samples.map((sample) => sample.sampleId)).size !== samples.length
       || new Set(samples.map((sample) => sample.sku)).size !== samples.length) throw invalid();
     const versions = Object.freeze(closedArray(value.versions, 0, 1_000).map((item) => publicVersion(item)));
+    const categoryPublications = Object.freeze(closedArray(value.categoryPublications, 0, 1_000)
+      .map(publicCategoryPublication));
     const published = value.published === null ? null : publicVersion(value.published, { publishedOnly: true });
     if ((published === null) !== !versions.some((item) => item.status === "PUBLISHED")
       || (published && !versions.some((item) => item.id === published.id && item.status === "PUBLISHED"))) throw invalid();
     return freeze({ draft: publicDraft(draft, { includeSource: true }), session, samples,
-      analysis: publicReadAnalysis(value.analysis), published, versions });
+      analysis: publicReadAnalysis(value.analysis), published, categoryPublications, versions });
   } catch (error) {
     if (error?.code === "AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND") throw error;
     throw dataBoundary();

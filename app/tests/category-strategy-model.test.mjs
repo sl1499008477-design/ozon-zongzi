@@ -11,6 +11,7 @@ import {
   projectCategoryStrategyDetailBundle,
   projectCategoryStrategyList,
   projectCategoryStrategyPublishedVersion,
+  projectCategoryStrategyPublicationHistory,
   projectCategoryStrategyVersionHistory,
   projectCategoryStrategySample,
   projectCategoryStrategySession,
@@ -111,9 +112,20 @@ test("closed UI projections cover list, detail, session, sample, analysis and pu
       previewRole: "MAIN", previewWidth: 1200, previewHeight: 1600,
       mainImageWidth: 1200, mainImageHeight: 1600,
       imageCount: 1, status: "READY", excludedReasons: [],
-    })), analysis, published: null, versions: [] });
+    })), analysis, published: null, categoryPublications: [{
+      eventId: "publication-a",
+      strategyVersionId: "strategy-v2",
+      strategyVersion: 2,
+      publishedAt: "2026-08-18T06:03:32.827Z",
+    }], versions: [] });
   assert.equal(bundle.samples[0].title, null);
   assert.equal(bundle.analysis.provenance, "AI");
+  assert.deepEqual(bundle.categoryPublications, [{
+    eventId: "publication-a",
+    strategyVersionId: "strategy-v2",
+    strategyVersion: 2,
+    publishedAt: "2026-08-18T06:03:32.827Z",
+  }]);
 
   assert.deepEqual(projectCategoryStrategyPublishedVersion({
     id: "strategy-v2", strategyKey: "default", version: 2,
@@ -298,6 +310,32 @@ test("hostile, open and sensitive carriers never enter the UI models", () => {
     duplicate: false, safeCode: null, guidance: GUIDANCE, evidenceSummary: null,
     provenance: "AI", editedAt: null, baseAnalysisAttemptId: null, rawVendorResponse: "secret",
   }), { code: "CATEGORY_STRATEGY_UI_DATA_INVALID" });
+
+  const publication = {
+    eventId: "publication-a", strategyVersionId: "strategy-v2", strategyVersion: 2,
+    publishedAt: "2026-08-18T06:03:32.827Z",
+  };
+  for (const invalidPublication of [
+    { ...publication, databaseOnlySecret: "must-not-leak" },
+    { eventId: publication.eventId, strategyVersionId: publication.strategyVersionId,
+      publishedAt: publication.publishedAt },
+    { ...publication, strategyVersion: 0 },
+    { ...publication, publishedAt: "not-an-iso-date" },
+  ]) {
+    assert.throws(() => projectCategoryStrategyPublicationHistory([invalidPublication]), {
+      code: "CATEGORY_STRATEGY_UI_DATA_INVALID",
+    });
+  }
+  let publicationGetterReads = 0;
+  const accessorPublication = { ...publication };
+  Object.defineProperty(accessorPublication, "publishedAt", { enumerable: true, get() {
+    publicationGetterReads += 1;
+    return publication.publishedAt;
+  } });
+  assert.throws(() => projectCategoryStrategyPublicationHistory([accessorPublication]), {
+    code: "CATEGORY_STRATEGY_UI_DATA_INVALID",
+  });
+  assert.equal(publicationGetterReads, 0);
 
   const proxy = new Proxy({}, { ownKeys() { throw new Error("trap"); } });
   assert.throws(() => projectCategoryStrategyDetail(proxy), {

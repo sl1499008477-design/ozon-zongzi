@@ -12,8 +12,8 @@ test("strategy page exposes the complete safe administrator workflow", () => {
   for (const text of [
     "类目图片策略", "精确类目", "当前状态", "样本库", "继续选样", "创建新草稿", "会话剩余时间",
     "生成类目策略草稿", "预计费用", "确认生成", "图片角色规则", "证据与置信度",
-    "样本差异", "注意事项", "人工编辑", "影响预览", "发布策略", "版本历史",
-    "创建回滚版本", "返回并继续创建",
+    "样本差异", "注意事项", "人工编辑", "影响预览", "发布策略", "当前类目发布记录",
+    "账号策略包版本历史（高级操作）", "创建账号级回滚版本", "返回并继续创建",
   ]) assert.match(page, new RegExp(text, "u"));
   for (const role of ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]) {
     assert.match(page, new RegExp(role));

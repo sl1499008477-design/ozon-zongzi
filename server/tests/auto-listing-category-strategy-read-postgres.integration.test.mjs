@@ -186,6 +186,53 @@ if (!enabled) {
         VALUES ($1,$3,'default',1,'RETIRED','{}'::JSONB,$4,NOW()-INTERVAL '1 day',$3,$3),
                ($2,$3,'default',2,'PUBLISHED','{}'::JSONB,$5,NOW(),$3,$3)`,
       [`strategy-v1-${suffix}`, `strategy-v2-${suffix}`, accountA, h(`v1-${suffix}`), h(`v2-${suffix}`)]);
+      await admin.query(`INSERT INTO auto_listing_category_strategy_events
+        (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,
+         analysis_result_id,published_strategy_version_id,event_payload,idempotency_key,correlation_id,
+         request_hash,actor_account_id)
+        VALUES ($1,$2,$3,'OZON:DEFAULT',170,99,'PUBLISHED',$4,$5,'{"version":2}'::JSONB,$6,$7,$8,$2)`,
+      [`publication-${suffix}`, accountA, draftId, `manual-result-${suffix}`, `strategy-v2-${suffix}`,
+        `publication-key-${suffix}`, `publication-corr-${suffix}`, h(`publication-${suffix}`)]);
+      const accountBVersionId = `strategy-account-b-${suffix}`;
+      await admin.query(`INSERT INTO ai_content_strategy_versions
+        (id,account_id,strategy_key,version,status,content,content_hash,published_at,published_by,created_by)
+        VALUES ($1,$2,'default',1,'PUBLISHED','{}'::JSONB,$3,NOW(),$2,$2)`,
+      [accountBVersionId, accountB, h(`account-b-version-${suffix}`)]);
+      // These rows are query-scope distractors only. The target publication above uses the full
+      // production lineage; replica mode is confined to this disposable schema and restored immediately.
+      await admin.query("SET session_replication_role=replica");
+      try {
+        await admin.query(`INSERT INTO auto_listing_category_strategy_events
+          (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,event_type,
+           analysis_result_id,published_strategy_version_id,event_payload,idempotency_key,correlation_id,
+           request_hash,actor_account_id)
+          VALUES
+            ($1,$4,'other-description','OZON:DEFAULT',171,99,'PUBLISHED','other-description-result',$5,
+             '{"version":2}'::JSONB,$6,$7,$8,$4),
+            ($2,$4,'other-type','OZON:DEFAULT',170,100,'PUBLISHED','other-type-result',$5,
+             '{"version":2}'::JSONB,$9,$10,$11,$4),
+            ($3,$12,'other-account','OZON:DEFAULT',170,99,'PUBLISHED','other-account-result',$13,
+             '{"version":1}'::JSONB,$14,$15,$16,$12)`, [
+          `publication-other-description-${suffix}`,
+          `publication-other-type-${suffix}`,
+          `publication-other-account-${suffix}`,
+          accountA,
+          `strategy-v2-${suffix}`,
+          `publication-other-description-key-${suffix}`,
+          `publication-other-description-corr-${suffix}`,
+          h(`publication-other-description-${suffix}`),
+          `publication-other-type-key-${suffix}`,
+          `publication-other-type-corr-${suffix}`,
+          h(`publication-other-type-${suffix}`),
+          accountB,
+          accountBVersionId,
+          `publication-other-account-key-${suffix}`,
+          `publication-other-account-corr-${suffix}`,
+          h(`publication-other-account-${suffix}`),
+        ]);
+      } finally {
+        await admin.query("SET session_replication_role=origin");
+      }
 
       pool = new Pool({ connectionString: databaseUrl, max: 4, options: `-c search_path=${schema},public` });
       const readModel = createCategoryStrategyReadModel({ pool });
@@ -222,6 +269,16 @@ if (!enabled) {
       assert.equal(detail.analysis.provenance, "MANUAL");
       assert.equal(detail.analysis.evidenceSummary.roleEvidence.MAIN.confidence, 0.86);
       assert.deepEqual(detail.versions.map((entry) => entry.status), ["PUBLISHED", "RETIRED"]);
+      assert.deepEqual(detail.categoryPublications.map((entry) => ({
+        eventId: entry.eventId,
+        strategyVersionId: entry.strategyVersionId,
+        strategyVersion: entry.strategyVersion,
+      })), [{
+        eventId: `publication-${suffix}`,
+        strategyVersionId: `strategy-v2-${suffix}`,
+        strategyVersion: 2,
+      }]);
+      assert.match(detail.categoryPublications[0].publishedAt, /^\d{4}-\d{2}-\d{2}T/u);
       assert.equal(detail.published.id, `strategy-v2-${suffix}`);
       const readSql = [];
       const guardedReadModel = createCategoryStrategyReadModel({ pool: {
@@ -243,6 +300,7 @@ if (!enabled) {
       });
     } finally {
       await pool?.end();
+      await admin.query("SET session_replication_role=origin").catch(() => {});
       await admin.query("SET search_path TO public").catch(() => {});
       await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
       admin.release();

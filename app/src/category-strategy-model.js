@@ -270,7 +270,9 @@ export function projectCategoryStrategyAnalysis(raw) {
 }
 
 export function projectCategoryStrategyDetailBundle(raw) {
-  const value = closed(raw, new Set(["draft", "session", "samples", "analysis", "published", "versions"]));
+  const value = closed(raw, new Set([
+    "draft", "session", "samples", "analysis", "published", "categoryPublications", "versions",
+  ]));
   const draft = projectCategoryStrategyDetail(value.draft);
   const samples = array(value.samples, 0, 20).map(projectCategoryStrategySample);
   if (samples.length !== draft.sampleCount || new Set(samples.map((sample) => sample.sampleId)).size !== samples.length
@@ -281,8 +283,23 @@ export function projectCategoryStrategyDetailBundle(raw) {
     samples,
     analysis: nullable(value.analysis, projectCategoryStrategyAnalysis),
     published: nullable(value.published, projectCategoryStrategyPublishedVersion),
+    categoryPublications: projectCategoryStrategyPublicationHistory(value.categoryPublications),
     versions: projectCategoryStrategyVersionHistory(value.versions),
   });
+}
+
+export function projectCategoryStrategyPublicationHistory(raw) {
+  return deepFreeze(array(raw, 0, 1_000).map((entry) => {
+    const value = closed(entry, new Set([
+      "eventId", "strategyVersionId", "strategyVersion", "publishedAt",
+    ]));
+    return Object.freeze({
+      eventId: id(value.eventId),
+      strategyVersionId: id(value.strategyVersionId),
+      strategyVersion: positive(value.strategyVersion),
+      publishedAt: iso(value.publishedAt),
+    });
+  }));
 }
 
 export function projectCategoryStrategyPublishedVersion(raw) {

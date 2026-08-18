@@ -90,7 +90,7 @@ test("sample cards show a clear existing preview and the original main-image qua
         await route.fulfill({ status: 200, json: { ok: true, data: {
           draft: { draftId: DRAFT_ID, scope: SCOPE, draftVersion: 2, status: "SAMPLES_READY", sampleCount: 5,
             sourceCollectItemId: "collect-category-preview", expectedSourceVersion: "draft:1" },
-          session: null, samples: SAMPLES, analysis: null, published: null, versions: [],
+          session: null, samples: SAMPLES, analysis: null, published: null, categoryPublications: [], versions: [],
         } } });
         return;
       }

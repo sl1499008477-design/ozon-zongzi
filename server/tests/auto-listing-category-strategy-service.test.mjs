@@ -169,7 +169,7 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
     status: "READY", excludedReasons: [], thumbnailImageId: `image-${index + 1}`,
   })) : [];
   const durableDetail = detailRead ?? (currentDraft ? { draft: currentDraft, session: null,
-    samples: defaultSamples, analysis: null, published: null, versions: [] } : null);
+    samples: defaultSamples, analysis: null, published: null, categoryPublications: [], versions: [] } : null);
   const readModel = {
     async listStrategies({ accountId }) { calls.read += 1; return [currentDraft && { ...currentDraft, accountId }].filter(Boolean); },
     async getDraft() { calls.read += 1; return currentDraft; },
@@ -355,6 +355,10 @@ test("durable detail read returns only the closed reloadable Web evidence bundle
     })),
     analysis,
     published: { id: "strategy-v2", strategyKey: "default", version: 2, status: "PUBLISHED" },
+    categoryPublications: [{
+      eventId: "publication-v2", strategyVersionId: "strategy-v2", strategyVersion: 2,
+      publishedAt: "2026-08-15T01:30:00.000Z",
+    }],
     versions: [
       { id: "strategy-v1", strategyKey: "default", version: 1, status: "RETIRED" },
       { id: "strategy-v2", strategyKey: "default", version: 2, status: "PUBLISHED" },
@@ -362,7 +366,9 @@ test("durable detail read returns only the closed reloadable Web evidence bundle
   };
   const h = harness({ currentDraft: detailRead.draft, detailRead });
   const result = await h.service.getDraft({ actor: ACTOR, draftId: "draft-a" });
-  assert.deepEqual(Object.keys(result), ["draft", "session", "samples", "analysis", "published", "versions"]);
+  assert.deepEqual(Object.keys(result), [
+    "draft", "session", "samples", "analysis", "published", "categoryPublications", "versions",
+  ]);
   assert.equal(result.draft.sourceCollectItemId, "collect-a");
   assert.equal(result.draft.expectedSourceVersion, "draft:1");
   assert.equal(result.samples[0].thumbnailUrl,
@@ -370,6 +376,7 @@ test("durable detail read returns only the closed reloadable Web evidence bundle
   assert.equal(result.analysis.provenance, "MANUAL");
   assert.equal(result.analysis.evidenceSummary.managementZh.guidance.overallStyle, "中文管理 catalogue");
   assert.equal(result.analysis.evidenceSummary.managementZh.commonPatterns[0], "主体居中");
+  assert.equal(result.categoryPublications[0].strategyVersion, 2);
   assert.equal(JSON.stringify(result).includes("account-a"), false);
   assert.doesNotMatch(JSON.stringify(result), /objectKey|rawResponse|editedBy|sourceUrl/u);
 });
@@ -449,7 +456,7 @@ test("administrator can list, read, and create exact account-scoped drafts", asy
       taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 17028922, typeId: 91542,
     }, draftVersion: 1, status: "COLLECTING", sampleCount: 0,
     sourceCollectItemId: "collect-a", expectedSourceVersion: "draft:1" },
-    session: null, samples: [], analysis: null, published: null, versions: [],
+    session: null, samples: [], analysis: null, published: null, categoryPublications: [], versions: [],
   });
   assert.deepEqual(await h.service.createDraft({
     actor: ACTOR, scope: {
@@ -779,6 +786,34 @@ test("malformed same-account read rows fail as a closed server data boundary", a
   await assert.rejects(h.service.getDraft({ actor: ACTOR, draftId: "draft-a" }), {
     code: "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", status: 500,
   });
+
+  const publication = {
+    eventId: "publication-a", strategyVersionId: "strategy-v2", strategyVersion: 2,
+    publishedAt: "2026-08-15T01:00:00.000Z",
+  };
+  const detailRead = (entry) => ({ draft: draft(), session: null, samples: [], analysis: null,
+    published: null, categoryPublications: [entry], versions: [] });
+  for (const invalidPublication of [
+    { ...publication, databaseOnlySecret: "must-not-leak" },
+    { eventId: publication.eventId, strategyVersionId: publication.strategyVersionId,
+      publishedAt: publication.publishedAt },
+    { ...publication, strategyVersion: 0 },
+    { ...publication, publishedAt: "not-an-iso-date" },
+  ]) {
+    await assert.rejects(harness({ detailRead: detailRead(invalidPublication) }).service.getDraft({
+      actor: ACTOR, draftId: "draft-a",
+    }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", status: 500 });
+  }
+  let publicationGetterReads = 0;
+  const accessorPublication = { ...publication };
+  Object.defineProperty(accessorPublication, "publishedAt", { enumerable: true, get() {
+    publicationGetterReads += 1;
+    return publication.publishedAt;
+  } });
+  await assert.rejects(harness({ detailRead: detailRead(accessorPublication) }).service.getDraft({
+    actor: ACTOR, draftId: "draft-a",
+  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", status: 500 });
+  assert.equal(publicationGetterReads, 0);
 });
 
 test("repository result DTOs are exact descriptor-safe server boundaries", async () => {

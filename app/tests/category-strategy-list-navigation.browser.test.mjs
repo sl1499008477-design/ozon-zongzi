@@ -104,6 +104,7 @@ function strategyBundle() {
     samples: [],
     analysis: null,
     published: null,
+    categoryPublications: [],
     versions: [],
   };
 }

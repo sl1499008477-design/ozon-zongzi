@@ -68,7 +68,7 @@ function bundle(draftId) {
   return {
     draft: { ...summary(draftId), sourceCollectItemId: "collect-language", expectedSourceVersion: "draft:1" },
     session: null, samples: [], analysis: analysis({ bilingual: draftId === NEW_DRAFT_ID }),
-    published: null, versions: [],
+    published: null, categoryPublications: [], versions: [],
   };
 }
 

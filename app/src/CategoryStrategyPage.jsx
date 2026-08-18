@@ -145,6 +145,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
   const [analysis, setAnalysis] = useState(null);
   const [guidanceLanguage, setGuidanceLanguage] = useState("ru");
   const [published, setPublished] = useState(null);
+  const [categoryPublications, setCategoryPublications] = useState([]);
   const [versions, setVersions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState("");
@@ -176,6 +177,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     setSamples(bundle.samples);
     setAnalysis(bundle.analysis);
     setPublished(bundle.published);
+    setCategoryPublications(bundle.categoryPublications);
     setVersions(bundle.versions);
   }, []);
 
@@ -185,6 +187,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     setSamples([]);
     setAnalysis(null);
     setPublished(null);
+    setCategoryPublications([]);
     setVersions([]);
     form.resetFields();
   }, [form]);
@@ -375,9 +378,9 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
   });
 
   const rollback = (target) => Modal.confirm({
-    title: `创建回滚版本 v${target.version}`,
-    content: "系统会复制该历史规则并发布为更高的新版本，不会修改原历史记录。",
-    okText: "创建回滚版本",
+    title: `创建账号级回滚版本 v${target.version}`,
+    content: "账号级回滚会复制所选历史版本的全部规则，并替换整个账号策略包；其中所有类目都会受到影响。原历史记录不会被修改。",
+    okText: "创建账号级回滚版本",
     cancelText: "取消",
     onOk: () => runAction(`rollback:${target.id}`, async (context) => {
       const fingerprint = { draftId: detail.draftId, targetStrategyVersionId: target.id,
@@ -547,12 +550,24 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
           <p>策略只规定图片表现方式，不会改变自动上架页面配置的图片数量、店铺、仓库、币种或库存。</p>
         </Card>
 
-        <Card title="版本历史" extra={<HistoryOutlined />}>
+        <Card title="当前类目发布记录" extra={<HistoryOutlined />}>
+          <Table rowKey="eventId" pagination={false} dataSource={categoryPublications}
+            locale={{ emptyText: "当前类目尚无发布记录" }} columns={[
+              { title: "发布版本", dataIndex: "strategyVersion", render: (value) => `v${value}` },
+              { title: "发布时间", dataIndex: "publishedAt",
+                render: (value) => new Date(value).toLocaleString() },
+            ]} />
+        </Card>
+
+        <Card title="账号策略包版本历史（高级操作）" extra={<HistoryOutlined />}>
+          <Alert type="warning" showIcon title="账号级操作"
+            description="回滚会替换整个账号策略包，并影响其中所有类目。" />
           <Table rowKey="id" pagination={false} dataSource={versions} columns={[
             { title: "版本", dataIndex: "version", render: (value) => `v${value}` },
             { title: "状态", dataIndex: "status" },
             { title: "操作", render: (_value, row) => row.id !== currentPublished?.id
-              ? <Button size="small" disabled={Boolean(action)} onClick={() => rollback(row)}>创建回滚版本</Button> : "当前版本" },
+              ? <Button size="small" disabled={Boolean(action)}
+                onClick={() => rollback(row)}>创建账号级回滚版本</Button> : "当前版本" },
           ]} />
         </Card>
 

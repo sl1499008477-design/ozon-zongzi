@@ -405,7 +405,9 @@ export function createCategoryStrategyReadModel({ pool }) {
             TO_CHAR(analysis.edited_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END,
           'baseAnalysisAttemptId',analysis.base_analysis_attempt_id
         ) END AS analysis,
-        versions.published,COALESCE(versions.items,'[]'::JSONB) AS versions
+        versions.published,
+        COALESCE(category_publications.items,'[]'::JSONB) AS category_publications,
+        COALESCE(versions.items,'[]'::JSONB) AS versions
       FROM target
       LEFT JOIN LATERAL (
         SELECT id,state,expires_at
@@ -461,6 +463,21 @@ export function createCategoryStrategyReadModel({ pool }) {
       ) analysis ON TRUE
       LEFT JOIN LATERAL (
         SELECT jsonb_agg(jsonb_build_object(
+          'eventId',publication.id,
+          'strategyVersionId',publication.published_strategy_version_id,
+          'strategyVersion',version.version,
+          'publishedAt',TO_CHAR(publication.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) ORDER BY publication.created_at DESC,publication.id DESC) AS items
+        FROM auto_listing_category_strategy_events publication
+        JOIN ai_content_strategy_versions version
+          ON version.account_id=publication.account_id AND version.id=publication.published_strategy_version_id
+        WHERE publication.account_id=target.account_id AND publication.event_type='PUBLISHED'
+          AND publication.taxonomy_scope=target.taxonomy_scope
+          AND publication.description_category_id=target.description_category_id
+          AND publication.type_id=target.type_id
+      ) category_publications ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(jsonb_build_object(
           'id',version.id,'strategyKey',version.strategy_key,'version',version.version,'status',version.status
         ) ORDER BY version.version DESC,version.id DESC) AS items,
         (jsonb_agg(jsonb_build_object(
@@ -471,7 +488,8 @@ export function createCategoryStrategyReadModel({ pool }) {
       ) versions ON TRUE`, [accountId, draftId]);
       const value = result.rows[0];
       return value ? { draft: row(value), session: value.session, samples: value.samples,
-        analysis: value.analysis, published: value.published, versions: value.versions } : null;
+        analysis: value.analysis, published: value.published,
+        categoryPublications: value.category_publications, versions: value.versions } : null;
     },
     async getThumbnailEvidence({ accountId, draftId, sampleId, imageId }) {
       const result = await pool.query(
