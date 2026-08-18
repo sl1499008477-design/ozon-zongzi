@@ -777,17 +777,34 @@ function imageMetadata(bytes) {
   }
   if (bytes.length >= 30 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") {
     const kind = bytes.toString("ascii", 12, 16);
-    if (kind === "VP8X") {
+    const riffEnd = 8 + bytes.readUInt32LE(4);
+    const chunkSize = bytes.readUInt32LE(16);
+    const chunkEnd = 20 + chunkSize + (chunkSize & 1);
+    const chunkIsContained = riffEnd <= bytes.length && chunkEnd <= riffEnd;
+    if (kind === "VP8X" && chunkIsContained && chunkSize >= 10) {
       const width = 1 + bytes.readUIntLE(24, 3);
       const height = 1 + bytes.readUIntLE(27, 3);
       if (width > 0 && height > 0) return { contentType: "image/webp", width, height, format: "webp" };
     }
-    if (kind === "VP8 " && bytes.subarray(23, 26).equals(Buffer.from([0x9d, 0x01, 0x2a]))) {
+    const vp8FrameTag = bytes.readUIntLE(20, 3);
+    const vp8PartitionLength = vp8FrameTag >>> 5;
+    if (kind === "VP8 "
+      && chunkIsContained
+      && chunkSize >= 10
+      && (vp8FrameTag & 0x01) === 0
+      && ((vp8FrameTag >>> 1) & 0x07) <= 3
+      && ((vp8FrameTag >>> 4) & 0x01) === 1
+      && vp8PartitionLength <= chunkSize - 10
+      && bytes.subarray(23, 26).equals(Buffer.from([0x9d, 0x01, 0x2a]))) {
       const width = bytes.readUInt16LE(26) & 0x3fff;
       const height = bytes.readUInt16LE(28) & 0x3fff;
       if (width > 0 && height > 0) return { contentType: "image/webp", width, height, format: "webp" };
     }
-    if (kind === "VP8L" && bytes[20] === 0x2f) {
+    if (kind === "VP8L"
+      && chunkIsContained
+      && chunkSize >= 5
+      && bytes[20] === 0x2f
+      && (bytes[24] >>> 5) === 0) {
       const dimensions = bytes.readUInt32LE(21);
       const width = 1 + (dimensions & 0x3fff);
       const height = 1 + ((dimensions >>> 14) & 0x3fff);

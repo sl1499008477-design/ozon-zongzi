@@ -1397,6 +1397,43 @@ test("Responses structured text accepts ordinary VP8 and VP8L WebP source eviden
   ]);
 });
 
+test("malformed VP8 and VP8L source evidence is rejected before secret or network access", async (t) => {
+  const malformedCases = [
+    ["VP8 RIFF boundary excludes the image chunk", WEBP_VP8_3X2, (bytes) => bytes.writeUInt32LE(20, 4)],
+    ["VP8 chunk is shorter than its frame header", WEBP_VP8_3X2, (bytes) => bytes.writeUInt32LE(0, 16)],
+    ["VP8 frame is not a key frame", WEBP_VP8_3X2, (bytes) => { bytes[20] |= 0x01; }],
+    ["VP8 frame profile is unsupported", WEBP_VP8_3X2, (bytes) => { bytes[20] = (bytes[20] & ~0x0e) | 0x08; }],
+    ["VP8 frame is marked invisible", WEBP_VP8_3X2, (bytes) => { bytes[20] &= ~0x10; }],
+    ["VP8 first partition reaches the chunk boundary", WEBP_VP8_3X2, (bytes) => {
+      const frameFlags = bytes.readUIntLE(20, 3) & 0x1f;
+      bytes.writeUIntLE((bytes.readUInt32LE(16) << 5) | frameFlags, 20, 3);
+    }],
+    ["VP8L chunk is shorter than its image header", WEBP_VP8L_3X2, (bytes) => bytes.writeUInt32LE(0, 16)],
+    ["VP8L uses a reserved format version", WEBP_VP8L_3X2, (bytes) => { bytes[24] |= 0xe0; }],
+  ];
+
+  for (const [name, encoded, mutate] of malformedCases) {
+    await t.test(name, async () => {
+      const bytes = Buffer.from(encoded, "base64");
+      mutate(bytes);
+      let reads = 0;
+      let fetches = 0;
+      const gateway = adapter(async () => {
+        fetches += 1;
+        return jsonResponse({
+          model: "gpt-text",
+          output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+        });
+      }, { readSecret: () => { reads += 1; return secret; } });
+
+      await assert.rejects(gateway.createTextResponse(textInput({
+        sourceImages: [{ bytes, contentType: "image/webp" }],
+      })), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID" && error?.retryable === false);
+      assert.deepEqual({ reads, fetches }, { reads: 0, fetches: 0 });
+    });
+  }
+});
+
 test("source-image aggregate raw bytes and exact encoded request body are bounded before secret or fetch", async () => {
   for (const adapterOptions of [
     { maxImageBytes: 68, maxSourceImageBytesTotal: 100 },
