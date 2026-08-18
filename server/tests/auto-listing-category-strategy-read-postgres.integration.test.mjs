@@ -81,11 +81,11 @@ if (!enabled) {
         await admin.query("INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$1,$1,'admin','active')", [accountId]);
       }
       await admin.query("INSERT INTO collect_items (id,account_id,status,source_sku,source_url) VALUES ($1,$2,'COLLECTED',$3,$4)",
-        [collectId, accountA, `sku-${suffix}`, `https://www.ozon.ru/product/${suffix}`]);
+        [collectId, accountA, `sku-${suffix}`, "https://www.ozon.ru/product/test-123456789/"]);
       await admin.query(`INSERT INTO collect_raw_payloads
         (id,collect_item_id,account_id,source_sku,source_url,payload_hash,collector_version,payload,collected_at)
         VALUES ($1,$2,$3,$4,$5,$6,'test','{}'::JSONB,NOW())`,
-      [rawId, collectId, accountA, `sku-${suffix}`, `https://www.ozon.ru/product/${suffix}`, h(rawId)]);
+      [rawId, collectId, accountA, `sku-${suffix}`, "https://www.ozon.ru/product/test-123456789/", h(rawId)]);
       await admin.query(`INSERT INTO product_drafts
         (id,collect_item_id,source_payload_id,version,data_hash,data) VALUES ($1,$2,$3,7,$4,'{}'::JSONB)`,
       [productDraftId, collectId, rawId, h(productDraftId)]);
@@ -127,12 +127,25 @@ if (!enabled) {
            analysis_object_key,analysis_content_hash,thumbnail_object_key,thumbnail_content_hash,content_type,
            width,height,captured_at,idempotency_key,correlation_id,request_hash,actor_account_id)
           VALUES ($1,$2,$3,'OZON:DEFAULT',170,99,$4,$5,$1,'MAIN',0,'cdn.example.test',$6,$7,$8,$9,$10,$11,$12,
-           'image/webp',1200,1600,NOW(),$13,$14,$15,$2)`,
+           'image/webp',${ordinal === 0 ? 50 : 1200},${ordinal === 0 ? 50 : 1600},NOW(),$13,$14,$15,$2)`,
         [imageId, accountA, draftId, setId, sampleId, h(`ref-${ordinal}`), h(`response-${ordinal}`),
           h(`content-${ordinal}`), `${objectPrefix}/analysis.webp`, h(`analysis-${ordinal}`),
           `${objectPrefix}/thumbnail.webp`, thumbnailHash, `image-key-${ordinal}`, `image-corr-${ordinal}`, h(`image-${ordinal}`)]);
-        if (ordinal === 0) expectedThumbnail = { sampleId, imageId,
-          key: `${objectPrefix}/thumbnail.webp`, hash: thumbnailHash };
+        if (ordinal === 0) {
+          await admin.query(`INSERT INTO auto_listing_category_strategy_sample_images
+            (id,account_id,draft_id,taxonomy_scope,description_category_id,type_id,sample_set_id,sample_id,image_id,
+             role,ordinal,source_url_host,source_ref_hash,source_response_hash,source_content_hash,
+             analysis_object_key,analysis_content_hash,thumbnail_object_key,thumbnail_content_hash,content_type,
+             width,height,captured_at,idempotency_key,correlation_id,request_hash,actor_account_id)
+            VALUES ($1,$2,$3,'OZON:DEFAULT',170,99,$4,$5,$1,'DETAIL',1,'cdn.example.test',$6,$7,$8,$9,$10,$11,$12,
+             'image/webp',1200,1600,NOW(),$13,$14,$15,$2)`,
+          [`detail-${imageId}`, accountA, draftId, setId, sampleId, h("detail-ref"), h("detail-response"),
+            h("detail-content"), `${objectPrefix}/detail-analysis.webp`, h("detail-analysis"),
+            `${objectPrefix}/detail-thumbnail.webp`, h("detail-thumbnail"), "detail-image-key", "detail-image-corr",
+            h("detail-image-request")]);
+          expectedThumbnail = { sampleId, imageId: `detail-${imageId}`,
+            key: `${objectPrefix}/detail-thumbnail.webp`, hash: h("detail-thumbnail") };
+        }
       }
       const sealed = await admin.query(`UPDATE auto_listing_category_strategy_sample_sets
         SET status='SEALED',sample_set_hash=auto_listing_category_strategy_canonical_sample_set_hash($1,$2)
@@ -189,6 +202,21 @@ if (!enabled) {
       const actorB = { id: accountB, role: "admin" };
       const detail = await service.getDraft({ actor: actorA, draftId });
       assert.equal(detail.samples.length, 5);
+      assert.deepEqual(detail.samples[0], {
+        sampleId: expectedThumbnail.sampleId,
+        sku: "sample-sku-0",
+        title: null,
+        thumbnailUrl: `/api/admin/auto-listing/category-strategies/${draftId}/samples/${expectedThumbnail.sampleId}`
+          + `/images/${expectedThumbnail.imageId}/thumbnail`,
+        imageCount: 2,
+        previewRole: "DETAIL",
+        previewWidth: 1200,
+        previewHeight: 1600,
+        mainImageWidth: 50,
+        mainImageHeight: 50,
+        status: "READY",
+        excludedReasons: [],
+      });
       assert.equal(detail.draft.sourceCollectItemId, collectId);
       assert.equal(detail.draft.expectedSourceVersion, "draft:7");
       assert.equal(detail.analysis.provenance, "MANUAL");

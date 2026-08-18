@@ -73,10 +73,14 @@ test("closed UI projections cover list, detail, session, sample, analysis and pu
   assert.deepEqual(projectCategoryStrategySample({
     sampleId: "sample-a", sku: "sku-a", title: "示例商品",
     thumbnailUrl: "/api/admin/auto-listing/category-strategies/draft-a/samples/sample-a/thumbnail",
+    previewRole: "DETAIL", previewWidth: 1240, previewHeight: 1240,
+    mainImageWidth: 50, mainImageHeight: 50,
     imageCount: 6, status: "READY", excludedReasons: [],
   }), {
     sampleId: "sample-a", sku: "sku-a", title: "示例商品",
     thumbnailUrl: "/api/admin/auto-listing/category-strategies/draft-a/samples/sample-a/thumbnail",
+    previewRole: "DETAIL", previewWidth: 1240, previewHeight: 1240,
+    mainImageWidth: 50, mainImageHeight: 50,
     imageCount: 6, status: "READY", excludedReasons: [],
   });
 
@@ -98,6 +102,8 @@ test("closed UI projections cover list, detail, session, sample, analysis and pu
     samples: Array.from({ length: 6 }, (_, index) => ({
       sampleId: `sample-${index}`, sku: `sku-${index}`, title: null,
       thumbnailUrl: `/api/admin/auto-listing/category-strategies/draft-a/samples/sample-${index}/images/image-${index}/thumbnail`,
+      previewRole: "MAIN", previewWidth: 1200, previewHeight: 1600,
+      mainImageWidth: 1200, mainImageHeight: 1600,
       imageCount: 1, status: "READY", excludedReasons: [],
     })), analysis, published: null, versions: [] });
   assert.equal(bundle.samples[0].title, null);

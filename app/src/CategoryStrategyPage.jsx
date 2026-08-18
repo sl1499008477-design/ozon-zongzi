@@ -93,7 +93,7 @@ function ProtectedThumbnail({ sample }) {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [sample.thumbnailUrl]);
-  if (src) return <img src={src} alt={`${sample.sku} 样本缩略图`} />;
+  if (src) return <img src={src} alt={`${sample.sku} 样本清晰预览`} />;
   return <span className="category-strategy-thumbnail-status" role="status">
     {failed ? "缩略图加载失败" : "缩略图加载中"}
   </span>;
@@ -445,6 +445,12 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
           {samples.length ? <div className="category-strategy-samples">{samples.map((sample) => <article key={sample.sampleId}>
             <ProtectedThumbnail sample={sample} />
             <strong>{sample.title || sample.sku}</strong>
+            <div className="category-strategy-sample-image-facts">
+              <Tag color="blue">共 {sample.imageCount} 张</Tag>
+              <span>预览：{sample.previewRole === "MAIN" ? "主图" : "详情图"} {sample.previewWidth}×{sample.previewHeight}</span>
+              <span>采集主图：{sample.mainImageWidth}×{sample.mainImageHeight}
+                {Math.min(sample.mainImageWidth, sample.mainImageHeight) < 256 ? "（低清源图）" : ""}</span>
+            </div>
             <label><input aria-label={`选择样本 ${sample.sku}`} type="checkbox" disabled /> SKU {sample.sku}</label>
             <Button size="small" danger icon={<DeleteOutlined />} disabled={!view?.canStartSampling || Boolean(action)}
               onClick={() => replaceSample(sample)}>替换此样本</Button>

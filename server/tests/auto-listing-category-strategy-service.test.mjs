@@ -164,6 +164,8 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   };
   const defaultSamples = currentDraft ? Array.from({ length: currentDraft.sampleCount || 0 }, (_, index) => ({
     sampleId: `sample-${index + 1}`, sku: `sku-${index + 1}`, title: null, imageCount: 1,
+    previewRole: "MAIN", previewWidth: 1200, previewHeight: 1600,
+    mainImageWidth: 1200, mainImageHeight: 1600,
     status: "READY", excludedReasons: [], thumbnailImageId: `image-${index + 1}`,
   })) : [];
   const durableDetail = detailRead ?? (currentDraft ? { draft: currentDraft, session: null,
@@ -341,6 +343,8 @@ test("durable detail read returns only the closed reloadable Web evidence bundle
     samples: Array.from({ length: 5 }, (_, index) => ({
       sampleId: index === 0 ? "sample-a" : `sample-${index}`, sku: String(4_862_904_234 + index),
       title: null, imageCount: 1, status: "READY", excludedReasons: [],
+      previewRole: "MAIN", previewWidth: 1200, previewHeight: 1600,
+      mainImageWidth: 1200, mainImageHeight: 1600,
       thumbnailImageId: index === 0 ? "image-a" : `image-${index}`,
     })),
     analysis,

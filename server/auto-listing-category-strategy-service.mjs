@@ -374,15 +374,21 @@ function publicDraftDetail(raw, accountId) {
     const samples = closedArray(value.samples, 0, 20).map((entry) => {
       const item = closed(entry, new Set([
         "sampleId", "sku", "title", "imageCount", "status", "excludedReasons", "thumbnailImageId",
+        "previewRole", "previewWidth", "previewHeight", "mainImageWidth", "mainImageHeight",
       ]));
       if (!["READY", "EXCLUDED", "PENDING"].includes(item.status)
-        || !Number.isSafeInteger(item.imageCount) || item.imageCount < 1 || item.imageCount > 6) throw invalid();
+        || !Number.isSafeInteger(item.imageCount) || item.imageCount < 1 || item.imageCount > 6
+        || !["MAIN", "DETAIL"].includes(item.previewRole)
+        || [item.previewWidth, item.previewHeight, item.mainImageWidth, item.mainImageHeight]
+          .some((dimension) => !Number.isSafeInteger(dimension) || dimension < 1 || dimension > 16_384)) throw invalid();
       const sampleId = identifier(item.sampleId);
       const imageId = identifier(item.thumbnailImageId);
       return Object.freeze({ sampleId, sku: identifier(item.sku), title: safeText(item.title, 500, true),
         thumbnailUrl: `/api/admin/auto-listing/category-strategies/${encodeURIComponent(draft.draftId)}`
           + `/samples/${encodeURIComponent(sampleId)}/images/${encodeURIComponent(imageId)}/thumbnail`,
-        imageCount: item.imageCount, status: item.status,
+        imageCount: item.imageCount, previewRole: item.previewRole,
+        previewWidth: item.previewWidth, previewHeight: item.previewHeight,
+        mainImageWidth: item.mainImageWidth, mainImageHeight: item.mainImageHeight, status: item.status,
         excludedReasons: Object.freeze(closedArray(item.excludedReasons, 0, 20).map((reason) => {
           const safe = safeText(reason, 160);
           if (!/^AUTO_LISTING_CATEGORY_STRATEGY_[A-Z0-9_:-]+$/u.test(safe)) throw invalid();

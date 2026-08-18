@@ -161,12 +161,18 @@ function safeThumbnail(value) {
 export function projectCategoryStrategySample(raw) {
   const value = closed(raw, new Set([
     "sampleId", "sku", "title", "thumbnailUrl", "imageCount", "status", "excludedReasons",
+    "previewRole", "previewWidth", "previewHeight", "mainImageWidth", "mainImageHeight",
   ]));
-  if (!SAMPLE_STATUSES.has(value.status)) throw uiError();
+  if (!SAMPLE_STATUSES.has(value.status) || !new Set(["MAIN", "DETAIL"]).has(value.previewRole)) throw uiError();
   const excludedReasons = array(value.excludedReasons, 0, 20).map((entry) => text(entry, 240));
   return deepFreeze({
     sampleId: id(value.sampleId), sku: id(value.sku), title: value.title === null ? null : text(value.title, 500),
     thumbnailUrl: safeThumbnail(value.thumbnailUrl), imageCount: positive(value.imageCount, { maximum: 6 }),
+    previewRole: value.previewRole,
+    previewWidth: positive(value.previewWidth, { maximum: 16_384 }),
+    previewHeight: positive(value.previewHeight, { maximum: 16_384 }),
+    mainImageWidth: positive(value.mainImageWidth, { maximum: 16_384 }),
+    mainImageHeight: positive(value.mainImageHeight, { maximum: 16_384 }),
     status: value.status, excludedReasons,
   });
 }

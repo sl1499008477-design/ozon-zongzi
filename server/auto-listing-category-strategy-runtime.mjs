@@ -414,13 +414,27 @@ export function createCategoryStrategyReadModel({ pool }) {
       LEFT JOIN LATERAL (
         SELECT jsonb_agg(jsonb_build_object(
           'sampleId',sample.id,'sku',sample.sku,'title',NULL,'imageCount',image.count,
-          'status','READY','excludedReasons','[]'::JSONB,'thumbnailImageId',image.thumbnail_image_id
+          'status','READY','excludedReasons','[]'::JSONB,'thumbnailImageId',image.thumbnail_image_id,
+          'previewRole',image.preview_role,'previewWidth',image.preview_width,'previewHeight',image.preview_height,
+          'mainImageWidth',image.main_image_width,'mainImageHeight',image.main_image_height
         ) ORDER BY sample.ordinal,sample.id) AS samples
         FROM auto_listing_category_strategy_samples sample
         JOIN LATERAL (
           SELECT COUNT(*)::INTEGER AS count,
-                 (ARRAY_AGG(sample_image.image_id ORDER BY sample_image.ordinal,sample_image.id))[1]
-                   AS thumbnail_image_id
+                 (ARRAY_AGG(sample_image.image_id ORDER BY
+                   sample_image.width::BIGINT*sample_image.height DESC,sample_image.ordinal,sample_image.id))[1]
+                   AS thumbnail_image_id,
+                 (ARRAY_AGG(sample_image.role ORDER BY
+                   sample_image.width::BIGINT*sample_image.height DESC,sample_image.ordinal,sample_image.id))[1]
+                   AS preview_role,
+                 (ARRAY_AGG(sample_image.width ORDER BY
+                   sample_image.width::BIGINT*sample_image.height DESC,sample_image.ordinal,sample_image.id))[1]
+                   AS preview_width,
+                 (ARRAY_AGG(sample_image.height ORDER BY
+                   sample_image.width::BIGINT*sample_image.height DESC,sample_image.ordinal,sample_image.id))[1]
+                   AS preview_height,
+                 MAX(sample_image.width) FILTER (WHERE sample_image.role='MAIN') AS main_image_width,
+                 MAX(sample_image.height) FILTER (WHERE sample_image.role='MAIN') AS main_image_height
           FROM auto_listing_category_strategy_sample_images sample_image
           WHERE sample_image.account_id=sample.account_id AND sample_image.draft_id=sample.draft_id
             AND sample_image.sample_set_id=sample.sample_set_id AND sample_image.sample_id=sample.id
