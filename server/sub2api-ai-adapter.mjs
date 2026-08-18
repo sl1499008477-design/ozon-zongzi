@@ -782,6 +782,17 @@ function imageMetadata(bytes) {
       const height = 1 + bytes.readUIntLE(27, 3);
       if (width > 0 && height > 0) return { contentType: "image/webp", width, height, format: "webp" };
     }
+    if (kind === "VP8 " && bytes.subarray(23, 26).equals(Buffer.from([0x9d, 0x01, 0x2a]))) {
+      const width = bytes.readUInt16LE(26) & 0x3fff;
+      const height = bytes.readUInt16LE(28) & 0x3fff;
+      if (width > 0 && height > 0) return { contentType: "image/webp", width, height, format: "webp" };
+    }
+    if (kind === "VP8L" && bytes[20] === 0x2f) {
+      const dimensions = bytes.readUInt32LE(21);
+      const width = 1 + (dimensions & 0x3fff);
+      const height = 1 + ((dimensions >>> 14) & 0x3fff);
+      if (width > 0 && height > 0) return { contentType: "image/webp", width, height, format: "webp" };
+    }
   }
   throw gatewayError("INVALID_GATEWAY_RESPONSE");
 }

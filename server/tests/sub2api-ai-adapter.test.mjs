@@ -8,6 +8,8 @@ import {
 } from "../sub2api-ai-adapter.mjs";
 
 const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const WEBP_VP8_3X2 = "UklGRjQAAABXRUJQVlA4ICgAAACQAQCdASoDAAIAAUAmJQBOl0AAjNAA/vhff9REQUksP0KNlEvmAAAA";
+const WEBP_VP8L_3X2 = "UklGRh4AAABXRUJQVlA4TBEAAAAvAkAAAAdQnnpUq/+BiOh/AAA=";
 const secret = "gateway-secret-value";
 const profile = Object.freeze({
   id: "profile-1",
@@ -1369,6 +1371,30 @@ test("malformed or oversized source-image bytes are request errors before secret
     assert.equal(reads, 0);
     assert.equal(fetches, 0);
   }
+});
+
+test("Responses structured text accepts ordinary VP8 and VP8L WebP source evidence", async () => {
+  let body;
+  const gateway = adapter(async (_url, init) => {
+    body = JSON.parse(init.body);
+    return jsonResponse({
+      model: "gpt-text",
+      output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+    });
+  });
+
+  const result = await gateway.createTextResponse(textInput({
+    sourceImages: [WEBP_VP8_3X2, WEBP_VP8L_3X2].map((value) => ({
+      bytes: Buffer.from(value, "base64"),
+      contentType: "image/webp",
+    })),
+  }));
+
+  assert.deepEqual(result.value, { ok: true });
+  assert.deepEqual(body.input[0].content.slice(1), [
+    { type: "input_image", image_url: `data:image/webp;base64,${WEBP_VP8_3X2}` },
+    { type: "input_image", image_url: `data:image/webp;base64,${WEBP_VP8L_3X2}` },
+  ]);
 });
 
 test("source-image aggregate raw bytes and exact encoded request body are bounded before secret or fetch", async () => {
