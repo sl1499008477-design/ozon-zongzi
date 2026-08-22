@@ -631,18 +631,19 @@
         if (!stored) throw failure('CATEGORY_STRATEGY_SAMPLING_SESSION_INVALID');
         const pageFact = projectCapturedPageFact(value.pageFact);
         const samples = arrayValues(value.samples, 5, 20).map(projectCapturedProductFact);
-        const recoverySession = stored.expectedDraftVersion === null ? null : freeze({
-          draftId: stored.draftId,
-          expectedDraftVersion: stored.expectedDraftVersion,
-          sessionSecret: stored.sessionSecret,
-          scope: stored.scope,
-          expiresAt: stored.expiresAt,
-        });
+        const recoverySession = stored.expectedDraftVersion === null
+          ? freeze({ draftId: stored.draftId, sessionSecret: stored.sessionSecret })
+          : freeze({
+            draftId: stored.draftId,
+            expectedDraftVersion: stored.expectedDraftVersion,
+            sessionSecret: stored.sessionSecret,
+            scope: stored.scope,
+            expiresAt: stored.expiresAt,
+          });
         const result = await options.request({ method: 'POST',
           path: `/extension/auto-listing/category-strategy/sampling-sessions/${encodeURIComponent(sessionId)}/confirm`,
           headers,
-          body: freeze({ sessionId, pageFact, samples: freeze(samples),
-            ...(recoverySession ? { session: recoverySession } : {}),
+          body: freeze({ sessionId, pageFact, samples: freeze(samples), session: recoverySession,
             idempotencyKey: `category-confirm-${sessionId}`,
             correlationId: `category-sampling-${sessionId}` }),
         });

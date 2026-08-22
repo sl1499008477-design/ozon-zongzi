@@ -410,6 +410,33 @@ test('background confirmation returns the private session proof only to the dedi
     || entry.path.includes('collect-box')), false);
 });
 
+test('background confirmation sends a minimal private proof for sessions created by older extensions', async () => {
+  const state = { [PRIVATE_SESSION_KEY]: {
+    accountId: 'account-a', ...session(),
+    sessionSecret: 'secret-value-at-least-32-characters', selectedFacts: [],
+  } };
+  const requests = [];
+  const storageSession = {
+    async get(key) { return { [key]: state[key] }; },
+    async set(values) { Object.assign(state, values); },
+    async remove(key) { delete state[key]; },
+  };
+  const client = createCategoryStrategySamplingBackgroundClient({
+    storageSession,
+    async currentAccount() { return { id: 'account-a' }; },
+    extensionVersion: '0.13.46.16',
+    async request(input) { requests.push(input); return { accepted: true }; },
+  });
+  const facts = Array.from({ length: 5 }, (_, index) => productFact(index + 1));
+
+  assert.deepEqual(await client.confirm({ sessionId: 'session-a', pageFact: pageFact(), samples: facts }),
+    { accepted: true });
+  assert.deepEqual(requests[0].body.session, {
+    draftId: 'draft-a',
+    sessionSecret: 'secret-value-at-least-32-characters',
+  });
+});
+
 test('background keeps only validated selected facts with the private session for cross-tab recovery', async () => {
   const state = { [PRIVATE_SESSION_KEY]: {
     accountId: 'account-a', ...session(), sessionSecret: 'secret-value-at-least-32-characters',

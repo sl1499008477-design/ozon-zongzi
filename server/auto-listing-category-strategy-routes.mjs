@@ -279,10 +279,28 @@ export function createAutoListingCategoryStrategyExtensionHttpHandler({
         ]));
       }
       if (decodeId(body.sessionId) !== route.sessionId) throw routeError();
+      let service;
       if (body.session) {
-        const recovery = closedBody(body.session, new Set([
-          "draftId", "expectedDraftVersion", "sessionSecret", "scope", "expiresAt",
-        ]));
+        let recovery;
+        try {
+          recovery = closedBody(body.session, new Set([
+            "draftId", "expectedDraftVersion", "sessionSecret", "scope", "expiresAt",
+          ]));
+        } catch {
+          const legacy = closedBody(body.session, new Set(["draftId", "sessionSecret"]));
+          service = await getService();
+          const durable = await service.getDraft({ actor: account, draftId: decodeId(legacy.draftId) });
+          if (durable?.session?.sessionId !== route.sessionId) {
+            throw routeError("AUTO_LISTING_CATEGORY_STRATEGY_SESSION_NOT_FOUND", 404);
+          }
+          recovery = {
+            draftId: durable.draft.draftId,
+            expectedDraftVersion: durable.draft.draftVersion,
+            sessionSecret: legacy.sessionSecret,
+            scope: durable.draft.scope,
+            expiresAt: durable.session.expiresAt,
+          };
+        }
         await extensionChannel.markReady({ accountId, extensionVersion: version });
         await extensionChannel.putSession({ accountId, actorId: accountId,
           draftId: recovery.draftId, expectedDraftVersion: recovery.expectedDraftVersion,
@@ -292,7 +310,7 @@ export function createAutoListingCategoryStrategyExtensionHttpHandler({
       }
       const handoff = await extensionChannel.putFacts({ accountId, sessionId: route.sessionId,
         extensionVersion: version, pageFact: body.pageFact, samples: body.samples });
-      const service = await getService();
+      service ??= await getService();
       const data = await service.confirmSampleSet({
         actor: { id: handoff.actorId, role: "admin" }, draftId: handoff.draftId,
         expectedDraftVersion: handoff.expectedDraftVersion, sessionId: handoff.sessionId,
