@@ -795,14 +795,14 @@ export function createAutoListingCategoryStrategyPostgres(rawOptions = {}) {
                 image_id,role,ordinal,source_url_host,source_ref_hash,source_response_hash,source_content_hash,
                 analysis_object_key,analysis_content_hash,thumbnail_object_key,thumbnail_content_hash,
                 content_type,width,height,captured_at,idempotency_key,correlation_id,request_hash,actor_account_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$1,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-               $22::TIMESTAMPTZ,$23,$24,$25,$2)`,
-            [image.imageId, input.accountId, input.draftId, draft.taxonomy_scope,
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+               $23::TIMESTAMPTZ,$1,$24,$25,$2)`,
+            [imageKey, input.accountId, input.draftId, draft.taxonomy_scope,
               draft.description_category_id, draft.type_id, input.sampleSetId, sample.sampleId,
-              image.role, image.ordinal, image.sourceUrlHost, image.sourceRefHash, image.sourceResponseHash,
+              image.imageId, image.role, image.ordinal, image.sourceUrlHost, image.sourceRefHash, image.sourceResponseHash,
               image.sourceContentHash, image.analysisObjectKey, image.analysisContentHash,
               image.thumbnailObjectKey, image.thumbnailContentHash, image.contentType, image.width,
-              image.height, image.capturedAt, imageKey, input.correlationId, hash]);
+              image.height, image.capturedAt, input.correlationId, hash]);
         }
       }
       const canonicalHash = (await query(client,
