@@ -46,7 +46,7 @@ test("analysis configuration resolver is account-scoped and requires exactly one
   }
 });
 
-test("category strategy production adapter sends the exact account profile and image evidence to the paid gateway", async () => {
+test("category strategy production adapter sends exact evidence and allows observed multimodal latency", async () => {
   const adapterModule = await import("../auto-listing-category-strategy-ai-adapter.mjs").catch(() => ({}));
   assert.equal(typeof adapterModule.createCategoryStrategyAnalysisAiAdapter, "function");
   const queries = [];
@@ -73,7 +73,13 @@ test("category strategy production adapter sends the exact account profile and i
       },
     },
     async getGateway() {
-      return { async createTextResponse(input) { gatewayCalls.push(input); return { value: rawOutput }; } };
+      return { async createTextResponse(input) {
+        gatewayCalls.push(input);
+        if (input.timeoutMs < 180_000) throw Object.assign(new Error("representative 126 second response timed out"), {
+          code: "GATEWAY_TIMEOUT",
+        });
+        return { value: rawOutput };
+      } };
     },
   });
   const execution = {
