@@ -165,7 +165,7 @@ function projectExtensionProductFact(raw) {
 }
 
 export function createCategoryStrategyExtensionChannel({
-  now = () => Date.now(), minimumExtensionVersion = "0.13.46.16",
+  now = () => Date.now(), minimumExtensionVersion = "0.13.46.17",
   readyTtlMs = EXTENSION_READY_TTL_MS,
 } = {}) {
   if (typeof now !== "function" || !extensionVersionParts(minimumExtensionVersion)
@@ -646,7 +646,7 @@ export function createAutoListingCategoryStrategyRuntime({
   const sessionChannel = extensionSessionChannel ?? createCategoryStrategyExtensionChannel({
     now: () => new Date(now()).getTime(),
     minimumExtensionVersion: String(
-      env.AUTO_LISTING_CATEGORY_STRATEGY_MIN_EXTENSION_VERSION || "0.13.46.16",
+      env.AUTO_LISTING_CATEGORY_STRATEGY_MIN_EXTENSION_VERSION || "0.13.46.17",
     ),
   });
   const factsPort = exactProductFacts
