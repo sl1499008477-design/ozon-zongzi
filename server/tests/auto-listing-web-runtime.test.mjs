@@ -611,6 +611,7 @@ test("extension facts route reprojects captured page and card evidence before Ta
     new URL("https://example.test/extension/auto-listing/category-strategy/sampling-sessions/session-a")), true);
   assert.equal(responses[1].status, 200);
   assert.equal(responses[1].payload.data.sessionId, "session-a");
+  assert.equal(responses[1].payload.data.expectedDraftVersion, 1);
   assert.equal(await handler({ method: "POST", headers: { "x-zongzi-extension-version": "0.13.46.3" } }, {},
     new URL("https://example.test/extension/auto-listing/category-strategy/sampling-sessions/session-a/confirm")), true);
   assert.equal(responses[2].status, 201);
@@ -637,6 +638,59 @@ test("extension facts route reprojects captured page and card evidence before Ta
   assert.equal(confirmCalls, 2);
 });
 
+test("extension confirmation restores the private facts channel after a server restart", async () => {
+  const hash = "a".repeat(64);
+  const scope = { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 17028922, typeId: 91542 };
+  const samples = Array.from({ length: 5 }, (_, index) => {
+    const sku = String(4_862_904_234 + index);
+    return { sku, sourceProductId: Number(sku), sourceProductRef: `product-${sku}`,
+      sourceProductResponseHash: hash, pageScope: scope, productScope: scope,
+      sourceReferences: [{ imageId: `image-${sku}`, role: "MAIN", ordinal: 0,
+        sourceUrl: `https://cdn1.ozone.ru/${sku}.jpg`, sourceResponseHash: hash }] };
+  });
+  const restartedChannel = createCategoryStrategyExtensionChannel({
+    now: () => Date.parse("2026-08-15T00:30:00.000Z"),
+    minimumExtensionVersion: "0.13.46.3",
+  });
+  let confirmed = null;
+  let response = null;
+  const handler = createAutoListingCategoryStrategyExtensionHttpHandler({
+    async authenticateExtension() { return { id: "account-a", role: "admin" }; },
+    async getService() { return { async confirmSampleSet(input) {
+      confirmed = input;
+      return { accepted: true };
+    } }; },
+    extensionChannel: restartedChannel,
+    async readJson() { return {
+      sessionId: "session-a",
+      session: {
+        draftId: "draft-a",
+        expectedDraftVersion: 1,
+        sessionSecret: "secret-value-at-least-32-characters",
+        scope,
+        expiresAt: "2026-08-15T02:00:00.000Z",
+      },
+      pageFact: { pageScope: scope, sourceResponseHash: hash },
+      samples,
+      idempotencyKey: "confirm-a",
+      correlationId: "correlation-a",
+    }; },
+    sendJson(_res, status, payload) { response = { status, payload }; },
+  });
+
+  assert.equal(await handler({ method: "POST", headers: {
+    "x-zongzi-extension-version": "0.13.46.3",
+  } }, {}, new URL(
+    "https://example.test/extension/auto-listing/category-strategy/sampling-sessions/session-a/confirm",
+  )), true);
+  assert.equal(response.status, 201);
+  assert.equal(confirmed.draftId, "draft-a");
+  assert.equal(confirmed.expectedDraftVersion, 1);
+  assert.equal(confirmed.sessionSecret, "secret-value-at-least-32-characters");
+  assert.deepEqual(confirmed.samples, samples.map(({ sku, sourceProductId, sourceProductRef }) =>
+    ({ sku, sourceProductId, sourceProductRef })));
+});
+
 test("extension cancellation clears local facts even when durable cancellation reports a safe failure", async () => {
   let localCancels = 0;
   const responses = [];
@@ -650,6 +704,7 @@ test("extension cancellation clears local facts even when durable cancellation r
     extensionChannel: {
       async markReady() {},
       async getSession() {},
+      async putSession() {},
       async putFacts() {},
       async completeSession() {},
       async cancelSession(input) {

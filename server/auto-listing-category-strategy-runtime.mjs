@@ -165,7 +165,7 @@ function projectExtensionProductFact(raw) {
 }
 
 export function createCategoryStrategyExtensionChannel({
-  now = () => Date.now(), minimumExtensionVersion = "0.13.46.14",
+  now = () => Date.now(), minimumExtensionVersion = "0.13.46.16",
   readyTtlMs = EXTENSION_READY_TTL_MS,
 } = {}) {
   if (typeof now !== "function" || !extensionVersionParts(minimumExtensionVersion)
@@ -249,6 +249,7 @@ export function createCategoryStrategyExtensionChannel({
       const record = activeRecord(accountId, extensionId(input.sessionId));
       if (!record) return null;
       return Object.freeze({ sessionId: record.sessionId, draftId: record.draftId,
+        expectedDraftVersion: record.expectedDraftVersion,
         extensionMode: record.extensionMode, scope: record.scope, expiresAt: record.expiresAt,
         sessionSecret: record.sessionSecret });
     },
@@ -645,7 +646,7 @@ export function createAutoListingCategoryStrategyRuntime({
   const sessionChannel = extensionSessionChannel ?? createCategoryStrategyExtensionChannel({
     now: () => new Date(now()).getTime(),
     minimumExtensionVersion: String(
-      env.AUTO_LISTING_CATEGORY_STRATEGY_MIN_EXTENSION_VERSION || "0.13.46.14",
+      env.AUTO_LISTING_CATEGORY_STRATEGY_MIN_EXTENSION_VERSION || "0.13.46.16",
     ),
   });
   const factsPort = exactProductFacts

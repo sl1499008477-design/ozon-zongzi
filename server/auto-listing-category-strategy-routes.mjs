@@ -212,6 +212,7 @@ export function createAutoListingCategoryStrategyExtensionHttpHandler({
   if (typeof authenticateExtension !== "function" || typeof getService !== "function"
     || typeof extensionChannel?.markReady !== "function"
     || typeof extensionChannel?.getSession !== "function"
+    || typeof extensionChannel?.putSession !== "function"
     || typeof extensionChannel?.putFacts !== "function"
     || typeof extensionChannel?.cancelSession !== "function"
     || typeof extensionChannel?.completeSession !== "function"
@@ -266,10 +267,29 @@ export function createAutoListingCategoryStrategyExtensionHttpHandler({
           localSessionRemoved: cancelled } });
         return true;
       }
-      const body = closedBody(await readJson(req), new Set([
-        "sessionId", "pageFact", "samples", "idempotencyKey", "correlationId",
-      ]));
+      const rawBody = await readJson(req);
+      let body;
+      try {
+        body = closedBody(rawBody, new Set([
+          "sessionId", "session", "pageFact", "samples", "idempotencyKey", "correlationId",
+        ]));
+      } catch {
+        body = closedBody(rawBody, new Set([
+          "sessionId", "pageFact", "samples", "idempotencyKey", "correlationId",
+        ]));
+      }
       if (decodeId(body.sessionId) !== route.sessionId) throw routeError();
+      if (body.session) {
+        const recovery = closedBody(body.session, new Set([
+          "draftId", "expectedDraftVersion", "sessionSecret", "scope", "expiresAt",
+        ]));
+        await extensionChannel.markReady({ accountId, extensionVersion: version });
+        await extensionChannel.putSession({ accountId, actorId: accountId,
+          draftId: recovery.draftId, expectedDraftVersion: recovery.expectedDraftVersion,
+          sessionId: route.sessionId, sessionSecret: recovery.sessionSecret,
+          expiresAt: recovery.expiresAt, extensionMode: "CATEGORY_STRATEGY_SAMPLING",
+          scope: recovery.scope });
+      }
       const handoff = await extensionChannel.putFacts({ accountId, sessionId: route.sessionId,
         extensionVersion: version, pageFact: body.pageFact, samples: body.samples });
       const service = await getService();

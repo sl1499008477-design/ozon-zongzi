@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN" translate="no">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ozon 粽子</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="popup">
+      <!-- Login View -->
+      <section class="login-view" id="login-view">
+        <div class="login-header">
+          <div class="logo-area">
+            <img src="../icons/ozon-zongzi-logo-primary.svg" class="brand-lockup" alt="ozon 粽子" />
+          </div>
+          <p class="login-subtitle">跨境电商选品采集工具</p>
+        </div>
+
+        <div class="login-card">
+          <p class="collector-auth-instruction">请先登录 Web 管理后台，再使用采集功能</p>
+          <p class="collector-auth-profile-hint">请在安装本扩展的同一浏览器用户配置中完成登录。</p>
+          <div class="login-tip" id="login-tip" aria-live="polite"></div>
+          <button class="btn btn-primary btn-block" id="web-login-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            <span id="web-login-label">前往登录</span>
+          </button>
+          <button class="btn btn-outline btn-block" id="collector-auth-recheck-btn"><span id="collector-auth-recheck-label">重新检查</span></button>
+        </div>
+
+        <div class="login-footer">
+          <span class="server-status" id="server-status">
+            <span class="status-dot"></span>
+            <span class="status-text">检测服务器...</span>
+          </span>
+        </div>
+      </section>
+
+      <!-- Main View -->
+      <section class="main-view" id="main-view">
+        <header class="main-header">
+          <div class="header-left">
+            <img src="../icons/ozon-zongzi-logo-primary.svg" class="brand-lockup" alt="ozon 粽子" />
+          </div>
+          <div class="header-actions">
+            <span class="connection-pill is-loading" id="connection-status" aria-live="polite">
+              <span class="status-dot"></span>
+              <span id="connection-status-text">连接中</span>
+            </span>
+            <button class="btn btn-ghost header-logout" id="logout-btn" title="退出登录" aria-label="退出登录">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="main-body">
+
+          <!-- Update Banner（保留） -->
+          <div class="update-banner" id="update-banner" style="display: none;">
+            <div class="update-banner-content">
+              <div class="update-banner-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </div>
+              <div class="update-banner-text">
+                <span class="update-banner-title">发现新版本 <strong id="update-version"></strong></span>
+                <span class="update-banner-sub">当前版本: <span id="current-version"></span></span>
+              </div>
+            </div>
+            <div class="update-banner-actions">
+              <button class="btn btn-ghost btn-sm" id="dismiss-update-btn">忽略</button>
+              <button class="btn btn-primary btn-sm" id="download-update-btn">立即更新</button>
+            </div>
+          </div>
+
+          <!-- Today's actionable signals -->
+          <section class="activity-section" aria-labelledby="activity-label">
+            <div class="today">
+              <span class="today-label" id="activity-label">待处理</span>
+              <span class="today-count" id="today-count">…</span>
+            </div>
+            <div class="signals" id="signals"></div>
+          </section>
+
+          <section class="seller-context-status is-loading" id="seller-context-status" aria-live="polite" aria-label="Seller 店铺状态">
+            正在识别 Seller 店铺
+          </section>
+
+          <!-- Four primary Web destinations -->
+          <section class="primary-links" aria-labelledby="primary-links-label">
+            <div class="nav-title" id="primary-links-label">快速访问</div>
+            <nav class="deep-link-list" aria-label="Web 管理系统快速访问">
+              <button class="deep-link" data-action="products">
+                <span class="deep-link-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>
+                <span class="deep-link-copy"><strong>商品</strong><small>商品列表、成本与库存</small></span>
+                <span class="deep-link-badge is-muted" id="nav-badge-products" style="display:none">0</span>
+                <span class="deep-link-arrow"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg></span>
+              </button>
+              <button class="deep-link" data-action="orders">
+                <span class="deep-link-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></span>
+                <span class="deep-link-copy"><strong>订单</strong><small>状态、采购价与汇率</small></span>
+                <span class="deep-link-arrow"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg></span>
+              </button>
+              <button class="deep-link" data-action="profit">
+                <span class="deep-link-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="10" y2="10"/><line x1="13" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="10" y2="14"/><line x1="13" y1="14" x2="16" y2="14"/><line x1="8" y1="18" x2="10" y2="18"/><line x1="13" y1="18" x2="16" y2="18"/></svg></span>
+                <span class="deep-link-copy"><strong>利润</strong><small>已签收与预估利润</small></span>
+                <span class="deep-link-arrow"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg></span>
+              </button>
+              <button class="deep-link" data-action="messages">
+                <span class="deep-link-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg></span>
+                <span class="deep-link-copy"><strong>消息</strong><small>模板、好评与取货提醒</small></span>
+                <span class="deep-link-arrow"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg></span>
+              </button>
+            </nav>
+          </section>
+
+          <!-- Existing extension-specific tools remain available, secondary by default. -->
+          <details class="tool-drawer">
+            <summary>
+              <span class="tool-drawer-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                插件工具
+              </span>
+              <span class="tool-drawer-meta">8 项 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+            </summary>
+            <div class="nav-grid tool-grid">
+              <button class="nav-cell" data-action="collect-box"><span class="nav-cell-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></span><span>采集箱</span><span class="nav-cell-badge" id="nav-badge-collect" style="display:none">0</span></button>
+              <button class="nav-cell" data-action="batch-upload"><span class="nav-cell-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span><span>批量上架</span></button>
+              <button class="nav-cell" data-action="import-history"><span class="nav-cell-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg></span><span>上架记录</span></button>
+              <button class="nav-cell" data-action="reshelf"><span class="nav-cell-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span><span>下架重上</span></button>
+              <button class="nav-cell" data-action="pricing"><span class="nav-cell-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="10" y2="10"/><line x1="13" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="10" y2="14"/><line x1="13" y1="14" x2="16" y2="14"/><line x1="8" y1="18" x2="10" y2="18"/><line x1="13" y1="18" x2="16" y2="18"/></svg></span><span>ozon 粽子算价</span></button>
+              <button class="nav-cell" data-action="stores"><span class="nav-cell-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span><span>店铺管理</span></button>
+              <button class="nav-cell" data-action="premium-pivot"><span class="nav-cell-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></span><span>数据透视眼</span><span class="nav-cell-badge premium-badge" id="nav-badge-premium">关</span></button>
+              <button class="nav-cell" data-action="data-panel"><span class="nav-cell-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg></span><span>数据面板</span><span class="nav-cell-badge premium-badge is-on" id="nav-badge-data-panel">开</span></button>
+            </div>
+          </details>
+
+          <!-- Main CTA -->
+          <button class="cta" data-action="dashboard" aria-label="打开 ozon 粽子 Web 管理系统">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            <span>打开 ozon 粽子 Web 管理系统</span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </button>
+
+          <footer class="popup-footer">
+            <span class="header-version" id="header-version"></span>
+            <button type="button" class="footer-link" data-action="stores">店铺配置</button>
+          </footer>
+        </div>
+      </section>
+    </div>
+    <script src="../lib/seller-context-status-controller.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
