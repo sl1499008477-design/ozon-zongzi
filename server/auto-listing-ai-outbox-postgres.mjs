@@ -178,8 +178,13 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
   const maxRetryMs = options.maxRetryMs ?? DEFAULT_MAX_RETRY_MS;
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   let poolQuery;
-  try { poolQuery = pool?.query; } catch { throw problem("AUTO_LISTING_AI_OUTBOX_INVALID"); }
-  if (typeof poolQuery !== "function" || typeof token !== "function" || typeof id !== "function"
+  let poolConnect;
+  try {
+    poolQuery = pool?.query;
+    poolConnect = pool?.connect;
+  } catch { throw problem("AUTO_LISTING_AI_OUTBOX_INVALID"); }
+  if (typeof poolQuery !== "function" || typeof poolConnect !== "function"
+    || typeof token !== "function" || typeof id !== "function"
     || !Number.isSafeInteger(baseRetryMs) || baseRetryMs < 1
     || !Number.isSafeInteger(maxRetryMs) || maxRetryMs < baseRetryMs
     || !Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) {
@@ -433,53 +438,40 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
       const request = claimInput(input);
       let nonce;
       try { nonce = identifier(token()); } catch { throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED"); }
-      const result = await query(
-        `WITH exhausted AS (
-           UPDATE auto_listing_ai_outbox
-           SET state='DEAD',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
-             last_error_code='AUTO_LISTING_AI_LEASE_EXHAUSTED',dead_at=NOW(),next_retry_at=NULL,updated_at=NOW()
-           WHERE account_id=$1 AND contract_version='V1' AND state='PROCESSING'
-             AND lease_expires_at <= NOW() AND attempts >= $6
-           RETURNING id
-         ), runnable_jobs AS MATERIALIZED (
-           SELECT outbox.account_id,outbox.job_id
-             FROM auto_listing_ai_outbox AS outbox
-             JOIN auto_listing_job_items AS item
-               ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
-            WHERE outbox.account_id=$1 AND outbox.contract_version='V1' AND outbox.attempts < $6
-              AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW())
-                OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
-              AND NOT EXISTS (
-                SELECT 1 FROM auto_listing_job_items AS predecessor
-                 WHERE predecessor.account_id=item.account_id AND predecessor.job_id=item.job_id
-                   AND predecessor.source_order < item.source_order
-                   AND predecessor.status NOT IN ('SUCCEEDED','READY_FOR_REVIEW','RETRYABLE_ERROR','BLOCKED','CANCELLED')
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM auto_listing_ai_outbox AS live
-                 WHERE live.account_id=outbox.account_id AND live.job_id=outbox.job_id
-                   AND live.id<>outbox.id AND live.contract_version='V1'
-                   AND live.state='PROCESSING' AND live.lease_expires_at > NOW()
-              )
-            GROUP BY outbox.account_id,outbox.job_id
-            ORDER BY MIN(outbox.created_at),MIN(outbox.id),outbox.account_id,outbox.job_id
-         ), locked_jobs AS MATERIALIZED (
-           SELECT runnable.account_id,runnable.job_id
-             FROM runnable_jobs AS runnable
-            WHERE pg_try_advisory_xact_lock(hashtextextended(
-              runnable.account_id || chr(31) || runnable.job_id,0
-            ))
-            LIMIT $2
-         ), candidates AS MATERIALIZED (
-           SELECT candidate.id
-             FROM locked_jobs AS locked
-             CROSS JOIN LATERAL (
-               SELECT outbox.id
+      let client;
+      let clientQuery;
+      let release;
+      let transactionStarted = false;
+      try {
+        client = await poolConnect.call(pool);
+        try {
+          clientQuery = client?.query;
+          release = client?.release;
+        } catch { throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED"); }
+        if (typeof clientQuery !== "function" || typeof release !== "function") {
+          throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+        }
+        await clientQuery.call(client, "BEGIN ISOLATION LEVEL READ COMMITTED");
+        transactionStarted = true;
+        const locked = await clientQuery.call(
+          client,
+          `WITH exhausted AS (
+             UPDATE auto_listing_ai_outbox
+                SET state='DEAD',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
+                    last_error_code='AUTO_LISTING_AI_LEASE_EXHAUSTED',dead_at=NOW(),next_retry_at=NULL,updated_at=NOW()
+              WHERE account_id=$1 AND contract_version='V1' AND state='PROCESSING'
+                AND lease_expires_at <= NOW() AND attempts >= $3
+              RETURNING id
+           )
+           SELECT job.id AS job_id
+             FROM auto_listing_jobs AS job
+             JOIN LATERAL (
+               SELECT outbox.created_at,outbox.id
                  FROM auto_listing_ai_outbox AS outbox
                  JOIN auto_listing_job_items AS item
                    ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
-                WHERE outbox.account_id=locked.account_id AND outbox.job_id=locked.job_id
-                  AND outbox.contract_version='V1' AND outbox.attempts < $6
+                WHERE outbox.account_id=job.account_id AND outbox.job_id=job.id
+                  AND outbox.contract_version='V1' AND outbox.attempts < $3
                   AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW())
                     OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
                   AND NOT EXISTS (
@@ -495,19 +487,76 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                        AND live.state='PROCESSING' AND live.lease_expires_at > NOW()
                   )
                 ORDER BY outbox.created_at,outbox.id
-                LIMIT 1 FOR UPDATE OF outbox SKIP LOCKED
-             ) AS candidate
-         )
-         UPDATE auto_listing_ai_outbox AS outbox
-         SET state='PROCESSING',attempts=outbox.attempts+1,lease_owner=$3,
-           lease_token=$4 || ':' || (outbox.attempts+1)::TEXT,
-           lease_expires_at=NOW()+($5 * INTERVAL '1 millisecond'),updated_at=NOW()
-         FROM candidates
-         WHERE outbox.id=candidates.id AND outbox.account_id=$1
-         RETURNING outbox.*`,
-        [request.accountId, request.limit, request.workerId, nonce, request.leaseMs, maxAttempts],
-      );
-      return (result.rows || []).map(mapRow);
+                LIMIT 1
+             ) AS earliest ON TRUE
+            WHERE job.account_id=$1
+            ORDER BY earliest.created_at,earliest.id,job.id
+            LIMIT $2 FOR UPDATE OF job SKIP LOCKED`,
+          [request.accountId, request.limit, maxAttempts],
+        );
+        const lockedRows = locked.rows || [];
+        if (!Array.isArray(lockedRows) || lockedRows.length > request.limit
+          || lockedRows.some((row) => !isSafeAutoListingAiIdentifier(row?.job_id))) {
+          throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+        }
+        const jobIds = lockedRows.map((row) => row.job_id);
+        let rows = [];
+        if (jobIds.length > 0) {
+          const result = await clientQuery.call(
+            client,
+            `WITH candidates AS MATERIALIZED (
+               SELECT candidate.id
+                 FROM unnest($6::TEXT[]) WITH ORDINALITY AS locked(job_id,lock_order)
+                 CROSS JOIN LATERAL (
+                   SELECT outbox.id
+                     FROM auto_listing_ai_outbox AS outbox
+                     JOIN auto_listing_job_items AS item
+                       ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
+                    WHERE outbox.account_id=$1 AND outbox.job_id=locked.job_id
+                      AND outbox.contract_version='V1' AND outbox.attempts < $5
+                      AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW())
+                        OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
+                      AND NOT EXISTS (
+                        SELECT 1 FROM auto_listing_job_items AS predecessor
+                         WHERE predecessor.account_id=item.account_id AND predecessor.job_id=item.job_id
+                           AND predecessor.source_order < item.source_order
+                           AND predecessor.status NOT IN ('SUCCEEDED','READY_FOR_REVIEW','RETRYABLE_ERROR','BLOCKED','CANCELLED')
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM auto_listing_ai_outbox AS live
+                         WHERE live.account_id=outbox.account_id AND live.job_id=outbox.job_id
+                           AND live.id<>outbox.id AND live.contract_version='V1'
+                           AND live.state='PROCESSING' AND live.lease_expires_at > NOW()
+                      )
+                    ORDER BY outbox.created_at,outbox.id
+                    LIMIT 1 FOR UPDATE OF outbox SKIP LOCKED
+                 ) AS candidate
+                ORDER BY locked.lock_order
+             )
+             UPDATE auto_listing_ai_outbox AS outbox
+                SET state='PROCESSING',attempts=outbox.attempts+1,lease_owner=$2,
+                    lease_token=$3 || ':' || (outbox.attempts+1)::TEXT,
+                    lease_expires_at=NOW()+($4 * INTERVAL '1 millisecond'),updated_at=NOW()
+               FROM candidates
+              WHERE outbox.id=candidates.id AND outbox.account_id=$1
+              RETURNING outbox.*`,
+            [request.accountId, request.workerId, nonce, request.leaseMs, maxAttempts, jobIds],
+          );
+          rows = (result.rows || []).map(mapRow);
+        }
+        await clientQuery.call(client, "COMMIT");
+        transactionStarted = false;
+        return rows;
+      } catch {
+        if (transactionStarted && typeof clientQuery === "function") {
+          try { await clientQuery.call(client, "ROLLBACK"); } catch {}
+        }
+        throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+      } finally {
+        if (typeof release === "function") {
+          try { release.call(client); } catch {}
+        }
+      }
     },
 
     async renewAutoListingAiMessageLease(input) {

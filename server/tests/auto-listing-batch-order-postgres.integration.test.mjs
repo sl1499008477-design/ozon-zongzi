@@ -29,8 +29,6 @@ if (!enabled) {
       "jobAItem1", "jobAItem2", "jobBItem1", "jobBItem2",
     ].map((key) => [key, `${key}-${suffix}`]));
     let pool;
-    let firstClient;
-    let secondClient;
 
     try {
       await admin.query(`CREATE SCHEMA ${schemaSql}`);
@@ -131,36 +129,24 @@ if (!enabled) {
       await complete(jobAItem1Claim);
       await complete(jobBItem1Claim);
 
-      firstClient = await pool.connect();
-      await firstClient.query("BEGIN");
-      const firstRepository = createPostgresAiOutboxRepository({
-        pool: firstClient,
-        token: () => "batch-order-first-transaction",
-      });
-      const secondJobAClaim = (await claimWith(firstRepository, 1))[0];
-      assert.equal(secondJobAClaim.itemId, ids.jobAItem1);
-
       await admin.query(
         "UPDATE auto_listing_job_items SET status='BLOCKED',updated_at=NOW() WHERE account_id=$1 AND id=$2",
         [ids.account, ids.jobBItem1],
       );
-      secondClient = await pool.connect();
-      await secondClient.query("BEGIN");
-      const secondRepository = createPostgresAiOutboxRepository({
-        pool: secondClient,
-        token: () => "batch-order-second-transaction",
-      });
-      const concurrentClaims = await claimWith(secondRepository);
-      assert.deepEqual(concurrentClaims.map((row) => row.itemId), [ids.jobBItem2]);
-      await secondClient.query("COMMIT");
-      secondClient.release();
-      secondClient = null;
-      await firstClient.query("COMMIT");
-      firstClient.release();
-      firstClient = null;
+      await admin.query(`CREATE FUNCTION pause_batch_claim() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_sleep(0.2); RETURN NEW; END;
+      $$`);
+      await admin.query(`CREATE TRIGGER pause_batch_claim_update
+        BEFORE UPDATE OF state ON auto_listing_ai_outbox
+        FOR EACH ROW WHEN (NEW.state='PROCESSING' AND OLD.state<>'PROCESSING')
+        EXECUTE FUNCTION pause_batch_claim()`);
+      const concurrentClaims = (await Promise.all([claim(1), claim(1)])).flat();
+      assert.deepEqual(concurrentClaims.map((row) => row.itemId).sort(), [ids.jobAItem1, ids.jobBItem2].sort());
+      assert.equal(concurrentClaims.filter((row) => row.itemId === ids.jobAItem1).length, 1);
+      await admin.query("DROP TRIGGER pause_batch_claim_update ON auto_listing_ai_outbox");
+      await admin.query("DROP FUNCTION pause_batch_claim()");
 
-      await complete(secondJobAClaim);
-      await complete(concurrentClaims[0]);
+      for (const row of concurrentClaims) await complete(row);
       const finalSameItemClaim = (await claim(1))[0];
       assert.equal(finalSameItemClaim.itemId, ids.jobAItem1);
       await complete(finalSameItemClaim);
@@ -209,14 +195,6 @@ if (!enabled) {
       assert.equal(expiredReclaim.attempts, retryClaim.attempts + 1);
       assert.notEqual(expiredReclaim.leaseToken, retryClaim.leaseToken);
     } finally {
-      if (secondClient) {
-        await secondClient.query("ROLLBACK").catch(() => {});
-        secondClient.release();
-      }
-      if (firstClient) {
-        await firstClient.query("ROLLBACK").catch(() => {});
-        firstClient.release();
-      }
       if (pool) await pool.end();
       await admin.query("SET search_path TO public").catch(() => {});
       await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});

@@ -44,13 +44,27 @@ function outboxRow(overrides = {}) {
 
 function scriptedPool(steps) {
   const calls = [];
+  let connectCount = 0;
+  let releaseCount = 0;
+  const execute = async (sql, parameters) => {
+    calls.push({ sql, parameters });
+    if (/^(?:BEGIN|COMMIT|ROLLBACK)/u.test(sql)) return { rows: [] };
+    const next = steps.shift();
+    if (next instanceof Error) throw next;
+    return next ?? { rows: [] };
+  };
+  const client = {
+    query: execute,
+    release() { releaseCount += 1; },
+  };
   return {
     calls,
-    async query(sql, parameters) {
-      calls.push({ sql, parameters });
-      const next = steps.shift();
-      if (next instanceof Error) throw next;
-      return next ?? { rows: [] };
+    get connectCount() { return connectCount; },
+    get releaseCount() { return releaseCount; },
+    query: execute,
+    async connect() {
+      connectCount += 1;
+      return client;
     },
   };
 }
@@ -80,7 +94,10 @@ test("PostgreSQL outbox claims with account scope, SKIP LOCKED, database lease t
     state: "PROCESSING", attempts: 1, lease_owner: "worker-a", lease_token: "nonce-a:1",
     lease_expires_at: new Date("2026-08-04T00:01:00Z"),
   });
-  const pool = scriptedPool([{ rows: [claimed] }, { rows: [{ ...claimed, lease_token: "nonce-b:2", attempts: 2 }] }]);
+  const pool = scriptedPool([
+    { rows: [{ job_id: "job-a" }] }, { rows: [claimed] },
+    { rows: [{ job_id: "job-a" }] }, { rows: [{ ...claimed, lease_token: "nonce-b:2", attempts: 2 }] },
+  ]);
   let nonce = 0;
   const repository = createPostgresAiOutboxRepository({ pool, token: () => `nonce-${++nonce}` });
 
@@ -89,32 +106,65 @@ test("PostgreSQL outbox claims with account scope, SKIP LOCKED, database lease t
 
   assert.equal(first[0].leaseToken, "nonce-a:1");
   assert.equal(reclaimed[0].leaseToken, "nonce-b:2");
-  for (const call of pool.calls) {
+  const claimUpdates = pool.calls.filter((call) => /UPDATE auto_listing_ai_outbox AS outbox/iu.test(call.sql));
+  for (const call of claimUpdates) {
     assert.match(call.sql, /FOR UPDATE OF outbox SKIP LOCKED/i);
     assert.match(call.sql, /account_id=\$1/i);
     assert.match(call.sql, /lease_expires_at <= NOW\(\)/i);
     assert.match(call.sql, /NOW\(\)\+\(\$[0-9]+ \* INTERVAL '1 millisecond'\)/i);
   }
+  assert.equal(claimUpdates.length, 2);
+  assert.equal(pool.connectCount, 2);
+  assert.equal(pool.releaseCount, 2);
+  assert.deepEqual(pool.calls.map((call) => call.sql.split(/\s/u, 1)[0]), [
+    "BEGIN", "WITH", "WITH", "COMMIT", "BEGIN", "WITH", "WITH", "COMMIT",
+  ]);
 });
 
-test("claim permits one mutex-protected candidate for the earliest non-stable item in each batch", async () => {
-  const pool = scriptedPool([{ rows: [] }]);
+test("claim locks jobs before a fresh-snapshot update selects one eligible outbox per batch", async () => {
+  const pool = scriptedPool([{ rows: [{ job_id: "job-a" }] }, { rows: [] }]);
   const repository = createPostgresAiOutboxRepository({ pool, token: () => "batch-order" });
 
   await repository.claimAutoListingAiMessages({
     accountId: "account-a", workerId: "worker-a", limit: 10, leaseMs: 60_000,
   });
 
-  const sql = pool.calls[0].sql;
-  assert.match(sql, /JOIN auto_listing_job_items AS item/iu);
-  assert.match(sql, /predecessor\.source_order < item\.source_order/iu);
-  assert.match(sql, /predecessor\.status NOT IN \('SUCCEEDED','READY_FOR_REVIEW','RETRYABLE_ERROR','BLOCKED','CANCELLED'\)/iu);
-  assert.match(sql, /live\.state='PROCESSING'[\s\S]*?live\.lease_expires_at > NOW\(\)/iu);
-  assert.match(sql, /locked_jobs AS MATERIALIZED/iu);
-  assert.match(sql, /pg_try_advisory_xact_lock\(hashtextextended\(\s*runnable\.account_id\s*\|\|\s*chr\(31\)\s*\|\|\s*runnable\.job_id\s*,\s*0\s*\)\s*\)/iu);
-  assert.match(sql, /GROUP BY outbox\.account_id,outbox\.job_id\s+ORDER BY MIN\(outbox\.created_at\),MIN\(outbox\.id\),outbox\.account_id,outbox\.job_id\s+\), locked_jobs AS MATERIALIZED/iu);
-  assert.doesNotMatch(sql.match(/locked_jobs AS MATERIALIZED \([\s\S]*?\), candidates AS MATERIALIZED/iu)?.[0] ?? "", /ORDER BY/iu);
-  assert.match(sql, /CROSS JOIN LATERAL[\s\S]*?LIMIT 1 FOR UPDATE OF outbox SKIP LOCKED/iu);
+  const [, lockCall, updateCall] = pool.calls;
+  assert.equal(pool.calls[0].sql, "BEGIN ISOLATION LEVEL READ COMMITTED");
+  assert.match(lockCall.sql, /FROM auto_listing_jobs AS job/iu);
+  assert.match(lockCall.sql, /JOIN LATERAL/iu);
+  assert.match(lockCall.sql, /LIMIT \$2 FOR UPDATE OF job SKIP LOCKED/iu);
+  assert.match(lockCall.sql, /state='PROCESSING'[\s\S]*?lease_expires_at <= NOW\(\)[\s\S]*?attempts >= \$3/iu);
+  assert.match(updateCall.sql, /unnest\(\$6::TEXT\[\]\)/iu);
+  assert.match(updateCall.sql, /JOIN auto_listing_job_items AS item/iu);
+  assert.match(updateCall.sql, /predecessor\.source_order < item\.source_order/iu);
+  assert.match(updateCall.sql, /predecessor\.status NOT IN \('SUCCEEDED','READY_FOR_REVIEW','RETRYABLE_ERROR','BLOCKED','CANCELLED'\)/iu);
+  assert.match(updateCall.sql, /live\.state='PROCESSING'[\s\S]*?live\.lease_expires_at > NOW\(\)/iu);
+  assert.match(updateCall.sql, /CROSS JOIN LATERAL[\s\S]*?LIMIT 1 FOR UPDATE OF outbox SKIP LOCKED/iu);
+  assert.doesNotMatch(`${lockCall.sql}\n${updateCall.sql}`, /advisory|hashtextextended/iu);
+  assert.doesNotMatch(updateCall.sql, /\$7/iu);
+  assert.deepEqual(updateCall.parameters[5], ["job-a"]);
+  assert.equal(updateCall.parameters.length, 6);
+  assert.equal(pool.calls.at(-1).sql, "COMMIT");
+  assert.equal(pool.releaseCount, 1);
+});
+
+test("claim rolls back and releases its dedicated client when the fresh-snapshot update fails", async () => {
+  const pool = scriptedPool([{ rows: [{ job_id: "job-a" }] }, new Error("password=raw-database-secret")]);
+  const repository = createPostgresAiOutboxRepository({ pool, token: () => "batch-order" });
+
+  await assert.rejects(
+    repository.claimAutoListingAiMessages({
+      accountId: "account-a", workerId: "worker-a", limit: 10, leaseMs: 60_000,
+    }),
+    (error) => error.code === "AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED"
+      && error.retryable === true
+      && !/password|database|secret/iu.test(error.message),
+  );
+
+  assert.equal(pool.calls.at(-1).sql, "ROLLBACK");
+  assert.equal(pool.calls.some((call) => call.sql === "COMMIT"), false);
+  assert.equal(pool.releaseCount, 1);
 });
 
 test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1 accounts with bounded keyset pagination", async () => {
@@ -287,5 +337,9 @@ test("factory options are closed and proxy traps cannot leak raw configuration f
   assert.throws(
     () => createPostgresAiOutboxRepository(trapped),
     (error) => error.code === "AUTO_LISTING_AI_OUTBOX_INVALID" && !/password|production|secret/i.test(error.message),
+  );
+  assert.throws(
+    () => createPostgresAiOutboxRepository({ pool: { query() {} } }),
+    { code: "AUTO_LISTING_AI_OUTBOX_INVALID" },
   );
 });
