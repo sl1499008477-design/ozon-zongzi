@@ -441,8 +441,8 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
            WHERE account_id=$1 AND contract_version='V1' AND state='PROCESSING'
              AND lease_expires_at <= NOW() AND attempts >= $6
            RETURNING id
-         ), candidates AS MATERIALIZED (
-           SELECT outbox.id
+         ), runnable_jobs AS MATERIALIZED (
+           SELECT outbox.account_id,outbox.job_id
              FROM auto_listing_ai_outbox AS outbox
              JOIN auto_listing_job_items AS item
                ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
@@ -461,8 +461,42 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                    AND live.id<>outbox.id AND live.contract_version='V1'
                    AND live.state='PROCESSING' AND live.lease_expires_at > NOW()
               )
-            ORDER BY outbox.created_at,outbox.id
-            LIMIT $2 FOR UPDATE OF outbox SKIP LOCKED
+            GROUP BY outbox.account_id,outbox.job_id
+            ORDER BY MIN(outbox.created_at),MIN(outbox.id),outbox.account_id,outbox.job_id
+         ), locked_jobs AS MATERIALIZED (
+           SELECT runnable.account_id,runnable.job_id
+             FROM runnable_jobs AS runnable
+            WHERE pg_try_advisory_xact_lock(hashtextextended(
+              runnable.account_id || chr(31) || runnable.job_id,0
+            ))
+            LIMIT $2
+         ), candidates AS MATERIALIZED (
+           SELECT candidate.id
+             FROM locked_jobs AS locked
+             CROSS JOIN LATERAL (
+               SELECT outbox.id
+                 FROM auto_listing_ai_outbox AS outbox
+                 JOIN auto_listing_job_items AS item
+                   ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
+                WHERE outbox.account_id=locked.account_id AND outbox.job_id=locked.job_id
+                  AND outbox.contract_version='V1' AND outbox.attempts < $6
+                  AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW())
+                    OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
+                  AND NOT EXISTS (
+                    SELECT 1 FROM auto_listing_job_items AS predecessor
+                     WHERE predecessor.account_id=item.account_id AND predecessor.job_id=item.job_id
+                       AND predecessor.source_order < item.source_order
+                       AND predecessor.status NOT IN ('SUCCEEDED','READY_FOR_REVIEW','RETRYABLE_ERROR','BLOCKED','CANCELLED')
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM auto_listing_ai_outbox AS live
+                     WHERE live.account_id=outbox.account_id AND live.job_id=outbox.job_id
+                       AND live.id<>outbox.id AND live.contract_version='V1'
+                       AND live.state='PROCESSING' AND live.lease_expires_at > NOW()
+                  )
+                ORDER BY outbox.created_at,outbox.id
+                LIMIT 1 FOR UPDATE OF outbox SKIP LOCKED
+             ) AS candidate
          )
          UPDATE auto_listing_ai_outbox AS outbox
          SET state='PROCESSING',attempts=outbox.attempts+1,lease_owner=$3,

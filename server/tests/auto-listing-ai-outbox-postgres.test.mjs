@@ -97,7 +97,7 @@ test("PostgreSQL outbox claims with account scope, SKIP LOCKED, database lease t
   }
 });
 
-test("claim permits only the earliest non-stable item and one live outbox per batch", async () => {
+test("claim permits one mutex-protected candidate for the earliest non-stable item in each batch", async () => {
   const pool = scriptedPool([{ rows: [] }]);
   const repository = createPostgresAiOutboxRepository({ pool, token: () => "batch-order" });
 
@@ -110,7 +110,11 @@ test("claim permits only the earliest non-stable item and one live outbox per ba
   assert.match(sql, /predecessor\.source_order < item\.source_order/iu);
   assert.match(sql, /predecessor\.status NOT IN \('SUCCEEDED','READY_FOR_REVIEW','RETRYABLE_ERROR','BLOCKED','CANCELLED'\)/iu);
   assert.match(sql, /live\.state='PROCESSING'[\s\S]*?live\.lease_expires_at > NOW\(\)/iu);
-  assert.match(sql, /FOR UPDATE OF outbox SKIP LOCKED/iu);
+  assert.match(sql, /locked_jobs AS MATERIALIZED/iu);
+  assert.match(sql, /pg_try_advisory_xact_lock\(hashtextextended\(\s*runnable\.account_id\s*\|\|\s*chr\(31\)\s*\|\|\s*runnable\.job_id\s*,\s*0\s*\)\s*\)/iu);
+  assert.match(sql, /GROUP BY outbox\.account_id,outbox\.job_id\s+ORDER BY MIN\(outbox\.created_at\),MIN\(outbox\.id\),outbox\.account_id,outbox\.job_id\s+\), locked_jobs AS MATERIALIZED/iu);
+  assert.doesNotMatch(sql.match(/locked_jobs AS MATERIALIZED \([\s\S]*?\), candidates AS MATERIALIZED/iu)?.[0] ?? "", /ORDER BY/iu);
+  assert.match(sql, /CROSS JOIN LATERAL[\s\S]*?LIMIT 1 FOR UPDATE OF outbox SKIP LOCKED/iu);
 });
 
 test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1 accounts with bounded keyset pagination", async () => {

@@ -29,6 +29,8 @@ if (!enabled) {
       "jobAItem1", "jobAItem2", "jobBItem1", "jobBItem2",
     ].map((key) => [key, `${key}-${suffix}`]));
     let pool;
+    let firstClient;
+    let secondClient;
 
     try {
       await admin.query(`CREATE SCHEMA ${schemaSql}`);
@@ -89,24 +91,29 @@ if (!enabled) {
         id: (dedupeKey) => `outbox-${dedupeKey.slice(0, 32)}`,
         token: () => `batch-order-${++token}`,
       });
-      const enqueue = (itemId, expectedStatusVersion = 1) => repository.enqueueAutoListingAiMessage({
+      const enqueue = ({ itemId, expectedStatusVersion = 1, phase = "PLAN_CONTENT", slotKey }) => repository.enqueueAutoListingAiMessage({
         contractVersion: "V1",
         accountId: ids.account,
         itemId,
-        phase: "PLAN_CONTENT",
+        phase,
         expectedStatusVersion,
         correlationId: `corr-${itemId}-${expectedStatusVersion}`,
+        ...(slotKey === undefined ? {} : { slotKey }),
       });
-      for (const itemId of [ids.jobAItem1, ids.jobAItem2, ids.jobBItem1, ids.jobBItem2]) {
-        await enqueue(itemId);
+      for (const slotKey of ["slot-a", "slot-b", "slot-c"]) {
+        await enqueue({ itemId: ids.jobAItem1, phase: "GENERATE_IMAGE_SLOT", slotKey });
+      }
+      for (const itemId of [ids.jobAItem2, ids.jobBItem1, ids.jobBItem2]) {
+        await enqueue({ itemId });
       }
 
-      const claim = (limit = 10) => repository.claimAutoListingAiMessages({
+      const claimWith = (targetRepository, limit = 10) => targetRepository.claimAutoListingAiMessages({
         accountId: ids.account,
         workerId: "batch-order-worker",
         limit,
         leaseMs: 60_000,
       });
+      const claim = (limit = 10) => claimWith(repository, limit);
       const complete = (row) => repository.completeAutoListingAiMessage({
         accountId: ids.account,
         itemId: row.itemId,
@@ -120,7 +127,44 @@ if (!enabled) {
       assert.equal(firstClaims.some((row) => row.itemId === ids.jobAItem2), false);
 
       const jobAItem1Claim = firstClaims.find((row) => row.itemId === ids.jobAItem1);
+      const jobBItem1Claim = firstClaims.find((row) => row.itemId === ids.jobBItem1);
       await complete(jobAItem1Claim);
+      await complete(jobBItem1Claim);
+
+      firstClient = await pool.connect();
+      await firstClient.query("BEGIN");
+      const firstRepository = createPostgresAiOutboxRepository({
+        pool: firstClient,
+        token: () => "batch-order-first-transaction",
+      });
+      const secondJobAClaim = (await claimWith(firstRepository, 1))[0];
+      assert.equal(secondJobAClaim.itemId, ids.jobAItem1);
+
+      await admin.query(
+        "UPDATE auto_listing_job_items SET status='BLOCKED',updated_at=NOW() WHERE account_id=$1 AND id=$2",
+        [ids.account, ids.jobBItem1],
+      );
+      secondClient = await pool.connect();
+      await secondClient.query("BEGIN");
+      const secondRepository = createPostgresAiOutboxRepository({
+        pool: secondClient,
+        token: () => "batch-order-second-transaction",
+      });
+      const concurrentClaims = await claimWith(secondRepository);
+      assert.deepEqual(concurrentClaims.map((row) => row.itemId), [ids.jobBItem2]);
+      await secondClient.query("COMMIT");
+      secondClient.release();
+      secondClient = null;
+      await firstClient.query("COMMIT");
+      firstClient.release();
+      firstClient = null;
+
+      await complete(secondJobAClaim);
+      await complete(concurrentClaims[0]);
+      const finalSameItemClaim = (await claim(1))[0];
+      assert.equal(finalSameItemClaim.itemId, ids.jobAItem1);
+      await complete(finalSameItemClaim);
+
       await admin.query(
         "UPDATE auto_listing_job_items SET status='UPLOAD_QUEUED',updated_at=NOW() WHERE account_id=$1 AND id=$2",
         [ids.account, ids.jobAItem1],
@@ -145,7 +189,7 @@ if (!enabled) {
           WHERE account_id=$1 AND id=$2`,
         [ids.account, ids.jobAItem1],
       );
-      await enqueue(ids.jobAItem1, 2);
+      await enqueue({ itemId: ids.jobAItem1, expectedStatusVersion: 2 });
       assert.deepEqual(await claim(), []);
 
       await complete(jobAItem2Claim);
@@ -156,7 +200,23 @@ if (!enabled) {
       const retryClaim = (await claim(1))[0];
       assert.equal(retryClaim.itemId, ids.jobAItem1);
       assert.equal(retryClaim.message.expectedStatusVersion, 2);
+      await admin.query(
+        "UPDATE auto_listing_ai_outbox SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+        [ids.account, retryClaim.id],
+      );
+      const expiredReclaim = (await claim(1))[0];
+      assert.equal(expiredReclaim.id, retryClaim.id);
+      assert.equal(expiredReclaim.attempts, retryClaim.attempts + 1);
+      assert.notEqual(expiredReclaim.leaseToken, retryClaim.leaseToken);
     } finally {
+      if (secondClient) {
+        await secondClient.query("ROLLBACK").catch(() => {});
+        secondClient.release();
+      }
+      if (firstClient) {
+        await firstClient.query("ROLLBACK").catch(() => {});
+        firstClient.release();
+      }
       if (pool) await pool.end();
       await admin.query("SET search_path TO public").catch(() => {});
       await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
