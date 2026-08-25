@@ -26,7 +26,7 @@ const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canoni
 
 test("configurable fixed-skeleton migration suite tracks 076 without weakening its 074 upgrade coverage", async () => {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
-  assert.equal(migrations.at(-1), "076_auto_listing_category_strategy_analysis_edits.sql");
+  assert.equal(migrations.at(-1), "088_auto_listing_batch_order_multiplier.sql");
 });
 
 const roles = Object.freeze({

@@ -53,7 +53,7 @@ test("Task 11 delivery pins the executable composition suite and rollout invaria
     "NEEDS_REVIEW", "ABORTED", "DONE", "new immutable version", "never delete evidence",
   ]) assert.match(runbook, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   const migrations = (await readdir(migrationsDir)).filter((name) => /^\d{3}_.+\.sql$/u.test(name)).sort();
-  assert.equal(migrations.at(-1), "076_auto_listing_category_strategy_analysis_edits.sql");
+  assert.equal(migrations.at(-1), "088_auto_listing_batch_order_multiplier.sql");
   assert.equal(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version, "0.13.46.15-local");
 });
 
