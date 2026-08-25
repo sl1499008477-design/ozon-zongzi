@@ -534,13 +534,31 @@ export async function runAutoListingAiRuntimePostgresFixture({ connectionString 
       throw new Error(`valid fixture message was rejected by SQL payload validator: ${JSON.stringify(parts.rows[0])}`);
     }
     let lastDatabaseFailure = null;
-    const diagnosticClient = (client) => ({
+    const diagnosticQuery = async (client, args) => {
+      try { return await client.query(...args); } catch (error) { lastDatabaseFailure = error; throw error; }
+    };
+    const diagnosticPool = (client) => ({
       async query(...args) {
-        try { return await client.query(...args); } catch (error) { lastDatabaseFailure = error; throw error; }
+        return diagnosticQuery(client, args);
+      },
+      async connect() {
+        let dedicatedClient;
+        try {
+          dedicatedClient = await pool.connect();
+          await dedicatedClient.query(`SET search_path TO ${quote(schema)}, public`);
+        } catch (error) {
+          lastDatabaseFailure = error;
+          dedicatedClient?.release();
+          throw error;
+        }
+        return {
+          query: (...args) => diagnosticQuery(dedicatedClient, args),
+          release: () => dedicatedClient.release(),
+        };
       },
     });
-    const repoA = createPostgresAiOutboxRepository({ pool: diagnosticClient(clientA), token: () => `token-a-${suffix}`, id: () => `outbox-${suffix}` });
-    const repoB = createPostgresAiOutboxRepository({ pool: diagnosticClient(clientB), token: () => `token-b-${suffix}`, id: () => `other-${suffix}` });
+    const repoA = createPostgresAiOutboxRepository({ pool: diagnosticPool(clientA), token: () => `token-a-${suffix}`, id: () => `outbox-${suffix}` });
+    const repoB = createPostgresAiOutboxRepository({ pool: diagnosticPool(clientB), token: () => `token-b-${suffix}`, id: () => `other-${suffix}` });
     let inserted;
     try { inserted = await repoA.enqueueAutoListingAiMessage(message); } catch {
       throw new Error(`outbox fixture query failed (${lastDatabaseFailure?.code || "UNKNOWN"}:${lastDatabaseFailure?.constraint || "NONE"})`);
