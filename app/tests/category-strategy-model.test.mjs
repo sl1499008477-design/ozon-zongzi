@@ -183,8 +183,8 @@ test("strategy-required and resume projections preserve only the exact safe crea
     sourceVersions: [{ collectItemId: "collect-a", expectedSourceVersion: "draft:3" }],
     form: {
       targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
-      priceAdjustmentAmount: "0", ratio: "3:4", resolution: "1K", quality: "Medium",
-      language: "ru",
+      priceAdjustmentAmount: "0", priceMultiplier: "1.25", ratio: "3:4", resolution: "1K", quality: "Medium",
+      language: "ru", useCollectedBrand: false,
       roles: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 },
     },
     currency: "CNY",
@@ -192,8 +192,26 @@ test("strategy-required and resume projections preserve only the exact safe crea
     state: "CONFIGURING",
   });
   assert.equal(resume.form.roles.sellingPoint, 3);
+  assert.equal(resume.form.useCollectedBrand, false);
+  assert.equal(resume.form.priceMultiplier, "1.25");
   assert.equal(resume.currency, "CNY");
   assert.equal(Object.isFrozen(resume.form.roles), true);
+
+  const preferSourceBrand = projectStrategyResumeDraft({
+    ...resume,
+    form: { ...resume.form, useCollectedBrand: true },
+  });
+  assert.equal(preferSourceBrand.form.useCollectedBrand, true);
+  assert.throws(() => projectStrategyResumeDraft({
+    ...resume,
+    form: { ...resume.form, useCollectedBrand: "false" },
+  }), { code: "CATEGORY_STRATEGY_UI_DATA_INVALID" });
+
+  const legacy = projectStrategyResumeDraft({
+    ...resume,
+    form: Object.fromEntries(Object.entries(resume.form).filter(([key]) => key !== "priceMultiplier")),
+  });
+  assert.equal(legacy.form.priceMultiplier, "1");
 });
 
 test("resume drafts expire and fail closed when a current collect source version differs", () => {

@@ -366,14 +366,18 @@ function formRoles(raw) {
 }
 
 function resumeForm(raw) {
-  const value = closed(raw, new Set([
+  const required = new Set([
     "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentAmount", "ratio", "resolution", "quality",
     "language", "roles",
-  ]));
-  if (value.language !== "ru") throw uiError();
+  ]);
+  const value = closed(raw, new Set([...required, "useCollectedBrand", "priceMultiplier"]), required);
+  if (value.language !== "ru"
+    || (value.useCollectedBrand !== undefined && typeof value.useCollectedBrand !== "boolean")) throw uiError();
   return deepFreeze({
     targetStoreId: id(value.targetStoreId), targetWarehouseId: id(value.targetWarehouseId),
     stock: positive(value.stock), priceAdjustmentAmount: text(value.priceAdjustmentAmount, 80),
+    priceMultiplier: value.priceMultiplier === undefined ? "1" : text(value.priceMultiplier, 80),
+    useCollectedBrand: value.useCollectedBrand === true,
     ratio: text(value.ratio, 20), resolution: text(value.resolution, 20), quality: text(value.quality, 20),
     language: value.language, roles: formRoles(value.roles),
   });
