@@ -33,6 +33,8 @@ const CURRENCY_PRESENTATIONS = Object.freeze({
   RUB: Object.freeze({ currency: "RUB", name: "卢布", symbol: "₽" }),
   CNY: Object.freeze({ currency: "CNY", name: "人民币", symbol: "¥" }),
 });
+const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
+const MULTIPLIER_SCALE = 1_000_000n;
 
 function configError(code = "AUTO_LISTING_CONFIG_INVALID") {
   const error = new Error(code);
@@ -78,6 +80,29 @@ export function amountToMinorUnits(value = "0") {
   return String(match[1] === "-" ? -amount : amount);
 }
 
+export function multiplierToMicros(value) {
+  const match = /^(\d+)(?:\.(\d{1,6}))?$/u.exec(String(value ?? "").trim());
+  if (!match) throw configError("AUTO_LISTING_PRICE_MULTIPLIER_INVALID");
+  const micros = (BigInt(match[1]) * MULTIPLIER_SCALE)
+    + BigInt((match[2] || "").padEnd(6, "0") || "0");
+  if (micros <= 0n || micros > POSTGRES_BIGINT_MAX) {
+    throw configError("AUTO_LISTING_PRICE_MULTIPLIER_INVALID");
+  }
+  return String(micros);
+}
+
+export function microsToMultiplier(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!/^\d+$/u.test(text)) throw configError("AUTO_LISTING_PRICE_MULTIPLIER_INVALID");
+  const micros = BigInt(text);
+  if (micros <= 0n || micros > POSTGRES_BIGINT_MAX) {
+    throw configError("AUTO_LISTING_PRICE_MULTIPLIER_INVALID");
+  }
+  const whole = micros / MULTIPLIER_SCALE;
+  const fraction = String(micros % MULTIPLIER_SCALE).padStart(6, "0").replace(/0+$/u, "");
+  return fraction ? `${whole}.${fraction}` : String(whole);
+}
+
 export function autoListingCurrencyPresentation(value) {
   const currency = typeof value === "string" ? value.trim().toUpperCase() : "";
   const presentation = CURRENCY_PRESENTATIONS[currency];
@@ -113,7 +138,7 @@ export function deriveAutoListingConfig(input = {}, {
   hasReliableProductDimensions = true,
 } = {}) {
   if (!onlyKeys(input, new Set([
-    "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "image",
+    "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplier", "image",
   ])) || !Number.isInteger(input.stock) || input.stock <= 0) throw configError();
   const imageInput = input.image ?? {};
   if (!onlyKeys(imageInput, new Set(["ratio", "resolution", "quality", "language", "roles"]))) {
@@ -127,6 +152,7 @@ export function deriveAutoListingConfig(input = {}, {
     targetWarehouseId: requiredId(input.targetWarehouseId),
     stock: input.stock,
     priceAdjustmentKopecks: signedInteger(input.priceAdjustmentKopecks),
+    priceMultiplierMicros: multiplierToMicros(input.priceMultiplier ?? "1"),
     image: Object.freeze({
       ratio: option(imageInput.ratio, AUTO_LISTING_IMAGE_DEFAULTS.ratio, RATIOS),
       resolution: option(imageInput.resolution, AUTO_LISTING_IMAGE_DEFAULTS.resolution, RESOLUTIONS),
@@ -162,6 +188,9 @@ export function previewAutoListingPrice(input = {}) {
   const currency = autoListingCurrencyPresentation(input.currency).currency;
   const black = parseKopecks(input.blackKopecks, { positive: true });
   const adjustment = parseKopecks(input.adjustmentKopecks ?? "0");
+  const multiplierText = input.priceMultiplierMicros ?? "1000000";
+  microsToMultiplier(multiplierText);
+  const priceMultiplierMicros = BigInt(multiplierText.trim());
   let branch;
   let real;
   if (black >= 8_000n) {
@@ -173,13 +202,18 @@ export function previewAutoListingPrice(input = {}) {
     branch = "BLACK_LT_80";
     real = roundHalfUp(black * 10_000n, 10_715n);
   }
-  const finalPrice = real + adjustment;
+  const preMultiplierPrice = real + adjustment;
+  if (preMultiplierPrice <= 0n) throw configError("PRICE_FINAL_NOT_POSITIVE");
+  const finalPrice = roundHalfUp(preMultiplierPrice * priceMultiplierMicros, MULTIPLIER_SCALE);
   if (finalPrice <= 0n) throw configError("PRICE_FINAL_NOT_POSITIVE");
+  if (finalPrice > POSTGRES_BIGINT_MAX) throw configError("PRICE_INPUT_INVALID");
   return Object.freeze({
     currency,
     branch,
     realPriceKopecks: String(real),
     adjustmentKopecks: String(adjustment),
+    preMultiplierPriceKopecks: String(preMultiplierPrice),
+    priceMultiplierMicros: String(priceMultiplierMicros),
     finalPriceKopecks: String(finalPrice),
     finalPriceText: currencyText(currency, finalPrice),
   });

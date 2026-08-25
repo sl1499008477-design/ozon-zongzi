@@ -3,10 +3,14 @@ import test from "node:test";
 
 import {
   autoListingActionAvailability,
+  autoListingCollectSelectionRows,
   autoListingImportProgress,
   autoListingImportRowPresentation,
   autoListingItemPresentation,
   autoListingTaskRows,
+  autoListingTaskDuration,
+  autoListingTaskMatchesFilter,
+  autoListingTaskProgress,
   autoListingCreatedAtLabel,
 } from "../src/auto-listing-view.js";
 
@@ -362,4 +366,63 @@ test("formats persisted timestamps in China time and never substitutes the curre
   assert.equal(autoListingCreatedAtLabel("not-a-time"), "—");
   assert.equal(autoListingCreatedAtLabel(""), "—");
   assert.equal(autoListingCreatedAtLabel(undefined), "—");
+});
+
+test("projects selected collect rows in URL order with display-safe fallbacks", () => {
+  const localData = { caches: { collectBox: [
+    { id: "collect-a", image: "https://example.test/a.jpg", name: "商品 A", sku: "SKU-A" },
+    { id: "collect-b", primaryImage: "https://example.test/b.jpg", title: "商品 B" },
+    { id: "collect-c", images: ["https://example.test/c.jpg"], productUrl: "https://ozon.test/c" },
+  ] } };
+  assert.deepEqual(autoListingCollectSelectionRows(localData, ["collect-b", "collect-a", "collect-c"]), [
+    { id: "collect-b", thumbnailUrl: "https://example.test/b.jpg", title: "商品 B", sku: "collect-b" },
+    { id: "collect-a", thumbnailUrl: "https://example.test/a.jpg", title: "商品 A", sku: "SKU-A" },
+    { id: "collect-c", thumbnailUrl: "https://example.test/c.jpg", title: "https://ozon.test/c", sku: "collect-c" },
+  ]);
+  assert.deepEqual(autoListingCollectSelectionRows({ collectBox: [{ id: "collect-empty" }] }, ["collect-empty"]), [
+    { id: "collect-empty", thumbnailUrl: "", title: "", sku: "collect-empty" },
+  ]);
+});
+
+test("derives task progress from the persisted workflow without completing failures", () => {
+  assert.equal(autoListingTaskProgress({ status: "UPLOADING" }).percent, 95);
+  assert.equal(autoListingTaskProgress({ status: "BLOCKED", failureStage: "UPLOAD" }).percent, 95);
+  assert.equal(autoListingTaskProgress({
+    status: "RETRYABLE_ERROR", failureStage: "GENERATION",
+    workflowProgress: { phase: "GENERATE_IMAGE_SLOT" },
+  }).percent, 60);
+  assert.ok(autoListingTaskProgress({ status: "BLOCKED", failureStage: "UPLOAD" }).percent < 100);
+});
+
+test("derives fixed terminal and live active task durations from the job start", () => {
+  const start = Date.parse("2026-08-25T00:00:00.000Z");
+  assert.deepEqual(autoListingTaskDuration({
+    status: "SUCCEEDED", jobCreatedAt: "2026-08-25T00:00:00.000Z", updatedAt: "2026-08-25T00:02:03.000Z",
+  }, Date.parse("2026-08-25T01:00:00.000Z")), { milliseconds: 123000, terminal: true, prefix: "总用时" });
+  assert.deepEqual(autoListingTaskDuration({
+    status: "BLOCKED", jobCreatedAt: "2026-08-25T00:00:00.000Z", updatedAt: "2026-08-25T00:02:03.000Z",
+  }, Date.parse("2026-08-25T01:00:00.000Z")), { milliseconds: 123000, terminal: true, prefix: "未上架 · 已用时" });
+  assert.deepEqual(autoListingTaskDuration({
+    status: "READY_FOR_REVIEW", jobCreatedAt: "2026-08-25T00:00:00.000Z", updatedAt: "2026-08-25T00:02:03.000Z",
+  }, start + 180000), { milliseconds: 180000, terminal: false, prefix: "已用时" });
+});
+
+test("matches exactly the seven task center filters", () => {
+  const rows = {
+    processing: { status: "GENERATING" },
+    review: { status: "READY_FOR_REVIEW" },
+    generationFailed: { status: "RETRYABLE_ERROR", failureStage: "GENERATION" },
+    uploadFailed: { status: "BLOCKED", failureStage: "UPLOAD" },
+    succeeded: { status: "SUCCEEDED" },
+    cancelled: { status: "CANCELLED" },
+  };
+  assert.equal(autoListingTaskMatchesFilter(rows.processing, "all"), true);
+  assert.equal(autoListingTaskMatchesFilter(rows.processing, "processing"), true);
+  assert.equal(autoListingTaskMatchesFilter(rows.review, "review"), true);
+  assert.equal(autoListingTaskMatchesFilter(rows.generationFailed, "generation-failed"), true);
+  assert.equal(autoListingTaskMatchesFilter(rows.uploadFailed, "upload-failed"), true);
+  assert.equal(autoListingTaskMatchesFilter(rows.succeeded, "succeeded"), true);
+  assert.equal(autoListingTaskMatchesFilter(rows.cancelled, "cancelled"), true);
+  assert.equal(autoListingTaskMatchesFilter(rows.uploadFailed, "generation-failed"), false);
+  assert.equal(autoListingTaskMatchesFilter(rows.succeeded, "unknown"), false);
 });

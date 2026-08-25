@@ -10,6 +10,8 @@ import {
   autoListingWarehouseOptions,
   deriveAutoListingConfig,
   kopecksToRubles,
+  microsToMultiplier,
+  multiplierToMicros,
   previewAutoListingPrice,
   readExcelFileAsBase64,
   shouldResetAutoListingAdjustment,
@@ -65,6 +67,7 @@ test("uses the approved ordinary-user defaults and derives total image count", (
   assert.equal("strategy" in config, false);
   assert.equal("model" in config, false);
   assert.equal("apiKey" in config, false);
+  assert.equal(config.priceMultiplierMicros, "1000000");
 });
 
 test("removes the product-size image when reliable product dimensions are unavailable", () => {
@@ -133,6 +136,8 @@ test("price preview mirrors the approved two-branch formula with integer roundin
     branch: "BLACK_GTE_80",
     realPriceKopecks: "14500",
     adjustmentKopecks: "100",
+    preMultiplierPriceKopecks: "14600",
+    priceMultiplierMicros: "1000000",
     finalPriceKopecks: "14600",
     finalPriceText: "146.00 ₽",
   });
@@ -262,4 +267,38 @@ test("reads a bounded workbook once and returns only request-safe metadata", asy
     name: "too-large.xlsx", type: result.contentType, size: 5,
     arrayBuffer: async () => assert.fail("oversized files must be rejected before reading"),
   }, { maxBytes: 4 }), { code: "AUTO_LISTING_EXCEL_FILE_TOO_LARGE" });
+});
+
+test("converts price multipliers exactly without floating point", () => {
+  assert.equal(multiplierToMicros("1"), "1000000");
+  assert.equal(multiplierToMicros("1.25"), "1250000");
+  assert.equal(multiplierToMicros("0.000001"), "1");
+  assert.equal(multiplierToMicros("9223372036854.775807"), "9223372036854775807");
+  assert.equal(microsToMultiplier("1250000"), "1.25");
+  assert.equal(microsToMultiplier("1"), "0.000001");
+  for (const value of ["0", "-1", "1.0000001", "1e2", "", "9223372036854.775808"]) {
+    assert.throws(() => multiplierToMicros(value), { code: "AUTO_LISTING_PRICE_MULTIPLIER_INVALID" });
+  }
+  for (const value of ["0", "-1", "1.5", "9223372036854775808"]) {
+    assert.throws(() => microsToMultiplier(value), { code: "AUTO_LISTING_PRICE_MULTIPLIER_INVALID" });
+  }
+});
+
+test("config sends multiplier micros and preview uses backend ordering and half-up rounding", () => {
+  const config = deriveAutoListingConfig({
+    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 1,
+    priceMultiplier: "1.25",
+  });
+  assert.equal(config.priceMultiplierMicros, "1250000");
+  assert.deepEqual(previewAutoListingPrice({
+    currency: "RUB", blackKopecks: "10000", greenKopecks: "8000",
+    adjustmentKopecks: "100", priceMultiplierMicros: "1250000",
+  }), {
+    currency: "RUB", branch: "BLACK_GTE_80", realPriceKopecks: "14500",
+    adjustmentKopecks: "100", preMultiplierPriceKopecks: "14600",
+    priceMultiplierMicros: "1250000", finalPriceKopecks: "18250", finalPriceText: "182.50 ₽",
+  });
+  assert.equal(previewAutoListingPrice({
+    currency: "RUB", blackKopecks: "500000", greenKopecks: "500000", priceMultiplierMicros: "1",
+  }).finalPriceKopecks, "1");
 });

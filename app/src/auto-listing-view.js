@@ -71,6 +71,22 @@ const WORKFLOW_PHASES = Object.freeze({
   GENERATE_RICH_CONTENT: "生成富文本",
 });
 const WORKFLOW_STATES = new Set(["QUEUED", "RUNNING", "RETRY_WAIT", "COMPLETED", "FAILED"]);
+const STATUS_PERCENT = Object.freeze({
+  CREATED: 5,
+  SOURCE_READY: 15,
+  PLANNING: 30,
+  GENERATING: 60,
+  READY_FOR_REVIEW: 80,
+  UPLOAD_QUEUED: 85,
+  UPLOADING: 95,
+  SUCCEEDED: 100,
+});
+const PROCESSING_STATUSES = new Set([
+  "CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "UPLOAD_QUEUED", "UPLOADING",
+]);
+const TASK_FILTERS = new Set([
+  "all", "processing", "review", "generation-failed", "upload-failed", "succeeded", "cancelled",
+]);
 const AUTO_LISTING_CHINA_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
   timeZone: "Asia/Shanghai",
   year: "numeric",
@@ -193,6 +209,7 @@ function projectItem(value, { allowJobFields = true } = {}) {
   for (const key of [
     "createdAt", "updatedAt", "targetStoreId", "targetWarehouseId",
     "sourceRecordId", "sourceVersion", "sourceHash", "failureCode",
+    "failureStage",
   ]) {
     if (!descriptors[key]) continue;
     const text = boundedString(field(key));
@@ -356,4 +373,85 @@ export function autoListingCreatedAtLabel(value) {
       .map(({ type, value: partValue }) => [type, partValue]),
   );
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function displayText(value) {
+  return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+}
+
+export function autoListingCollectSelectionRows(localData = {}, collectIds = []) {
+  const sourceRows = Array.isArray(localData?.caches?.collectBox)
+    ? localData.caches.collectBox : Array.isArray(localData?.collectBox) ? localData.collectBox : [];
+  const byId = new Map(sourceRows.map((row) => [displayText(row?.id), row]));
+  if (!Array.isArray(collectIds)) return Object.freeze([]);
+  return Object.freeze(collectIds.flatMap((collectId) => {
+    const id = displayText(collectId);
+    const source = byId.get(id);
+    if (!id || !source) return [];
+    const thumbnailUrl = [source.image, source.primaryImage, Array.isArray(source.images) ? source.images[0] : ""]
+      .map(displayText).find(Boolean) || "";
+    return [Object.freeze({
+      id,
+      thumbnailUrl,
+      title: [source.name, source.title, source.productUrl].map(displayText).find(Boolean) || "",
+      sku: displayText(source.sku) || id,
+    })];
+  }));
+}
+
+function failurePercent(row) {
+  if (row?.failureStage === "UPLOAD") return STATUS_PERCENT.UPLOADING;
+  if (row?.failureStage === "GENERATION") return STATUS_PERCENT.GENERATING;
+  const phase = row?.workflowProgress?.phase;
+  if (phase === "GENERATE_IMAGE_SLOT" || phase === "GENERATE_RICH_CONTENT") {
+    return STATUS_PERCENT.GENERATING;
+  }
+  if (phase === "PLAN_CONTENT" || phase === "MATERIALIZE_SOURCE_ASSET" || phase === "FINALIZE_MATERIALIZED_PLAN") {
+    return STATUS_PERCENT.PLANNING;
+  }
+  return STATUS_PERCENT.CREATED;
+}
+
+export function autoListingTaskProgress(row = {}) {
+  const status = typeof row?.status === "string" ? row.status : "";
+  const percent = Object.hasOwn(STATUS_PERCENT, status) ? STATUS_PERCENT[status]
+    : ["RETRYABLE_ERROR", "BLOCKED"].includes(status) ? failurePercent(row) : 0;
+  return Object.freeze({ percent: Math.min(percent, 99) === percent ? percent : 100 });
+}
+
+function timestampMilliseconds(value) {
+  if (typeof value !== "string") return null;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? milliseconds : null;
+}
+
+export function autoListingTaskDuration(row = {}, nowMs = Date.now()) {
+  const status = typeof row?.status === "string" ? row.status : "";
+  const start = timestampMilliseconds(row?.jobCreatedAt);
+  const failed = status === "RETRYABLE_ERROR" || status === "BLOCKED";
+  const cancelled = status === "CANCELLED";
+  const terminal = status === "SUCCEEDED" || failed || cancelled;
+  const end = terminal ? timestampMilliseconds(row?.updatedAt) : nowMs;
+  const milliseconds = start === null || !Number.isFinite(end) ? 0 : Math.max(0, end - start);
+  return Object.freeze({
+    milliseconds,
+    terminal,
+    prefix: status === "SUCCEEDED" ? "总用时" : failed ? "未上架 · 已用时"
+      : cancelled ? "已取消 · 已用时" : "已用时",
+  });
+}
+
+export function autoListingTaskMatchesFilter(row = {}, filter) {
+  if (!TASK_FILTERS.has(filter)) return false;
+  if (filter === "all") return true;
+  const status = typeof row?.status === "string" ? row.status : "";
+  if (filter === "processing") return PROCESSING_STATUSES.has(status);
+  if (filter === "review") return status === "READY_FOR_REVIEW";
+  if (filter === "generation-failed") {
+    return ["RETRYABLE_ERROR", "BLOCKED"].includes(status) && row?.failureStage === "GENERATION";
+  }
+  if (filter === "upload-failed") {
+    return ["RETRYABLE_ERROR", "BLOCKED"].includes(status) && row?.failureStage === "UPLOAD";
+  }
+  return filter === "succeeded" ? status === "SUCCEEDED" : status === "CANCELLED";
 }
