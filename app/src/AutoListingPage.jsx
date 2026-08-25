@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Progress,
   Select,
   Space,
   Spin,
@@ -33,6 +34,7 @@ import {
   autoListingExcelSerializedBodyLimit,
   deriveAutoListingConfig,
   kopecksToRubles,
+  microsToMultiplier,
   readExcelFileAsBase64,
   shouldResetAutoListingAdjustment,
 } from "./auto-listing-config.js";
@@ -40,6 +42,10 @@ import {
   autoListingImportProgress,
   autoListingImportRowPresentation,
   autoListingItemPresentation,
+  autoListingCollectSelectionRows,
+  autoListingTaskDuration,
+  autoListingTaskMatchesFilter,
+  autoListingTaskProgress,
   autoListingTaskRows,
   autoListingCreatedAtLabel,
 } from "./auto-listing-view.js";
@@ -63,11 +69,23 @@ const ROLE_FIELDS = Object.freeze([
   ["infographic", "信息图", 1, 2],
 ]);
 
+function AutoListingThumbnail({ src, alt, className = "" }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [src]);
+  if (!src || failed) {
+    return <span className={`auto-listing-thumbnail-placeholder ${className}`.trim()} role="img" aria-label={alt || "图片不可用"}>
+      图片不可用
+    </span>;
+  }
+  return <img className={className} src={src} alt={alt || "来源商品"} onError={() => setFailed(true)} />;
+}
+
 const DEFAULT_FORM = Object.freeze({
   targetStoreId: "",
   targetWarehouseId: "",
   stock: 5,
   priceAdjustmentAmount: "0",
+  priceMultiplier: "1",
   ratio: "3:4",
   resolution: "1K",
   quality: "Medium",
@@ -76,10 +94,32 @@ const DEFAULT_FORM = Object.freeze({
 });
 
 const DEFAULT_EXCEL_LIMITS = Object.freeze({ maxBytes: 2_097_152, maxRows: 1_000 });
+const TASK_FILTER_ITEMS = Object.freeze([
+  { key: "all", label: "全部任务" },
+  { key: "processing", label: "处理中" },
+  { key: "review", label: "待审核" },
+  { key: "generation-failed", label: "生成失败" },
+  { key: "upload-failed", label: "上架失败" },
+  { key: "succeeded", label: "上架成功" },
+  { key: "cancelled", label: "已取消" },
+]);
 
 function byteLimitLabel(bytes) {
   if (bytes >= 1024 * 1024 && bytes % (1024 * 1024) === 0) return `${bytes / (1024 * 1024)} MB`;
   return `${Math.ceil(bytes / 1024)} KB`;
+}
+
+function taskDurationLabel(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${hours ? `${hours}小时` : ""}${minutes ? `${minutes}分` : ""}${seconds}秒`;
+}
+
+function shortSourceId(value) {
+  const text = String(value || "");
+  return text.length > 12 ? `${text.slice(0, 6)}…${text.slice(-4)}` : (text || "—");
 }
 
 function requestId(prefix) {
@@ -153,6 +193,9 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   const [resumeDraft, setResumeDraft] = useState(initialResume);
   const [strategyRequired, setStrategyRequired] = useState(null);
   const [source, setSource] = useState(initialResume?.source || "collect");
+  const [activePageTab, setActivePageTab] = useState("create");
+  const [taskFilter, setTaskFilter] = useState("all");
+  const [displayNowMs, setDisplayNowMs] = useState(() => Date.now());
   const [collectIds] = useState(() => initialResume?.collectIds
     || visibleCollectIds(localData, collectIdsFromLocation()));
   const [workbook, setWorkbook] = useState(null);
@@ -207,6 +250,16 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     targetStoreId: selectedStoreId,
     selectedWarehouseId,
   }), [warehouses, selectedStoreId, selectedWarehouseId]);
+  const taskRows = useMemo(() => autoListingTaskRows(jobs), [jobs]);
+  const collectSelectionRows = useMemo(
+    () => autoListingCollectSelectionRows(localData, collectIds),
+    [collectIds, localData],
+  );
+  const filteredTaskRows = useMemo(
+    () => taskRows.filter((row) => autoListingTaskMatchesFilter(row, taskFilter)),
+    [taskFilter, taskRows],
+  );
+  const hasNonTerminalTasks = taskRows.some((row) => !autoListingTaskDuration(row, 0).terminal);
 
   useEffect(() => {
     if (selectedWarehouseId && !warehouseChoice.selectedWarehouseId) {
@@ -246,6 +299,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
           targetWarehouseId: preference.targetWarehouseId || "",
           stock: preference.stock || DEFAULT_FORM.stock,
           priceAdjustmentAmount: kopecksToRubles(preference.priceAdjustmentKopecks || "0"),
+          priceMultiplier: microsToMultiplier(preference.priceMultiplierMicros || "1000000"),
           ratio: preference.image?.ratio || DEFAULT_FORM.ratio,
           resolution: preference.image?.resolution || DEFAULT_FORM.resolution,
           quality: preference.image?.quality || DEFAULT_FORM.quality,
@@ -278,6 +332,12 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
 
   useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => {
+    if (activePageTab !== "tasks" || !hasNonTerminalTasks) return undefined;
+    setDisplayNowMs(Date.now());
+    const timer = globalThis.setInterval(() => setDisplayNowMs(Date.now()), 1_000);
+    return () => globalThis.clearInterval(timer);
+  }, [activePageTab, hasNonTerminalTasks]);
+  useEffect(() => {
     if (resumeDraft?.state !== "READY_TO_CONTINUE") return;
     createIntentRef.current = null;
     setNotice("类目策略已准备完成，请检查原配置后继续创建任务");
@@ -290,6 +350,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     targetWarehouseId: values.targetWarehouseId,
     stock: values.stock,
     priceAdjustmentKopecks: amountToMinorUnits(values.priceAdjustmentAmount),
+    priceMultiplier: values.priceMultiplier,
     image: {
       ratio: values.ratio,
       resolution: values.resolution,
@@ -367,6 +428,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       setResumeDraft(null);
       setStrategyRequired(null);
       setNotice("任务已创建");
+      setActivePageTab("tasks");
       let refreshed = await loadData();
       try {
         await onRefresh?.();
@@ -575,12 +637,25 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     }
   };
 
-  const taskRows = autoListingTaskRows(jobs);
   const taskColumns = [
-    { title: "商品", dataIndex: "sourceRecordId", render: (value, row) => row.title || row.sku || value || row.itemId },
+    { title: "商品", dataIndex: "sourceRecordId", render: (value, row) => <div className="auto-listing-task-product">
+      <div className="auto-listing-task-source-media">
+        <AutoListingThumbnail className="auto-listing-task-thumbnail" src={row.sourceThumbnailUrl} alt={row.sourceTitle || "来源商品"} />
+        <span title={value || row.itemId}>{shortSourceId(value || row.itemId)}</span>
+      </div>
+      <div><strong>{row.sourceTitle || row.sourceSku || value || row.itemId}</strong><span>{row.sourceSku || "SKU 未提供"}</span></div>
+    </div> },
     { title: "任务进度", dataIndex: "status", render: (_value, row) => {
       const item = autoListingItemPresentation(row);
+      const progress = {
+        ...autoListingTaskProgress(row),
+        status: row.status === "SUCCEEDED" ? "success"
+          : ["RETRYABLE_ERROR", "BLOCKED", "CANCELLED"].includes(row.status) ? "exception"
+            : ["CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "UPLOAD_QUEUED", "UPLOADING"].includes(row.status)
+              ? "active" : "normal",
+      };
       return <Space direction="vertical" size={2}>
+        <Progress percent={progress.percent} status={progress.status} size="small" />
         <Tag>{item.workflowProgress?.label || item.statusLabel}</Tag>
         {item.workflowProgress ? <span>{item.workflowProgress.detail}</span> : null}
         {item.workflowProgress ? <span>{item.workflowProgress.updatedLabel}</span> : null}
@@ -589,6 +664,10 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       </Space>;
     } },
     { title: "上架店铺", dataIndex: "targetStoreId", render: (value) => storeLabels.get(String(value || "")) || "—" },
+    { title: "任务用时", key: "duration", render: (_value, row) => {
+      const duration = autoListingTaskDuration(row, displayNowMs);
+      return `${duration.prefix} ${taskDurationLabel(duration.milliseconds)}`;
+    } },
     { title: "创建时间", dataIndex: "jobCreatedAt", render: (value) => autoListingCreatedAtLabel(value) },
     { title: "操作", key: "actions", render: (_value, row) => {
       const item = autoListingItemPresentation(row);
@@ -617,10 +696,15 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     {notice ? <Alert type="success" showIcon title={notice} closable onClose={() => setNotice("")} /> : null}
     {error ? <Alert type="error" showIcon title={error} closable onClose={() => setError("")} /> : null}
     <Spin spinning={loading}>
+      <Tabs className="auto-listing-page-tabs" activeKey={activePageTab} onChange={setActivePageTab} items={[
+        { key: "create", label: "创建任务", children: <div className="auto-listing-tab-content">
       <Card title="1. 选择商品来源">
         <Tabs activeKey={source} onChange={setSource} items={[
           { key: "collect", label: "采集箱推送", children: collectIds.length
-            ? <Alert type="info" showIcon title={`已选择 ${collectIds.length} 个采集箱商品`} />
+            ? <div className="auto-listing-source-list">{collectSelectionRows.map((row, index) => <div className="auto-listing-source-row" key={row.id}>
+              <AutoListingThumbnail className="auto-listing-source-thumbnail" src={row.thumbnailUrl} alt={row.title || "采集来源商品"} />
+              <div><strong>{index + 1}. {row.title || "商品标题未提供"}</strong><span>SKU：{row.sku}</span><span>ID：{row.id}</span></div>
+            </div>)}</div>
             : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先在采集箱勾选商品并点击“推送到自动上架”" /> },
           { key: "excel", label: "Excel SKU", children: <Upload.Dragger
             accept=".xlsx"
@@ -653,12 +737,16 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
             <Form.Item name="priceAdjustmentAmount"
               label={`售价加减（${currencyPresentation ? `${currencyPresentation.name} ${currencyPresentation.symbol}` : "请选择支持的店铺币种"}）`}
               rules={[{ required: true }]}><Input /></Form.Item>
+            <Form.Item name="priceMultiplier" label="上架倍率" rules={[{ required: true, message: "请输入上架倍率" }]}
+              extra="支持最多 6 位小数，必须大于 0">
+              <InputNumber stringMode min="0.000001" />
+            </Form.Item>
           </div>
           {selectedStoreId && !currencyPresentation
             ? <Alert type="error" showIcon title="店铺币种尚未同步，请先同步店铺资料。" /> : null}
           <Alert type="info" showIcon title="RFBS 新店仓库将在创建任务时由后端只读验证，不会在验证阶段创建商品或修改库存。" />
           <Alert type="info" showIcon title="售价计算规则"
-            description={`所有金额均按店铺原币计算。黑标价大于等于 80 ${currencyPresentation?.symbol || ""}：真实售价＝（黑标价－绿标价）×2.25＋黑标价；低于 80 ${currencyPresentation?.symbol || ""}：真实售价＝黑标价÷1.0715。最后再加上或减去上面的金额。`} />
+            description={`所有金额均按店铺原币计算。黑标价大于等于 80 ${currencyPresentation?.symbol || ""}：真实售价＝（黑标价－绿标价）×2.25＋黑标价；低于 80 ${currencyPresentation?.symbol || ""}：真实售价＝黑标价÷1.0715。最后加减上面的金额，再乘以上架倍率`} />
 
           <div className="auto-listing-section-title">图片生成配置</div>
           <div className="auto-listing-grid auto-listing-grid--four">
@@ -678,8 +766,8 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
           {resumeDraft?.state === "READY_TO_CONTINUE" ? "继续创建任务" : "创建生成任务"}
         </Button>
       </Card>
-
-      <Card title="3. 导入与任务进度" extra={<Button onClick={loadData}>刷新</Button>}>
+        </div> },
+        { key: "tasks", label: "任务中心", children: <Card title="导入与任务进度" extra={<Button onClick={loadData}>刷新</Button>}>
         {imports.length ? <div className="auto-listing-imports">{imports.map((item) => {
           const progress = autoListingImportProgress(item);
           return <div key={item.id} className="auto-listing-import-row">
@@ -687,8 +775,11 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
             <Button size="small" icon={<EyeOutlined />} disabled={Boolean(importActionId)} onClick={() => openImportDetail(item)}>查看失败行</Button>
           </div>;
         })}</div> : null}
-        <Table rowKey="itemId" dataSource={taskRows} columns={taskColumns} pagination={{ pageSize: 10 }} locale={{ emptyText: "暂无自动上架任务" }} />
-      </Card>
+        <Tabs className="auto-listing-task-filters" activeKey={taskFilter} onChange={setTaskFilter} items={TASK_FILTER_ITEMS} />
+        <div className="auto-listing-task-table"><Table rowKey="itemId" dataSource={filteredTaskRows} columns={taskColumns}
+          pagination={{ pageSize: 10 }} scroll={{ x: 1120 }} locale={{ emptyText: "暂无自动上架任务" }} /></div>
+      </Card> },
+      ]} />
     </Spin>
 
     <Modal title="需要先配置类目图片策略" open={Boolean(strategyRequired)}

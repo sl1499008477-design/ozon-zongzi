@@ -208,13 +208,23 @@ function projectItem(value, { allowJobFields = true } = {}) {
   const output = { itemId, status };
   for (const key of [
     "createdAt", "updatedAt", "targetStoreId", "targetWarehouseId",
-    "sourceRecordId", "sourceVersion", "sourceHash", "failureCode",
-    "failureStage",
+    "sourceRecordId", "sourceVersion", "sourceHash", "sourceThumbnailUrl",
+    "sourceTitle", "sourceSku", "failureCode",
   ]) {
     if (!descriptors[key]) continue;
     const text = boundedString(field(key));
     if (text === null) return null;
     output[key] = text;
+  }
+  if (descriptors.sourceOrder) {
+    const sourceOrder = field("sourceOrder");
+    if (!Number.isSafeInteger(sourceOrder) || sourceOrder < 1) return null;
+    output.sourceOrder = sourceOrder;
+  }
+  if (descriptors.failureStage) {
+    const failureStage = field("failureStage");
+    if (failureStage !== null && !["PREPARATION", "GENERATION", "UPLOAD"].includes(failureStage)) return null;
+    output.failureStage = failureStage;
   }
   if (descriptors.statusVersion) {
     const statusVersion = field("statusVersion");

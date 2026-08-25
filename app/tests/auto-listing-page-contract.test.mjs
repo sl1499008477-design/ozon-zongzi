@@ -37,6 +37,17 @@ test("automatic listing page owns the complete review-mode ordinary-user workflo
   assert.match(page, /RFBS 新店仓库将在创建任务时由后端只读验证，不会在验证阶段创建商品或修改库存。/u);
 });
 
+test("automatic listing separates creation from a filterable task center", () => {
+  assert.match(page, /创建任务/u);
+  assert.match(page, /任务中心/u);
+  assert.match(page, /name="priceMultiplier"|name=\{"priceMultiplier"\}/u);
+  assert.match(page, /上架倍率/u);
+  assert.match(page, /任务用时/u);
+  assert.match(page, /<Progress/u);
+  assert.match(page, /sourceThumbnailUrl/u);
+  assert.doesNotMatch(page, /title=\{`已选择 \$\{collectIds\.length\} 个采集箱商品`\}/u);
+});
+
 test("page uses focused pure models and stable backend routes without direct Ozon writes", () => {
   assert.match(page, /from "\.\/auto-listing-config\.js"/);
   assert.match(page, /from "\.\/auto-listing-view\.js"/);

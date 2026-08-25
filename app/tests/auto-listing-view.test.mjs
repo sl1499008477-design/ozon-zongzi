@@ -280,6 +280,43 @@ test("task rows reject hostile carriers and nested authority without executing a
   assert.equal(trapCalls, 0);
 });
 
+test("task rows preserve only the expanded public source evidence used by the task center", () => {
+  const actions = { review: false, approve: false, retry: false, regenerate: false, cancel: false };
+  const rows = autoListingTaskRows([{
+    jobId: "job-expanded",
+    createdAt: "2026-08-25T00:00:00.000Z",
+    items: [{
+      itemId: "item-expanded",
+      status: "BLOCKED",
+      updatedAt: "2026-08-25T00:02:03.000Z",
+      sourceRecordId: "collect-expanded",
+      sourceOrder: 2,
+      sourceThumbnailUrl: "https://example.test/expanded.jpg",
+      sourceTitle: "扩展来源商品",
+      sourceSku: "SKU-EXPANDED",
+      jobCreatedAt: "2026-08-24T23:59:59.000Z",
+      failureStage: "UPLOAD",
+      actions,
+      privateSourcePayload: "must-not-copy",
+    }],
+  }]);
+  assert.deepEqual(rows, [{
+    itemId: "item-expanded",
+    status: "BLOCKED",
+    updatedAt: "2026-08-25T00:02:03.000Z",
+    sourceRecordId: "collect-expanded",
+    sourceOrder: 2,
+    sourceThumbnailUrl: "https://example.test/expanded.jpg",
+    sourceTitle: "扩展来源商品",
+    sourceSku: "SKU-EXPANDED",
+    failureStage: "UPLOAD",
+    actions,
+    jobId: "job-expanded",
+    jobCreatedAt: "2026-08-25T00:00:00.000Z",
+  }]);
+  assert.equal("privateSourcePayload" in rows[0], false);
+});
+
 test("task rows accept only the two exact canonical public price branches", () => {
   const base = {
     itemId: "item-a", status: "SOURCE_READY", sourceRecordId: "collect-a",
