@@ -380,21 +380,80 @@ function displayText(value) {
 }
 
 export function autoListingCollectSelectionRows(localData = {}, collectIds = []) {
-  const sourceRows = Array.isArray(localData?.caches?.collectBox)
-    ? localData.caches.collectBox : Array.isArray(localData?.collectBox) ? localData.collectBox : [];
-  const byId = new Map(sourceRows.map((row) => [displayText(row?.id), row]));
+  let localDescriptors = null;
+  try {
+    if (localData && typeof localData === "object" && !Array.isArray(localData) && !runtimeIsProxy(localData)) {
+      const localPrototype = Object.getPrototypeOf(localData);
+      if (localPrototype !== Object.prototype && localPrototype !== null) throw new Error("unsafe carrier");
+      localDescriptors = Object.getOwnPropertyDescriptors(localData);
+    }
+  } catch {}
+  const cacheDescriptor = localDescriptors?.caches;
+  const cache = cacheDescriptor?.enumerable && Object.hasOwn(cacheDescriptor, "value") ? cacheDescriptor.value : null;
+  let cacheDescriptors = null;
+  try {
+    if (cache && typeof cache === "object" && !Array.isArray(cache) && !runtimeIsProxy(cache)) {
+      const cachePrototype = Object.getPrototypeOf(cache);
+      if (cachePrototype !== Object.prototype && cachePrototype !== null) throw new Error("unsafe carrier");
+      cacheDescriptors = Object.getOwnPropertyDescriptors(cache);
+    }
+  } catch {}
+  const cachedRowsDescriptor = cacheDescriptors?.collectBox;
+  const localRowsDescriptor = localDescriptors?.collectBox;
+  const sourceRows = cachedRowsDescriptor?.enumerable && Object.hasOwn(cachedRowsDescriptor, "value")
+    && Array.isArray(cachedRowsDescriptor.value) ? cachedRowsDescriptor.value
+    : localRowsDescriptor?.enumerable && Object.hasOwn(localRowsDescriptor, "value")
+      && Array.isArray(localRowsDescriptor.value) ? localRowsDescriptor.value : null;
+  const byId = new Map();
+  try {
+    if (sourceRows && !runtimeIsProxy(sourceRows)) {
+      const rowDescriptors = Object.getOwnPropertyDescriptors(sourceRows);
+      const rowLength = rowDescriptors.length?.value;
+      if (Number.isSafeInteger(rowLength) && rowLength >= 0) {
+        for (let index = 0; index < rowLength; index += 1) {
+          const rowDescriptor = rowDescriptors[String(index)];
+          const row = rowDescriptor?.enumerable && Object.hasOwn(rowDescriptor, "value") ? rowDescriptor.value : null;
+          let sourceDescriptors = null;
+          try {
+            if (row && typeof row === "object" && !Array.isArray(row) && !runtimeIsProxy(row)) {
+              const sourcePrototype = Object.getPrototypeOf(row);
+              if (sourcePrototype !== Object.prototype && sourcePrototype !== null) throw new Error("unsafe carrier");
+              sourceDescriptors = Object.getOwnPropertyDescriptors(row);
+            }
+          } catch {}
+          const idDescriptor = sourceDescriptors?.id;
+          const id = idDescriptor?.enumerable && Object.hasOwn(idDescriptor, "value")
+            ? displayText(idDescriptor.value) : "";
+          if (!id || !sourceDescriptors) continue;
+          byId.set(id, sourceDescriptors);
+        }
+      }
+    }
+  } catch {}
   if (!Array.isArray(collectIds)) return Object.freeze([]);
   return Object.freeze(collectIds.flatMap((collectId) => {
     const id = displayText(collectId);
     const source = byId.get(id);
     if (!id || !source) return [];
-    const thumbnailUrl = [source.image, source.primaryImage, Array.isArray(source.images) ? source.images[0] : ""]
-      .map(displayText).find(Boolean) || "";
+    const field = (key) => {
+      const descriptor = source[key];
+      return descriptor?.enumerable && Object.hasOwn(descriptor, "value") ? displayText(descriptor.value) : "";
+    };
+    let firstImage = "";
+    const imagesDescriptor = source.images;
+    const images = imagesDescriptor?.enumerable && Object.hasOwn(imagesDescriptor, "value") ? imagesDescriptor.value : null;
+    try {
+      if (Array.isArray(images) && !runtimeIsProxy(images)) {
+        const imageDescriptor = Object.getOwnPropertyDescriptor(images, "0");
+        if (imageDescriptor?.enumerable && Object.hasOwn(imageDescriptor, "value")) firstImage = displayText(imageDescriptor.value);
+      }
+    } catch {}
+    const thumbnailUrl = field("image") || field("primaryImage") || firstImage;
     return [Object.freeze({
       id,
       thumbnailUrl,
-      title: [source.name, source.title, source.productUrl].map(displayText).find(Boolean) || "",
-      sku: displayText(source.sku) || id,
+      title: field("name") || field("title") || field("productUrl"),
+      sku: field("sku") || id,
     })];
   }));
 }
@@ -415,7 +474,7 @@ function failurePercent(row) {
 export function autoListingTaskProgress(row = {}) {
   const status = typeof row?.status === "string" ? row.status : "";
   const percent = Object.hasOwn(STATUS_PERCENT, status) ? STATUS_PERCENT[status]
-    : ["RETRYABLE_ERROR", "BLOCKED"].includes(status) ? failurePercent(row) : 0;
+    : ["RETRYABLE_ERROR", "BLOCKED", "CANCELLED"].includes(status) ? failurePercent(row) : 0;
   return Object.freeze({ percent: Math.min(percent, 99) === percent ? percent : 100 });
 }
 
@@ -436,8 +495,7 @@ export function autoListingTaskDuration(row = {}, nowMs = Date.now()) {
   return Object.freeze({
     milliseconds,
     terminal,
-    prefix: status === "SUCCEEDED" ? "总用时" : failed ? "未上架 · 已用时"
-      : cancelled ? "已取消 · 已用时" : "已用时",
+    prefix: status === "SUCCEEDED" ? "总用时" : failed || cancelled ? "未上架 · 已用时" : "已用时",
   });
 }
 

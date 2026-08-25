@@ -384,6 +384,40 @@ test("projects selected collect rows in URL order with display-safe fallbacks", 
   ]);
 });
 
+test("collect selection skips accessor carriers without disturbing safe URL order", () => {
+  let getterCalls = 0;
+  const badRow = { id: "collect-bad" };
+  for (const key of ["image", "primaryImage", "images", "name", "title", "productUrl", "sku"]) {
+    Object.defineProperty(badRow, key, {
+      enumerable: true,
+      get() { getterCalls += 1; return "must-not-read"; },
+    });
+  }
+  const localData = { collectBox: [
+    { id: "collect-a", name: "商品 A", sku: "SKU-A" },
+    badRow,
+    { id: "collect-b", title: "商品 B", sku: "SKU-B" },
+  ] };
+  Object.defineProperty(localData, "caches", {
+    enumerable: true,
+    get() { getterCalls += 1; return { collectBox: [] }; },
+  });
+  const requested = ["collect-b", "collect-bad", "collect-a"];
+  const expected = [
+    { id: "collect-b", thumbnailUrl: "", title: "商品 B", sku: "SKU-B" },
+    { id: "collect-bad", thumbnailUrl: "", title: "", sku: "collect-bad" },
+    { id: "collect-a", thumbnailUrl: "", title: "商品 A", sku: "SKU-A" },
+  ];
+  assert.deepEqual(autoListingCollectSelectionRows(localData, requested), expected);
+  const cache = {};
+  Object.defineProperty(cache, "collectBox", {
+    enumerable: true,
+    get() { getterCalls += 1; return []; },
+  });
+  assert.deepEqual(autoListingCollectSelectionRows({ caches: cache, collectBox: localData.collectBox }, requested), expected);
+  assert.equal(getterCalls, 0);
+});
+
 test("derives task progress from the persisted workflow without completing failures", () => {
   assert.equal(autoListingTaskProgress({ status: "UPLOADING" }).percent, 95);
   assert.equal(autoListingTaskProgress({ status: "BLOCKED", failureStage: "UPLOAD" }).percent, 95);
@@ -391,7 +425,10 @@ test("derives task progress from the persisted workflow without completing failu
     status: "RETRYABLE_ERROR", failureStage: "GENERATION",
     workflowProgress: { phase: "GENERATE_IMAGE_SLOT" },
   }).percent, 60);
+  assert.equal(autoListingTaskProgress({ status: "CANCELLED", failureStage: "GENERATION" }).percent, 60);
+  assert.equal(autoListingTaskProgress({ status: "CANCELLED", failureStage: "UPLOAD" }).percent, 95);
   assert.ok(autoListingTaskProgress({ status: "BLOCKED", failureStage: "UPLOAD" }).percent < 100);
+  assert.ok(autoListingTaskProgress({ status: "CANCELLED", failureStage: "UPLOAD" }).percent < 100);
 });
 
 test("derives fixed terminal and live active task durations from the job start", () => {
@@ -405,6 +442,9 @@ test("derives fixed terminal and live active task durations from the job start",
   assert.deepEqual(autoListingTaskDuration({
     status: "READY_FOR_REVIEW", jobCreatedAt: "2026-08-25T00:00:00.000Z", updatedAt: "2026-08-25T00:02:03.000Z",
   }, start + 180000), { milliseconds: 180000, terminal: false, prefix: "已用时" });
+  assert.deepEqual(autoListingTaskDuration({
+    status: "CANCELLED", jobCreatedAt: "2026-08-25T00:00:00.000Z", updatedAt: "2026-08-25T00:02:03.000Z",
+  }, Date.parse("2026-08-25T01:00:00.000Z")), { milliseconds: 123000, terminal: true, prefix: "未上架 · 已用时" });
 });
 
 test("matches exactly the seven task center filters", () => {
