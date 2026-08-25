@@ -60,6 +60,7 @@ const PRICE_KEYS = Object.freeze([
   "currency", "branch", "blackKopecks", "greenKopecks", "realPriceKopecks",
   "adjustmentKopecks", "finalPriceKopecks",
 ]);
+const MULTIPLIER_PRICE_KEYS = Object.freeze(["preMultiplierPriceKopecks", "priceMultiplierMicros"]);
 const HIGH_PRICE_KEYS = Object.freeze(PRICE_KEYS);
 const LOW_PRICE_KEYS = Object.freeze(PRICE_KEYS.filter((key) => key !== "greenKopecks"));
 const WORKFLOW_PROGRESS_KEYS = Object.freeze(["phase", "state", "attemptCount", "updatedAt", "nextRetryAt"]);
@@ -164,8 +165,14 @@ function projectPrice(value) {
   if (!descriptors || !descriptors.currency || !descriptors.branch) return null;
   const currency = descriptors.currency.value;
   const branch = descriptors.branch.value;
-  const expectedKeys = branch === "BLACK_GTE_80" ? HIGH_PRICE_KEYS
+  const branchKeys = branch === "BLACK_GTE_80" ? HIGH_PRICE_KEYS
     : branch === "BLACK_LT_80" ? LOW_PRICE_KEYS : null;
+  const hasPreMultiplierPrice = Object.hasOwn(descriptors, "preMultiplierPriceKopecks");
+  const hasPriceMultiplier = Object.hasOwn(descriptors, "priceMultiplierMicros");
+  if (hasPreMultiplierPrice !== hasPriceMultiplier) return null;
+  const expectedKeys = branchKeys && hasPreMultiplierPrice
+    ? [...branchKeys.slice(0, -1), ...MULTIPLIER_PRICE_KEYS, branchKeys.at(-1)]
+    : branchKeys;
   if (!descriptors.currency.enumerable || !descriptors.branch.enumerable
     || !["RUB", "CNY"].includes(currency)
     || !expectedKeys || keys.length !== expectedKeys.length
@@ -516,7 +523,8 @@ export function autoListingTaskMatchesFilter(row = {}, filter) {
   if (filter === "processing") return PROCESSING_STATUSES.has(status);
   if (filter === "review") return status === "READY_FOR_REVIEW";
   if (filter === "generation-failed") {
-    return ["RETRYABLE_ERROR", "BLOCKED"].includes(status) && row?.failureStage === "GENERATION";
+    return ["RETRYABLE_ERROR", "BLOCKED"].includes(status)
+      && ["PREPARATION", "GENERATION"].includes(row?.failureStage);
   }
   if (filter === "upload-failed") {
     return ["RETRYABLE_ERROR", "BLOCKED"].includes(status) && row?.failureStage === "UPLOAD";

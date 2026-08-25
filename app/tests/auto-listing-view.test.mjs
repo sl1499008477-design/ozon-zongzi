@@ -317,7 +317,7 @@ test("task rows preserve only the expanded public source evidence used by the ta
   assert.equal("privateSourcePayload" in rows[0], false);
 });
 
-test("task rows accept only the two exact canonical public price branches", () => {
+test("task rows accept exact legacy and multiplier public price evidence without mixing shapes", () => {
   const base = {
     itemId: "item-a", status: "SOURCE_READY", sourceRecordId: "collect-a",
     targetStoreId: "store-a",
@@ -334,8 +334,21 @@ test("task rows accept only the two exact canonical public price branches", () =
     currency: "CNY", branch: "BLACK_LT_80", blackKopecks: "7999",
     realPriceKopecks: "7465", adjustmentKopecks: "0", finalPriceKopecks: "7465",
   };
+  const multiplierHigh = {
+    ...high,
+    preMultiplierPriceKopecks: "14000",
+    priceMultiplierMicros: "1250000",
+    finalPriceKopecks: "17500",
+  };
+  const multiplierLow = {
+    ...low,
+    preMultiplierPriceKopecks: "7465",
+    priceMultiplierMicros: "1000000",
+  };
   assert.deepEqual(row(high)[0].price, high);
   assert.deepEqual(row(low)[0].price, low);
+  assert.deepEqual(row(multiplierHigh)[0].price, multiplierHigh);
+  assert.deepEqual(row(multiplierLow)[0].price, multiplierLow);
   for (const invalid of [
     { ...high, currency: undefined },
     { ...high, branch: undefined },
@@ -362,6 +375,12 @@ test("task rows accept only the two exact canonical public price branches", () =
     { ...high, adjustmentKopecks: "+1" },
     { ...high, adjustmentKopecks: "01" },
     { ...high, finalPriceKopecks: "1".repeat(31) },
+    { ...high, preMultiplierPriceKopecks: "14000" },
+    { ...high, priceMultiplierMicros: "1250000" },
+    { ...multiplierHigh, preMultiplierPriceKopecks: undefined },
+    { ...multiplierHigh, priceMultiplierMicros: undefined },
+    { ...multiplierHigh, preMultiplierPriceKopecks: "0" },
+    { ...multiplierHigh, priceMultiplierMicros: "0" },
   ]) assert.deepEqual(row(invalid), [], JSON.stringify(invalid));
 });
 
@@ -488,6 +507,7 @@ test("matches exactly the seven task center filters", () => {
   const rows = {
     processing: { status: "GENERATING" },
     review: { status: "READY_FOR_REVIEW" },
+    preparationFailed: { status: "BLOCKED", failureStage: "PREPARATION" },
     generationFailed: { status: "RETRYABLE_ERROR", failureStage: "GENERATION" },
     uploadFailed: { status: "BLOCKED", failureStage: "UPLOAD" },
     succeeded: { status: "SUCCEEDED" },
@@ -496,6 +516,7 @@ test("matches exactly the seven task center filters", () => {
   assert.equal(autoListingTaskMatchesFilter(rows.processing, "all"), true);
   assert.equal(autoListingTaskMatchesFilter(rows.processing, "processing"), true);
   assert.equal(autoListingTaskMatchesFilter(rows.review, "review"), true);
+  assert.equal(autoListingTaskMatchesFilter(rows.preparationFailed, "generation-failed"), true);
   assert.equal(autoListingTaskMatchesFilter(rows.generationFailed, "generation-failed"), true);
   assert.equal(autoListingTaskMatchesFilter(rows.uploadFailed, "upload-failed"), true);
   assert.equal(autoListingTaskMatchesFilter(rows.succeeded, "succeeded"), true);
