@@ -277,7 +277,7 @@ if (!enabled) {
       );
       const expiredReclaim = (await claim(1))[0];
       assert.equal(expiredReclaim.id, retryClaim.id);
-      assert.equal(expiredReclaim.attempts, retryClaim.attempts + 1);
+      assert.equal(expiredReclaim.attemptCount, retryClaim.attemptCount + 1);
       assert.notEqual(expiredReclaim.leaseToken, retryClaim.leaseToken);
     } finally {
       if (advisoryLockHeld) {
