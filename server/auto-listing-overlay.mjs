@@ -252,8 +252,8 @@ function derivePrice(pricingEvidence, adjustmentKopecks, priceMultiplierMicros) 
       blackKopecks: pricingEvidence.blackKopecks,
       ...(pricingEvidence.greenKopecks === null ? {} : { greenKopecks: pricingEvidence.greenKopecks }),
       adjustmentKopecks,
-    });
       priceMultiplierMicros,
+    });
   } catch { throw overlayInvalid(); }
   if (!/^\d{1,30}$/u.test(calculated.finalPriceKopecks)) throw overlayInvalid();
   const kopecks = BigInt(calculated.finalPriceKopecks);

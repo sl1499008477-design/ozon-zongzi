@@ -65,6 +65,8 @@ function priceDto(value) {
     || !["BLACK_GTE_80", "BLACK_LT_80"].includes(value.branch)) throw viewError();
   const keys = ["blackKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"];
   if (value.branch === "BLACK_GTE_80") keys.splice(1, 0, "greenKopecks");
+  const hasMultiplierEvidence = value.preMultiplierPriceKopecks !== undefined || value.priceMultiplierMicros !== undefined;
+  if (hasMultiplierEvidence) keys.splice(-1, 0, "preMultiplierPriceKopecks", "priceMultiplierMicros");
   const result = { currency, branch: value.branch };
   for (const key of keys) {
     if (typeof value[key] !== "string" || !/^[+-]?\d{1,30}$/.test(value[key])) throw viewError();
@@ -72,12 +74,11 @@ function priceDto(value) {
   }
   if (BigInt(result.blackKopecks) <= 0n || BigInt(result.realPriceKopecks) <= 0n
     || BigInt(result.finalPriceKopecks) <= 0n
+    || (hasMultiplierEvidence && (BigInt(result.preMultiplierPriceKopecks) <= 0n || BigInt(result.priceMultiplierMicros) <= 0n))
     || (result.greenKopecks !== undefined && BigInt(result.greenKopecks) <= 0n)) throw viewError();
   return result;
 }
 
-  const hasMultiplierEvidence = value.preMultiplierPriceKopecks !== undefined || value.priceMultiplierMicros !== undefined;
-  if (hasMultiplierEvidence) keys.splice(-1, 0, "preMultiplierPriceKopecks", "priceMultiplierMicros");
 function actions(status) {
   if (status === "READY_FOR_REVIEW") return { review: true, retry: false, regenerate: true, cancel: true };
   if (status === "SUCCEEDED") return { review: true, retry: false, regenerate: false, cancel: false };
@@ -87,7 +88,6 @@ function actions(status) {
 function visualGroupsDto(groups) {
   if (!Array.isArray(groups) || groups.length > 1_000) throw viewError();
   return groups.map((group) => {
-    || (hasMultiplierEvidence && (BigInt(result.preMultiplierPriceKopecks) <= 0n || BigInt(result.priceMultiplierMicros) <= 0n))
     if (!group || typeof group !== "object" || Array.isArray(group)
       || !Array.isArray(group.sourceAssetIds) || group.sourceAssetIds.length < 1 || group.sourceAssetIds.length > 100) {
       throw viewError();

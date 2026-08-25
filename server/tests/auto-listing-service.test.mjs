@@ -634,6 +634,8 @@ test("assigns planning contracts per item on the server without adding authority
     "FIXED_SKELETON_V1",
     "LEGACY_FULL_PLAN_V3",
   ]);
+  assert.equal(Object.hasOwn(graph.configSnapshot, "planningContract"), false);
+});
 test("creation freezes exact multiplier price evidence", async () => {
   const repository = fakeRepository();
   const result = await createAutoListingService({ repository }).createAutoListingJob({
@@ -646,8 +648,6 @@ test("creation freezes exact multiplier price evidence", async () => {
     realPriceKopecks: "14500", adjustmentKopecks: "0", preMultiplierPriceKopecks: "14500",
     priceMultiplierMicros: "1250000", finalPriceKopecks: "18125",
   });
-});
-  assert.equal(Object.hasOwn(graph.configSnapshot, "planningContract"), false);
 });
 
 test("orders replay, exact category strategy gate, store/currency, warehouse, then paid graph", async () => {
