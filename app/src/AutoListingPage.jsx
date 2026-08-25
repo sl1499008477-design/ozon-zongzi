@@ -94,6 +94,10 @@ const DEFAULT_FORM = Object.freeze({
 });
 
 const DEFAULT_EXCEL_LIMITS = Object.freeze({ maxBytes: 2_097_152, maxRows: 1_000 });
+const POLLED_TASK_STATUSES = new Set([
+  "CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "UPLOAD_QUEUED", "UPLOADING",
+]);
+const TASK_POLL_INTERVAL_MS = 3_000;
 const TASK_FILTER_ITEMS = Object.freeze([
   { key: "all", label: "全部任务" },
   { key: "processing", label: "处理中" },
@@ -222,6 +226,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   const reviewRequestRef = useRef(0);
   const importDetailRequestRef = useRef(0);
   const planDiagnosticRequestRef = useRef(0);
+  const jobRequestRef = useRef(0);
   const hydratedAccountRef = useRef("");
   const selectedCurrencyRef = useRef(null);
   const createIntentRef = useRef(null);
@@ -259,6 +264,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     () => taskRows.filter((row) => autoListingTaskMatchesFilter(row, taskFilter)),
     [taskFilter, taskRows],
   );
+  const hasActiveTasks = taskRows.some((row) => POLLED_TASK_STATUSES.has(row.status));
   const hasNonTerminalTasks = taskRows.some((row) => !autoListingTaskDuration(row, 0).terminal);
 
   useEffect(() => {
@@ -282,6 +288,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
 
   const loadData = useCallback(async () => {
     const requestVersion = ++loadRequestRef.current;
+    const jobRequestVersion = ++jobRequestRef.current;
     setLoading(true);
     setError("");
     try {
@@ -308,7 +315,9 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         });
         hydratedAccountRef.current = accountId;
       }
-      setJobs(Array.isArray(jobResult?.data) ? jobResult.data : []);
+      if (jobRequestVersion === jobRequestRef.current) {
+        setJobs(Array.isArray(jobResult?.data) ? jobResult.data : []);
+      }
       setImports(Array.isArray(preferenceResult?.imports) ? preferenceResult.imports : []);
       const nextLimits = preferenceResult?.limits;
       if (!Number.isSafeInteger(nextLimits?.maxBytes) || nextLimits.maxBytes < 1
@@ -330,7 +339,23 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     }
   }, [accountId, defaultStoreId, form, resumeDraft]);
 
+  const refreshJobs = useCallback(async () => {
+    const requestVersion = ++jobRequestRef.current;
+    try {
+      const result = await apiRequest("/auto-listing/jobs?limit=50");
+      if (requestVersion !== jobRequestRef.current) return;
+      setJobs(Array.isArray(result?.data) ? result.data : []);
+    } catch {
+      // Keep the last visible result; the next interval or manual refresh can recover.
+    }
+  }, []);
+
   useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    if (!hasActiveTasks) return undefined;
+    const timer = globalThis.setInterval(refreshJobs, TASK_POLL_INTERVAL_MS);
+    return () => globalThis.clearInterval(timer);
+  }, [hasActiveTasks, refreshJobs]);
   useEffect(() => {
     if (activePageTab !== "tasks" || !hasNonTerminalTasks) return undefined;
     setDisplayNowMs(Date.now());

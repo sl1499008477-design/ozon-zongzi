@@ -66,12 +66,12 @@ function item({ id, title, status, order, failureStage = null }) {
   };
 }
 
-function jobs() {
+function jobs(processingStatus = "GENERATING") {
   return [{
     jobId: "job-center",
     createdAt: "2026-08-25T00:00:00.000Z",
     items: [
-      item({ id: "processing", title: "处理中商品", status: "GENERATING", order: 1 }),
+      item({ id: "processing", title: "处理中商品", status: processingStatus, order: 1 }),
       item({ id: "review", title: "待审核商品", status: "READY_FOR_REVIEW", order: 2 }),
       item({ id: "generation", title: "生成失败商品", status: "BLOCKED", order: 3, failureStage: "GENERATION" }),
       item({ id: "upload", title: "上传失败商品", status: "BLOCKED", order: 4, failureStage: "UPLOAD" }),
@@ -180,6 +180,98 @@ test("ordered collection creation switches to the task center with exact multipl
     await page.getByText("上传失败商品", { exact: true }).waitFor();
     assert.equal(await page.getByText("生成失败商品", { exact: true }).count(), 0);
     assert.ok(await page.getByText("图片不可用", { exact: true }).count() >= 1);
+    assert.deepEqual(pageErrors, []);
+  } finally {
+    await context?.close();
+    await browser?.close();
+    await vite?.close();
+  }
+});
+
+test("active tasks poll once and stop after the refreshed row becomes terminal", async () => {
+  let vite;
+  let browser;
+  let context;
+  let jobsReadCount = 0;
+  let processingStatus = "GENERATING";
+  try {
+    vite = await createServer({
+      root: appRoot,
+      logLevel: "silent",
+      server: { host: "127.0.0.1", port: 0, strictPort: false },
+    });
+    await vite.listen();
+    const address = vite.httpServer.address();
+    assert.ok(address && typeof address === "object");
+    browser = await chromium.launch({ executablePath: browserExecutable(), headless: true });
+    context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const page = await context.newPage();
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error.stack || error.message));
+    await page.addInitScript(() => {
+      let nextIntervalId = 1;
+      const intervals = new Map();
+      window.setInterval = (callback, delay, ...args) => {
+        const id = nextIntervalId;
+        nextIntervalId += 1;
+        intervals.set(id, { delay, callback: () => callback(...args) });
+        return id;
+      };
+      window.clearInterval = (id) => intervals.delete(id);
+      window.__intervalCountForTest = (delay) => [...intervals.values()]
+        .filter((entry) => entry.delay === delay).length;
+      window.__runIntervalsForTest = async (delay) => {
+        const callbacks = [...intervals.values()]
+          .filter((entry) => entry.delay === delay)
+          .map((entry) => entry.callback);
+        await Promise.all(callbacks.map((callback) => callback()));
+      };
+      localStorage.setItem("token", "center-token");
+    });
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname === "/api/local/state") {
+        await route.fulfill({ status: 200, json: localState() });
+        return;
+      }
+      if (url.pathname === "/api/auto-listing/preferences" && request.method() === "GET") {
+        await route.fulfill({ status: 200, json: {
+          ok: true,
+          data: {
+            configVersion: 3,
+            targetStoreId: "store-center",
+            targetWarehouseId: "warehouse-center",
+            stock: 5,
+            priceAdjustmentKopecks: "0",
+            priceMultiplierMicros: "1000000",
+          },
+          imports: [],
+          limits: { maxBytes: 2_097_152, maxRows: 1_000 },
+        } });
+        return;
+      }
+      if (url.pathname === "/api/auto-listing/jobs" && request.method() === "GET") {
+        jobsReadCount += 1;
+        await route.fulfill({ status: 200, json: { ok: true, data: jobs(processingStatus) } });
+        return;
+      }
+      await route.fulfill({ status: 404, json: { message: "not available in this fixture" } });
+    });
+
+    await page.goto(`http://127.0.0.1:${address.port}/ozon/tools/auto-listing/`);
+    await page.getByRole("tab", { name: "任务中心" }).click();
+    await page.getByText("正在生成图片和内容", { exact: true }).waitFor();
+    const initialJobsReadCount = jobsReadCount;
+    assert.ok(initialJobsReadCount >= 1);
+    assert.equal(await page.evaluate(() => window.__intervalCountForTest(3_000)), 1);
+
+    processingStatus = "SUCCEEDED";
+    await page.evaluate(() => window.__runIntervalsForTest(3_000));
+    await page.getByRole("row").filter({ hasText: "处理中商品" })
+      .getByText("已完成上架", { exact: true }).waitFor();
+    assert.equal(jobsReadCount, initialJobsReadCount + 1);
+    await page.waitForFunction(() => window.__intervalCountForTest(3_000) === 0);
     assert.deepEqual(pageErrors, []);
   } finally {
     await context?.close();
