@@ -90,11 +90,27 @@ test("PostgreSQL outbox claims with account scope, SKIP LOCKED, database lease t
   assert.equal(first[0].leaseToken, "nonce-a:1");
   assert.equal(reclaimed[0].leaseToken, "nonce-b:2");
   for (const call of pool.calls) {
-    assert.match(call.sql, /FOR UPDATE SKIP LOCKED/i);
+    assert.match(call.sql, /FOR UPDATE OF outbox SKIP LOCKED/i);
     assert.match(call.sql, /account_id=\$1/i);
     assert.match(call.sql, /lease_expires_at <= NOW\(\)/i);
     assert.match(call.sql, /NOW\(\)\+\(\$[0-9]+ \* INTERVAL '1 millisecond'\)/i);
   }
+});
+
+test("claim permits only the earliest non-stable item and one live outbox per batch", async () => {
+  const pool = scriptedPool([{ rows: [] }]);
+  const repository = createPostgresAiOutboxRepository({ pool, token: () => "batch-order" });
+
+  await repository.claimAutoListingAiMessages({
+    accountId: "account-a", workerId: "worker-a", limit: 10, leaseMs: 60_000,
+  });
+
+  const sql = pool.calls[0].sql;
+  assert.match(sql, /JOIN auto_listing_job_items AS item/iu);
+  assert.match(sql, /predecessor\.source_order < item\.source_order/iu);
+  assert.match(sql, /predecessor\.status NOT IN \('SUCCEEDED','READY_FOR_REVIEW','RETRYABLE_ERROR','BLOCKED','CANCELLED'\)/iu);
+  assert.match(sql, /live\.state='PROCESSING'[\s\S]*?live\.lease_expires_at > NOW\(\)/iu);
+  assert.match(sql, /FOR UPDATE OF outbox SKIP LOCKED/iu);
 });
 
 test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1 accounts with bounded keyset pagination", async () => {
