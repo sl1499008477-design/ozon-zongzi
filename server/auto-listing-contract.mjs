@@ -71,7 +71,7 @@ const FORBIDDEN_CLIENT_FIELDS = new Set([
   "hasReliableProductDimensions",
 ]);
 
-const CONFIG_KEYS = new Set(["targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "image"]);
+const CONFIG_KEYS = new Set(["targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplierMicros", "image"]);
 const IMAGE_KEYS = new Set(["ratio", "resolution", "quality", "language", "roles", "total"]);
 
 const POSTGRES_BIGINT_MIN = -9_223_372_036_854_775_808n;
@@ -136,6 +136,15 @@ const signedIntegerString = (value, fallback = "0") => {
   return String(parsed);
 };
 
+const positiveIntegerString = (value) => {
+  if (typeof value !== "string" || !/^\+?\d{1,19}$/.test(value.trim())) {
+    throw contractError("AUTO_LISTING_CONFIG_INVALID");
+  }
+  const parsed = BigInt(value.trim());
+  if (parsed <= 0n || parsed > POSTGRES_BIGINT_MAX) throw contractError("AUTO_LISTING_CONFIG_INVALID");
+  return String(parsed);
+};
+
 const normalizedImageOption = (input, key) => {
   const value = input[key] ?? DEFAULT_IMAGE[key];
   if (!IMAGE_OPTIONS[key].includes(value)) throw contractError("AUTO_LISTING_CONFIG_INVALID");
@@ -185,7 +194,7 @@ export function normalizeAutoListingConfig(rawConfig = {}) {
     throw contractError("AUTO_LISTING_CONFIG_INVALID");
   }
 
-  return {
+  const config = {
     targetStoreId: requiredIdentifier(rawConfig.targetStoreId),
     targetWarehouseId: requiredIdentifier(rawConfig.targetWarehouseId),
     stock: rawConfig.stock,
@@ -199,6 +208,10 @@ export function normalizeAutoListingConfig(rawConfig = {}) {
       total,
     },
   };
+  if (rawConfig.priceMultiplierMicros !== undefined) {
+    config.priceMultiplierMicros = positiveIntegerString(rawConfig.priceMultiplierMicros);
+  }
+  return config;
 }
 
 const configHashFor = (config) => crypto.createHash("sha256").update(JSON.stringify(canonical(config))).digest("hex");

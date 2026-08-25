@@ -7,6 +7,7 @@ const PRICE_FINAL_NOT_POSITIVE = "PRICE_FINAL_NOT_POSITIVE";
 
 const POSTGRES_BIGINT_MIN = -9_223_372_036_854_775_808n;
 const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
+const MULTIPLIER_SCALE = 1_000_000n;
 
 const priceError = (code) => {
   const error = new Error(code);
@@ -45,6 +46,9 @@ export function calculateAutoListingPrice(input = {}) {
 
   const blackKopecks = parseIntegerKopecks(input.blackKopecks, { required: true, positive: true });
   const adjustmentKopecks = parseIntegerKopecks(input.adjustmentKopecks, { required: false, positive: false });
+  const priceMultiplierMicros = parseIntegerKopecks(
+    input.priceMultiplierMicros ?? String(MULTIPLIER_SCALE), { required: true, positive: true },
+  );
 
   let branch;
   let greenKopecks;
@@ -59,8 +63,11 @@ export function calculateAutoListingPrice(input = {}) {
     realPriceKopecks = roundHalfUp(blackKopecks * 10_000n, 10_715n);
   }
 
-  const finalPriceKopecks = realPriceKopecks + adjustmentKopecks;
+  const preMultiplierPriceKopecks = realPriceKopecks + adjustmentKopecks;
+  if (preMultiplierPriceKopecks <= 0n) throw priceError(PRICE_FINAL_NOT_POSITIVE);
+  const finalPriceKopecks = roundHalfUp(preMultiplierPriceKopecks * priceMultiplierMicros, MULTIPLIER_SCALE);
   if (finalPriceKopecks <= 0n) throw priceError(PRICE_FINAL_NOT_POSITIVE);
+  if (finalPriceKopecks > POSTGRES_BIGINT_MAX) throw priceError(PRICE_INPUT_INVALID);
 
   return {
     currency,
@@ -69,6 +76,8 @@ export function calculateAutoListingPrice(input = {}) {
     ...(greenKopecks === undefined ? {} : { greenKopecks: String(greenKopecks) }),
     realPriceKopecks: String(realPriceKopecks),
     adjustmentKopecks: String(adjustmentKopecks),
+    preMultiplierPriceKopecks: String(preMultiplierPriceKopecks),
+    priceMultiplierMicros: String(priceMultiplierMicros),
     finalPriceKopecks: String(finalPriceKopecks),
   };
 }

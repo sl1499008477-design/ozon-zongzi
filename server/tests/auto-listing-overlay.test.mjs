@@ -344,9 +344,10 @@ test("derives price only from frozen source pricing evidence plus the frozen adj
   const groups = [groupContract("group-a", ["variant-blue"], assets)];
   const input = submissionInput(base, groups, assets);
   input.frozenConfig.config.priceAdjustmentKopecks = "100";
+  input.frozenConfig.config.priceMultiplierMicros = "1250000";
   input.frozenConfig.configHash = digest(input.frozenConfig.config);
   const draft = buildAutoListingSubmissionDraft(input);
-  assert.equal(draft.items[0].price, "146.00");
+  assert.equal(draft.items[0].price, "182.50");
   assert.throws(
     () => buildAutoListingSubmissionDraft({ ...input, calculatedPrice: { currency: "RUB", finalPriceKopecks: "1" } }),
     (error) => error?.code === "AUTO_LISTING_OVERLAY_INVALID",

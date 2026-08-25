@@ -750,7 +750,8 @@ function assertGraph(graph) {
       let calculated;
       try {
         calculated = calculateAutoListingPrice({ ...captured.snapshot.priceEvidence,
-          adjustmentKopecks: configSnapshot.priceAdjustmentKopecks });
+          adjustmentKopecks: configSnapshot.priceAdjustmentKopecks,
+          priceMultiplierMicros: configSnapshot.priceMultiplierMicros });
       } catch {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
@@ -825,8 +826,11 @@ function samePrice(left, right) {
   if (!plainJsonObject(left) || !plainJsonObject(right)) return false;
   const leftKeys = Object.keys(left).sort();
   const rightKeys = Object.keys(right).sort();
-  return leftKeys.length === rightKeys.length
-    && leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
+  if (leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key])) return true;
+  const legacyKeys = rightKeys.filter((key) => !["preMultiplierPriceKopecks", "priceMultiplierMicros"].includes(key));
+  return right.priceMultiplierMicros === "1000000" && leftKeys.length === legacyKeys.length
+    && leftKeys.every((key, index) => key === legacyKeys[index] && left[key] === right[key]);
 }
 
 function exactCategoryAuthorizationItem(value) {
@@ -1898,7 +1902,8 @@ export function createAutoListingRepository({
               throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
             }
             const price = calculateAutoListingPrice({ ...item.snapshot.priceEvidence,
-              adjustmentKopecks: graph.configSnapshot.priceAdjustmentKopecks });
+              adjustmentKopecks: graph.configSnapshot.priceAdjustmentKopecks,
+              priceMultiplierMicros: graph.configSnapshot.priceMultiplierMicros });
             if (!samePrice(item.price, price)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
           }
         }

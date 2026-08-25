@@ -55,6 +55,45 @@ test("preference save validates owned active FBS inventory scope and records one
   ]);
 });
 
+test("preference persistence reads and writes the exact multiplier column", async () => {
+  const multiplierFrozen = normalizeAndHashAutoListingConfig({
+    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
+    priceAdjustmentKopecks: "100", priceMultiplierMicros: "1250000",
+  });
+  const calls = [];
+  const client = {
+    async query(sql, params = []) {
+      calls.push([sql, params]);
+      if (sql.includes("SELECT id FROM accounts")) return { rows: [{ id: "account-a" }] };
+      if (sql.includes("FROM audit_events")) return { rows: [] };
+      if (sql.includes("FROM auto_listing_preferences") && sql.includes("FOR UPDATE")) return { rows: [] };
+      if (sql.includes("FROM stores s") && sql.includes("JOIN warehouses")) return { rows: [{
+        store_id: "store-a", owner_account_id: "account-a", store_status: "active", client_id: "client-a",
+        currency_code: "RUB", currency_source: "OZON_SELLER_INFO", currency_synced_at: "2026-08-13T00:00:00.000Z",
+        credentials_saved: true, warehouse_record_id: "warehouse-a", warehouse_id: "1001",
+        warehouse_type: "FBS", warehouse_status: "active", is_active: true, is_archived: false,
+        has_active_product_association: true,
+      }] };
+      if (sql.includes("INSERT INTO auto_listing_preferences")) return { rows: [preferenceRow({ price_multiplier_micros: "1250000" })] };
+      if (sql.includes("INSERT INTO audit_events")) return { rows: [{ event_id: params[0] }], rowCount: 1 };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = createPostgresAutoListingPreferencesRepository({
+    pool: { async query() {}, async connect() { return client; } },
+  });
+  const result = await repository.savePreferences({
+    accountId: "account-a", actorId: "account-a", expectedVersion: 0,
+    idempotencyKey: "pref-multiplier", correlationId: "corr-multiplier",
+    config: multiplierFrozen.config, configHash: multiplierFrozen.configHash,
+  });
+  assert.equal(result.priceMultiplierMicros, "1250000");
+  const insert = calls.find(([sql]) => sql.includes("INSERT INTO auto_listing_preferences"));
+  assert.match(insert[0], /price_multiplier_micros/u);
+  assert.equal(insert[1][5], "1250000");
+});
+
 test("preference save accepts only the exact RFBS pending state without networking or fabricated evidence", async (t) => {
   let networkCalls = 0;
   t.mock.method(globalThis, "fetch", async () => {

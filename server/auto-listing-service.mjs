@@ -21,7 +21,7 @@ import { selectAutoListingUploadPolicyForNewJob } from "./auto-listing-upload-po
 import { assertPermission, hasPermission, PERMISSIONS } from "./permissions.mjs";
 
 const REQUEST_KEYS = new Set(["actor", "collectItemIds", "idempotencyKey", "config", "correlationId"]);
-const PRICE_STRING_FIELDS = ["blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"];
+const PRICE_STRING_FIELDS = ["blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "preMultiplierPriceKopecks", "priceMultiplierMicros", "finalPriceKopecks"];
 const BLOCKED_SOURCE_FAILURE_CODES = new Set([
   "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
   "AUTO_LISTING_SOURCE_SKU_REQUIRED",
@@ -258,12 +258,13 @@ function assertRequest(input) {
   return { collectItemIds, idempotencyKey, correlationId };
 }
 
-function priceInput(snapshot, adjustmentKopecks) {
+function priceInput(snapshot, adjustmentKopecks, priceMultiplierMicros) {
   return {
     blackKopecks: snapshot.priceEvidence.blackKopecks,
     greenKopecks: snapshot.priceEvidence.greenKopecks,
     currency: snapshot.priceEvidence.currency,
     adjustmentKopecks,
+    priceMultiplierMicros,
   };
 }
 
@@ -351,7 +352,9 @@ function buildJobItems({
         ...base, strategyId: strategy.strategyId, strategyVersionId: strategy.strategyVersionId,
         ruleId: strategy.ruleId, style: strategy.style, matchedBy: strategy.matchedBy,
         status: "SOURCE_READY",
-        price: calculateAutoListingPrice(priceInput(captured.snapshot, config.priceAdjustmentKopecks)),
+        price: calculateAutoListingPrice(priceInput(
+          captured.snapshot, config.priceAdjustmentKopecks, config.priceMultiplierMicros,
+        )),
       };
     } catch (caught) {
       return {

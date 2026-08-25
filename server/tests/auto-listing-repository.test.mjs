@@ -4,6 +4,7 @@ import test from "node:test";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
+import { calculateAutoListingPrice } from "../auto-listing-pricing.mjs";
 import {
   buildAutoListingBlockedSourceEvidence,
   buildAutoListingSourceSnapshot,
@@ -343,12 +344,13 @@ test("ordinary list ranks item rows before limit and filters unselected siblings
   assert.deepEqual(full.events.map((event) => event.id), ["event-job", "event-a", "event-sibling"]);
 });
 
-function warehouseGraph({ itemCount = 1 } = {}) {
+function warehouseGraph({ itemCount = 1, priceMultiplierMicros } = {}) {
   const { config, configHash } = normalizeAndHashAutoListingConfig({
     targetStoreId: "store-a",
     targetWarehouseId: "warehouse-a",
     stock: 1,
     priceAdjustmentKopecks: "0",
+    ...(priceMultiplierMicros ? { priceMultiplierMicros } : {}),
   });
   const items = Array.from({ length: itemCount }, (_, sourceOrder) => {
     const sourceRecordId = `collect-lock-${sourceOrder}`;
@@ -403,7 +405,9 @@ function warehouseGraph({ itemCount = 1 } = {}) {
       ruleId: null,
       style: "BALANCED_DEFAULT",
       matchedBy: "DEFAULT",
-      price: {
+      price: priceMultiplierMicros ? calculateAutoListingPrice({
+        currency: "RUB", blackKopecks: "10000", greenKopecks: "8000", adjustmentKopecks: "0", priceMultiplierMicros,
+      }) : {
         currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000",
         realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500",
       },
@@ -1020,7 +1024,7 @@ test("job creation fails closed instead of guessing when multiple AI profiles ar
   assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
 });
 
-test("idempotent job replay returns before profile selection and does not change frozen evidence", async () => {
+test("idempotent job replay recalculates exact multiplier evidence before profile selection", async () => {
   const calls = [];
   let stageCount = 0;
   const client = {
@@ -1049,7 +1053,7 @@ test("idempotent job replay returns before profile selection and does not change
       return { status: "PLANNING", statusVersion: 2 };
     },
   });
-  const result = await repository.createJobGraph(warehouseGraph());
+  const result = await repository.createJobGraph(warehouseGraph({ priceMultiplierMicros: "1250000" }));
   assert.equal(result.id, "job-existing");
   assert.equal(result.duplicate, true);
   assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);

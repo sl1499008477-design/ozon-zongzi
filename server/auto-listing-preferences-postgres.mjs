@@ -29,6 +29,7 @@ function fromRow(row) {
     stock: Number(row.stock),
     priceAdjustmentKopecks: String(row.price_adjustment_kopecks),
     image: row.image_config,
+    priceMultiplierMicros: String(row.price_multiplier_micros ?? 1_000_000),
     configVersion: Number(row.config_version),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -201,17 +202,18 @@ export function createPostgresAutoListingPreferencesRepository({ pool } = {}) {
         const savedResult = current ? await client.query(
           `UPDATE auto_listing_preferences
               SET target_store_id=$2,target_warehouse_id=$3,stock=$4,price_adjustment_kopecks=$5,
-                  image_config=$6::JSONB,config_version=$7,updated_by=$1,updated_at=NOW()
-            WHERE account_id=$1 AND config_version=$8 RETURNING *`,
+                  price_multiplier_micros=$6,image_config=$7::JSONB,config_version=$8,updated_by=$1,updated_at=NOW()
+            WHERE account_id=$1 AND config_version=$9 RETURNING *`,
           [input.accountId, input.config.targetStoreId, input.config.targetWarehouseId, input.config.stock,
-            input.config.priceAdjustmentKopecks, JSON.stringify(input.config.image), nextVersion, currentVersion],
+            input.config.priceAdjustmentKopecks, input.config.priceMultiplierMicros ?? "1000000", JSON.stringify(input.config.image),
+            nextVersion, currentVersion],
         ) : await client.query(
           `INSERT INTO auto_listing_preferences (
              account_id,target_store_id,target_warehouse_id,stock,price_adjustment_kopecks,
-             image_config,config_version,updated_by
-           ) VALUES ($1,$2,$3,$4,$5,$6::JSONB,1,$1) RETURNING *`,
+             price_multiplier_micros,image_config,config_version,updated_by
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7::JSONB,1,$1) RETURNING *`,
           [input.accountId, input.config.targetStoreId, input.config.targetWarehouseId, input.config.stock,
-            input.config.priceAdjustmentKopecks, JSON.stringify(input.config.image)],
+            input.config.priceAdjustmentKopecks, input.config.priceMultiplierMicros ?? "1000000", JSON.stringify(input.config.image)],
         );
         const saved = fromRow(savedResult.rows?.[0]);
         if (!saved || saved.accountId !== input.accountId || saved.configVersion !== nextVersion) {

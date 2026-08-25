@@ -634,6 +634,19 @@ test("assigns planning contracts per item on the server without adding authority
     "FIXED_SKELETON_V1",
     "LEGACY_FULL_PLAN_V3",
   ]);
+test("creation freezes exact multiplier price evidence", async () => {
+  const repository = fakeRepository();
+  const result = await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "multiplier-key", correlationId: "multiplier-corr",
+    config: { ...config, priceMultiplierMicros: "1250000" },
+  });
+
+  assert.deepEqual(result.items[0].price, {
+    currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000",
+    realPriceKopecks: "14500", adjustmentKopecks: "0", preMultiplierPriceKopecks: "14500",
+    priceMultiplierMicros: "1250000", finalPriceKopecks: "18125",
+  });
+});
   assert.equal(Object.hasOwn(graph.configSnapshot, "planningContract"), false);
 });
 

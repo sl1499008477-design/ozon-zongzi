@@ -130,6 +130,17 @@ test("allows the declared image option values and derives total from role counts
   assert.equal(normalized.image.total, 13);
 });
 
+test("historical frozen config remains byte-shape compatible while new multiplier is normalized", () => {
+  const historical = baseConfig();
+  const frozen = normalizeAndHashAutoListingConfig(historical);
+  assert.equal(Object.hasOwn(frozen.config, "priceMultiplierMicros"), false);
+  assert.deepEqual(verifyAutoListingFrozenConfig(frozen.config, frozen.configHash).config, frozen.config);
+  assert.equal(normalizeAutoListingConfig({ ...historical, priceMultiplierMicros: "+1250000" }).priceMultiplierMicros, "1250000");
+  for (const value of ["0", "-1", "1.5", 1000000]) {
+    expectConfigError({ ...historical, priceMultiplierMicros: value }, "AUTO_LISTING_CONFIG_INVALID");
+  }
+});
+
 test("preserves trusted counts and reduces missing reliable product dimensions", () => {
   const frozen = normalizeAndHashAutoListingConfig(baseConfig());
   const effective = (productMeasurements, logistics = {}) => deriveEffectiveAutoListingImageConfig({

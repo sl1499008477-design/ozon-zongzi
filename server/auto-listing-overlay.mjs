@@ -244,7 +244,7 @@ function verifyFrozenConfig(value) {
   try { return verifyAutoListingFrozenConfig(value.config, value.configHash).config; } catch { throw overlayInvalid(); }
 }
 
-function derivePrice(pricingEvidence, adjustmentKopecks) {
+function derivePrice(pricingEvidence, adjustmentKopecks, priceMultiplierMicros) {
   let calculated;
   try {
     calculated = calculateAutoListingPrice({
@@ -253,6 +253,7 @@ function derivePrice(pricingEvidence, adjustmentKopecks) {
       ...(pricingEvidence.greenKopecks === null ? {} : { greenKopecks: pricingEvidence.greenKopecks }),
       adjustmentKopecks,
     });
+      priceMultiplierMicros,
   } catch { throw overlayInvalid(); }
   if (!/^\d{1,30}$/u.test(calculated.finalPriceKopecks)) throw overlayInvalid();
   const kopecks = BigInt(calculated.finalPriceKopecks);
@@ -374,7 +375,7 @@ export function buildAutoListingSubmissionDraft(input = {}) {
   const targetWarehousePlatformId = text(input.targetWarehousePlatformId);
   if (config.targetStoreId !== base.targetStoreId || base.richContentAttributeSupported !== true
     || !targetWarehousePlatformId) throw overlayInvalid();
-  const price = derivePrice(base.pricingEvidence, config.priceAdjustmentKopecks);
+  const price = derivePrice(base.pricingEvidence, config.priceAdjustmentKopecks, config.priceMultiplierMicros);
   const { scope, groupKeys, groupContracts, variantToGroup } = verifyGroups(input.visualGroups, base.variants, base, config);
   const assetsByGroup = verifyAssets(input.acceptedAssets, groupContracts, scope);
   const richByGroup = verifyRichResults(input.acceptedRichContent, groupKeys, scope);

@@ -50,6 +50,7 @@ function safePreference(row, accountId) {
     targetWarehouseId: row.targetWarehouseId,
     stock: row.stock,
     priceAdjustmentKopecks: row.priceAdjustmentKopecks,
+    priceMultiplierMicros: row.priceMultiplierMicros,
     image: row.image,
   });
   const configVersion = Number(row.configVersion);

@@ -145,7 +145,7 @@ function safePrice(price) {
   const currency = normalizeAutoListingCurrency(price?.currency);
   if (!price || typeof price !== "object" || Array.isArray(price) || !currency) return undefined;
   const output = {};
-  for (const key of ["currency", "branch", "blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"]) {
+  for (const key of ["currency", "branch", "blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "preMultiplierPriceKopecks", "priceMultiplierMicros", "finalPriceKopecks"]) {
     if (typeof price[key] === "string" && price[key].length <= 80) output[key] = price[key];
   }
   return output.currency === currency ? output : undefined;

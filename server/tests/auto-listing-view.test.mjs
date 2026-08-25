@@ -95,6 +95,23 @@ test("preserves a native CNY price in the review contract", () => {
   assert.equal(value.price.finalPriceKopecks, "14600");
 });
 
+test("includes exact multiplier evidence in the safe review price", () => {
+  const value = createAutoListingReviewView(fixture({
+    item: {
+      ...fixture().item,
+      price: {
+        ...fixture().item.price,
+        preMultiplierPriceKopecks: "14600",
+        priceMultiplierMicros: "1250000",
+        finalPriceKopecks: "18250",
+      },
+    },
+  }));
+  assert.equal(value.price.preMultiplierPriceKopecks, "14600");
+  assert.equal(value.price.priceMultiplierMicros, "1250000");
+  assert.equal(value.price.finalPriceKopecks, "18250");
+});
+
 test("rejects every cross-account component instead of filtering it silently", () => {
   for (const [field, value] of [
     ["item", { ...fixture().item, accountId: "account-b" }],

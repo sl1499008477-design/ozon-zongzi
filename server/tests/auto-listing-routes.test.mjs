@@ -173,7 +173,8 @@ test("create route preserves a native CNY price without exposing internal eviden
       price: {
         currency: "CNY", branch: "BLACK_GTE_80", blackKopecks: "10000",
         greenKopecks: "8000", realPriceKopecks: "14500",
-        adjustmentKopecks: "0", finalPriceKopecks: "14500",
+        adjustmentKopecks: "0", preMultiplierPriceKopecks: "14500",
+        priceMultiplierMicros: "1250000", finalPriceKopecks: "18125",
         sourceEvidence: { secret: "never" },
       },
     }],
@@ -183,7 +184,8 @@ test("create route preserves a native CNY price without exposing internal eviden
   assert.deepEqual(replies[0].payload.data.items[0].price, {
     currency: "CNY", branch: "BLACK_GTE_80", blackKopecks: "10000",
     greenKopecks: "8000", realPriceKopecks: "14500",
-    adjustmentKopecks: "0", finalPriceKopecks: "14500",
+    adjustmentKopecks: "0", preMultiplierPriceKopecks: "14500",
+    priceMultiplierMicros: "1250000", finalPriceKopecks: "18125",
   });
   assert.doesNotMatch(JSON.stringify(replies[0]), /sourceEvidence|secret/);
 });
