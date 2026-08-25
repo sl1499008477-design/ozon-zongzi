@@ -300,6 +300,40 @@ test("HTTP task projection strips internal strategy metadata even if a service r
   assert.doesNotMatch(serialized, /strategyId|strategyVersionId|PARAMETER_FIRST|matchedBy/);
 });
 
+test("HTTP task projection retains the backend's stable failure-stage classification", async () => {
+  const service = {
+    getAutoListingJob: async () => ({
+      id: "job_1", createdAt: "2026-08-25T01:02:03.000Z", items: [
+        { id: "upload", status: "RETRYABLE_ERROR", sourceOrder: 1, failureStage: "UPLOAD",
+          sourceThumbnailUrl: "https://source.example.test/one.jpg", sourceTitle: "商品一", sourceSku: "SKU-1",
+          jobCreatedAt: "2026-08-25T01:02:03.000Z", recoveryPoint: "UPLOAD", failureDetail: "中文上传失败提示" },
+        { id: "planner", status: "RETRYABLE_ERROR", sourceOrder: 2, failureStage: "PREPARATION",
+          sourceThumbnailUrl: "", sourceTitle: "商品二", sourceSku: "SKU-2",
+          jobCreatedAt: "2026-08-25T01:02:03.000Z", recoveryPoint: "PLANNING" },
+        { id: "generated", status: "BLOCKED", sourceOrder: 3, failureStage: "GENERATION",
+          sourceThumbnailUrl: "", sourceTitle: "商品三", sourceSku: "SKU-3",
+          jobCreatedAt: "2026-08-25T01:02:03.000Z", activeContentPlanId: "plan-1" },
+      ],
+    }),
+  };
+  const { handler, replies } = harness({ runtime: { getService: async () => service } });
+  await handler(request({ path: "/auto-listing/jobs/job_1" }), {}, new URL("http://local/auto-listing/jobs/job_1"));
+
+  assert.deepEqual(replies[0].payload.data.items.map((item) => ({
+    itemId: item.itemId, sourceOrder: item.sourceOrder, sourceThumbnailUrl: item.sourceThumbnailUrl,
+    sourceTitle: item.sourceTitle, sourceSku: item.sourceSku, jobCreatedAt: item.jobCreatedAt,
+    failureStage: item.failureStage,
+  })), [
+    { itemId: "upload", sourceOrder: 1, sourceThumbnailUrl: "https://source.example.test/one.jpg",
+      sourceTitle: "商品一", sourceSku: "SKU-1", jobCreatedAt: "2026-08-25T01:02:03.000Z", failureStage: "UPLOAD" },
+    { itemId: "planner", sourceOrder: 2, sourceThumbnailUrl: "", sourceTitle: "商品二", sourceSku: "SKU-2",
+      jobCreatedAt: "2026-08-25T01:02:03.000Z", failureStage: "PREPARATION" },
+    { itemId: "generated", sourceOrder: 3, sourceThumbnailUrl: "", sourceTitle: "商品三", sourceSku: "SKU-3",
+      jobCreatedAt: "2026-08-25T01:02:03.000Z", failureStage: "GENERATION" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(replies[0].payload.data), /recoveryPoint|activeContentPlanId|failureDetail|中文上传失败提示|snapshot/u);
+});
+
 test("GET query contract rejects client scope and unknown fields before runtime initialization", async () => {
   let initialized = 0;
   const runtime = { getService: async () => { initialized += 1; return {}; } };

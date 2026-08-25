@@ -601,6 +601,7 @@ test("uses only actor scope, freezes server strategy and persists valid plus blo
   assert.equal(repository.calls.find(([name]) => name === "loadCollectSources")[1].accountId, "account-a");
   const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
   assert.equal(graph.items.length, 2);
+  assert.deepEqual(graph.items.map((item) => item.sourceOrder), [1, 2]);
   assert.equal(graph.items[0].strategyVersionId, "version-a");
   assert.equal(graph.uploadPolicyVersionId, "upload-policy-review-v1");
   assert.equal(graph.items[0].listingBaseTemplate.productDraft.id, "draft-collect-1");
@@ -1703,6 +1704,34 @@ test("job DTO exposes only server-authorized item actions and hides recovery evi
   assert.doesNotMatch(JSON.stringify(result), /recoveryPoint|activeContentPlanId|plan-[abc]/u);
 });
 
+test("job DTO projects ordered source evidence and machine-readable failure stages", async () => {
+  const repository = fakeRepository({ existing: {
+    id: "job-task-center", createdAt: "2026-08-25T01:02:03.000Z", items: [
+      { id: "upload", status: "RETRYABLE_ERROR", sourceOrder: 1, recoveryPoint: "UPLOAD",
+        sourceThumbnailUrl: "https://source.example.test/one.jpg", sourceTitle: "商品一", sourceSku: "SKU-1" },
+      { id: "planner", status: "RETRYABLE_ERROR", sourceOrder: 2, recoveryPoint: "PLANNING",
+        sourceThumbnailUrl: "", sourceTitle: "商品二", sourceSku: "SKU-2" },
+      { id: "generated", status: "BLOCKED", sourceOrder: 3, activeContentPlanId: "plan-1",
+        sourceThumbnailUrl: "", sourceTitle: "商品三", sourceSku: "SKU-3" },
+    ],
+  } });
+  const result = await createAutoListingService({ repository }).getAutoListingJob({ actor, jobId: "job-task-center" });
+
+  assert.deepEqual(result.items.map((item) => ({
+    itemId: item.itemId, sourceOrder: item.sourceOrder, sourceThumbnailUrl: item.sourceThumbnailUrl,
+    sourceTitle: item.sourceTitle, sourceSku: item.sourceSku, jobCreatedAt: item.jobCreatedAt,
+    failureStage: item.failureStage,
+  })), [
+    { itemId: "upload", sourceOrder: 1, sourceThumbnailUrl: "https://source.example.test/one.jpg",
+      sourceTitle: "商品一", sourceSku: "SKU-1", jobCreatedAt: "2026-08-25T01:02:03.000Z", failureStage: "UPLOAD" },
+    { itemId: "planner", sourceOrder: 2, sourceThumbnailUrl: "", sourceTitle: "商品二", sourceSku: "SKU-2",
+      jobCreatedAt: "2026-08-25T01:02:03.000Z", failureStage: "PREPARATION" },
+    { itemId: "generated", sourceOrder: 3, sourceThumbnailUrl: "", sourceTitle: "商品三", sourceSku: "SKU-3",
+      jobCreatedAt: "2026-08-25T01:02:03.000Z", failureStage: "GENERATION" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /recoveryPoint|activeContentPlanId|plan-1/u);
+});
+
 test("never exposes nested objects through job and item scalar DTO slots", async () => {
   const secret = { rawPayload: { token: "secret" } };
   const repository = fakeRepository({ existing: {
@@ -1751,7 +1780,7 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-warehouse", sourceVersion: "1",
     planningContract: "LEGACY_FULL_PLAN_V3",
     snapshot: captured.snapshot, snapshotHash: captured.snapshotHash, rawResponseRef: captured.rawResponseRef,
-    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0, status: "SOURCE_READY",
+    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 1, status: "SOURCE_READY",
     strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: null, style: "BALANCED_DEFAULT", matchedBy: "DEFAULT",
     price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
     listingBaseTemplate: repositoryListingBaseTemplate("collect-warehouse"),
@@ -1784,7 +1813,7 @@ test("repository rejects malformed frozen configuration before connecting", asyn
   const item = {
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-config", sourceVersion: "1", snapshot: captured.snapshot,
     snapshotHash: captured.snapshotHash, rawResponseRef: captured.rawResponseRef, targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
-    sourceOrder: 0, status: "SOURCE_READY", strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: null,
+    sourceOrder: 1, status: "SOURCE_READY", strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: null,
     style: "BALANCED_DEFAULT", matchedBy: "DEFAULT", effectiveImageConfig: effectiveImageConfig(frozen, captured),
     price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
   };
@@ -1832,7 +1861,7 @@ test("repository persists only a canonical recomputed price with a non-default s
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-rule", sourceVersion: "1", snapshot: captured.snapshot,
     planningContract: "LEGACY_FULL_PLAN_V3",
     snapshotHash: captured.snapshotHash, rawResponseRef: "raw-rule", targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
-    sourceOrder: 0, status: "SOURCE_READY", strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: "rule-modern",
+    sourceOrder: 1, status: "SOURCE_READY", strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: "rule-modern",
     style: "VISUAL_FIRST", matchedBy: "PRODUCT_STYLE",
     price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
     listingBaseTemplate: repositoryListingBaseTemplate("collect-rule"),
@@ -1913,7 +1942,7 @@ test("repository transaction fails closed before writes when exact policy, lease
       sourceType: "COLLECT_BOX", sourceRecordId: "collect-exact", sourceVersion: "1", snapshot: captured.snapshot,
       planningContract: "FIXED_SKELETON_V1", snapshotHash: captured.snapshotHash,
       rawResponseRef: captured.rawResponseRef, targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
-      sourceOrder: 0, status: "SOURCE_READY", strategyId: "default", strategyVersionId: "version-v2",
+      sourceOrder: 1, status: "SOURCE_READY", strategyId: "default", strategyVersionId: "version-v2",
       ruleId: "exact-v2", style: "BALANCED_DEFAULT", matchedBy: "EXACT_CATEGORY_TYPE_V2",
       effectiveImageConfig: effectiveImageConfig(frozen, captured), listingBaseTemplate: repositoryListingBaseTemplate("collect-exact"),
       price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000",

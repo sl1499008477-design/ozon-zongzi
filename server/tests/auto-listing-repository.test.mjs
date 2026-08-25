@@ -352,7 +352,8 @@ function warehouseGraph({ itemCount = 1, priceMultiplierMicros } = {}) {
     priceAdjustmentKopecks: "0",
     ...(priceMultiplierMicros ? { priceMultiplierMicros } : {}),
   });
-  const items = Array.from({ length: itemCount }, (_, sourceOrder) => {
+  const items = Array.from({ length: itemCount }, (_, sourceIndex) => {
+    const sourceOrder = sourceIndex + 1;
     const sourceRecordId = `collect-lock-${sourceOrder}`;
     const captured = buildAutoListingSourceSnapshot({
       accountId: "account-a",
@@ -369,15 +370,15 @@ function warehouseGraph({ itemCount = 1, priceMultiplierMicros } = {}) {
       collectItem: {
         id: sourceRecordId,
         accountId: "account-a",
-        sku: `sku-lock-${sourceOrder}`,
+        sku: `SKU-${sourceOrder}`,
         listingDraft: {
-          sku: `sku-lock-${sourceOrder}`,
+          sku: `SKU-${sourceOrder}`,
           offerId: `offer-lock-${sourceOrder}`,
-          title: "Locked evidence product",
+          title: sourceOrder === 1 ? "商品一" : `商品${sourceOrder}`,
           currency: "RUB",
           blackKopecks: "10000",
           greenKopecks: "8000",
-          images: [],
+          images: [`https://source.example.test/${sourceOrder === 1 ? "one" : sourceOrder}.jpg`],
           productMeasurements: { reliable: true, length: 28, unit: "cm", source: "manufacturer" },
           variants: [{ sku: `sku-lock-${sourceOrder}`, offerId: `offer-lock-${sourceOrder}` }],
           categoryResolution: {
@@ -482,7 +483,8 @@ function excelWarehouseGraph() {
   graph.sourceType = "EXCEL_SKU";
   graph.items = [{
     ...graph.items[0], sourceType: "EXCEL_SKU", sourceRecordId, collectItemId,
-    snapshot: captured.snapshot, snapshotHash: captured.snapshotHash,
+    snapshot: captured.snapshot, snapshotHash: captured.snapshotHash, rawResponseRef: captured.rawResponseRef,
+    listingBaseTemplate: listingBaseTemplate(collectItemId, 1),
     effectiveImageConfig: deriveEffectiveAutoListingImageConfig({
       configSnapshot: graph.configSnapshot, configHash: graph.configHash, sourceCapture: captured,
     }),
@@ -1116,7 +1118,7 @@ function blockedSourceGraph() {
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-reused-blocked", sourceVersion: "1",
     planningContract: "LEGACY_FULL_PLAN_V3",
     blockedEvidence: evidence.blockedEvidence, snapshotHash: evidence.snapshotHash, rawResponseRef: evidence.rawResponseRef,
-    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0,
+    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 1,
     status: "BLOCKED", failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",
   }];
   return graph;
@@ -1125,7 +1127,7 @@ function blockedSourceGraph() {
 function mixedCreationGraph() {
   const graph = warehouseGraph({ itemCount: 2 });
   const blocked = blockedSourceGraph().items[0];
-  graph.items.push({ ...blocked, sourceOrder: 2 });
+  graph.items.push({ ...blocked, sourceOrder: 3 });
   return graph;
 }
 
@@ -1187,9 +1189,9 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
       if (/INSERT INTO auto_listing_job_items/.test(sql)) {
         items.push({
           id: params[0], job_id: params[1], account_id: params[2], snapshot_id: params[3],
-          target_store_id: params[4], target_warehouse_id: params[5], status: params[6],
-          status_version: 1, failure_code: params[7], created_at: new Date(0), updated_at: new Date(0),
-          planning_contract: params[9],
+          source_order: params[4], target_store_id: params[5], target_warehouse_id: params[6], status: params[7],
+          status_version: 1, failure_code: params[8], created_at: new Date(0), updated_at: new Date(0),
+          planning_contract: params[10],
         });
         return { rows: [] };
       }
@@ -1206,12 +1208,18 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
         return { rows: [] };
       }
       if (/SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id/.test(sql)) return { rows: job ? [job] : [] };
-      if (/FROM auto_listing_job_items i/.test(sql)) return { rows: items.map((item) => ({
-        ...item,
-        source_record_id: snapshots.get(item.snapshot_id).source_record_id,
-        source_version: snapshots.get(item.snapshot_id).source_version,
-        snapshot_hash: snapshots.get(item.snapshot_id).snapshot_hash,
-      })) };
+      if (/FROM auto_listing_job_items i/.test(sql)) return { rows: items.map((item) => {
+        const snapshot = snapshots.get(item.snapshot_id);
+        return {
+          ...item,
+          source_record_id: snapshot.source_record_id,
+          source_version: snapshot.source_version,
+          snapshot_hash: snapshot.snapshot_hash,
+          source_thumbnail_url: snapshot.snapshot.media?.images?.[0] || "",
+          source_title: snapshot.snapshot.identity?.primaryName || "",
+          source_sku: snapshot.snapshot.identity?.primarySku || "",
+        };
+      }) };
       if (/FROM auto_listing_events/.test(sql)) return { rows: events };
       throw new Error(`unexpected query: ${sql}`);
     },
@@ -1263,8 +1271,14 @@ test("job graph persists and returns each server-selected planning contract", as
 
   const itemInsert = calls.find(({ sql }) => /INSERT INTO auto_listing_job_items/.test(sql));
   assert.match(itemInsert.sql, /planning_contract/u);
+  assert.match(itemInsert.sql, /source_order/u);
+  assert.equal(itemInsert.params.includes(1), true);
   assert.equal(itemInsert.params.at(-1), "FIXED_SKELETON_V1");
   assert.equal(created.items[0].planningContract, "FIXED_SKELETON_V1");
+  assert.equal(created.items[0].sourceOrder, 1);
+  assert.equal(created.items[0].sourceThumbnailUrl, "https://source.example.test/one.jpg");
+  assert.equal(created.items[0].sourceTitle, "商品一");
+  assert.equal(created.items[0].sourceSku, "SKU-1");
 });
 
 test("SOURCE_CAPTURED audit round-trips the reduced effective image configuration", async () => {
@@ -1353,12 +1367,12 @@ test("optional AI workflow stages every ready sibling after its original event a
   assert.deepEqual(stageCalls.map((call) => ({ ...call, client: undefined })), [
     {
       client: undefined, accountId: "account-a", jobId: "auto_listing_job-1",
-      itemId: "auto_listing_job-1_item_000", actorAccountId: "account-a",
+      itemId: "auto_listing_job-1_item_001", actorAccountId: "account-a",
       expectedStatusVersion: 1, correlationId: "lock-evidence-correlation",
     },
     {
       client: undefined, accountId: "account-a", jobId: "auto_listing_job-1",
-      itemId: "auto_listing_job-1_item_001", actorAccountId: "account-a",
+      itemId: "auto_listing_job-1_item_002", actorAccountId: "account-a",
       expectedStatusVersion: 1, correlationId: "lock-evidence-correlation",
     },
   ]);
@@ -1376,7 +1390,7 @@ test("optional AI workflow stages every ready sibling after its original event a
     assert.ok(stageIndex > baseIndex);
     assert.ok(stageIndex > sourceEventIndex);
   }
-  assert.equal(stageCalls.some(({ itemId }) => itemId.endsWith("_002")), false);
+  assert.equal(stageCalls.some(({ itemId }) => itemId.endsWith("_003")), false);
 });
 
 test("a ready item without a complete listing-base template fails before connecting", async () => {
@@ -1599,7 +1613,7 @@ test("repository accepts only canonical blocked-source evidence before connectin
       sourceType: "COLLECT_BOX", sourceRecordId: "collect-blocked", sourceVersion: "1",
       planningContract: "LEGACY_FULL_PLAN_V3",
       blockedEvidence: evidence.blockedEvidence, snapshotHash: evidence.snapshotHash, rawResponseRef: evidence.rawResponseRef,
-      targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0,
+      targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 1,
       status: "BLOCKED", failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",
     }],
   };

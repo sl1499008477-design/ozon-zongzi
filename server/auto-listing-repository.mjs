@@ -488,6 +488,10 @@ function mapJob(row, items, events) {
         sourceRecordId: item.source_record_id,
         sourceVersion: item.source_version,
         sourceHash: item.snapshot_hash,
+        sourceOrder: Number.isSafeInteger(item.source_order) ? item.source_order : null,
+        sourceThumbnailUrl: typeof item.source_thumbnail_url === "string" ? item.source_thumbnail_url : "",
+        sourceTitle: typeof item.source_title === "string" ? item.source_title : "",
+        sourceSku: typeof item.source_sku === "string" ? item.source_sku : "",
         strategyId: audit.strategyId || null,
         strategyVersionId: audit.strategyVersionId || row.strategy_version_id || null,
         ruleId: audit.ruleId || null,
@@ -530,8 +534,12 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
   if (!job) return null;
   const itemResult = await client.query(
     `SELECT i.id,i.status,i.status_version,i.recovery_point,i.active_content_plan_id,i.planning_contract,
-            i.target_store_id,i.target_warehouse_id,i.failure_code,i.created_at,i.updated_at,
+            i.target_store_id,i.target_warehouse_id,i.failure_code,i.created_at,i.updated_at,i.source_order,
             s.source_record_id,s.source_version,s.snapshot_hash,
+            CASE WHEN jsonb_typeof(s.snapshot#>'{media,images,0}')='string'
+                 THEN s.snapshot#>>'{media,images,0}' ELSE '' END AS source_thumbnail_url,
+            COALESCE(s.snapshot#>>'{identity,primaryName}','') AS source_title,
+            COALESCE(s.snapshot#>>'{identity,primarySku}','') AS source_sku,
             progress.phase AS progress_phase,progress.state AS progress_state,
             progress.attempts AS progress_attempts,progress.updated_at AS progress_updated_at,
             progress.next_retry_at AS progress_next_retry_at
@@ -554,7 +562,7 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
        ) progress ON TRUE
       WHERE i.job_id=$1 AND i.account_id=$2
         ${selection ? "AND i.id=ANY($3::text[])" : ""}
-      ORDER BY i.id ASC`,
+      ORDER BY i.source_order ASC,i.id ASC`,
     selection ? [jobId, accountId, selection] : [jobId, accountId],
   );
   const eventResult = await client.query(
@@ -692,7 +700,7 @@ function assertGraph(graph) {
     if (!item || typeof item !== "object" || item.sourceType !== graph.sourceType
       || !requiredText(item.sourceRecordId) || !requiredText(item.sourceVersion)
       || !requiredText(item.targetStoreId) || !requiredText(item.targetWarehouseId)
-      || !Number.isInteger(item.sourceOrder) || item.sourceOrder < 0
+      || !Number.isInteger(item.sourceOrder) || item.sourceOrder < 1
       || !["SOURCE_READY", "BLOCKED"].includes(item.status)) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
@@ -770,7 +778,8 @@ function assertGraph(graph) {
     if (Object.hasOwn(item, "listingBaseTemplate")) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     return { ...item, collectItemId, ...captured, effectiveImageConfig };
   });
-  if (new Set(items.map((item) => item.sourceOrder)).size !== items.length) {
+  if (new Set(items.map((item) => item.sourceOrder)).size !== items.length
+    || items.some((item, index) => item.sourceOrder !== index + 1)) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
   return { ...graph, accountId, idempotencyKey, categoryPreparationLeaseId,
@@ -1971,10 +1980,10 @@ export function createAutoListingRepository({
           const itemId = `${jobId}_item_${String(item.sourceOrder).padStart(3, "0")}`;
           await client.query(
             `INSERT INTO auto_listing_job_items (
-               id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,
+               id,job_id,account_id,snapshot_id,source_order,target_store_id,target_warehouse_id,status,status_version,
                visual_group_count,failure_code,failure_detail_safe,planning_contract
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,0,$8,$9,$10)`,
-            [itemId, jobId, graph.accountId, snapshotId, item.targetStoreId, item.targetWarehouseId,
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,0,$9,$10,$11)`,
+            [itemId, jobId, graph.accountId, snapshotId, item.sourceOrder, item.targetStoreId, item.targetWarehouseId,
               item.status, item.failureCode || null, item.failureCode ? item.failureCode : null,
               item.planningContract],
           );

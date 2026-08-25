@@ -163,6 +163,20 @@ function safeItem(item = {}) {
   if (price) output.price = price;
   const statusVersion = source.statusVersion ?? source.status_version;
   if (Number.isSafeInteger(statusVersion) && statusVersion > 0) output.statusVersion = statusVersion;
+  const sourceOrder = source.sourceOrder ?? source.source_order;
+  if (Number.isSafeInteger(sourceOrder) && sourceOrder > 0) output.sourceOrder = sourceOrder;
+  for (const [name, ...candidates] of [
+    ["sourceThumbnailUrl", "sourceThumbnailUrl", "source_thumbnail_url"],
+    ["sourceTitle", "sourceTitle", "source_title"],
+    ["sourceSku", "sourceSku", "source_sku"],
+    ["jobCreatedAt", "jobCreatedAt", "job_created_at"],
+  ]) {
+    const value = candidates.map((key) => source[key]).find((candidate) => typeof candidate === "string" && candidate.length <= 512);
+    if (value !== undefined) output[name] = value;
+  }
+  if (["PREPARATION", "GENERATION", "UPLOAD"].includes(source.failureStage) || source.failureStage === null) {
+    output.failureStage = source.failureStage;
+  }
   const actions = source.actions;
   if (actions && typeof actions === "object" && !Array.isArray(actions)
     && Object.getPrototypeOf(actions) === Object.prototype

@@ -291,7 +291,8 @@ function strategyFor(snapshot, source, published) {
 function buildJobItems({
   accountId, sourceType, sources, targetStore, config, configHash, published, selectPlanningContract,
 }) {
-  return sources.map((source, sourceOrder) => {
+  return sources.map((source, sourceIndex) => {
+    const sourceOrder = sourceIndex + 1;
     const sourceRecordId = text(source.id);
     const collectItemId = text(source.collectItemId || source.id);
     const planningContract = selectPlanningContract({ accountId, sourceType, collectItemId });
@@ -403,7 +404,20 @@ function safeItemActions(source) {
   });
 }
 
-function safeItem(item = {}) {
+function failureStageFor(source) {
+  const status = safeString(source.status) || "";
+  if (!["RETRYABLE_ERROR", "BLOCKED", "CANCELLED"].includes(status)) return null;
+  const recoveryPoint = safeString(source.recoveryPoint) || safeString(source.recovery_point) || "";
+  if (recoveryPoint === "UPLOAD") return "UPLOAD";
+  if (recoveryPoint === "GENERATION") return "GENERATION";
+  if (recoveryPoint === "PLANNING") return "PREPARATION";
+  const code = safeString(source.failureCode) || safeString(source.failure_code) || "";
+  if (/^(?:AUTO_LISTING_(?:UPLOAD|DIRECT|PUBLICATION|RECONCILE)_|OZON_(?:SUBMISSION|RICH_CONTENT)_)/u.test(code)) return "UPLOAD";
+  if (safeString(source.activeContentPlanId) || safeString(source.active_content_plan_id)) return "GENERATION";
+  return "PREPARATION";
+}
+
+function safeItem(item = {}, jobCreatedAt = null) {
   const source = item.source || item;
   const workflowProgress = safeWorkflowProgress(source.workflowProgress);
   return {
@@ -419,6 +433,14 @@ function safeItem(item = {}) {
     sourceRecordId: safeString(source.sourceRecordId) || safeString(source.source_record_id),
     sourceVersion: safeString(source.sourceVersion) || safeString(source.source_version),
     sourceHash: safeString(source.sourceHash) || safeString(source.source_hash) || safeString(source.snapshotHash) || safeString(source.snapshot_hash),
+    ...(Number.isSafeInteger(source.sourceOrder ?? source.source_order)
+      && Number(source.sourceOrder ?? source.source_order) > 0
+      ? { sourceOrder: Number(source.sourceOrder ?? source.source_order) } : {}),
+    sourceThumbnailUrl: safeString(source.sourceThumbnailUrl) || safeString(source.source_thumbnail_url) || "",
+    sourceTitle: safeString(source.sourceTitle) || safeString(source.source_title) || "",
+    sourceSku: safeString(source.sourceSku) || safeString(source.source_sku) || "",
+    jobCreatedAt,
+    failureStage: failureStageFor(source),
     ...(safePrice(source.price) ? { price: safePrice(source.price) } : {}),
     ...(safeString(source.failureCode) || safeString(source.failure_code) ? { failureCode: safeString(source.failureCode) || safeString(source.failure_code) } : {}),
     ...(workflowProgress ? { workflowProgress } : {}),
@@ -456,14 +478,15 @@ function safeWorkflowProgress(value) {
 
 function safeJob(row = {}) {
   if (!row) return null;
+  const createdAt = safeTimestamp(row.createdAt) || safeTimestamp(row.created_at);
   return {
     jobId: safeString(row.id) || safeString(row.jobId),
     sourceType: safeString(row.sourceType) || safeString(row.source_type) || "COLLECT_BOX",
     status: safeString(row.status) || "CREATED",
     correlationId: safeString(row.correlationId) || safeString(row.correlation_id),
-    createdAt: safeTimestamp(row.createdAt) || safeTimestamp(row.created_at),
+    createdAt,
     updatedAt: safeTimestamp(row.updatedAt) || safeTimestamp(row.updated_at),
-    items: (Array.isArray(row.items) ? row.items : []).map(safeItem),
+    items: (Array.isArray(row.items) ? row.items : []).map((item) => safeItem(item, createdAt)),
   };
 }
 
@@ -724,7 +747,7 @@ export function createAutoListingService({
       const preparedResults = await Promise.allSettled(items.map(async (item) => {
         if (item.status !== "SOURCE_READY") return item;
         assertCategoryLeaseActive(signal);
-        const source = sources[item.sourceOrder];
+        const source = sources[item.sourceOrder - 1];
         const listingBaseTemplate = await prepareListingBase({
           accountId,
           source,
