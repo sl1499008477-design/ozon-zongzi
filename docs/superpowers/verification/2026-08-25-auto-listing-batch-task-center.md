@@ -2,9 +2,9 @@
 
 ## 结论
 
-验证基线为提交 `6a6e876` 的隔离归档，不使用共享工作树中的未提交业务改动掩盖结果。聚焦后端测试、前端测试和 Vite 生产构建通过；mock API 浏览器测试及正式本地页面只读检查均没有触发付费 AI 或 Ozon 写入。
+提交级验证以隔离归档为准，不使用共享工作树中的未提交业务改动掩盖结果；最终又在保留正式工作树现状的前提下运行项目完整 `scripts/verify.mjs`。聚焦后端、前端、浏览器测试、Vite 生产构建、扩展一致性、插件就绪和安全扫描均通过，且没有触发付费 AI 或 Ozon 写入。
 
-当前结论为 **仍有未验证范围**：集成测试第 280 行的 `.attempts` / `.attemptCount` 字段错配已在 `32941d6` 修复并经复审 Approve，不再是当前代码阻断项；但一次性 PostgreSQL URL 仍未提供，真实数据库并发套件没有运行，所以数据库级验收仍未完成。现有应用数据库也尚未应用迁移 088，不能代替一次性测试库或验证新字段投影。
+当前结论为 **代码与现有自动化验证通过，但仍有外部未验证范围**：一次性 PostgreSQL URL 仍未提供，真实数据库并发套件没有运行，所以数据库级验收仍未完成。现有应用数据库也尚未应用迁移 088，不能代替一次性测试库或验证新字段投影；真实付费 AI 与 Ozon 上传也未执行。
 
 ## 修改批次与提交
 
@@ -14,6 +14,9 @@
 - Task 4（同批次领取门禁与并发测试）：`352e305`、`4d41342`、`8358498`、`1294be0`；后续测试字段修复：`32941d6`
 - Task 5（前端纯函数投影）：`d615be8`、`047c587`
 - Task 6（任务中心 UI 与轮询）：`95e3709`、`6a6e876`
+- 最终投影、筛选与轮询修复：`7cef0a7`
+- 最新迁移测试断言：`e1d60c9`
+- 类目策略恢复倍率、旧草稿兼容及迁移分支断言：`f00e181`
 
 ## 数据库
 
@@ -47,6 +50,7 @@
 | 字段修复后的 Outbox 单测 | `node --test server/tests/auto-listing-ai-outbox-postgres.test.mjs` | PASS，14/14，0 skipped | 0.08 秒 |
 | 前端 | `node --test app/tests/auto-listing-config.test.mjs app/tests/auto-listing-view.test.mjs app/tests/auto-listing-page-contract.test.mjs app/tests/auto-listing-task-center.browser.test.mjs` | 沙箱内 Chrome 启动 `SIGABRT`；沙箱外原命令重跑 PASS，61/61，0 skipped | 7.58 秒 |
 | 生产构建 | `pnpm --dir app build` | PASS，4850 modules；有既存的大 chunk 警告 | 5.74 秒 |
+| 项目最终全量验证 | `QH_SOURCE_EXTENSION_DIR=/Users/songliang/Desktop/0.13.46.1 node scripts/verify.mjs` | PASS；完整活动套件 3504 项：3466 pass、0 fail、38 个需外部环境的 explicit skip；其余构建、一致性、插件和安全检查全部通过 | 约 3 分 12 秒（活动套件） |
 | 现有 DB 只读检查 | Node/pg 连接后执行 `BEGIN READ ONLY`、账号范围 schema/状态/投影统计、`ROLLBACK` | 连接成功，只输出状态类别和数量 | 每次约 0.2 秒 |
 
 构建说明：运行时的 pnpm 默认依赖状态检查会尝试自动安装并因无 TTY 中止。为遵守“不安装依赖”，最终使用现有 `node_modules`、设置 bundled Node 到 `PATH` 并关闭 `verify-deps-before-run` 后运行同一 `pnpm --dir app build` 脚本。
@@ -82,7 +86,7 @@
 3. 同批次数据库级串行、失败放行、重试门禁和跨批次并行未在真实 PostgreSQL 执行。
 4. 付费 AI、真实 Ozon 上传/提交、生产写入均未执行。
 5. 没有真实数据库中的等待审核、新倍率任务、多商品批次代表性数据。
-6. 自动化浏览器没有逐个点击七个筛选器，但正式页面只读验收已逐项切换；窄 viewport 仍未实测。
+6. 自动化浏览器覆盖筛选分组和任务中心轮询，正式页面只读验收已逐项切换七个筛选器；窄 viewport 仍未实测。
 7. helper 的缺省 `Date.now()` 保留；当前页面显式传入时钟，未观察到套件失败。
 
 不得据此宣称真实 Ozon 上架、生产迁移或数据库并发已经验证。
