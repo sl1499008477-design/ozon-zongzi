@@ -10,6 +10,7 @@ test("088 backfills a one-based batch order and adds an exact positive multiplie
   assert.match(sql, /ROW_NUMBER\(\) OVER \(PARTITION BY account_id,job_id ORDER BY created_at,id\)/i);
   assert.match(sql, /ALTER COLUMN source_order SET NOT NULL/i);
   assert.match(sql, /CHECK \(source_order > 0\)/i);
+  assert.match(sql, /conrelid\s*=\s*'auto_listing_job_items'::regclass/i);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS auto_listing_job_items_batch_order_uq[\s\S]*?account_id,job_id,source_order/i);
   assert.match(sql, /price_multiplier_micros BIGINT NOT NULL DEFAULT 1000000/i);
   assert.match(sql, /CHECK \(price_multiplier_micros > 0\)/i);

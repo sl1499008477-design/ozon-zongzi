@@ -17,7 +17,9 @@ ALTER TABLE auto_listing_job_items
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='auto_listing_job_items_source_order_check') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname='auto_listing_job_items_source_order_check'
+                    AND conrelid='auto_listing_job_items'::regclass) THEN
     ALTER TABLE auto_listing_job_items
       ADD CONSTRAINT auto_listing_job_items_source_order_check CHECK (source_order > 0);
   END IF;
