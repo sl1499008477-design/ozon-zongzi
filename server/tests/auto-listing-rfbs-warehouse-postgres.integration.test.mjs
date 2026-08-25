@@ -84,7 +84,7 @@ function graph(accountId, storeId, warehouseId, idempotencyKey, sourceSuffix, wa
     items: [{
       sourceType: "COLLECT_BOX", sourceRecordId, sourceVersion: "1", snapshot: captured.snapshot,
       snapshotHash: captured.snapshotHash, rawResponseRef: captured.rawResponseRef,
-      targetStoreId: storeId, targetWarehouseId: warehouseId, sourceOrder: 0, status: "SOURCE_READY",
+      targetStoreId: storeId, targetWarehouseId: warehouseId, sourceOrder: 1, status: "SOURCE_READY",
       strategyId: `strategy-key-${accountId}`, strategyVersionId: `strategy-${accountId}`,
       ruleId: null, style: "BALANCED_DEFAULT", matchedBy: "DEFAULT",
       price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000",
@@ -129,7 +129,7 @@ function blockedGraph(accountId, storeId, warehouseId, idempotencyKey, sourceSuf
       sourceType: "COLLECT_BOX", sourceRecordId, sourceVersion: "1",
       blockedEvidence: captured.blockedEvidence, snapshotHash: captured.snapshotHash,
       rawResponseRef: captured.rawResponseRef, targetStoreId: storeId,
-      targetWarehouseId: warehouseId, sourceOrder: 0, status: "BLOCKED",
+      targetWarehouseId: warehouseId, sourceOrder: 1, status: "BLOCKED",
       failureCode: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
     }],
   };

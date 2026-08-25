@@ -616,7 +616,7 @@ function jobGraph(idempotencyKey) {
       rawResponseRef: captured.rawResponseRef,
       targetStoreId: config.targetStoreId,
       targetWarehouseId: config.targetWarehouseId,
-      sourceOrder: 0,
+      sourceOrder: 1,
       status: "SOURCE_READY",
       planningContract: "LEGACY_FULL_PLAN_V3",
       strategyId: "strategy-e2e",

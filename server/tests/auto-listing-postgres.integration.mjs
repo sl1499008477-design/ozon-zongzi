@@ -121,7 +121,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
       rawResponseRef: captured.rawResponseRef,
       targetStoreId: `store-${accountId}`,
       targetWarehouseId: `warehouse-${accountId}`,
-      sourceOrder: 0,
+      sourceOrder: 1,
       status: "SOURCE_READY",
       planningContract: "LEGACY_FULL_PLAN_V3",
       strategyId: "default",
