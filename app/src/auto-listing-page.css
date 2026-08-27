@@ -82,6 +82,13 @@
   font-size: 12px;
 }
 
+.auto-listing-task-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .auto-listing-task-table {
   max-width: 100%;
   overflow-x: auto;
@@ -159,6 +166,22 @@
   aspect-ratio: 3 / 4;
   object-fit: contain;
   background: #f8fafc;
+}
+
+.auto-listing-review-image-status {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.auto-listing-review-image-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .auto-listing-rich-preview,

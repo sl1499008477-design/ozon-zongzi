@@ -13,6 +13,7 @@ import {
   Select,
   Space,
   Spin,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -27,6 +28,7 @@ import {
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
+  AUTO_LISTING_IMAGE_DEFAULTS,
   amountToMinorUnits,
   autoListingCurrencyPresentation,
   autoListingTaskErrorMessage,
@@ -50,6 +52,7 @@ import {
   autoListingCreatedAtLabel,
 } from "./auto-listing-view.js";
 import { autoListingPlanDiagnosticDetail } from "./auto-listing-plan-diagnostics.js";
+import { loadAutoListingReviewImage } from "./auto-listing-review-client.js";
 import { apiRequest } from "./client-transport.js";
 import {
   clearStrategyResumeDraft,
@@ -65,9 +68,35 @@ const ROLE_FIELDS = Object.freeze([
   ["sellingPoint", "卖点图", 2, 5],
   ["detail", "细节图", 1, 2],
   ["scene", "场景图", 1, 2],
-  ["specification", "尺寸图", 0, 1],
+  ["specification", "产品实拍图", 0, 1],
   ["infographic", "信息图", 1, 2],
 ]);
+
+function ProtectedReviewImage({ image }) {
+  const [src, setSrc] = useState("");
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    let objectUrl = "";
+    setSrc("");
+    setFailed(false);
+    loadAutoListingReviewImage(image.url, { signal: controller.signal }).then((blob) => {
+      if (!active) return;
+      objectUrl = URL.createObjectURL(blob);
+      setSrc(objectUrl);
+    }).catch(() => { if (active) setFailed(true); });
+    return () => {
+      active = false;
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [image.url]);
+  if (src) return <img src={src} alt={image.roleLabel || "生成商品图"} />;
+  return <span className="auto-listing-review-image-status" role="status">
+    {failed ? "图片加载失败" : "图片加载中"}
+  </span>;
+}
 
 function AutoListingThumbnail({ src, alt, className = "" }) {
   const [failed, setFailed] = useState(false);
@@ -86,11 +115,12 @@ const DEFAULT_FORM = Object.freeze({
   stock: 5,
   priceAdjustmentAmount: "0",
   priceMultiplier: "1",
-  ratio: "3:4",
-  resolution: "1K",
-  quality: "Medium",
-  language: "ru",
-  roles: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 },
+  useCollectedBrand: false,
+  ratio: AUTO_LISTING_IMAGE_DEFAULTS.ratio,
+  resolution: AUTO_LISTING_IMAGE_DEFAULTS.resolution,
+  quality: AUTO_LISTING_IMAGE_DEFAULTS.quality,
+  language: AUTO_LISTING_IMAGE_DEFAULTS.language,
+  roles: { ...AUTO_LISTING_IMAGE_DEFAULTS.roles },
 });
 
 const DEFAULT_EXCEL_LIMITS = Object.freeze({ maxBytes: 2_097_152, maxRows: 1_000 });
@@ -222,11 +252,16 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   const [planDiagnostic, setPlanDiagnostic] = useState(null);
   const [planDiagnosticOpen, setPlanDiagnosticOpen] = useState(false);
   const [planDiagnosticLoading, setPlanDiagnosticLoading] = useState(false);
+  const [uploadPolicyMode, setUploadPolicyMode] = useState(null);
+  const [uploadPolicyLoading, setUploadPolicyLoading] = useState(false);
+  const [uploadPolicyChanging, setUploadPolicyChanging] = useState(false);
+  const [uploadPolicyError, setUploadPolicyError] = useState("");
   const loadRequestRef = useRef(0);
   const reviewRequestRef = useRef(0);
   const importDetailRequestRef = useRef(0);
   const planDiagnosticRequestRef = useRef(0);
   const jobRequestRef = useRef(0);
+  const uploadPolicyRequestRef = useRef(0);
   const hydratedAccountRef = useRef("");
   const selectedCurrencyRef = useRef(null);
   const createIntentRef = useRef(null);
@@ -237,8 +272,11 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   const warehouses = localData?.caches?.warehouses || localData?.warehouses || [];
   const selectedStoreId = Form.useWatch("targetStoreId", form) || "";
   const selectedWarehouseId = Form.useWatch("targetWarehouseId", form) || "";
-  const roles = Form.useWatch("roles", form) || DEFAULT_FORM.roles;
-  const imageTotal = Object.values(roles).reduce((sum, count) => sum + (Number(count) || 0), 0);
+  const imageTotal = Form.useWatch(
+    (values) => Object.values(values?.roles || DEFAULT_FORM.roles)
+      .reduce((sum, count) => sum + (Number(count) || 0), 0),
+    form,
+  ) ?? AUTO_LISTING_IMAGE_DEFAULTS.total;
   const selectedStore = useMemo(
     () => stores.find((store) => String(store?.id || "") === selectedStoreId) || null,
     [selectedStoreId, stores],
@@ -305,6 +343,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
           targetStoreId: preference.targetStoreId || defaultStoreId,
           targetWarehouseId: preference.targetWarehouseId || "",
           stock: preference.stock || DEFAULT_FORM.stock,
+          useCollectedBrand: preference.brandMode === "PREFER_SOURCE",
           priceAdjustmentAmount: kopecksToRubles(preference.priceAdjustmentKopecks || "0"),
           priceMultiplier: microsToMultiplier(preference.priceMultiplierMicros || "1000000"),
           ratio: preference.image?.ratio || DEFAULT_FORM.ratio,
@@ -350,7 +389,36 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     }
   }, []);
 
+  const loadUploadPolicy = useCallback(async () => {
+    const requestVersion = ++uploadPolicyRequestRef.current;
+    if (account?.role !== "admin") {
+      setUploadPolicyMode(null);
+      setUploadPolicyError("");
+      return;
+    }
+    setUploadPolicyLoading(true);
+    setUploadPolicyError("");
+    try {
+      const result = await apiRequest("/admin/auto-listing/upload-policies");
+      if (requestVersion !== uploadPolicyRequestRef.current) return;
+      const latest = Array.isArray(result?.data) ? result.data[0] : null;
+      if (!latest || !["REVIEW", "DIRECT"].includes(latest.mode)) {
+        throw new Error("上传策略状态无效");
+      }
+      setUploadPolicyMode(latest.mode);
+    } catch (caught) {
+      if (requestVersion !== uploadPolicyRequestRef.current) return;
+      setUploadPolicyMode(null);
+      setUploadPolicyError(caught?.status === 403
+        ? "当前账号没有上传策略管理权限"
+        : "上传策略状态读取失败，请刷新后重试");
+    } finally {
+      if (requestVersion === uploadPolicyRequestRef.current) setUploadPolicyLoading(false);
+    }
+  }, [account?.role, accountId]);
+
   useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { loadUploadPolicy(); }, [loadUploadPolicy]);
   useEffect(() => {
     if (!hasActiveTasks) return undefined;
     const timer = globalThis.setInterval(refreshJobs, TASK_POLL_INTERVAL_MS);
@@ -369,6 +437,66 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   }, [resumeDraft]);
   useEffect(() => () => { importDetailRequestRef.current += 1; }, []);
   useEffect(() => () => { planDiagnosticRequestRef.current += 1; }, []);
+  useEffect(() => () => { uploadPolicyRequestRef.current += 1; }, []);
+
+  const changeUploadPolicy = async (mode) => {
+    if (uploadPolicyChanging || !["REVIEW", "DIRECT"].includes(mode)) return;
+    setUploadPolicyChanging(true);
+    setUploadPolicyError("");
+    try {
+      if (mode === "DIRECT") {
+        const health = await apiRequest("/admin/auto-listing/upload-policies/publication-health", {
+          method: "POST",
+          body: {},
+        });
+        if (health?.data?.outcome !== "PASSED") {
+          setUploadPolicyError("公网图片健康检查未通过，仍保持人工审核后上传");
+          return;
+        }
+      }
+      const result = await apiRequest("/admin/auto-listing/upload-policies", {
+        method: "POST",
+        body: {
+          mode,
+          publicationReason: mode === "DIRECT"
+            ? "管理员在自动上架页面开启自动上传"
+            : "管理员在自动上架页面恢复人工审核",
+          idempotencyKey: requestId(`upload-policy-${mode.toLowerCase()}`),
+          correlationId: requestId("upload-policy"),
+        },
+      });
+      if (result?.data?.mode !== mode || result?.data?.enabled !== true) {
+        throw new Error("上传策略发布结果无效");
+      }
+      setUploadPolicyMode(mode);
+      setNotice(mode === "DIRECT" ? "已开启自动上传到 Ozon" : "已恢复人工审核后上传");
+    } catch (caught) {
+      const currentLabel = uploadPolicyMode === "DIRECT" ? "自动上传到 Ozon" : "人工审核后上传";
+      if (mode === "DIRECT" && caught?.code === "AUTO_LISTING_PUBLICATION_HEALTH_CHECK_FAILED") {
+        setUploadPolicyError("公网图片健康检查未通过，仍保持人工审核后上传");
+      } else if (mode === "DIRECT" && caught?.code === "AUTO_LISTING_DIRECT_POLICY_NOT_READY") {
+        setUploadPolicyError("自动上传条件尚未全部满足，仍保持人工审核后上传");
+      } else {
+        setUploadPolicyError(`上传策略更新失败，仍保持${currentLabel}`);
+      }
+    } finally {
+      setUploadPolicyChanging(false);
+    }
+  };
+
+  const confirmDirectUpload = () => {
+    if (uploadPolicyLoading || uploadPolicyChanging || uploadPolicyMode !== "REVIEW") return;
+    Modal.confirm({
+      title: "开启自动上传到 Ozon",
+      content: <Space direction="vertical" size={4}>
+        <span>之后新建的任务在图片和内容检查通过后，将不再等待人工审核，直接提交到 Ozon。</span>
+        <span>已有任务继续使用创建时冻结的上传策略，不会被改变。</span>
+      </Space>,
+      okText: "确认开启",
+      cancelText: "取消",
+      onOk: () => changeUploadPolicy("DIRECT"),
+    });
+  };
 
   const normalizedConfig = useCallback((values) => deriveAutoListingConfig({
     targetStoreId: values.targetStoreId,
@@ -376,6 +504,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     stock: values.stock,
     priceAdjustmentKopecks: amountToMinorUnits(values.priceAdjustmentAmount),
     priceMultiplier: values.priceMultiplier,
+    brandMode: values.useCollectedBrand ? "PREFER_SOURCE" : "FORCE_NO_BRAND",
     image: {
       ratio: values.ratio,
       resolution: values.resolution,
@@ -666,9 +795,13 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     { title: "商品", dataIndex: "sourceRecordId", render: (value, row) => <div className="auto-listing-task-product">
       <div className="auto-listing-task-source-media">
         <AutoListingThumbnail className="auto-listing-task-thumbnail" src={row.sourceThumbnailUrl} alt={row.sourceTitle || "来源商品"} />
-        <span title={value || row.itemId}>{shortSourceId(value || row.itemId)}</span>
       </div>
-      <div><strong>{row.sourceTitle || row.sourceSku || value || row.itemId}</strong><span>{row.sourceSku || "SKU 未提供"}</span></div>
+      <div>
+        <strong className="auto-listing-task-title" title={row.sourceTitle || row.sourceSku || value || row.itemId}>
+          {row.sourceTitle || row.sourceSku || shortSourceId(value || row.itemId)}
+        </strong>
+        <span>{row.sourceSku || "SKU 未提供"}</span>
+      </div>
     </div> },
     { title: "任务进度", dataIndex: "status", render: (_value, row) => {
       const item = autoListingItemPresentation(row);
@@ -676,8 +809,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         ...autoListingTaskProgress(row),
         status: row.status === "SUCCEEDED" ? "success"
           : ["RETRYABLE_ERROR", "BLOCKED", "CANCELLED"].includes(row.status) ? "exception"
-            : ["CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "UPLOAD_QUEUED", "UPLOADING"].includes(row.status)
-              ? "active" : "normal",
+            : POLLED_TASK_STATUSES.has(row.status) ? "active" : "normal",
       };
       return <Space direction="vertical" size={2}>
         <Progress percent={progress.percent} status={progress.status} size="small" />
@@ -701,7 +833,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         {account?.role === "admin" && String(row.failureCode || "").startsWith("AUTO_LISTING_CONTENT_PLAN_")
           ? <Button size="small" disabled={planDiagnosticLoading} icon={<EyeOutlined />}
             onClick={() => openPlanDiagnostic(row)}>查看规划问题</Button> : null}
-        {item.actions.approve ? <Button type="primary" size="small" loading={actionItemId === row.itemId} disabled={Boolean(actionItemId)} icon={<CloudUploadOutlined />} onClick={() => confirmApprove(row)}>审核通过并上架</Button> : null}
+        {item.actions.approve ? <Button type="primary" size="small" loading={actionItemId === row.itemId} disabled={Boolean(actionItemId)} icon={<CloudUploadOutlined />} onClick={() => confirmApprove(row)}>{row.status === "BLOCKED" ? "重新上传到 Ozon" : "审核通过并上架"}</Button> : null}
         {item.actions.regenerate ? <Button size="small" loading={actionItemId === row.itemId} disabled={Boolean(actionItemId)} icon={<ReloadOutlined />} onClick={() => performAction(row, "regenerate")}>重新生成</Button> : null}
         {item.actions.retry ? <Button size="small" loading={actionItemId === row.itemId} disabled={Boolean(actionItemId)} icon={<ReloadOutlined />} onClick={() => performAction(row, "retry")}>重试</Button> : null}
         {item.actions.cancel ? <Button size="small" danger loading={actionItemId === row.itemId} disabled={Boolean(actionItemId)} icon={<StopOutlined />} onClick={() => performAction(row, "cancel")}>取消任务</Button> : null}
@@ -766,6 +898,24 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
               extra="支持最多 6 位小数，必须大于 0">
               <InputNumber stringMode min="0.000001" />
             </Form.Item>
+            <Form.Item name="useCollectedBrand" label="品牌处理" valuePropName="checked"
+              extra="关闭时统一使用 Ozon 类目字典确认的 Нет бренда">
+              <Switch aria-label="使用采集品牌" checkedChildren="使用采集品牌" unCheckedChildren="统一无品牌" />
+            </Form.Item>
+            {account?.role === "admin" ? <Form.Item label="上传方式"
+              extra={uploadPolicyError || (uploadPolicyMode === "DIRECT"
+                ? "开启：新任务检查通过后自动上传；已有任务不变"
+                : "关闭：新任务停在人工审核后再上传")}>
+              <Switch
+                aria-label="自动上传到 Ozon"
+                checked={uploadPolicyMode === "DIRECT"}
+                checkedChildren="自动上传"
+                unCheckedChildren="人工审核"
+                loading={uploadPolicyLoading || uploadPolicyChanging}
+                disabled={uploadPolicyLoading || uploadPolicyChanging || uploadPolicyMode === null}
+                onChange={(checked) => (checked ? confirmDirectUpload() : changeUploadPolicy("REVIEW"))}
+              />
+            </Form.Item> : null}
           </div>
           {selectedStoreId && !currencyPresentation
             ? <Alert type="error" showIcon title="店铺币种尚未同步，请先同步店铺资料。" /> : null}
@@ -832,7 +982,19 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
           <Card size="small" title="商品与目标"><p>{review.source?.title || review.source?.sku || "—"}</p><p>店铺：{storeLabels.get(String(review.target?.storeId || "")) || "—"}</p><p>仓库：{review.target?.warehouseLabel || review.target?.warehouseId || "—"}</p></Card>
           {review.source?.thumbnailUrl ? <Card size="small" title="采集来源图片"><div className="auto-listing-review-images"><img src={review.source.thumbnailUrl} alt="采集来源商品" /></div></Card> : null}
           {(review.visualGroups || []).map((group) => <Card key={group.key} size="small" title={`生成图片组：${group.key}`}>
-            <div className="auto-listing-review-images">{(review.images || []).filter((image) => image.visualGroupKey === group.key).map((image) => <Card key={image.id || image.url} size="small" title={image.roleLabel || image.role}><img src={image.url} alt={image.roleLabel || "生成商品图"} /><Tag color={image.accepted ? "green" : "orange"}>{image.accepted ? "已通过检查" : "待检查"}</Tag></Card>)}</div>
+            <div className="auto-listing-review-images">{(review.images || []).filter((image) => image.visualGroupKey === group.key).map((image) => {
+              const substituted = image.requestedRole && image.requestedRole !== image.role;
+              const warningLabels = Array.isArray(image.manualReviewWarningLabels) ? image.manualReviewWarningLabels : [];
+              return <Card key={image.id || image.url} size="small"
+                title={substituted ? `${image.requestedRoleLabel} → ${image.roleLabel}` : (image.roleLabel || image.role)}>
+                <ProtectedReviewImage image={image} />
+                <div className="auto-listing-review-image-notes">
+                  {image.substitutionReasonLabel ? <Tag color="blue">{image.substitutionReasonLabel}</Tag> : null}
+                  {warningLabels.length ? warningLabels.map((label) => <Tag color="orange" key={label}>需人工关注：{label}</Tag>)
+                    : <Tag color="green">已通过检查</Tag>}
+                </div>
+              </Card>;
+            })}</div>
           </Card>)}
           <Card title="富文本预览"><div className="auto-listing-rich-preview">{review.richContent?.previewText || review.richContent?.text || "暂无富文本内容"}</div></Card>
           <Card title="价格与事件记录"><pre>{JSON.stringify({ price: review.price, timeline: review.timeline }, null, 2)}</pre></Card>

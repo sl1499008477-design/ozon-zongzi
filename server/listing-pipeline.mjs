@@ -1339,13 +1339,35 @@ export async function softDeleteCollectItemsForAccountV4(accountId, ids = []) {
   if (!listingPipelineEnabled()) return 0;
   const values = [...new Set(ids.map((id) => clean(id, 240)).filter(Boolean))];
   if (!values.length) return 0;
-  const pool = await poolReady();
-  const result = await pool.query(
-    `UPDATE collect_items SET deleted_at=NOW(),status='DELETED',updated_at=NOW()
-     WHERE account_id=$1 AND id=ANY($2::text[]) AND deleted_at IS NULL`,
-    [clean(accountId, 240), values],
-  );
-  return result.rowCount;
+  return transaction(async (client) => {
+    const scopedAccountId = clean(accountId, 240);
+    const result = await client.query(
+      `UPDATE collect_items SET deleted_at=NOW(),status='DELETED',updated_at=NOW()
+       WHERE account_id=$1 AND id=ANY($2::text[]) AND deleted_at IS NULL
+       RETURNING id`,
+      [scopedAccountId, values],
+    );
+    const deletedIds = result.rows.map((row) => String(row.id));
+    if (deletedIds.length) {
+      await client.query(
+        `UPDATE collector_ozon_enrichment_jobs
+            SET status='FAILED', result_json=NULL,
+                error_json=jsonb_build_object(
+                  'code','OZON_ENRICHMENT_COLLECT_ITEM_DELETED','status',410
+                ),
+                last_error_json=jsonb_build_object(
+                  'code','OZON_ENRICHMENT_COLLECT_ITEM_DELETED','status',410
+                ),
+                preferred_session_id=NULL, claimed_session_id=NULL,
+                claim_expires_at=NULL, claim_fence=NULL,
+                capture_context_json=NULL, completed_at=NOW(), updated_at=NOW()
+          WHERE account_id=$1 AND collect_item_id=ANY($2::text[])
+            AND status IN ('PENDING','PROCESSING')`,
+        [scopedAccountId, deletedIds],
+      );
+    }
+    return result.rowCount;
+  });
 }
 
 export function projectSubmissionItemPublicResultV3(raw = {}) {

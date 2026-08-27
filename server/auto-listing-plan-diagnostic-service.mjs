@@ -349,7 +349,6 @@ export function createAutoListingPlanDiagnosticService({
             model: reservation.model,
             correlationId: reservation.correlationId,
             requestKey: reservation.requestKey,
-            timeoutMs: 120_000,
             jsonSchema: reservation.request.schema,
             prompt: reservation.request.text,
           });

@@ -10,6 +10,7 @@ const PUBLIC_ERRORS = Object.freeze({
   AUTO_LISTING_REQUEST_INVALID: 400,
   AUTO_LISTING_JOB_NOT_FOUND: 404,
   AUTO_LISTING_SOURCE_NOT_FOUND: 404,
+  AUTO_LISTING_SOURCE_CATEGORY_REQUIRED: 409,
   AUTO_LISTING_WAREHOUSE_NOT_FOUND: 404,
   AUTO_LISTING_STRATEGY_NOT_PUBLISHED: 409,
   AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED: 409,
@@ -229,6 +230,7 @@ function messageFor(code) {
   if (code === "AUTO_LISTING_JOB_NOT_FOUND") return "自动上架任务不存在";
   if (code === "PERMISSION_FORBIDDEN") return "没有该操作权限";
   if (code === "AUTO_LISTING_REQUEST_INVALID") return "自动上架请求无效";
+  if (code === "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED") return "商品类目资料尚未完成确认，请刷新采集箱后重试";
   if (code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED") return "当前商品类目需要先配置并发布图片策略";
   if (code === "AUTO_LISTING_CATEGORY_STRATEGY_CHANGED") return "类目策略已变化，请重新提交创建任务";
   if (code === "AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED") return "目标店铺币种暂不支持自动上架";
@@ -237,7 +239,7 @@ function messageFor(code) {
   if (code === "AUTO_LISTING_CATEGORY_NEEDS_REVIEW") return "Ozon 当前类目无法唯一确定，请联系管理员处理";
   if (code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE") return "Ozon 类目属性暂时不可用，请稍后重试";
   if (code === "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED") return "商品品牌或类目选项未在 Ozon 当前字典中登记，请先补全资料";
-  if (code === "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED") return "商品缺少品牌，且 Ozon 当前类目未提供唯一的“无品牌”选项，请补全品牌后重试";
+  if (code === "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED") return "Ozon 当前类目无法唯一确认“Нет бренда（无品牌）”字典值；请开启“使用采集品牌”并确认商品有品牌，或稍后重试";
   if (code === "RFBS_WAREHOUSE_NOT_FOUND") return "未找到目标 RFBS 仓库";
   if (code === "RFBS_WAREHOUSE_DISABLED") return "目标 RFBS 仓库不可用";
   if (code === "RFBS_WAREHOUSE_SCOPE_MISMATCH") return "RFBS 仓库不属于当前账号或店铺";

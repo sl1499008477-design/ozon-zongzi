@@ -59,6 +59,18 @@ function validPlan() {
   };
 }
 
+test("validator accepts both historical V1 slots and closed V2 role metadata", () => {
+  assert.doesNotThrow(() => validateContentPlan({ plan: validPlan(), plannerContext }));
+  const plan = validPlan();
+  plan.version = 2;
+  plan.slots = plan.slots.map((entry) => ({
+    ...entry,
+    requestedRole: entry.role,
+    substitutionReasonCode: null,
+  }));
+  assert.doesNotThrow(() => validateContentPlan({ plan, plannerContext }));
+});
+
 const mutated = (change) => {
   const plan = structuredClone(validPlan());
   change(plan);
@@ -99,6 +111,52 @@ test("accepted diagnosis returns a detached recursively frozen normalized plan",
   assert.ok(Object.isFrozen(result.plan));
   assert.ok(Object.isFrozen(result.plan.slots[0]));
   assert.equal(Object.isFrozen(plan), false);
+});
+
+test("accepts an extractive identity phrase with normalized watt spacing but rejects new facts", () => {
+  const context = structuredClone(plannerContext);
+  context.plannerInput.factRegistry[0].value =
+    "Терморегулятор, термостат до 3500Вт Для теплого пола, белый матовый";
+  const plan = validPlan();
+  plan.slots[1].claims[0] = {
+    text: "Терморегулятор до 3500 Вт",
+    claimType: "IDENTITY_NAME",
+    sourceFactIds: ["fact-name"],
+  };
+
+  assert.equal(diagnoseContentPlan({ plan, plannerContext: context }).status, "ACCEPTED");
+
+  for (const unsupported of [
+    "Сенсорный терморегулятор до 3500 Вт",
+    "Терморегулятор до 3600 Вт",
+    "Терморегулятор до 3500 В",
+  ]) {
+    const invalid = structuredClone(plan);
+    invalid.slots[1].claims[0].text = unsupported;
+    assert.equal(diagnoseContentPlan({ plan: invalid, plannerContext: context }).status, "REJECTED", unsupported);
+  }
+});
+
+test("accepts an exact cited alphanumeric model fact but rejects a changed model identifier", () => {
+  const context = structuredClone(plannerContext);
+  context.plannerInput.factRegistry.push({
+    factId: "fact-model",
+    kind: "ATTRIBUTE:model",
+    value: "Название модели (для объединения в одну карточку): F404020A",
+    visualGroupKeys: ["group-a"],
+  });
+  const plan = validPlan();
+  plan.slots[3].sourceFactIds.push("fact-model");
+  plan.slots[3].claims = [{
+    text: "Название модели (для объединения в одну карточку): F404020A",
+    claimType: "ATTRIBUTE:model",
+    sourceFactIds: ["fact-model"],
+  }];
+
+  assert.equal(diagnoseContentPlan({ plan, plannerContext: context }).status, "ACCEPTED");
+
+  plan.slots[3].claims[0].text = "Название модели (для объединения в одну карточку): F404021A";
+  assert.equal(diagnoseContentPlan({ plan, plannerContext: context }).status, "REJECTED");
 });
 
 test("hostile carriers fail closed without running getters or proxy traps", () => {

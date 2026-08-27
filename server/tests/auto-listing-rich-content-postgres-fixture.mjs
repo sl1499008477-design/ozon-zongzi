@@ -102,6 +102,9 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     const migration031 = await readFile(path.join(migrationsDir, "031_auto_listing_rich_content_attempt_evidence.sql"), "utf8");
     await client.query(migration031);
     await client.query(migration031);
+    const migration078 = await readFile(path.join(migrationsDir, "078_auto_listing_rich_embedded_numeric_evidence.sql"), "utf8");
+    await client.query(migration078);
+    await client.query(migration078);
     const after = await client.query("SELECT * FROM ai_rich_content_results WHERE id=$1", [legacyId]);
     const legacyTerminalPreserved = before.rows[0].status === after.rows[0].status
       && JSON.stringify(before.rows[0].rich_content) === JSON.stringify(after.rows[0].rich_content)
@@ -223,6 +226,15 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     assert.deepEqual(assetValidation.rows[0], {
       sources_valid: true, object_keys_valid: true, checker_valid: true,
     });
+    const embeddedNumericBinding = {
+      sourceFactId: "fact.identity.name", field: "variants.name",
+      value: "Терморегулятор до 3500Вт Для теплого пола", numericValue: null, unit: null,
+    };
+    const embeddedNumericValidation = await client.query(
+      `SELECT auto_listing_rich_text_matches_bindings($1,$2::jsonb) AS binding_valid`,
+      [embeddedNumericBinding.value, JSON.stringify([embeddedNumericBinding])],
+    );
+    assert.deepEqual(embeddedNumericValidation.rows[0], { binding_valid: true });
     assert.deepEqual(evidenceValidation.rows[0], {
       fact_valid: true, asset_valid: true, asset_matches: true,
     });

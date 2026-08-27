@@ -62,6 +62,11 @@ const wrapper = (suffix) => ({
   item: item(suffix),
 });
 
+const variantPricing = (blackKopecks, greenKopecks) => {
+  const evidence = { currency: "RUB", blackKopecks, greenKopecks };
+  return { ...evidence, evidenceHash: digest(evidence) };
+};
+
 const freezeInput = (variants = [wrapper("blue")]) => ({
   accountId: "account-a",
   jobId: "job-a",
@@ -197,16 +202,49 @@ test("freezes a complete normalized single-variant base and overlays only genera
   assert.deepEqual(draft.items[0].images, assets.map((asset) => asset.publishedUrl));
   assert.equal(draft.items[0].primary_image, assets[0].publishedUrl);
   assert.equal(draft.items[0].price, "145.00");
-  const rich = draft.items[0].attributes.find((attribute) => Number(attribute.id) === 11254);
-  assert.equal(JSON.parse(rich.values[0].value).widgetName, "raShowcase");
-  assert.equal(draft.items[0].richContent, rich.values[0].value);
-  assert.equal(draft.items[0].rich_content, rich.values[0].value);
-  assert.equal(draft.versions.richContentRuleVersion, "AUTO_LISTING_OZON_RICH_CONTENT_V1_UNVERIFIED");
+  const richAttribute = draft.items[0].attributes.find((attribute) => Number(attribute.id) === 11254);
+  assert.equal(Boolean(richAttribute), true);
+  const ozonRichContent = JSON.parse(richAttribute.values[0].value);
+  assert.equal(ozonRichContent.version, 0.3);
+  assert.equal(ozonRichContent.content[0].widgetName, "raShowcase");
+  assert.equal(draft.items[0].richContent, richAttribute.values[0].value);
+  assert.equal(draft.items[0].rich_content, richAttribute.values[0].value);
+  assert.equal(draft.versions.richContentRuleVersion, "AUTO_LISTING_OZON_RICH_CONTENT_V2");
   assert.match(draft.resultHash, /^[a-f0-9]{64}$/);
   assert.equal(digest(nonAiFacts(draft.items[0])), digest(nonAiFacts(base.variants[0].item)));
   assert.equal(JSON.stringify(nonAiFacts(draft.items[0])), JSON.stringify(nonAiFacts(base.variants[0].item)));
   assert.equal(base.variants[0].item.price, "100.00");
   assert.deepEqual(base.variants[0].item.images, rawBefore.variants[0].item.images);
+});
+
+test("historical SKU aliases and an approved six-image subset remain uploadable", () => {
+  const sourceSku = "2828836686";
+  const base = freezeAutoListingListingBase(freezeInput([{
+    sourceVariantId: sourceSku,
+    sourceSku,
+    item: { ...item("blue"), offer_id: sourceSku },
+  }]));
+  const planned = [
+    publication("group-a", "MAIN", 0),
+    publication("group-a", "SELLING_POINT", 1),
+    publication("group-a", "SELLING_POINT", 2),
+    publication("group-a", "SELLING_POINT", 6),
+    publication("group-a", "DETAIL", 3),
+    publication("group-a", "SCENE", 4),
+    publication("group-a", "INFOGRAPHIC", 5),
+  ];
+  const accepted = planned.filter((asset) => asset.slotKey !== "group-a-slot-2");
+  const input = submissionInput(base, [
+    groupContract("group-a", [`source-sku:${sourceSku}`], planned),
+  ], accepted);
+  input.frozenConfig.config.image.roles.sellingPoint = 3;
+  input.frozenConfig.config.image.total = 7;
+  input.frozenConfig.configHash = digest(input.frozenConfig.config);
+
+  const draft = buildAutoListingSubmissionDraft(input);
+
+  assert.equal(draft.items[0].images.length, 6);
+  assert.deepEqual(draft.items[0].images, accepted.map((asset) => asset.publishedUrl));
 });
 
 test("freezes a V2 CNY base and submits native CNY without conversion", () => {
@@ -226,6 +264,28 @@ test("freezes a V2 CNY base and submits native CNY without conversion", () => {
   assert.equal(draft.items[0].currency_code, "CNY");
   assert.equal(draft.items[0].price, "145.00");
   assert.equal(draft.priceCalculation.currency, "CNY");
+});
+
+test("accepts a below-80 source price with a legal green price and keeps the below-80 formula", () => {
+  const price = {
+    currency: "CNY", currencySource: "SOURCE",
+    blackKopecks: "3448", greenKopecks: "3280",
+  };
+  const base = freezeAutoListingListingBase({
+    ...freezeInput([{ ...wrapper("blue"), item: { ...item("blue"), currency_code: "CNY" } }]),
+    pricingEvidence: { ...price, evidenceHash: digest(price) },
+  });
+
+  assert.equal(base.pricingEvidence.greenKopecks, "3280");
+
+  const assets = groupAssets("group-a");
+  const draft = buildAutoListingSubmissionDraft(submissionInput(base, [
+    groupContract("group-a", ["variant-blue"], assets),
+  ], assets));
+
+  assert.equal(draft.items[0].price, "32.18");
+  assert.equal(draft.priceCalculation.branch, "BLACK_LT_80");
+  assert.equal(Object.hasOwn(draft.priceCalculation, "greenKopecks"), false);
 });
 
 test("rejects invalid V1/V2 currency evidence and forged variant currency", () => {
@@ -268,6 +328,27 @@ test("keeps every multi-variant fact byte-identical while sharing size-only grou
     assert.equal(draft.items[index].description_category_id, base.variants[index].item.description_category_id);
     assert.equal(draft.items[index].type_id, base.variants[index].item.type_id);
   }
+});
+
+test("calculates and uploads every variant from its own frozen price evidence", () => {
+  const base = freezeAutoListingListingBase(freezeInput([
+    { ...wrapper("blue"), pricingEvidence: variantPricing("10000", "8000") },
+    { ...wrapper("red"), pricingEvidence: variantPricing("25000", null) },
+  ]));
+  const assets = groupAssets("group-a");
+  const input = submissionInput(base, [
+    groupContract("group-a", ["variant-blue", "variant-red"], assets),
+  ], assets);
+  input.frozenConfig.config.priceAdjustmentKopecks = "100";
+  input.frozenConfig.config.priceMultiplierMicros = "1250000";
+  input.frozenConfig.configHash = digest(input.frozenConfig.config);
+
+  const draft = buildAutoListingSubmissionDraft(input);
+
+  assert.deepEqual(draft.items.map(({ offer_id: offerId, price }) => ({ offerId, price })), [
+    { offerId: "offer-blue", price: "182.50" },
+    { offerId: "offer-red", price: "313.75" },
+  ]);
 });
 
 test("rejects compact snapshots, duplicate identities, unsafe JSON, missing Ozon-ready facts, and mutated frozen evidence", () => {
@@ -391,7 +472,7 @@ test("binds target store, plan scope, visual groups, assets, and group-local ric
   }
 });
 
-test("requires exact configured role counts and one accepted asset for every verified slot in stable slot order", () => {
+test("requires exact planned role counts and keeps accepted assets in stable slot order", () => {
   const base = freezeAutoListingListingBase(freezeInput());
   const assets = groupAssets("group-a").reverse();
   const group = groupContract("group-a", ["variant-blue"], groupAssets("group-a"));
@@ -412,13 +493,15 @@ test("requires exact configured role counts and one accepted asset for every ver
   }
 });
 
-test("records unsupported category rich-content capability but blocks upload without attribute 11254 support", () => {
+test("omits optional rich content instead of blocking a category without attribute 11254", () => {
   const source = freezeInput();
   source.richContentAttributeSupported = false;
   const base = freezeAutoListingListingBase(source);
   const assets = groupAssets("group-a");
-  assert.throws(
-    () => buildAutoListingSubmissionDraft(submissionInput(base, [groupContract("group-a", ["variant-blue"], assets)], assets)),
-    (error) => error?.code === "AUTO_LISTING_OVERLAY_INVALID",
+  const draft = buildAutoListingSubmissionDraft(
+    submissionInput(base, [groupContract("group-a", ["variant-blue"], assets)], assets),
   );
+  assert.equal(draft.items[0].attributes.some((attribute) => Number(attribute.id) === 11254), false);
+  assert.equal(Object.hasOwn(draft.items[0], "richContent"), false);
+  assert.equal(Object.hasOwn(draft.items[0], "rich_content"), false);
 });

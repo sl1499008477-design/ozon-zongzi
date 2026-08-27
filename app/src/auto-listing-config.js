@@ -2,6 +2,7 @@ const RATIOS = new Set(["16:9", "9:16", "2:3", "3:2", "1:1", "3:4", "4:3"]);
 const RESOLUTIONS = new Set(["1K", "2K", "4K"]);
 const QUALITIES = new Set(["Low", "Medium", "High", "Ultra"]);
 const LANGUAGES = new Set(["ru"]);
+const BRAND_MODES = new Set(["PREFER_SOURCE", "FORCE_NO_BRAND"]);
 const ROLE_RANGES = Object.freeze({
   main: [1, 1],
   sellingPoint: [2, 5],
@@ -13,10 +14,10 @@ const ROLE_RANGES = Object.freeze({
 
 const DEFAULT_ROLES = Object.freeze({
   main: 1,
-  sellingPoint: 3,
+  sellingPoint: 2,
   detail: 1,
   scene: 1,
-  specification: 1,
+  specification: 0,
   infographic: 1,
 });
 
@@ -26,7 +27,7 @@ export const AUTO_LISTING_IMAGE_DEFAULTS = Object.freeze({
   quality: "Medium",
   language: "ru",
   roles: DEFAULT_ROLES,
-  total: 8,
+  total: 6,
 });
 
 const CURRENCY_PRESENTATIONS = Object.freeze({
@@ -138,7 +139,7 @@ export function deriveAutoListingConfig(input = {}, {
   hasReliableProductDimensions = true,
 } = {}) {
   if (!onlyKeys(input, new Set([
-    "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplier", "image",
+    "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplier", "brandMode", "image",
   ])) || !Number.isInteger(input.stock) || input.stock <= 0) throw configError();
   const imageInput = input.image ?? {};
   if (!onlyKeys(imageInput, new Set(["ratio", "resolution", "quality", "language", "roles"]))) {
@@ -153,6 +154,7 @@ export function deriveAutoListingConfig(input = {}, {
     stock: input.stock,
     priceAdjustmentKopecks: signedInteger(input.priceAdjustmentKopecks),
     priceMultiplierMicros: multiplierToMicros(input.priceMultiplier ?? "1"),
+    brandMode: option(input.brandMode, "FORCE_NO_BRAND", BRAND_MODES),
     image: Object.freeze({
       ratio: option(imageInput.ratio, AUTO_LISTING_IMAGE_DEFAULTS.ratio, RATIOS),
       resolution: option(imageInput.resolution, AUTO_LISTING_IMAGE_DEFAULTS.resolution, RESOLUTIONS),
@@ -279,7 +281,7 @@ const AUTO_LISTING_RFBS_ERROR_MESSAGES = Object.freeze({
   AUTO_LISTING_CATEGORY_NEEDS_REVIEW: "Ozon 当前类目无法唯一确定，请联系管理员处理",
   AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE: "Ozon 类目属性暂时不可用，请稍后重试",
   AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED: "商品品牌或类目选项未在 Ozon 当前字典中登记，请先补全资料",
-  AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED: "商品缺少品牌，且 Ozon 当前类目未提供唯一的“无品牌”选项，请补全品牌后重试",
+  AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED: "Ozon 当前类目无法唯一确认“Нет бренда（无品牌）”字典值；请开启“使用采集品牌”并确认商品有品牌，或稍后重试",
   RFBS_WAREHOUSE_NOT_FOUND: "未在当前店铺找到该 RFBS 仓库，请同步仓库后重试",
   RFBS_WAREHOUSE_DISABLED: "该 RFBS 仓库当前不可用，请在 Ozon 启用或改选其他仓库",
   RFBS_WAREHOUSE_SCOPE_MISMATCH: "仓库与当前店铺不匹配，请重新选择店铺和仓库",

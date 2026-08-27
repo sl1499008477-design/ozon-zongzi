@@ -9,6 +9,10 @@ const databaseUrl = process.env.TEST_DATABASE_URL;
 const postgresEnabled = process.env.AUTO_LISTING_CATEGORY_STRATEGY_POSTGRES_TESTS === "1" && Boolean(databaseUrl);
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
 const migrationPath = path.join(migrationsDir, "075_auto_listing_category_strategy_sampling.sql");
+const sourceRevisionMigrationPath = path.join(
+  migrationsDir,
+  "093_category_strategy_source_product_revision.sql",
+);
 const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const H = (digit) => digit.repeat(64);
 const sha = (value) => crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
@@ -19,6 +23,14 @@ function legacyIncompleteSampleSetHash(samples) {
     sample.images.map((image) => `${String(image.ordinal).padStart(2, "0")}:${image.role}:${image.imageId}`).join(","),
   ].join(":")).join("\n"));
 }
+
+test("093 keeps category-strategy source evidence immutable without locking the mutable product draft", async () => {
+  const sql = await readFile(sourceRevisionMigrationPath, "utf8");
+
+  assert.match(sql, /DROP CONSTRAINT IF EXISTS auto_listing_category_strateg_source_collect_item_id_sourc_fkey/iu);
+  assert.match(sql, /FOREIGN KEY \(source_collect_item_id,source_product_draft_id\)[\s\S]*REFERENCES product_drafts\(collect_item_id,id\)/iu);
+  assert.match(sql, /FOREIGN KEY \(source_product_draft_id,source_product_draft_version\)[\s\S]*REFERENCES product_draft_revisions\(draft_id,version\)/iu);
+});
 
 async function databaseSampleSetHash(client, accountId, sampleSetId) {
   const result = await client.query(
@@ -35,7 +47,7 @@ async function expectCode(promise, code = "23514") {
 async function applyMigrations(client) {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "088_auto_listing_batch_order_multiplier.sql");
+  assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
   for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
 }
 

@@ -1,4 +1,5 @@
 import { types } from "node:util";
+import { fixedClaimRange } from "./auto-listing-fixed-skeleton.mjs";
 
 export const AUTO_LISTING_CONTENT_PLAN_VALIDATOR_VERSION = "AUTO_LISTING_CONTENT_PLAN_VALIDATOR_V1";
 
@@ -9,10 +10,11 @@ const MAX_STRING_LENGTH = 2_000_000;
 const MAX_ISSUES = 100;
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const PLAN_KEYS = new Set(["version", "language", "slots"]);
-const SLOT_KEYS = new Set([
+const SLOT_KEYS_V1 = new Set([
   "slotKey", "visualGroupKey", "role", "order", "textDensity", "claims", "sourceFactIds",
   "referenceAssetIds", "preserve", "prohibitedClaims",
 ]);
+const SLOT_KEYS_V2 = new Set([...SLOT_KEYS_V1, "requestedRole", "substitutionReasonCode"]);
 const CLAIM_KEYS = new Set(["text", "claimType", "sourceFactIds"]);
 const ROLE_ORDER = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
 const SECRET_LIKE = /(?:api[_-]?key|password|passwd|secret|bearer|authorization|cookie|credential|private[_-]?key|access[_-]?token|refresh[_-]?token|sk-(?:proj-)?)/iu;
@@ -135,6 +137,7 @@ function normalizedUnit(value) {
   return new Map([
     ["mm", "mm"], ["мм", "mm"], ["cm", "cm"], ["см", "cm"], ["m", "m"], ["м", "m"],
     ["kg", "kg"], ["кг", "kg"], ["g", "g"], ["г", "g"], ["l", "l"], ["л", "l"],
+    ["w", "w"], ["вт", "w"],
   ]).get(String(value).toLocaleLowerCase("ru-RU")) || null;
 }
 
@@ -151,6 +154,24 @@ function numericEvidenceMatches(text, facts, claimType = "") {
     .some((evidence) => evidence.number === pair.number && evidence.unit === pair.unit)));
 }
 
+const IDENTITY_STOP_WORDS = new Set(["и", "в", "во", "на", "для", "до", "с", "со", "из", "по", "от", "к", "у", "не", "без"]);
+
+function identityTokens(value) {
+  return (String(value || "").toLocaleLowerCase("ru-RU").match(/\d+(?:[.,]\d+)?|\p{L}+/gu) || [])
+    .map((token) => token.replaceAll(",", "."));
+}
+
+function identityTextUsesEvidence(text, facts, claimType) {
+  const claimTokens = identityTokens(text);
+  const evidenceTokens = new Set(facts
+    .filter((fact) => fact?.kind === claimType)
+    .flatMap((fact) => identityTokens(fact?.value)));
+  const allowedLabels = claimType === "IDENTITY_BRAND" ? new Set(["бренд", "марка"]) : new Set();
+  return claimTokens.length > 0
+    && claimTokens.every((token) => evidenceTokens.has(token) || allowedLabels.has(token))
+    && claimTokens.some((token) => /\d/u.test(token) || (token.length >= 2 && !IDENTITY_STOP_WORDS.has(token)));
+}
+
 function textUsesEvidence(claim, facts) {
   const normalized = String(claim.text || "").toLocaleLowerCase("ru-RU");
   if (String(claim.claimType || "").startsWith("DIMENSION_")) {
@@ -163,6 +184,9 @@ function textUsesEvidence(claim, facts) {
       [/диаметр/u, "DIMENSION_DIAMETER"],
     ].filter(([pattern]) => pattern.test(normalized)).map(([, kind]) => kind);
     return !mentionedKinds.length || mentionedKinds.every((kind) => kind === claim.claimType);
+  }
+  if (String(claim.claimType || "").startsWith("IDENTITY_")) {
+    return identityTextUsesEvidence(claim.text, facts, claim.claimType);
   }
   return facts.some((fact) => {
     if (fact?.kind !== claim.claimType || typeof fact.value !== "string") return false;
@@ -178,10 +202,22 @@ function expectedSlots(input) {
     let order = 1;
     for (const role of ROLE_ORDER) {
       const count = Number.isSafeInteger(input.requestedRoleCounts?.[role]) ? input.requestedRoleCounts[role] : 0;
+      const substitutions = Array.isArray(input.roleSubstitutions)
+        ? input.roleSubstitutions.filter((entry) => entry?.actualRole === role) : [];
+      const originalCount = count - substitutions.reduce((sum, entry) => sum + Number(entry?.count || 0), 0);
       for (let occurrence = 1; occurrence <= count; occurrence += 1) {
+        let substitution = null;
+        let substitutedOccurrence = occurrence - originalCount;
+        if (substitutedOccurrence > 0) substitution = substitutions.find((entry) => {
+          if (substitutedOccurrence <= entry.count) return true;
+          substitutedOccurrence -= entry.count;
+          return false;
+        }) || null;
         slots.push({
           visualGroupKey: group.visualGroupKey,
           role,
+          requestedRole: substitution?.requestedRole || role,
+          substitutionReasonCode: substitution?.reasonCode || null,
           order: order++,
           slotKey: `${group.visualGroupKey}:${role.toLowerCase().replaceAll("_", "-")}:${String(occurrence).padStart(2, "0")}`,
         });
@@ -194,10 +230,13 @@ function expectedSlots(input) {
 function collectIssues(plan, plannerContext) {
   const issues = [];
   const input = plannerContext?.plannerInput;
-  if (!exactKeys(plan, PLAN_KEYS) || plan.version !== 1 || plan.language !== "ru" || !Array.isArray(plan.slots)
+  if (!exactKeys(plan, PLAN_KEYS) || ![1, 2].includes(plan.version) || plan.language !== "ru" || !Array.isArray(plan.slots)
     || !input || !Array.isArray(input.visualGroups) || !Array.isArray(input.factRegistry)) {
-    addIssue(issues, { code: "CONTENT_PLAN_SHAPE_INVALID", field: "plan", expected: "closed V1 ru plan", actual: plan });
+    addIssue(issues, { code: "CONTENT_PLAN_SHAPE_INVALID", field: "plan", expected: "closed V1 or V2 ru plan", actual: plan });
     return issues;
+  }
+  if (plan.version === 1 && Array.isArray(input.roleSubstitutions) && input.roleSubstitutions.length) {
+    addIssue(issues, { code: "CONTENT_PLAN_SHAPE_INVALID", field: "version", expected: 2, actual: plan.version });
   }
   const expected = expectedSlots(input);
   if (plan.slots.length !== expected.length) addIssue(issues, {
@@ -210,7 +249,8 @@ function collectIssues(plan, plannerContext) {
     const slot = plan.slots[index];
     const expectedSlot = expected[index];
     const slotKey = typeof slot?.slotKey === "string" ? slot.slotKey : null;
-    if (!exactKeys(slot, SLOT_KEYS)) {
+    const slotKeys = plan.version === 2 ? SLOT_KEYS_V2 : SLOT_KEYS_V1;
+    if (!exactKeys(slot, slotKeys)) {
       addIssue(issues, { code: "SLOT_SHAPE_INVALID", slotKey, field: `slots[${index}]`, expected: "closed slot", actual: slot });
       continue;
     }
@@ -223,6 +263,13 @@ function collectIssues(plan, plannerContext) {
     if (expectedSlot && slot.role !== expectedSlot.role) addIssue(issues, {
       code: "ROLE_COUNT_MISMATCH", slotKey, field: "role", expected: expectedSlot.role, actual: slot.role,
     });
+    if (plan.version === 2 && expectedSlot
+      && (slot.requestedRole !== expectedSlot.requestedRole
+        || slot.substitutionReasonCode !== expectedSlot.substitutionReasonCode)) {
+      addIssue(issues, { code: "ROLE_SUBSTITUTION_MISMATCH", slotKey, field: "requestedRole",
+        expected: `${expectedSlot.requestedRole}:${expectedSlot.substitutionReasonCode || "none"}`,
+        actual: `${slot.requestedRole}:${slot.substitutionReasonCode || "none"}` });
+    }
     if (expectedSlot && (slot.slotKey !== expectedSlot.slotKey || slot.visualGroupKey !== expectedSlot.visualGroupKey)) {
       addIssue(issues, { code: "SLOT_IDENTITY_MISMATCH", slotKey, field: "slotKey", expected: expectedSlot.slotKey, actual: slot.slotKey });
     }
@@ -235,7 +282,8 @@ function collectIssues(plan, plannerContext) {
       continue;
     }
     const allowedAssets = new Set((group.referenceImages || []).map((entry) => entry?.assetId));
-    if (slot.textDensity !== input.textDensityByRole?.[slot.role]) addIssue(issues, {
+    const copyFreeFallback = slot.textDensity === "NONE" && Array.isArray(slot.claims) && slot.claims.length === 0;
+    if (slot.textDensity !== input.textDensityByRole?.[slot.role] && !copyFreeFallback) addIssue(issues, {
       code: "TEXT_DENSITY_MISMATCH", slotKey, field: "textDensity",
       expected: input.textDensityByRole?.[slot.role], actual: slot.textDensity,
     });
@@ -262,7 +310,10 @@ function collectIssues(plan, plannerContext) {
       addIssue(issues, { code: "CLAIM_SHAPE_INVALID", slotKey, field: "claims", expected: "array", actual: slot.claims });
       continue;
     }
-    const claimLimit = { NONE: 0, LIGHT: 1, MEDIUM: 2, HEAVY: 3 }[slot.textDensity];
+    const fixedCopy = /^AUTO_LISTING_CONTENT_PLAN_FILL_V[3-6]$/u.test(input.promptTemplateVersion || "");
+    const claimLimit = fixedCopy
+      ? fixedClaimRange(slot, Array.isArray(slot.sourceFactIds) ? slot.sourceFactIds.length : 0).maximum
+      : { NONE: 0, LIGHT: 1, MEDIUM: 2, HEAVY: 3 }[slot.textDensity];
     if (!Number.isInteger(claimLimit) || slot.claims.length > claimLimit) addIssue(issues, {
       code: "CLAIM_COUNT_MISMATCH", slotKey, field: "claims", expected: claimLimit, actual: slot.claims.length,
     });
@@ -294,10 +345,11 @@ function collectIssues(plan, plannerContext) {
       }
       const identityExact = claimFacts.some((fact) => String(fact?.kind || "").startsWith("IDENTITY_")
         && claim.text === fact.value);
+      const factExact = claimFacts.some((fact) => fact?.kind === claim.claimType && claim.text === fact.value);
       if (typeof claim.text !== "string" || (!/\p{Script=Cyrillic}/u.test(claim.text) && !identityExact)) {
         addIssue(issues, { code: "RUSSIAN_TEXT_REQUIRED", slotKey, claimIndex, field: `claims[${claimIndex}].text`, expected: "Russian or exact identity", actual: claim.text });
       }
-      if (numberTokens(claim.text).length && !numericEvidenceMatches(claim.text, claimFacts, claim.claimType)) {
+      if (!factExact && numberTokens(claim.text).length && !numericEvidenceMatches(claim.text, claimFacts, claim.claimType)) {
         addIssue(issues, { code: "NUMERIC_EVIDENCE_MISMATCH", slotKey, claimIndex, field: `claims[${claimIndex}].text`, expected: "cited number and unit", actual: claim.text });
       }
       if (claimFacts.length && !textUsesEvidence(claim, claimFacts)) {

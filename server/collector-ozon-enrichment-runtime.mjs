@@ -125,6 +125,7 @@ export function createCollectorOzonEnrichmentRuntime({
     completeJobAndCache: (input) => callRepository("completeJobAndCache", input),
     failJobAndCache: (input) => callRepository("failJobAndCache", input),
     readJob: (input) => callRepository("readJob", input),
+    expireUnlinkedJob: (input) => callRepository("expireUnlinkedJob", input),
   });
 
   function jsonCollectItems(state) {

@@ -12,6 +12,14 @@ const FACTORY_KEYS = new Set(["pool"]);
 const STATEMENT_TIMEOUT_MS = 25_000;
 const LOCK_TIMEOUT_MS = 5_000;
 const IDLE_TRANSACTION_TIMEOUT_MS = 30_000;
+const MAX_PLAN_SLOTS = 1_000;
+const RECOVERABLE_BLOCKED_FAILURES = new Set([
+  "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID",
+  "AUTO_LISTING_MAIN_IMAGE_REQUIRED",
+  "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET",
+  "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID",
+  "AUTO_LISTING_RICH_CONTENT_ATTEMPTS_EXHAUSTED",
+]);
 
 function retryError(code, retryable = false) {
   const error = new Error("自动上架 AI 重试数据操作失败");
@@ -86,7 +94,7 @@ async function configureTransaction(client) {
 
 function plannedSlots(raw) {
   const values = raw && typeof raw === "object" && Array.isArray(raw.slots) ? raw.slots : null;
-  if (!values || values.length < 1 || values.length > 15) throw notRecoverable();
+  if (!values || values.length < 1 || values.length > MAX_PLAN_SLOTS) throw notRecoverable();
   const slots = new Map();
   for (const slot of values) {
     if (!isSafeAutoListingAiIdentifier(slot?.slotKey) || !isSafeAutoListingAiIdentifier(slot?.role)
@@ -122,7 +130,9 @@ async function replay(client, value, eventId, idempotencyHash) {
   const row = result?.rowCount === 1 ? result.rows?.[0] : null;
   if (!row) return null;
   const details = row.details;
-  if (row.from_status !== "RETRYABLE_ERROR"
+  const sourceStatus = details?.sourceStatus || "RETRYABLE_ERROR";
+  if (row.from_status !== sourceStatus
+    || !["RETRYABLE_ERROR", "BLOCKED"].includes(sourceStatus)
     || !Number.isInteger(row.transition_version) || row.transition_version !== value.expectedStatusVersion + 1
     || !details || details.idempotencyKeyHash !== idempotencyHash
     || details.requestedStatusVersion !== value.expectedStatusVersion
@@ -156,8 +166,17 @@ async function buildGenerationMessages(client, value, row, nextVersion, correlat
   if (planResult?.rowCount !== 1) throw notRecoverable();
   const slots = plannedSlots(planResult.rows[0].plan);
   const acceptedResult = await safeQuery(client,
-    `SELECT DISTINCT slot_key FROM ai_generation_assets
-      WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND status='ACCEPTED'`,
+    `SELECT DISTINCT asset.slot_key
+       FROM ai_generation_assets AS asset
+       JOIN ai_content_plans AS plan
+         ON plan.account_id=asset.account_id AND plan.job_id=asset.job_id
+           AND plan.item_id=asset.item_id AND plan.id=asset.plan_id
+       CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'slots') AS planned_slot
+      WHERE asset.account_id=$1 AND asset.job_id=$2 AND asset.item_id=$3 AND asset.plan_id=$4
+        AND asset.status='ACCEPTED' AND planned_slot->>'slotKey'=asset.slot_key
+        AND (plan.prompt_template_version NOT IN ('AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4','AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6')
+          OR jsonb_array_length(planned_slot->'claims')>0
+          OR asset.checker_result->>'textForbidden'='true')`,
     [value.accountId, value.jobId, value.itemId, row.active_content_plan_id]);
   const skippedResult = await safeQuery(client,
     `SELECT DISTINCT details->>'slotKey' AS slot_key FROM auto_listing_events
@@ -167,14 +186,32 @@ async function buildGenerationMessages(client, value, row, nextVersion, correlat
   const accepted = new Set((acceptedResult.rows || []).map((entry) => entry.slot_key));
   const skipped = new Set((skippedResult.rows || []).map((entry) => entry.slot_key));
   if ([...accepted, ...skipped].some((slotKey) => !slots.has(slotKey))) throw notRecoverable();
-  const incomplete = [...slots.values()].filter((slot) => !accepted.has(slot.slotKey) && !skipped.has(slot.slotKey));
-  const main = [...slots.values()].find((slot) => slot.role === "MAIN");
-  if (!main || skipped.has(main.slotKey)) throw notRecoverable();
-  if (incomplete.length > 0) {
-    return incomplete.sort((a, b) => a.slotKey.localeCompare(b.slotKey)).map((slot) =>
+  const slotValues = [...slots.values()];
+  const incomplete = slotValues.filter((slot) => !accepted.has(slot.slotKey) && !skipped.has(slot.slotKey));
+  const recoverySlots = new Map(incomplete.map((slot) => [slot.slotKey, slot]));
+  const groups = new Map();
+  for (const slot of slotValues) {
+    const group = groups.get(slot.visualGroupKey) || [];
+    group.push(slot);
+    groups.set(slot.visualGroupKey, group);
+  }
+  for (const groupSlots of groups.values()) {
+    const skippedSlots = groupSlots.filter((slot) => skipped.has(slot.slotKey))
+      .sort((left, right) => left.slotKey.localeCompare(right.slotKey));
+    const main = groupSlots.find((slot) => slot.role === "MAIN");
+    if (!main) throw notRecoverable();
+    for (const slot of skippedSlots) recoverySlots.set(slot.slotKey, slot);
+  }
+  if (recoverySlots.size > 0) {
+    return [...recoverySlots.values()].sort((a, b) => a.slotKey.localeCompare(b.slotKey)).map((slot) =>
       retryMessage(value, "GENERATE_IMAGE_SLOT", nextVersion, slot.slotKey, correlationId));
   }
-  if (accepted.size < 6 || !accepted.has(main.slotKey)) throw notRecoverable();
+  const allGroupsReady = [...groups.values()].every((groupSlots) => {
+    const main = groupSlots.find((slot) => slot.role === "MAIN");
+    return main && accepted.has(main.slotKey)
+      && groupSlots.filter((slot) => accepted.has(slot.slotKey)).length >= 6;
+  });
+  if (!allGroupsReady) throw notRecoverable();
   return [retryMessage(value, "GENERATE_RICH_CONTENT", nextVersion, null, correlationId)];
 }
 
@@ -214,7 +251,7 @@ export function createPostgresAutoListingAiRetryRepository(rawOptions = {}) {
         await safeQuery(client, "BEGIN");
         await configureTransaction(client);
         const boundary = await safeQuery(client,
-          `SELECT i.status,i.status_version,i.recovery_point,i.active_content_plan_id
+          `SELECT i.status,i.status_version,i.recovery_point,i.active_content_plan_id,i.failure_code
              FROM auto_listing_job_items AS i
              JOIN auto_listing_jobs AS j ON j.account_id=i.account_id AND j.id=i.job_id
             WHERE i.account_id=$1 AND i.job_id=$2 AND i.id=$3
@@ -228,45 +265,61 @@ export function createPostgresAutoListingAiRetryRepository(rawOptions = {}) {
           return existing;
         }
         const row = boundary.rows[0];
-        if (row.status !== "RETRYABLE_ERROR" || row.status_version !== value.expectedStatusVersion) throw conflict();
-        if (!["PLANNING", "GENERATION"].includes(row.recovery_point)) throw notRecoverable();
+        if (row.status_version !== value.expectedStatusVersion) throw conflict();
+        const sourceStatus = row.status;
+        const recoveryPoint = sourceStatus === "RETRYABLE_ERROR"
+          ? row.recovery_point
+          : sourceStatus === "BLOCKED" && RECOVERABLE_BLOCKED_FAILURES.has(row.failure_code)
+            ? "GENERATION" : null;
+        if (sourceStatus !== "RETRYABLE_ERROR" && sourceStatus !== "BLOCKED") throw conflict();
+        if (!["PLANNING", "GENERATION"].includes(recoveryPoint)) throw notRecoverable();
         const nextVersion = value.expectedStatusVersion + 1;
-        const toStatus = row.recovery_point === "PLANNING" ? "PLANNING" : "GENERATING";
-        let messages = row.recovery_point === "PLANNING"
+        const toStatus = recoveryPoint === "PLANNING" ? "PLANNING" : "GENERATING";
+        if (recoveryPoint === "GENERATION") {
+          await safeQuery(client,
+            `UPDATE ai_generation_assets
+                SET status='FAILED',lease_token=NULL,lease_expires_at=NULL,
+                    error_code='AUTO_LISTING_IMAGE_RETRY_SUPERSEDED',error_retryable=TRUE,updated_at=NOW()
+              WHERE account_id=$1 AND job_id=$2 AND item_id=$3
+                AND expected_status_version < $4 AND plan_id=$5 AND status='GENERATING'`,
+            [value.accountId, value.jobId, value.itemId, value.expectedStatusVersion, row.active_content_plan_id]);
+        }
+        let messages = recoveryPoint === "PLANNING"
           ? [retryMessage(value, "PLAN_CONTENT", nextVersion, null, correlationId)]
           : await buildGenerationMessages(client, value, row, nextVersion, correlationId);
-        if (messages.length < 1 || messages.length > 15) throw notRecoverable();
+        if (messages.length < 1 || messages.length > MAX_PLAN_SLOTS) throw notRecoverable();
         messages = messages.map((message) => normalizeAutoListingAiMessage(message));
         const updated = await safeQuery(client,
           `UPDATE auto_listing_job_items
               SET status=$5,status_version=status_version+1,recovery_point=NULL,
                   failure_code=NULL,failure_detail_safe=NULL,updated_at=NOW()
-            WHERE account_id=$1 AND job_id=$2 AND id=$3 AND status_version=$4 AND status='RETRYABLE_ERROR'
+            WHERE account_id=$1 AND job_id=$2 AND id=$3 AND status_version=$4 AND status=$6
             RETURNING status,status_version`,
-          [value.accountId, value.jobId, value.itemId, value.expectedStatusVersion, toStatus]);
+          [value.accountId, value.jobId, value.itemId, value.expectedStatusVersion, toStatus, sourceStatus]);
         if (updated?.rowCount !== 1 || updated.rows[0].status !== toStatus
           || updated.rows[0].status_version !== nextVersion) throw conflict();
         const details = Object.freeze({
           idempotencyKeyHash: idempotencyHash,
           requestedStatusVersion: value.expectedStatusVersion,
-          recoveryPoint: row.recovery_point,
+          sourceStatus,
+          recoveryPoint,
           messages: messageEvidence(messages),
         });
         const event = await safeQuery(client,
           `INSERT INTO auto_listing_events (
              id,account_id,job_id,item_id,actor_account_id,from_status,to_status,event_type,
              correlation_id,details,transition_version
-           ) VALUES ($1,$2,$3,$4,$2,'RETRYABLE_ERROR',$5,$6,$7,$8::JSONB,$9)
+           ) VALUES ($1,$2,$3,$4,$2,$5,$6,$7,$8,$9::JSONB,$10)
            RETURNING id`,
-          [eventId, value.accountId, value.jobId, value.itemId, toStatus,
-            row.recovery_point === "PLANNING" ? "RETRY_PLANNING" : "RETRY_GENERATION",
+          [eventId, value.accountId, value.jobId, value.itemId, sourceStatus, toStatus,
+            recoveryPoint === "PLANNING" ? "RETRY_PLANNING" : "RETRY_GENERATION",
             correlationId, JSON.stringify(details), nextVersion]);
         if (event?.rowCount !== 1) throw conflict();
         for (const message of messages) await insertOutbox(client, value, message);
         await safeQuery(client, "COMMIT");
         committed = true;
         return Object.freeze({
-          status: toStatus, statusVersion: nextVersion, recoveryPoint: row.recovery_point,
+          status: toStatus, statusVersion: nextVersion, recoveryPoint,
           enqueued: messages.length, duplicate: false,
         });
       } catch (error) {

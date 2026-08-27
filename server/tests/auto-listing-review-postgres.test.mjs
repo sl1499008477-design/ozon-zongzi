@@ -26,15 +26,16 @@ function mainRow(overrides = {}) {
   };
 }
 
-function asset(index, role = index === 0 ? "MAIN" : "SELLING_POINT") {
+function asset(index, role = index === 0 ? "MAIN" : "SELLING_POINT", visualGroupKey = "group-a") {
   return {
-    id: `asset-${index + 1}`, account_id: "account-a", visual_group_key: "group-a", role, slot_key: `slot-${index + 1}`,
+    id: `asset-${visualGroupKey}-${index + 1}`, account_id: "account-a", visual_group_key: visualGroupKey,
+    role, slot_key: `${visualGroupKey}:slot-${index + 1}`,
     object_key: `private/${index + 1}.png`, content_type: "image/png", content_hash: String(index + 1).repeat(64),
   };
 }
 
 function scripted({ row = mainRow(), assets = Array.from({ length: 6 }, (_, index) => asset(index)), rich = {
-  account_id: "account-a", status: "ACCEPTED", rich_content: {
+  account_id: "account-a", status: "ACCEPTED", group_key: "group-a", rich_content: {
     version: "AUTO_LISTING_RICH_CONTENT_V1", language: "ru",
     blocks: [{ type: "HEADING", text: "Новый заголовок" },
       { type: "IMAGE_TEXT", assetId: "asset-1", text: "Текст рядом с изображением" },
@@ -51,7 +52,10 @@ function scripted({ row = mainRow(), assets = Array.from({ length: 6 }, (_, inde
       calls.push({ sql, values });
       if (/FROM auto_listing_job_items AS item/i.test(sql)) return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
       if (/FROM ai_generation_assets AS asset/i.test(sql)) return { rows: assets, rowCount: assets.length };
-      if (/FROM ai_rich_content_results AS rich/i.test(sql)) return { rows: rich ? [rich] : [], rowCount: rich ? 1 : 0 };
+      if (/FROM ai_rich_content_results AS rich/i.test(sql)) {
+        const rows = Array.isArray(rich) ? rich : rich ? [rich] : [];
+        return { rows, rowCount: rows.length };
+      }
       if (/FROM auto_listing_events AS event/i.test(sql)) return { rows: events, rowCount: events.length };
       throw new Error(`unexpected SQL: ${sql}`);
     },
@@ -70,7 +74,7 @@ test("review repository reads one account-scoped repeatable snapshot and returns
   assert.deepEqual(evidence.item.price, price);
   assert.equal(evidence.images.length, 6);
   assert.equal(evidence.images[0].visualGroupKey, "group-a");
-  assert.equal(evidence.images[0].publicUrl, "/auto-listing/items/item-a/assets/asset-1");
+  assert.equal(evidence.images[0].publicUrl, "/auto-listing/items/item-a/assets/asset-group-a-1");
   assert.equal(evidence.richContent.previewText, "Новый заголовок\nТекст рядом с изображением\nОписание");
   assert.deepEqual(db.control, ["BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", "COMMIT"]);
   assert.match(db.calls[0].sql, /JOIN auto_listing_jobs AS job[\s\S]*job\.account_id=item\.account_id/u);
@@ -80,8 +84,77 @@ test("review repository reads one account-scoped repeatable snapshot and returns
   assert.match(db.calls[0].sql, /plan\.id=item\.active_content_plan_id/u);
   assert.match(db.calls[0].sql, /JOIN auto_listing_listing_bases AS base[\s\S]*base\.source_snapshot_id=item\.snapshot_id/u);
   assert.match(db.calls.find((call) => /FROM ai_generation_assets AS asset/i.test(call.sql)).sql, /visual_group_key/u);
+  assert.match(db.calls.find((call) => /FROM ai_generation_assets AS asset/i.test(call.sql)).sql,
+    /expected_status_version DESC NULLS LAST/u);
   for (const call of db.calls) assert.equal(call.values[0], "account-a");
   assert.doesNotMatch(JSON.stringify(evidence), /object_key|private\//i);
+});
+
+test("review repository exposes only planned role substitutions and third-attempt warning codes", async () => {
+  const rows = Array.from({ length: 6 }, (_, index) => asset(index));
+  Object.assign(rows[1], {
+    role: "DETAIL",
+    requested_role: "SPECIFICATION",
+    substitution_reason_code: "PRODUCT_DIMENSIONS_UNAVAILABLE",
+    attempt_no: 3,
+    prompt_template_version: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    checker_result: { checkerResult: { reasons: ["AUTO_LISTING_MANUAL_REVIEW_WARNING:SUBJECT_NOT_DOMINANT"] } },
+  });
+  Object.assign(rows[2], {
+    attempt_no: 1,
+    prompt_template_version: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    checker_result: { checkerResult: { reasons: ["AUTO_LISTING_MANUAL_REVIEW_WARNING:LABEL_OVERLAP"] } },
+  });
+  const db = scripted({ assets: rows });
+
+  const evidence = await createPostgresAutoListingReviewRepository({ pool: db.pool })
+    .loadReviewEvidence({ accountId: "account-a", itemId: "item-a" });
+
+  assert.deepEqual(evidence.images[1], {
+    accountId: "account-a",
+    id: "asset-group-a-2",
+    visualGroupKey: "group-a",
+    role: "DETAIL",
+    requestedRole: "SPECIFICATION",
+    substitutionReasonCode: "PRODUCT_DIMENSIONS_UNAVAILABLE",
+    manualReviewWarnings: ["SUBJECT_NOT_DOMINANT"],
+    slotKey: "group-a:slot-2",
+    accepted: true,
+    publicUrl: "/auto-listing/items/item-a/assets/asset-group-a-2",
+  });
+  assert.deepEqual(evidence.images[2].manualReviewWarnings, []);
+  const sql = db.calls.find((call) => /FROM ai_generation_assets AS asset/i.test(call.sql)).sql;
+  assert.match(sql, /planned_slot->>'requestedRole' AS requested_role/iu);
+  assert.match(sql, /asset\.checker_result/iu);
+  assert.match(sql, /asset\.attempt_no/iu);
+});
+
+test("review preview includes every visual group's accepted rich content", async () => {
+  const row = mainRow({ visual_groups: { groups: [
+    { visualGroupKey: "group-a", referenceImages: [{ assetId: "source-a" }] },
+    { visualGroupKey: "group-b", referenceImages: [{ assetId: "source-b" }] },
+  ] } });
+  const rich = [
+    { group_key: "group-a", rich_content: { blocks: [{ type: "TEXT", text: "Описание A" }] } },
+    { group_key: "group-b", rich_content: { blocks: [{ type: "TEXT", text: "Описание B" }] } },
+  ];
+  const assets = [
+    ...Array.from({ length: 6 }, (_, index) => asset(index, index === 0 ? "MAIN" : "SELLING_POINT", "group-a")),
+    ...Array.from({ length: 6 }, (_, index) => asset(index, index === 0 ? "MAIN" : "SELLING_POINT", "group-b")),
+  ];
+  const db = scripted({ row, rich, assets });
+  const evidence = await createPostgresAutoListingReviewRepository({ pool: db.pool })
+    .loadReviewEvidence({ accountId: "account-a", itemId: "item-a" });
+  assert.equal(evidence.richContent.previewText, "商品组 1\nОписание A\n\n商品组 2\nОписание B");
+  const richSql = db.calls.find((call) => /FROM ai_rich_content_results AS rich/i.test(call.sql)).sql;
+  assert.match(richSql, /DISTINCT ON \(group_key\)/iu);
+  assert.match(richSql, /group_count=1/iu);
+
+  const missingGroupImages = scripted({ row, rich, assets: assets.filter((image) => image.visual_group_key === "group-a") });
+  await assert.rejects(createPostgresAutoListingReviewRepository({ pool: missingGroupImages.pool })
+    .loadReviewEvidence({ accountId: "account-a", itemId: "item-a" }), {
+    code: "AUTO_LISTING_REVIEW_NOT_READY",
+  });
 });
 
 test("review store label falls back from blank label to company name", async () => {

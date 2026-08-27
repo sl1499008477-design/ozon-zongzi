@@ -369,6 +369,53 @@ function normalizeRichContentWidget(raw) {
   return { widgetName, type, blocks };
 }
 
+function exactRichKeys(value, keys) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function normalizeRichV03Text(value) {
+  if (!exactRichKeys(value, ["content"]) || !Array.isArray(value.content)
+    || value.content.length < 1 || value.content.length > 16) return null;
+  const content = value.content.map((entry) => cleanText(entry, 8_192));
+  return content.every(Boolean) ? { content } : null;
+}
+
+function normalizeRichV03Image(value) {
+  if (!exactRichKeys(value, ["src", "srcMobile"])) return null;
+  const src = cleanText(value.src, 8_192);
+  const srcMobile = cleanText(value.srcMobile, 8_192);
+  return src && srcMobile ? { src, srcMobile } : null;
+}
+
+function normalizeRichV03Widget(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.widgetName === "raTextBlock") {
+    const field = Object.hasOwn(value, "title") ? "title" : Object.hasOwn(value, "text") ? "text" : null;
+    if (!field || !exactRichKeys(value, ["widgetName", field])) return null;
+    const text = normalizeRichV03Text(value[field]);
+    return text ? { widgetName: "raTextBlock", [field]: text } : null;
+  }
+  if (value.widgetName !== "raShowcase" || value.type !== "billboard"
+    || !exactRichKeys(value, ["widgetName", "type", "blocks"])
+    || !Array.isArray(value.blocks) || value.blocks.length < 1 || value.blocks.length > 3) return null;
+  const blocks = value.blocks.map((block) => {
+    const hasTitle = block && Object.hasOwn(block, "title");
+    if (!exactRichKeys(block, hasTitle ? ["img", "title"] : ["img"])) return null;
+    const img = normalizeRichV03Image(block.img);
+    const title = hasTitle ? normalizeRichV03Text(block.title) : null;
+    return img && (!hasTitle || title) ? { img, ...(hasTitle ? { title } : {}) } : null;
+  });
+  return blocks.every(Boolean) ? { widgetName: "raShowcase", type: "billboard", blocks } : null;
+}
+
+function normalizeRichContentV03(parsed) {
+  if (!exactRichKeys(parsed, ["content", "version"]) || parsed.version !== 0.3
+    || !Array.isArray(parsed.content) || parsed.content.length < 1 || parsed.content.length > 20) return null;
+  const content = parsed.content.map(normalizeRichV03Widget);
+  return content.every(Boolean) ? { content, version: 0.3 } : null;
+}
+
 function normalizeRichContentValue(value) {
   const text = cleanText(value, 0);
   if (!text) return "";
@@ -379,6 +426,8 @@ function normalizeRichContentValue(value) {
     return "";
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+  const v03 = normalizeRichContentV03(parsed);
+  if (v03) return JSON.stringify(v03);
   const widget = normalizeRichContentWidget(parsed) ||
     asArray(parsed.content).map(normalizeRichContentWidget).find(Boolean);
   return widget ? JSON.stringify(widget) : "";
@@ -1227,7 +1276,7 @@ async function normalizeOneImportItem(item, ctx) {
 
   const normalized = {
     offer_id: cleanText(item.offer_id || item.offerId || `jz-${item.scraped_sku || Date.now()}`),
-    name: cleanText(firstFilled(item.name, sourceAttributeText(item, 4180), item.scraped_sku), 200),
+    name: cleanText(firstFilled(item.name, item.title, sourceAttributeText(item, 4180), item.scraped_sku), 200),
     price: cleanText(item.price),
     old_price: cleanText(item.old_price || item.oldPrice),
     min_price: parseSourceNumber(item.min_price || item.minPrice) > 0 ? cleanText(item.min_price || item.minPrice) : undefined,

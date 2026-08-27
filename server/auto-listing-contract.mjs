@@ -29,6 +29,7 @@ const IMAGE_OPTIONS = {
   quality: ["Low", "Medium", "High", "Ultra"],
   language: ["ru"],
 };
+const BRAND_MODES = new Set(["PREFER_SOURCE", "FORCE_NO_BRAND"]);
 
 const ROLE_RANGES = {
   main: [1, 1],
@@ -46,10 +47,10 @@ const DEFAULT_IMAGE = {
   language: "ru",
   roles: {
     main: 1,
-    sellingPoint: 3,
+    sellingPoint: 2,
     detail: 1,
     scene: 1,
-    specification: 1,
+    specification: 0,
     infographic: 1,
   },
 };
@@ -71,7 +72,7 @@ const FORBIDDEN_CLIENT_FIELDS = new Set([
   "hasReliableProductDimensions",
 ]);
 
-const CONFIG_KEYS = new Set(["targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplierMicros", "image"]);
+const CONFIG_KEYS = new Set(["targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplierMicros", "brandMode", "image"]);
 const IMAGE_KEYS = new Set(["ratio", "resolution", "quality", "language", "roles", "total"]);
 
 const POSTGRES_BIGINT_MIN = -9_223_372_036_854_775_808n;
@@ -208,6 +209,10 @@ export function normalizeAutoListingConfig(rawConfig = {}) {
       total,
     },
   };
+  if (rawConfig.brandMode !== undefined) {
+    if (!BRAND_MODES.has(rawConfig.brandMode)) throw contractError("AUTO_LISTING_CONFIG_INVALID");
+    config.brandMode = rawConfig.brandMode;
+  }
   if (rawConfig.priceMultiplierMicros !== undefined) {
     config.priceMultiplierMicros = positiveIntegerString(rawConfig.priceMultiplierMicros);
   }

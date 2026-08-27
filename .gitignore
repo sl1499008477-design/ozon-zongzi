@@ -1,6 +1,7 @@
 node_modules/
 .pnpm-store/
 .worktrees/
+.superpowers/
 .env
 .env.local
 /.env.sub2api-local-*.bak

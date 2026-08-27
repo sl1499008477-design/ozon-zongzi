@@ -16,6 +16,8 @@ const TEXT_DENSITIES = new Set(["NONE", "LIGHT", "MEDIUM", "HEAVY"]);
 const MAX_RAW_BYTES = 256 * 1024;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const MAX_REQUEST_IMAGE_BYTES = 64 * 1024 * 1024;
+const MAX_REPRESENTATIVE_SAMPLE_MAINS = 8;
+const MAX_REPRESENTATIVE_IMAGES = 10;
 const MAX_AI_TEXT_LENGTH = 500;
 const MAX_AI_PATTERN_ITEMS = 10;
 
@@ -123,6 +125,24 @@ function safeGuidance() {
       textDensity: "NONE", layout: "manual review required",
     }])),
   });
+}
+
+function representativeImages(samples) {
+  const mainCount = Math.min(samples.length, MAX_REPRESENTATIVE_SAMPLE_MAINS);
+  const selectedSamples = mainCount === samples.length
+    ? samples
+    : Array.from({ length: mainCount }, (_, index) => samples[
+      Math.round(index * (samples.length - 1) / (mainCount - 1))
+    ]);
+  const selected = selectedSamples.map((sample) => ({ sample, image: sample.images[0] }));
+  const detailSamples = selectedSamples.length > 1
+    ? [selectedSamples[0], selectedSamples.at(-1)]
+    : selectedSamples;
+  for (const sample of detailSamples) {
+    const image = sample.images.find((candidate) => candidate.role === "DETAIL");
+    if (image && selected.length < MAX_REPRESENTATIVE_IMAGES) selected.push({ sample, image });
+  }
+  return selected;
 }
 
 function evidenceDto(raw, accountId, draftId) {
@@ -453,17 +473,15 @@ export function createCategoryStrategyAnalyzer(rawOptions = {}) {
           const loadedImages = [];
           let totalImageBytes = 0;
           try {
-            for (const sample of evidence.samples) {
-              for (const image of sample.images) {
-                const bytes = await objectStorage.readObjectExpected({ accountId,
-                  key: image.analysisObjectKey, expectedSha256: image.analysisContentHash,
-                  maxBytes: MAX_IMAGE_BYTES });
-                totalImageBytes += Buffer.byteLength(bytes);
-                if (totalImageBytes > MAX_REQUEST_IMAGE_BYTES) throw new Error("image budget exceeded");
-                loadedImages.push(deepFreeze({ evidenceId: image.evidenceId, sampleId: sample.sampleId,
-                  sku: sample.sku, role: image.role, ordinal: image.ordinal, contentType: image.contentType,
-                  bytesBase64: Buffer.from(bytes).toString("base64") }));
-              }
+            for (const { sample, image } of representativeImages(evidence.samples)) {
+              const bytes = await objectStorage.readObjectExpected({ accountId,
+                key: image.analysisObjectKey, expectedSha256: image.analysisContentHash,
+                maxBytes: MAX_IMAGE_BYTES });
+              totalImageBytes += Buffer.byteLength(bytes);
+              if (totalImageBytes > MAX_REQUEST_IMAGE_BYTES) throw new Error("image budget exceeded");
+              loadedImages.push(deepFreeze({ evidenceId: image.evidenceId, sampleId: sample.sampleId,
+                sku: sample.sku, role: image.role, ordinal: image.ordinal, contentType: image.contentType,
+                bytesBase64: Buffer.from(bytes).toString("base64") }));
             }
           } catch { preflightSafeCode = "AUTO_LISTING_CATEGORY_STRATEGY_AI_EVIDENCE_NOT_READY"; }
           if (preflightSafeCode === null) {

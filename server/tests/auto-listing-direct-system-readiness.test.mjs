@@ -66,7 +66,7 @@ test("verified DIRECT readiness checks the account, one capable AI profile and a
   const db = pool();
   const readiness = createAutoListingDirectSystemReadiness({
     env, resolvePool: async () => db,
-    richContentContractVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V1",
+    richContentContractVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V2",
   });
   assert.deepEqual(await readiness({ accountId: "account-a" }), { ready: true });
   assert.equal(db.calls.length, 3);
@@ -89,7 +89,7 @@ test("verified DIRECT readiness accepts an exact active encrypted connection wit
   })] });
   const readiness = createAutoListingDirectSystemReadiness({
     env: encryptedEnv, resolvePool: async () => db,
-    richContentContractVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V1",
+    richContentContractVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V2",
   });
   assert.deepEqual(await readiness({ accountId: "account-a" }), { ready: true });
   const profileRead = db.calls.find(({ sql }) => /FROM ai_gateway_profiles/u.test(sql));
@@ -106,7 +106,7 @@ test("DIRECT readiness fails closed for missing scope, ambiguous/uncapable profi
   ]) {
     const readiness = createAutoListingDirectSystemReadiness({
       env, resolvePool: async () => fixture,
-      richContentContractVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V1",
+      richContentContractVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V2",
     });
     await assert.rejects(readiness({ accountId: "account-a" }), {
       code: "AUTO_LISTING_DIRECT_SYSTEM_HEALTH_NOT_READY",

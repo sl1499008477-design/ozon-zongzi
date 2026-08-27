@@ -18,6 +18,26 @@ assert.equal(Object.isFrozen(success), true);
 assert.equal(Object.isFrozen(success.items), true);
 assert.equal(Object.isFrozen(success.items[0].response), true);
 
+const importedWithWarnings = deriveOzonImportStatus({ result: { items: [{
+  offer_id: "offer-1", product_id: 101, status: "imported",
+  errors: [{ code: "erased_attribute_value", field: "", attribute_id: 11254,
+    level: "warning", message: "Ozon corrected an optional attribute" }],
+}] } }, { expectedOfferIds: ["offer-1"] });
+assert.equal(importedWithWarnings.status, "SUCCEEDED");
+assert.equal(importedWithWarnings.done, true);
+assert.equal(importedWithWarnings.success, 1);
+assert.equal(importedWithWarnings.items[0].productId, "101");
+
+const importedWithImageError = deriveOzonImportStatus({ result: { items: [{
+  offer_id: "offer-1", product_id: 101, status: "imported",
+  errors: [{ code: "all_image_failed", field: "pictures", attribute_id: 0,
+    level: "error", message: "image download failed" }],
+}] } }, { expectedOfferIds: ["offer-1"] });
+assert.equal(importedWithImageError.status, "FAILED");
+assert.equal(importedWithImageError.done, true);
+assert.equal(importedWithImageError.failed, 1);
+assert.equal(importedWithImageError.items[0].productId, "");
+
 for (const productId of [
   0, -1, 1.5, Number.NaN, undefined, "", " ", "0", "01",
   Number.MAX_SAFE_INTEGER + 1, String(Number.MAX_SAFE_INTEGER + 1), {}, [],

@@ -226,7 +226,6 @@ export function createCategoryStrategyAnalysisAiAdapter({ pool, getGateway } = {
         jsonSchema: analysisSchema(evidenceIds),
         correlationId: attemptId,
         requestKey: request.requestKey,
-        timeoutMs: 300_000,
       });
       if (!response || typeof response !== "object" || !Object.hasOwn(response, "value")) {
         throw failure("AUTO_LISTING_CATEGORY_STRATEGY_AI_OUTPUT_INVALID", 502, true);

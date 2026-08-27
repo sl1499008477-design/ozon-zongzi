@@ -9,10 +9,20 @@ function frozenConfig() {
     targetStoreId: "store-1",
     targetWarehouseId: "warehouse-1",
     stock: 5,
+    image: {
+      roles: {
+        main: 1,
+        sellingPoint: 3,
+        detail: 1,
+        scene: 1,
+        specification: 1,
+        infographic: 1,
+      },
+    },
   });
 }
 
-function sourceCapture(productMeasurements = {}) {
+function sourceCapture(productMeasurements = {}, attributes = []) {
   return buildAutoListingSourceSnapshot({
     accountId: "account-1",
     sourceType: "COLLECT_BOX",
@@ -59,7 +69,7 @@ function sourceCapture(productMeasurements = {}) {
           target: { storeId: "store-1", descriptionCategoryId: "123", typeId: "456" },
           source: { path: ["root"] },
         },
-        attributes: [],
+        attributes,
         logistics: {},
         productMeasurements,
         blackKopecks: "10000",
@@ -72,7 +82,7 @@ function sourceCapture(productMeasurements = {}) {
   });
 }
 
-test("requested specification image without trusted dimensions reduces only that role", () => {
+test("requested specification image without trusted dimensions preserves the requested count for planning", () => {
   const frozen = frozenConfig();
   const result = deriveEffectiveAutoListingImageConfig({
     configSnapshot: frozen.config,
@@ -84,10 +94,10 @@ test("requested specification image without trusted dimensions reduces only that
     sellingPoint: 3,
     detail: 1,
     scene: 1,
-    specification: 0,
+    specification: 1,
     infographic: 1,
   });
-  assert.equal(result.total, 7);
+  assert.equal(result.total, 8);
   assert.deepEqual(result.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
 });
 
@@ -112,7 +122,35 @@ test("valid effective image configuration preserves exact counts in a recursivel
   assert.equal(Object.isFrozen(result.reasonCodes), true);
 });
 
-test("recognized dimensions with unknown measurement fields are conservatively unavailable", () => {
+test("trusted product attributes keep the requested specification image when dimensions are unavailable", () => {
+  const frozen = frozenConfig();
+  const result = deriveEffectiveAutoListingImageConfig({
+    configSnapshot: frozen.config,
+    configHash: frozen.configHash,
+    sourceCapture: sourceCapture({}, [
+      { id: 8145, name: "Мощность, Вт", value: "80", values: ["80"], required: false, dictionaryId: 0, multiple: false },
+    ]),
+  });
+  assert.equal(result.roles.specification, 1);
+  assert.equal(result.total, 8);
+  assert.deepEqual(result.reasonCodes, []);
+});
+
+test("descriptions and other non-product-fact attributes record a gap without reducing the request", () => {
+  const frozen = frozenConfig();
+  const result = deriveEffectiveAutoListingImageConfig({
+    configSnapshot: frozen.config,
+    configHash: frozen.configHash,
+    sourceCapture: sourceCapture({}, [
+      { id: 4191, name: "Описание", value: "marketing copy", values: ["marketing copy"], required: false, dictionaryId: 0, multiple: false },
+    ]),
+  });
+  assert.equal(result.roles.specification, 1);
+  assert.equal(result.total, 8);
+  assert.deepEqual(result.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
+});
+
+test("unknown measurement fields record unavailable evidence without reducing the request", () => {
   const frozen = frozenConfig();
   const result = deriveEffectiveAutoListingImageConfig({
     configSnapshot: frozen.config,
@@ -130,9 +168,9 @@ test("recognized dimensions with unknown measurement fields are conservatively u
     sellingPoint: 3,
     detail: 1,
     scene: 1,
-    specification: 0,
+    specification: 1,
     infographic: 1,
   });
-  assert.equal(result.total, 7);
+  assert.equal(result.total, 8);
   assert.deepEqual(result.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
 });

@@ -34,6 +34,7 @@ function fixture(overrides = {}) {
     visualGroups: [{ key: "group-a", sourceAssetIds: ["source-a"] }],
     images: [{
       accountId: "account-a", id: "image-a", visualGroupKey: "group-a", role: "MAIN", slotKey: "main-1", accepted: true,
+      requestedRole: "MAIN", substitutionReasonCode: null, manualReviewWarnings: [],
       publicUrl: "https://cdn.example/generated.jpg", objectKey: "private/object/key",
       checkerEvidence: { raw: "private reasoning" }, requestBody: "private",
     }],
@@ -73,6 +74,8 @@ test("returns the closed ordinary-user review DTO and omits internal evidence", 
     visualGroups: [{ key: "group-a", sourceAssetIds: ["source-a"] }],
     images: [{
       id: "image-a", visualGroupKey: "group-a", role: "MAIN", roleLabel: "主图", slotKey: "main-1",
+      requestedRole: "MAIN", requestedRoleLabel: "主图", substitutionReasonCode: null,
+      substitutionReasonLabel: "", manualReviewWarnings: [], manualReviewWarningLabels: [],
       accepted: true, url: "https://cdn.example/generated.jpg",
     }],
     richContent: { accepted: true, previewText: "Новый текст" },
@@ -82,6 +85,28 @@ test("returns the closed ordinary-user review DTO and omits internal evidence", 
   });
   const serialized = JSON.stringify(view);
   assert.doesNotMatch(serialized, /objectKey|checker|reasoning|requestBody|requestId|internalDocument|metadata|private/i);
+});
+
+test("review DTO explains a substituted role and manual-review warning in ordinary language", () => {
+  const value = createAutoListingReviewView(fixture({
+    images: [{
+      ...fixture().images[0],
+      role: "DETAIL",
+      requestedRole: "SPECIFICATION",
+      substitutionReasonCode: "PRODUCT_DIMENSIONS_UNAVAILABLE",
+      manualReviewWarnings: ["SUBJECT_NOT_DOMINANT", "LABEL_READABILITY_LOW"],
+    }],
+  }));
+
+  assert.deepEqual(value.images[0], {
+    id: "image-a", visualGroupKey: "group-a", role: "DETAIL", roleLabel: "细节图", slotKey: "main-1",
+    requestedRole: "SPECIFICATION", requestedRoleLabel: "产品实拍图",
+    substitutionReasonCode: "PRODUCT_DIMENSIONS_UNAVAILABLE",
+    substitutionReasonLabel: "历史任务缺少可信参数，已改用细节图",
+    manualReviewWarnings: ["SUBJECT_NOT_DOMINANT", "LABEL_READABILITY_LOW"],
+    manualReviewWarningLabels: ["商品主体不够突出", "标签在缩略图下不易阅读"],
+    accepted: true, url: "https://cdn.example/generated.jpg",
+  });
 });
 
 test("preserves a native CNY price in the review contract", () => {
@@ -110,6 +135,36 @@ test("includes exact multiplier evidence in the safe review price", () => {
   assert.equal(value.price.preMultiplierPriceKopecks, "14600");
   assert.equal(value.price.priceMultiplierMicros, "1250000");
   assert.equal(value.price.finalPriceKopecks, "18250");
+});
+
+test("renders all 72 accepted images for an eleven-variant review", () => {
+  const visualGroups = Array.from({ length: 11 }, (_, index) => ({
+    key: `group-${index + 1}`,
+    sourceAssetIds: [`source-${index + 1}`],
+  }));
+  const roles = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "INFOGRAPHIC", "SELLING_POINT"];
+  const images = visualGroups.flatMap((group, groupIndex) => {
+    const count = groupIndex < 6 ? 7 : 6;
+    return Array.from({ length: count }, (_, imageIndex) => ({
+      accountId: "account-a",
+      id: `image-${groupIndex + 1}-${imageIndex + 1}`,
+      visualGroupKey: group.key,
+      role: roles[imageIndex % roles.length],
+      slotKey: `slot-${groupIndex + 1}-${imageIndex + 1}`,
+      accepted: true,
+      publicUrl: `https://cdn.example/generated-${groupIndex + 1}-${imageIndex + 1}.jpg`,
+    }));
+  });
+
+  const value = createAutoListingReviewView(fixture({
+    item: { ...fixture().item, variantCount: 11 },
+    visualGroups,
+    images,
+  }));
+
+  assert.equal(images.length, 72);
+  assert.equal(value.images.length, 72);
+  assert.equal(value.target.imageCount, 72);
 });
 
 test("rejects every cross-account component instead of filtering it silently", () => {

@@ -43,6 +43,7 @@ const slots = slotSpecs.map(([, role, slotKey]) => ({
   visualGroupKey: "group-a",
   role,
   textDensity: "LIGHT",
+  claims: [{ text: "товар", claimType: "IDENTITY", sourceFactIds: ["fact.brand"] }],
   preserve: ["shape"],
   referenceAssetIds: [`source-${slotKey}`],
 }));
@@ -64,7 +65,7 @@ const plan = Object.freeze({
   profileId: profile.id,
   profileVersion: profile.configVersion,
   plannerModel: profile.textModel,
-  promptTemplateVersion: "image-v1",
+  promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V3",
   planHash: "c".repeat(64),
   sourceHash: "d".repeat(64),
   strategyHash: "e".repeat(64),
@@ -366,10 +367,99 @@ test("requires Russian prose while permitting only frozen brand, model, and clos
   assert.equal((await validation(allowed)).valid, true);
 });
 
+test("permits Latin product words when the current block cites the exact frozen fact", async () => {
+  const { validateRichContentDocument } = await richModule();
+  const identityFact = {
+    factId: "fact.identity.name",
+    field: "identity.name",
+    kind: "IDENTITY_NAME",
+    value: "Pragma Kelm",
+    numericValue: null,
+    unit: null,
+    sourcePath: "identity.name",
+  };
+  const documentAssets = Array.from({ length: 6 }, (_, index) => ({
+    id: `identity-asset-${index + 1}`,
+    ...scope,
+    status: "ACCEPTED",
+    role: index === 0 ? "MAIN" : "SELLING_POINT",
+    visualGroupKey: "group-a",
+  }));
+  const factBinding = {
+    sourceFactId: identityFact.factId,
+    field: identityFact.field,
+    value: identityFact.value,
+    numericValue: null,
+    unit: null,
+  };
+
+  const result = validateRichContentDocument({
+    scope,
+    factRegistry: [identityFact],
+    acceptedAssets: documentAssets,
+    richContent: {
+      version: "AUTO_LISTING_RICH_CONTENT_V1",
+      language: "ru",
+      blocks: [
+        { type: "HERO_IMAGE", assetId: documentAssets[0].id },
+        { type: "HEADING", text: "Лампа Pragma Kelm", sourceFactIds: [identityFact.factId], factBindings: [factBinding] },
+        { type: "TEXT", text: "Модель Pragma Kelm", sourceFactIds: [identityFact.factId], factBindings: [factBinding] },
+      ],
+    },
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("permits package contents only when the current block cites the exact frozen fact", async () => {
+  const { validateRichContentDocument } = await richModule();
+  const packageFact = {
+    factId: "fact.package.contents",
+    field: "package.contents",
+    kind: "PACKAGE_CONTENTS",
+    value: "В комплекте кабель USB",
+    numericValue: null,
+    unit: null,
+    sourcePath: "package.contents",
+  };
+  const documentAssets = Array.from({ length: 6 }, (_, index) => ({
+    id: `package-asset-${index + 1}`,
+    ...scope,
+    status: "ACCEPTED",
+    role: index === 0 ? "MAIN" : "SELLING_POINT",
+    visualGroupKey: "group-a",
+  }));
+  const factBinding = {
+    sourceFactId: packageFact.factId,
+    field: packageFact.field,
+    value: packageFact.value,
+    numericValue: null,
+    unit: null,
+  };
+
+  const result = validateRichContentDocument({
+    scope,
+    factRegistry: [packageFact],
+    acceptedAssets: documentAssets,
+    richContent: {
+      version: "AUTO_LISTING_RICH_CONTENT_V1",
+      language: "ru",
+      blocks: [
+        { type: "HERO_IMAGE", assetId: documentAssets[0].id },
+        { type: "HEADING", text: packageFact.value, sourceFactIds: [packageFact.factId], factBindings: [factBinding] },
+        { type: "TEXT", text: packageFact.value, sourceFactIds: [packageFact.factId], factBindings: [factBinding] },
+      ],
+    },
+  });
+
+  assert.equal(result.valid, true);
+});
+
 test("rejects URLs, contacts, external promotion, reviews, and unsupported regulated or after-sales claims", async () => {
   for (const phrase of [
     "Подробнее https://example.test", "Пишите в Telegram", "Позвоните +7 999 123-45-67",
     "Оставьте отзыв", "Сертифицировано", "Лечебный эффект", "Гарантия 5 лет", "В комплекте чехол",
+    "Подарок чехол", "Бонус кабель",
   ]) {
     const content = validContent(); content.blocks[2].text = `Корпус из нержавеющей стали. ${phrase}`;
     await assertRejected(content);
@@ -444,6 +534,136 @@ test("builds a deterministic prompt from frozen facts and accepted asset evidenc
   assert.throws(() => buildRichContentPrompt(context()), (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
 });
 
+test("sends the model a machine-readable source-citation contract", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const { prompt } = buildRichContentPrompt(context({ profile, promptTemplateVersion: "rich-v1" }));
+  const rulesLine = prompt.split("\n").find((line) => line.startsWith("OUTPUT_RULES="));
+
+  assert.ok(rulesLine, "the gateway prompt must carry executable output rules");
+  assert.deepEqual(JSON.parse(rulesLine.slice("OUTPUT_RULES=".length)), {
+    validationPolicyVersion: "AUTO_LISTING_RICH_VALIDATION_V2",
+    sourceFactIdsUnique: true,
+    sourceFactIdMustBeExactListedFactId: true,
+    citeOnlyFactsExplicitlyStatedInText: true,
+    everyTextNumberAndUnitMatchesExactlyOneCitedFact: true,
+    everyCitedNumericFactAppearsInText: true,
+    unboundNumbersForbidden: true,
+    recommendedFactsPerTextBlock: 1,
+    discardOptionalBlocksWithoutCompleteFactEvidence: true,
+    discardOptionalImageTextWithDuplicateAsset: true,
+    imageTextAssetMustBeExactListedAssetId: true,
+    allReferencedAssetIdsUnique: true,
+    unlistedAssetIdsForbidden: true,
+  });
+});
+
+test("limits each visual-group prompt to facts explicitly assigned to that group", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const input = context({ profile, promptTemplateVersion: "rich-v1" });
+  const otherVariantFact = {
+    factId: "fact.variant.other",
+    field: "variants.name",
+    kind: "IDENTITY_NAME",
+    value: "Другой вариант 999 кг",
+    numericValue: null,
+    unit: null,
+    sourcePath: "variants.name",
+  };
+  input.factRegistry.push(structuredClone(otherVariantFact));
+  input.plan.factRegistry.push({ ...structuredClone(otherVariantFact), visualGroupKeys: ["group-b"] });
+
+  const { prompt } = buildRichContentPrompt(input);
+
+  assert.match(prompt, /fact\.brand|нержавеющая сталь/u);
+  assert.doesNotMatch(prompt, /fact\.variant\.other|Другой вариант|999 кг/u);
+});
+
+test("includes facts with no visual-group restriction in every visual-group prompt", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const input = context({ profile, promptTemplateVersion: "rich-v1" });
+  input.plan.factRegistry = input.plan.factRegistry.map((fact) => ({
+    ...fact,
+    visualGroupKeys: [],
+  }));
+
+  const { prompt } = buildRichContentPrompt(input);
+
+  assert.match(prompt, /fact\.brand|нержавеющая сталь|500 мл/u);
+});
+
+test("rich-content evidence normalizes non-authoritative accepted image review metadata", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const embeddedFact = {
+    factId: "fact.identity.name", field: "variants.name", kind: "IDENTITY_NAME",
+    value: "Терморегулятор до 3500Вт Для теплого пола", numericValue: null, unit: null,
+    sourcePath: "variants.name",
+  };
+  const withReasons = structuredClone(assets);
+  for (const acceptedAsset of withReasons) acceptedAsset.checkerEvidence.sourceFacts.push(structuredClone(embeddedFact));
+  withReasons[0].checkerEvidence.checkerResult.reasons = ["商品主体、文案和质量均已核对通过。"];
+  withReasons[0].checkerEvidence.checkerResult.evidence.claims = [{
+    text: embeddedFact.value, sourceFactId: embeddedFact.factId, field: embeddedFact.field,
+    value: embeddedFact.value, numericValue: 3500, unit: "Вт",
+  }];
+  withReasons[0].checkerEvidence.checkerResult.evidence.detectedTexts = [embeddedFact.value];
+  withReasons[0].checkerEvidence.sourceFactIds = [embeddedFact.factId];
+  withReasons[0].checkerEvidence.checkerResult.claimsVerified = false;
+  const withoutReasons = structuredClone(withReasons);
+  withoutReasons[0].checkerEvidence.checkerResult.reasons = [];
+  withoutReasons[0].checkerEvidence.checkerResult.claimsVerified = true;
+  withoutReasons[0].checkerEvidence.checkerResult.evidence.claims[0].numericValue = null;
+  withoutReasons[0].checkerEvidence.checkerResult.evidence.claims[0].unit = null;
+
+  const makeInput = (acceptedAssets) => {
+    const input = context({ acceptedAssets });
+    input.factRegistry.push(structuredClone(embeddedFact));
+    input.plan.factRegistry.push({ ...structuredClone(embeddedFact), visualGroupKeys: ["group-a"] });
+    input.profile = structuredClone(profile);
+    input.promptTemplateVersion = "rich-v1";
+    return input;
+  };
+
+  const expected = buildRichContentPrompt(makeInput(withoutReasons));
+  const actual = buildRichContentPrompt(makeInput(withReasons));
+  assert.deepEqual(actual, expected);
+});
+
+test("keeps accepted legacy checker facts immutable while deriving numeric rich facts", async () => {
+  const { generateRichContent } = await richModule();
+  const powerFact = {
+    factId: "fact.attribute.power",
+    kind: "ATTRIBUTE:power",
+    value: "Мощность, Вт: 80",
+    sourcePath: "attributes.power",
+  };
+  const legacyCheckerPowerFact = {
+    ...powerFact,
+    field: powerFact.sourcePath,
+    numericValue: null,
+    unit: null,
+  };
+  const acceptedAssets = structuredClone(assets);
+  for (const acceptedAsset of acceptedAssets) {
+    acceptedAsset.checkerEvidence.sourceFacts.push(structuredClone(legacyCheckerPowerFact));
+  }
+  const input = context({ acceptedAssets });
+  input.factRegistry.push(structuredClone(powerFact));
+  input.plan.factRegistry.push({ ...structuredClone(powerFact), visualGroupKeys: ["group-a"] });
+  input.profile = structuredClone(profile);
+  input.promptTemplateVersion = "rich-v1";
+  const repo = repository({ reserve: { status: "IN_PROGRESS" } });
+  input.repository = repo;
+  input.gateway = { async createTextResponse() { throw new Error("gateway must not run"); } };
+
+  await assert.rejects(generateRichContent(input), (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_IN_PROGRESS");
+  const reservation = repo.calls[0][1];
+  const outerPower = reservation.sourceFactEvidence.find((fact) => fact.factId === powerFact.factId);
+  const nestedPower = reservation.assetEvidence[0].checkerEvidence.sourceFacts.find((fact) => fact.factId === powerFact.factId);
+
+  assert.deepEqual({ numericValue: outerPower.numericValue, unit: outerPower.unit }, { numericValue: 80, unit: "w" });
+  assert.deepEqual({ numericValue: nestedPower.numericValue, unit: nestedPower.unit }, { numericValue: null, unit: null });
+});
+
 test("rich-content input rejects shallow accepted assets that cannot replay the complete Task 4 contract", async () => {
   const { buildRichContentPrompt } = await richModule();
   const acceptedAssets = assets.map(({ id, status, accountId, jobId, itemId, planId, role, visualGroupKey, slotKey, attemptIdentityHash, attemptNo, inputHash, contentHash, objectKeyVersion, objectKey }) => ({
@@ -453,6 +673,238 @@ test("rich-content input rejects shallow accepted assets that cannot replay the 
     () => buildRichContentPrompt({ ...context({ acceptedAssets }), profile, promptTemplateVersion: "rich-v1" }),
     (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID",
   );
+});
+
+test("rich content trusts the semantic payload of structurally bound ACCEPTED image evidence", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const acceptedAssets = structuredClone(assets);
+  for (const acceptedAsset of acceptedAssets) {
+    acceptedAsset.checkerEvidence.checkerResult.evidence.presentationAudit = {
+      version: "future-checker-v1",
+      warnings: [],
+    };
+  }
+
+  assert.doesNotThrow(() => buildRichContentPrompt({
+    ...context({ acceptedAssets }), profile, promptTemplateVersion: "rich-v1",
+  }));
+
+  acceptedAssets[0].checkerEvidence.generatedHash = "0".repeat(64);
+  assert.throws(() => buildRichContentPrompt({
+    ...context({ acceptedAssets }), profile, promptTemplateVersion: "rich-v1",
+  }), (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
+});
+
+test("rich content accepts the frozen planner fact shape and binds a trusted number embedded in a product name", async () => {
+  const { buildRichContentPrompt, validateRichContentDocument } = await richModule();
+  const input = { ...context(), profile, promptTemplateVersion: "rich-v1" };
+  const plannerFacts = input.factRegistry.map(({ factId, kind, value, sourcePath }) => ({
+    factId, kind, value, sourcePath, visualGroupKeys: ["group-a"],
+  }));
+  input.factRegistry = structuredClone(plannerFacts);
+  input.plan.factRegistry = structuredClone(plannerFacts);
+
+  const prompt = buildRichContentPrompt(input);
+  assert.match(prompt.prompt, /"field":"attributes\.capacity"/u);
+  assert.match(prompt.prompt, /"numericValue":500/u);
+
+  const rawFact = {
+    factId: "fact.identity.name",
+    kind: "IDENTITY_NAME",
+    value: "Термостат до 3500Вт",
+    sourcePath: "identity.primaryName",
+    visualGroupKeys: ["group-a"],
+  };
+  const documentAssets = Array.from({ length: 6 }, (_, index) => ({
+    id: `document-asset-${index + 1}`,
+    ...scope,
+    status: "ACCEPTED",
+    role: index === 0 ? "MAIN" : "SELLING_POINT",
+    visualGroupKey: "group-a",
+  }));
+  const factBinding = {
+    sourceFactId: rawFact.factId,
+    field: rawFact.sourcePath,
+    value: rawFact.value,
+    numericValue: null,
+    unit: null,
+  };
+  const result = validateRichContentDocument({
+    scope,
+    factRegistry: [rawFact],
+    acceptedAssets: documentAssets,
+    richContent: {
+      version: "AUTO_LISTING_RICH_CONTENT_V1",
+      language: "ru",
+      blocks: [
+        { type: "HERO_IMAGE", assetId: documentAssets[0].id },
+        { type: "HEADING", text: rawFact.value, sourceFactIds: [rawFact.factId], factBindings: [factBinding] },
+        { type: "TEXT", text: rawFact.value, sourceFactIds: [rawFact.factId], factBindings: [factBinding] },
+      ],
+    },
+  });
+  assert.equal(result.valid, true);
+});
+
+test("binds a numeric attribute whose trusted unit is written before the value", async () => {
+  const { validateRichContentDocument } = await richModule();
+  const powerFact = {
+    factId: "fact.attribute.power",
+    kind: "ATTRIBUTE:power",
+    value: "Мощность, Вт: 80",
+    sourcePath: "attributes.power",
+  };
+  const documentAssets = Array.from({ length: 6 }, (_, index) => ({
+    id: `power-asset-${index + 1}`,
+    ...scope,
+    status: "ACCEPTED",
+    role: index === 0 ? "MAIN" : "SELLING_POINT",
+    visualGroupKey: "group-a",
+  }));
+  const binding = {
+    sourceFactId: powerFact.factId,
+    field: powerFact.sourcePath,
+    value: powerFact.value,
+    numericValue: 80,
+    unit: "w",
+  };
+
+  const result = validateRichContentDocument({
+    scope,
+    factRegistry: [powerFact],
+    acceptedAssets: documentAssets,
+    richContent: {
+      version: "AUTO_LISTING_RICH_CONTENT_V1",
+      language: "ru",
+      blocks: [
+        { type: "HERO_IMAGE", assetId: documentAssets[0].id },
+        { type: "HEADING", text: "Мощность 80 Вт", sourceFactIds: [powerFact.factId], factBindings: [binding] },
+        { type: "TEXT", text: "Фонарь мощностью 80 Вт", sourceFactIds: [powerFact.factId], factBindings: [binding] },
+      ],
+    },
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("permits an exact alphanumeric technical token proven by a cited frozen fact", async () => {
+  const { validateRichContentDocument } = await richModule();
+  const protectionFact = {
+    factId: "fact.attribute.protection",
+    field: "attributes.protection",
+    kind: "ATTRIBUTE:protection",
+    value: "Степень защиты от влаги и пыли: IP55",
+    numericValue: null,
+    unit: null,
+    sourcePath: "attributes.protection",
+  };
+  const documentAssets = Array.from({ length: 6 }, (_, index) => ({
+    id: `protection-asset-${index + 1}`,
+    ...scope,
+    status: "ACCEPTED",
+    role: index === 0 ? "MAIN" : "SELLING_POINT",
+    visualGroupKey: "group-a",
+  }));
+  const binding = {
+    sourceFactId: protectionFact.factId,
+    field: protectionFact.field,
+    value: protectionFact.value,
+    numericValue: null,
+    unit: null,
+  };
+
+  const result = validateRichContentDocument({
+    scope,
+    factRegistry: [protectionFact],
+    acceptedAssets: documentAssets,
+    richContent: {
+      version: "AUTO_LISTING_RICH_CONTENT_V1",
+      language: "ru",
+      blocks: [
+        { type: "HERO_IMAGE", assetId: documentAssets[0].id },
+        { type: "HEADING", text: "Степень защиты от влаги и пыли IP55", sourceFactIds: [protectionFact.factId], factBindings: [binding] },
+        { type: "TEXT", text: "Степень защиты от влаги и пыли IP55", sourceFactIds: [protectionFact.factId], factBindings: [binding] },
+      ],
+    },
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("rich content replays production image evidence whose attempt identity is fenced by item status version", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const expectedStatusVersion = 11;
+  const acceptedAssets = structuredClone(assets).map((acceptedAsset) => {
+    const slot = slots.find((candidate) => candidate.slotKey === acceptedAsset.slotKey);
+    const group = visualGroups.groups.find((candidate) => candidate.visualGroupKey === acceptedAsset.visualGroupKey);
+    const preliminaryEvidence = slot.referenceAssetIds.map((assetId) => {
+      const reference = group.referenceImages.find((entry) => entry.assetId === assetId);
+      return { assetId, evidenceKind: reference.evidenceKind, evidenceRefHash: reference.contentHash };
+    });
+    const versioned = {
+      ...acceptedAsset,
+      expectedStatusVersion,
+      attemptIdentityHash: buildImageGenerationAttemptIdentity({
+        scope: { ...scope, visualGroupKey: acceptedAsset.visualGroupKey, slotKey: acceptedAsset.slotKey,
+          expectedStatusVersion },
+        plan,
+        slot,
+        preliminaryEvidence,
+        profile,
+        imageModel: profile.imageModel,
+        ratio: "3:4",
+        resolution: "1K",
+        size: acceptedAsset.generationSize,
+        quality: "medium",
+        templateVersion: plan.promptTemplateVersion,
+        regeneration: null,
+      }),
+    };
+    versioned.objectKey = buildGeneratedAssetObjectKey(versioned);
+    return versioned;
+  });
+  assert.doesNotThrow(() => buildRichContentPrompt({
+    ...context({ acceptedAssets }), profile, promptTemplateVersion: "rich-v1",
+  }));
+});
+
+test("rich content treats the frozen variants.name source path as an internal field rather than a public domain", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const input = { ...context(), profile, promptTemplateVersion: "rich-v1" };
+  const selectedFactId = "fact.brand";
+  for (const fact of [
+    input.factRegistry.find((entry) => entry.factId === selectedFactId),
+    input.plan.factRegistry.find((entry) => entry.factId === selectedFactId),
+  ]) {
+    fact.field = "variants.name";
+    fact.sourcePath = "variants.name";
+  }
+  for (const acceptedAsset of input.acceptedAssets) {
+    const fact = acceptedAsset.checkerEvidence.sourceFacts.find((entry) => entry.factId === selectedFactId);
+    fact.field = "variants.name";
+    fact.sourcePath = "variants.name";
+  }
+  assert.doesNotThrow(() => buildRichContentPrompt(input));
+});
+
+test("rich content accepts the trusted derived dimensions source path produced by the planner", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const input = { ...context(), profile, promptTemplateVersion: "rich-v1" };
+  const selectedFactId = "fact.capacity";
+  for (const fact of [
+    input.factRegistry.find((entry) => entry.factId === selectedFactId),
+    input.plan.factRegistry.find((entry) => entry.factId === selectedFactId),
+  ]) {
+    fact.field = "derived.dimensions(length,width,height)";
+    fact.sourcePath = "derived.dimensions(length,width,height)";
+  }
+  for (const acceptedAsset of input.acceptedAssets) {
+    const fact = acceptedAsset.checkerEvidence.sourceFacts.find((entry) => entry.factId === selectedFactId);
+    fact.field = "derived.dimensions(length,width,height)";
+    fact.sourcePath = "derived.dimensions(length,width,height)";
+  }
+
+  assert.doesNotThrow(() => buildRichContentPrompt(input));
 });
 
 test("every prompt-projected fact and asset string rejects URL contact and credential-like values", async () => {
@@ -516,7 +968,7 @@ test("treats frozen facts and accepted assets as id-keyed collections for prompt
   const baseline = { ...context(), profile, promptTemplateVersion: "rich-v1" };
   const reorderedFacts = structuredClone(facts).reverse();
   const reordered = context({
-    plan: { ...structuredClone(plan), factRegistry: reorderedFacts },
+    plan: { ...structuredClone(plan), factRegistry: reorderedFacts.map((fact) => ({ ...fact, visualGroupKeys: ["group-a"] })) },
     factRegistry: reorderedFacts,
     acceptedAssets: structuredClone(assets).reverse(),
     profile,
@@ -563,15 +1015,213 @@ test("reserves before its one text gateway call, persists deterministic checker 
     gatewayCalls += 1;
     assert.equal(repo.calls[0][0], "reserve");
     assert.equal(request.model, "rich-model");
+    assert.equal(Object.hasOwn(request, "timeoutMs"), false);
     assert.doesNotMatch(request.prompt, /https?:\/\/|secret/i);
     return { value: validContent(), requestId: "gateway-1", modelEvidence: { requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model", gatewayReportedTextModelPresent: true }, usage: { totalTokens: 42 } };
   } };
   const result = await generateRichContent(generationInput(repo, gateway));
   assert.equal(result.status, "ACCEPTED"); assert.equal(gatewayCalls, 1);
   assert.deepEqual(repo.calls.map(([name]) => name), ["reserve", "complete"]);
+  assert.equal(repo.calls[0][1].maxAttempts, 5);
   assert.equal(repo.calls[1][1].checkerResult.accepted, true);
   assert.deepEqual(repo.calls[1][1].assetEvidence.map((entry) => entry.assetId), assets.map((entry) => entry.id).sort());
   assert.equal(repo.calls[1][1].gatewayRequestId, "gateway-1");
+});
+
+test("rebuilds model-echoed fact bindings from frozen facts before authoritative validation", async () => {
+  const { generateRichContent } = await richModule();
+  const modelValue = validContent();
+  modelValue.blocks[1].factBindings[0] = {
+    sourceFactId: "fact.brand",
+    field: "wrong.field",
+    value: "wrong value",
+    numericValue: 999,
+    unit: "kg",
+  };
+  const repo = repository();
+
+  const accepted = await generateRichContent(generationInput(repo, {
+    async createTextResponse() {
+      return {
+        value: modelValue,
+        requestId: "gateway-binding-copy",
+        modelEvidence: {
+          requestedTextModel: "rich-model",
+          gatewayReportedTextModel: "rich-model",
+          gatewayReportedTextModelPresent: true,
+        },
+      };
+    },
+  }));
+
+  assert.equal(accepted.status, "ACCEPTED");
+  const persisted = repo.calls.find(([name]) => name === "complete")[1].richContent;
+  assert.deepEqual(persisted.blocks[1].factBindings, [binding("fact.brand")]);
+});
+
+test("builds the one leading hero from the authoritative MAIN asset instead of the model echo", async () => {
+  const { generateRichContent } = await richModule();
+  const modelValue = validContent();
+  const [modelHero] = modelValue.blocks.splice(0, 1);
+  modelHero.assetId = "invented-model-asset";
+  modelValue.blocks.push(modelHero);
+  const repo = repository();
+
+  const accepted = await generateRichContent(generationInput(repo, {
+    async createTextResponse() {
+      return {
+        value: modelValue,
+        requestId: "gateway-hero-copy",
+        modelEvidence: {
+          requestedTextModel: "rich-model",
+          gatewayReportedTextModel: "rich-model",
+          gatewayReportedTextModelPresent: true,
+        },
+      };
+    },
+  }));
+
+  assert.equal(accepted.status, "ACCEPTED");
+  const persisted = repo.calls.find(([name]) => name === "complete")[1].richContent;
+  assert.deepEqual(persisted.blocks[0], { type: "HERO_IMAGE", assetId: "asset-main" });
+  assert.equal(persisted.blocks.filter(({ type }) => type === "HERO_IMAGE").length, 1);
+});
+
+test("asks the model only for non-deterministic text blocks and completes the persisted V1 document on the server", async () => {
+  const { generateRichContent } = await richModule();
+  const modelValue = {
+    version: "AUTO_LISTING_RICH_CONTENT_V1",
+    language: "ru",
+    blocks: [
+      { type: "HEADING", text: "Термокружка SONLI", sourceFactIds: ["fact.brand"] },
+      { type: "TEXT", text: "Корпус из нержавеющей стали", sourceFactIds: ["fact.material"] },
+      { type: "IMAGE_TEXT", assetId: "asset-detail", text: "Объём 500 мл", sourceFactIds: ["fact.capacity"] },
+    ],
+  };
+  const repo = repository();
+
+  const accepted = await generateRichContent(generationInput(repo, {
+    async createTextResponse(request) {
+      assert.equal(request.jsonSchema.properties.blocks.minItems, 2);
+      assert.equal(request.jsonSchema.properties.blocks.maxItems, 19);
+      assert.doesNotMatch(JSON.stringify(request.jsonSchema), /HERO_IMAGE|factBindings/u);
+      return {
+        value: modelValue,
+        requestId: "gateway-text-only",
+        modelEvidence: {
+          requestedTextModel: "rich-model",
+          gatewayReportedTextModel: "rich-model",
+          gatewayReportedTextModelPresent: true,
+        },
+      };
+    },
+  }));
+
+  assert.equal(accepted.status, "ACCEPTED");
+  const persisted = repo.calls.find(([name]) => name === "complete")[1].richContent;
+  assert.deepEqual(persisted.blocks[0], { type: "HERO_IMAGE", assetId: "asset-main" });
+  assert.deepEqual(persisted.blocks[1].factBindings, [binding("fact.brand")]);
+});
+
+test("drops one optional text block with incomplete fact evidence instead of failing the complete rich document", async () => {
+  const { generateRichContent } = await richModule();
+  const modelValue = {
+    version: "AUTO_LISTING_RICH_CONTENT_V1",
+    language: "ru",
+    blocks: [
+      { type: "HEADING", text: "Термокружка SONLI", sourceFactIds: ["fact.brand"] },
+      { type: "TEXT", text: "Стильный выбор на каждый день", sourceFactIds: ["fact.brand"] },
+      { type: "IMAGE_TEXT", assetId: "asset-detail", text: "Объём 500 мл", sourceFactIds: ["fact.capacity"] },
+    ],
+  };
+  const repo = repository();
+
+  const accepted = await generateRichContent(generationInput(repo, {
+    async createTextResponse(request) {
+      assert.match(request.prompt, /discardOptionalBlocksWithoutCompleteFactEvidence/u);
+      return {
+        value: modelValue,
+        requestId: "gateway-one-incomplete-block",
+        modelEvidence: {
+          requestedTextModel: "rich-model",
+          gatewayReportedTextModel: "rich-model",
+          gatewayReportedTextModelPresent: true,
+        },
+      };
+    },
+  }));
+
+  assert.equal(accepted.status, "ACCEPTED");
+  const persisted = repo.calls.find(([name]) => name === "complete")[1].richContent;
+  assert.deepEqual(persisted.blocks.map(({ type }) => type), ["HERO_IMAGE", "HEADING", "IMAGE_TEXT"]);
+  assert.equal(persisted.blocks.some(({ text }) => text === "Стильный выбор на каждый день"), false);
+});
+
+test("drops one optional block with unsupported language instead of failing valid remaining blocks", async () => {
+  const { generateRichContent } = await richModule();
+  const modelValue = {
+    version: "AUTO_LISTING_RICH_CONTENT_V1",
+    language: "ru",
+    blocks: [
+      { type: "HEADING", text: "Термокружка SONLI", sourceFactIds: ["fact.brand"] },
+      { type: "TEXT", text: "Корпус из нержавеющей стали", sourceFactIds: ["fact.material"] },
+      { type: "TEXT", text: "Premium SONLI", sourceFactIds: ["fact.brand"] },
+      { type: "IMAGE_TEXT", assetId: "asset-detail", text: "Объём 500 мл", sourceFactIds: ["fact.capacity"] },
+    ],
+  };
+  const repo = repository();
+
+  const accepted = await generateRichContent(generationInput(repo, {
+    async createTextResponse() {
+      return {
+        value: modelValue,
+        requestId: "gateway-unsupported-language-block",
+        modelEvidence: {
+          requestedTextModel: "rich-model",
+          gatewayReportedTextModel: "rich-model",
+          gatewayReportedTextModelPresent: true,
+        },
+      };
+    },
+  }));
+
+  assert.equal(accepted.status, "ACCEPTED");
+  const persisted = repo.calls.find(([name]) => name === "complete")[1].richContent;
+  assert.equal(persisted.blocks.some(({ text }) => text === "Premium SONLI"), false);
+});
+
+test("drops an optional image-text block that reuses the authoritative hero asset", async () => {
+  const { generateRichContent } = await richModule();
+  const modelValue = {
+    version: "AUTO_LISTING_RICH_CONTENT_V1",
+    language: "ru",
+    blocks: [
+      { type: "HEADING", text: "Термокружка SONLI", sourceFactIds: ["fact.brand"] },
+      { type: "TEXT", text: "Корпус из нержавеющей стали", sourceFactIds: ["fact.material"] },
+      { type: "IMAGE_TEXT", assetId: "asset-main", text: "Термокружка SONLI", sourceFactIds: ["fact.brand"] },
+      { type: "IMAGE_TEXT", assetId: "asset-detail", text: "Объём 500 мл", sourceFactIds: ["fact.capacity"] },
+    ],
+  };
+  const repo = repository();
+
+  const accepted = await generateRichContent(generationInput(repo, {
+    async createTextResponse(request) {
+      assert.match(request.prompt, /discardOptionalImageTextWithDuplicateAsset/u);
+      return {
+        value: modelValue,
+        requestId: "gateway-duplicate-hero-asset",
+        modelEvidence: {
+          requestedTextModel: "rich-model",
+          gatewayReportedTextModel: "rich-model",
+          gatewayReportedTextModelPresent: true,
+        },
+      };
+    },
+  }));
+
+  assert.equal(accepted.status, "ACCEPTED");
+  const persisted = repo.calls.find(([name]) => name === "complete")[1].richContent;
+  assert.deepEqual(persisted.blocks.filter(({ assetId }) => assetId).map(({ assetId }) => assetId), ["asset-main", "asset-detail"]);
 });
 
 test("reuses an audited accepted result with zero gateway calls and fails closed on corrupt scope, evidence, object refs, or checker result", async () => {
@@ -633,35 +1283,75 @@ test("fails closed before reservation when profile, scope, frozen facts, or acce
   }
 });
 
-test("terminalizes malformed gateway output, gateway failure, and policy rejection through the reserved lease", async () => {
+test("uses a deterministic fact-only rich document when the AI gateway is unavailable", async () => {
+  const { generateRichContent, validateRichContentDocument } = await richModule();
+  const repo = repository();
+
+  const accepted = await generateRichContent(generationInput(repo, {
+    async createTextResponse() {
+      throw Object.assign(new Error("temporary gateway outage"), { retryable: true });
+    },
+  }));
+
+  assert.equal(accepted.status, "ACCEPTED");
+  assert.deepEqual(repo.calls.map(([name]) => name), ["reserve", "complete"]);
+  const completed = repo.calls[1][1];
+  assert.match(completed.gatewayRequestId, /^auto-listing-rich-fallback-/u);
+  assert.deepEqual(completed.modelEvidence, {
+    requestedTextModel: "rich-model",
+    gatewayReportedTextModel: "",
+    gatewayReportedTextModelPresent: false,
+  });
+  assert.equal(completed.usage.deterministicFallback, true);
+  assert.equal(validateRichContentDocument({
+    richContent: completed.richContent,
+    factRegistry: completed.sourceFactEvidence,
+    acceptedAssets: completed.assetEvidence,
+    scope,
+  }).valid, true);
+});
+
+test("falls back for malformed or unavailable gateways but still rejects policy violations", async () => {
   const { generateRichContent } = await richModule();
   for (const gateway of [
     { async createTextResponse() { return { requestId: "bad" }; } },
     { async createTextResponse() { throw Object.assign(new Error("safe gateway failure"), { code: "RETRYABLE_GATEWAY", retryable: true }); } },
-    { async createTextResponse() { return { value: (() => { const content = validContent(); content.blocks[2].text = "Оставьте отзыв"; return content; })(), requestId: "policy", modelEvidence: { requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model", gatewayReportedTextModelPresent: true } }; } },
   ]) {
     const repo = repository();
-    await assert.rejects(generateRichContent(generationInput(repo, gateway)));
-    assert.equal(repo.calls[0][0], "reserve");
-    assert.ok(["reject", "fail"].includes(repo.calls.at(-1)[0]));
+    const accepted = await generateRichContent(generationInput(repo, gateway));
+    assert.equal(accepted.status, "ACCEPTED");
+    assert.deepEqual(repo.calls.map(([name]) => name), ["reserve", "complete"]);
+    assert.match(repo.calls.at(-1)[1].gatewayRequestId, /^auto-listing-rich-fallback-/u);
   }
-});
 
-test("gateway failures terminalize the lease but expose only the stable safe rich-content error", async () => {
-  const { generateRichContent } = await richModule();
   const repo = repository();
   await assert.rejects(generateRichContent(generationInput(repo, {
+    async createTextResponse() { return { value: {
+      version: "AUTO_LISTING_RICH_CONTENT_V1",
+      language: "ru",
+      blocks: [
+        { type: "HEADING", text: "Термокружка SONLI", sourceFactIds: ["fact.brand"] },
+        { type: "TEXT", text: "Нержавеющая сталь, оставьте отзыв", sourceFactIds: ["fact.material"] },
+      ],
+    }, requestId: "policy", modelEvidence: { requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model", gatewayReportedTextModelPresent: true } }; },
+  })));
+  assert.equal(repo.calls[0][0], "reserve");
+  assert.equal(repo.calls.at(-1)[0], "reject");
+});
+
+test("gateway failures complete with fallback evidence and expose no upstream secret", async () => {
+  const { generateRichContent } = await richModule();
+  const repo = repository();
+  const accepted = await generateRichContent(generationInput(repo, {
     async createTextResponse() {
       throw Object.assign(new Error("secret upstream gateway body"), { code: "UPSTREAM_PRIVATE_CODE", retryable: true });
     },
-  })), (error) => {
-    assert.equal(error?.code, "AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED");
-    assert.equal(error?.retryable, true);
-    assert.doesNotMatch(error?.message || "", /secret upstream|private/i);
-    return true;
-  });
-  assert.equal(repo.calls.at(-1)[0], "fail");
-  assert.equal(repo.calls.at(-1)[1].errorCode, "AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED");
+  }));
+  assert.equal(accepted.status, "ACCEPTED");
+  assert.equal(repo.calls.at(-1)[0], "complete");
+  assert.equal(repo.calls.at(-1)[1].usage.deterministicFallback, true);
+  assert.equal(repo.calls.at(-1)[1].usage.reason, "AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED");
+  assert.doesNotMatch(JSON.stringify(repo.calls.at(-1)[1]), /secret upstream|private_code/i);
 });
 
 test("does not call a gateway for concurrent work, policy-rejected reservations, or repository transition errors", async () => {
@@ -692,7 +1382,7 @@ test("requires an exact echoed attempt number and input or prompt hash before th
   }
 });
 
-test("requires gateway request and exact requested/reported model evidence", async () => {
+test("invalid gateway request or model evidence uses the explicit deterministic fallback", async () => {
   const { generateRichContent } = await richModule();
   for (const response of [
     { value: validContent(), modelEvidence: { requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model", gatewayReportedTextModelPresent: true } },
@@ -700,9 +1390,11 @@ test("requires gateway request and exact requested/reported model evidence", asy
     { value: validContent(), requestId: "gateway-1", modelEvidence: { requestedTextModel: "rich-model", gatewayReportedTextModel: "other-model", gatewayReportedTextModelPresent: true } },
   ]) {
     const repo = repository();
-    await assert.rejects(generateRichContent(generationInput(repo, { async createTextResponse() { return response; } })),
-      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_GATEWAY_EVIDENCE_INVALID");
-    assert.equal(repo.calls.at(-1)[0], "fail");
+    const accepted = await generateRichContent(generationInput(repo, { async createTextResponse() { return response; } }));
+    assert.equal(accepted.status, "ACCEPTED");
+    assert.equal(repo.calls.at(-1)[0], "complete");
+    assert.match(repo.calls.at(-1)[1].gatewayRequestId, /^auto-listing-rich-fallback-/u);
+    assert.equal(repo.calls.at(-1)[1].modelEvidence.gatewayReportedTextModelPresent, false);
   }
 });
 
@@ -758,7 +1450,7 @@ test("reuses the same accepted facts/assets collection after reordering with zer
   const first = await generateRichContent(generationInput(repo, gateway));
   const reorderedFacts = structuredClone(facts).reverse();
   const second = await generateRichContent(generationInput(repo, gateway, {
-    plan: { ...structuredClone(plan), factRegistry: reorderedFacts },
+    plan: { ...structuredClone(plan), factRegistry: reorderedFacts.map((fact) => ({ ...fact, visualGroupKeys: ["group-a"] })) },
     factRegistry: reorderedFacts,
     acceptedAssets: structuredClone(assets).reverse(),
   }));

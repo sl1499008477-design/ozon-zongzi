@@ -3623,7 +3623,10 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account
             { title: "商品信息", dataIndex: "商品信息", render: (value, row) => (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {row._image ? <img src={row._image} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} /> : null}
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</span>
+                <div style={{ display: "grid", minWidth: 0, gap: 2 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={value}>{value}</span>
+                  <span className="product-sku-text" title={row.sku || ""}>SKU：{row.sku || "未提供"}</span>
+                </div>
               </div>
             ) },
             "采集价格",

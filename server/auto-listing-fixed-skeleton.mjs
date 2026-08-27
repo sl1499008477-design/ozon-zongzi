@@ -5,10 +5,12 @@ const ROLE_ORDER = Object.freeze(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "S
 const ROLE_KEYS = new Set(ROLE_ORDER);
 const OUTPUT_KEYS = new Set(["plan", "skeletonHash", "allowedClaimsBySlot"]);
 const PLAN_KEYS = new Set(["version", "language", "slots"]);
-const SLOT_KEYS = new Set([
+const SLOT_KEYS_V1 = new Set([
   "slotKey", "visualGroupKey", "role", "order", "textDensity", "claims", "sourceFactIds",
   "referenceAssetIds", "preserve", "prohibitedClaims",
 ]);
+const SLOT_KEYS_V2 = new Set([...SLOT_KEYS_V1, "requestedRole", "substitutionReasonCode"]);
+const SUBSTITUTION_KEYS = new Set(["requestedRole", "actualRole", "count", "reasonCode"]);
 const FILL_KEYS = new Set(["version", "language", "fills"]);
 const SLOT_FILL_KEYS = new Set(["claims"]);
 const CLAIM_KEYS = new Set(["text", "claimType", "sourceFactIds"]);
@@ -17,7 +19,14 @@ const MAX_DEPTH = 64;
 const MAX_NODES = 200_000;
 const MAX_STRING_LENGTH = 2_000_000;
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-const CLAIM_LIMIT = Object.freeze({ NONE: 0, LIGHT: 1, MEDIUM: 2, HEAVY: 3 });
+const ROLE_CLAIM_RANGES = Object.freeze({
+  MAIN: Object.freeze({ LIGHT: [1, 2], MEDIUM: [2, 3], HEAVY: [4, 4] }),
+  SELLING_POINT: Object.freeze({ LIGHT: [2, 2], MEDIUM: [2, 3], HEAVY: [3, 4] }),
+  DETAIL: Object.freeze({ LIGHT: [1, 2], MEDIUM: [1, 2], HEAVY: [2, 2] }),
+  SCENE: Object.freeze({ LIGHT: [1, 2], MEDIUM: [2, 3], HEAVY: [2, 3] }),
+  SPECIFICATION: Object.freeze({ LIGHT: [2, 3], MEDIUM: [3, 4], HEAVY: [5, 6] }),
+  INFOGRAPHIC: Object.freeze({ LIGHT: [3, 4], MEDIUM: [4, 5], HEAVY: [5, 6] }),
+});
 
 class UnsafeCarrier extends Error {}
 
@@ -112,15 +121,133 @@ const same = (left, right) => canonicalText(left) === canonicalText(right);
 const requiredText = (value, max = 500) => typeof value === "string" && value.length > 0
   && value === value.trim() && value.length <= max && !/[\u0000-\u001f\u007f]/u.test(value);
 
-function factAllowedForRole(fact, role) {
-  if (role === "SPECIFICATION") return String(fact.kind).startsWith("DIMENSION_");
+export function factAllowedForRole(fact, role) {
+  if (role === "SPECIFICATION") return documentaryFact(fact);
   if (role === "MAIN") return true;
   if (role === "SELLING_POINT") return ["COLOR", "PATTERN", "SHAPE", "MATERIAL", "ACCESSORY_COUNT", "IDENTITY_NAME", "IDENTITY_BRAND"]
     .includes(fact.kind) || String(fact.kind).startsWith("ATTRIBUTE:");
-  if (role === "DETAIL") return ["MATERIAL", "PATTERN", "SHAPE", "ACCESSORY_COUNT", "SIZE"]
-    .includes(fact.kind) || String(fact.kind).startsWith("ATTRIBUTE:");
+  if (role === "DETAIL") return ["MATERIAL", "PATTERN", "SHAPE"].includes(fact.kind)
+    || (String(fact.kind).startsWith("ATTRIBUTE:") && !detailFactExcluded(fact));
   if (role === "SCENE") return ["IDENTITY_NAME", "IDENTITY_BRAND", "SIZE", "COLOR", "MATERIAL"].includes(fact.kind);
   return true;
+}
+
+function dimensionFact(fact) {
+  const kind = String(fact?.kind || "");
+  const value = String(fact?.claimText || fact?.value || "");
+  return kind.startsWith("DIMENSION_") || kind === "SIZE"
+    || /(?:размер|длина|ширина|высота|глубина|диаметр|дхшхв)/iu.test(value);
+}
+
+function accessoryFact(fact) {
+  const kind = String(fact?.kind || "");
+  const value = String(fact?.claimText || fact?.value || "");
+  return kind === "ACCESSORY_COUNT"
+    || /(?:комплектац|комплект поставки|аксессуар|в комплекте|количество предметов)/iu.test(value);
+}
+
+function documentaryFact(fact) {
+  return dimensionFact(fact) || accessoryFact(fact);
+}
+
+function mainFactBucket(fact) {
+  const kind = String(fact?.kind || "");
+  const evidence = `${kind} ${String(fact?.claimText || fact?.value || "")}`;
+  if (/(?:нагруз|грузопод|мощност|емкост|объ[её]м|производительност|скорост|давлен|дальност|яркост|время работы|承重|功率|容量)/iu.test(evidence)) return "PERFORMANCE";
+  if (kind === "MATERIAL" || /(?:материал|材质)/iu.test(evidence)) return "MATERIAL";
+  if (dimensionFact(fact)) return "DIMENSION";
+  if (/(?:вес(?:\s+товара)?|масса|weight|重量)/iu.test(evidence)) return "WEIGHT";
+  if (String(kind).startsWith("ATTRIBUTE:") && /\d/u.test(evidence)) return "NUMERIC_ATTRIBUTE";
+  if (String(kind).startsWith("ATTRIBUTE:")) return "ATTRIBUTE";
+  if (["COLOR", "PATTERN", "SHAPE"].includes(kind)) return "APPEARANCE";
+  return "IDENTITY";
+}
+
+const MAIN_FACT_BUCKETS = Object.freeze([
+  "PERFORMANCE", "MATERIAL", "DIMENSION", "WEIGHT",
+  "NUMERIC_ATTRIBUTE", "ATTRIBUTE", "APPEARANCE",
+]);
+
+function mainFactEligible(fact) {
+  if (mainFactBucket(fact) === "IDENTITY") return false;
+  const evidence = `${String(fact?.kind || "")} ${String(fact?.claimText || fact?.value || "")}`;
+  return !/(?:код продавца|артикул продавца|количеств[оа] заводских упаковок|нужен код маркировки|название модели|страна[- ]изготовитель|^ATTRIBUTE:[^\s]+\s+тип\s*:)/iu.test(evidence);
+}
+
+function prioritizedMainFacts(facts) {
+  const ranked = facts.filter(mainFactEligible).sort((left, right) => {
+    const bucketDifference = MAIN_FACT_BUCKETS.indexOf(mainFactBucket(left))
+      - MAIN_FACT_BUCKETS.indexOf(mainFactBucket(right));
+    if (bucketDifference) return bucketDifference;
+    if (mainFactBucket(left) === "DIMENSION") {
+      const leftCombined = /(?:размер|дхшхв|×)/iu.test(String(left.claimText || left.value || ""));
+      const rightCombined = /(?:размер|дхшхв|×)/iu.test(String(right.claimText || right.value || ""));
+      if (leftCombined !== rightCombined) return leftCombined ? -1 : 1;
+    }
+    return compareText(left.factId, right.factId);
+  });
+  const selected = [];
+  const selectedBuckets = new Set();
+  for (const fact of ranked) {
+    const bucket = mainFactBucket(fact);
+    if (selectedBuckets.has(bucket)) continue;
+    selected.push(fact);
+    selectedBuckets.add(bucket);
+    if (selected.length === 4) return selected;
+  }
+  for (const fact of ranked) {
+    if (selected.includes(fact)) continue;
+    selected.push(fact);
+    if (selected.length === 4) break;
+  }
+  return selected;
+}
+
+function detailFactExcluded(fact) {
+  if (dimensionFact(fact)) return true;
+  const evidence = `${String(fact?.kind || "")} ${String(fact?.claimText || fact?.value || "")}`;
+  return /(?:\sтип\s*:|модел|код продавца|артикул продавца|количеств[оа] заводских упаковок|комплектац|упаковк|срок годности|страна[- ]изготовитель|хештег|код маркировк|вес товара)/iu.test(evidence);
+}
+
+export function fixedClaimRange(slot, allowedCount) {
+  if (slot.textDensity === "NONE") return { minimum: 0, maximum: 0 };
+  const configured = ROLE_CLAIM_RANGES[slot.role]?.[slot.textDensity];
+  if (!configured || !Number.isSafeInteger(allowedCount) || allowedCount < 1) throw skeletonInvalid();
+  return {
+    minimum: Math.min(configured[0], allowedCount),
+    maximum: Math.min(configured[1], allowedCount),
+  };
+}
+
+const DIMENSION_LABELS = Object.freeze({
+  DIMENSION_HEIGHT: "Высота",
+  DIMENSION_WIDTH: "Ширина",
+  DIMENSION_LENGTH: "Длина",
+  DIMENSION_DEPTH: "Глубина",
+  DIMENSION_DIAMETER: "Диаметр",
+});
+
+function claimTextForFact(fact) {
+  const raw = typeof fact?.value === "string" ? fact.value.trim() : "";
+  if (!raw) return "";
+  const label = DIMENSION_LABELS[fact.kind];
+  const localized = raw.replace(/\b(mm|cm|kg|g|l|w)\b/giu, (unit) => ({
+    mm: "мм", cm: "см", kg: "кг", g: "г", l: "л", w: "Вт",
+  })[unit.toLocaleLowerCase("en-US")] || unit);
+  const text = label ? `${label}: ${localized}` : localized;
+  return text.length <= 300 && (/\p{Script=Cyrillic}/u.test(text)
+    || String(fact.kind).startsWith("IDENTITY_")) ? text : "";
+}
+
+function prohibitedClaimText(text) {
+  return typeof text === "string"
+    && /сертиф|certif|гаранти|warrant|медицин|лечеб|medical\s+benefit|вылеч|cure\b/iu.test(text);
+}
+
+function factsForOccurrence(facts, occurrence, count) {
+  if (count <= 1 || facts.length <= 1) return facts;
+  if (facts.length < count) return [facts[occurrence % facts.length]];
+  return facts.filter((_fact, index) => index % count === occurrence);
 }
 
 function fixedContext(rawContext) {
@@ -128,8 +255,8 @@ function fixedContext(rawContext) {
   try { context = project(rawContext); } catch { throw skeletonInvalid(); }
   const input = context?.plannerInput;
   if (!input || typeof input !== "object" || Array.isArray(input)
-    || !Array.isArray(input.visualGroups) || input.visualGroups.length !== 1) {
-    throw error("AUTO_LISTING_FIXED_SKELETON_VISUAL_GROUP_UNSUPPORTED", "固定图片骨架当前只支持一个视觉分组");
+    || !Array.isArray(input.visualGroups) || !input.visualGroups.length) {
+    throw error("AUTO_LISTING_FIXED_SKELETON_VISUAL_GROUP_UNSUPPORTED", "固定图片骨架缺少视觉分组");
   }
   if (!Array.isArray(input.factRegistry) || !input.factRegistry.length
     || !input.requestedRoleCounts || typeof input.requestedRoleCounts !== "object"
@@ -138,60 +265,114 @@ function fixedContext(rawContext) {
     || !requiredText(input.ratio, 20) || !requiredText(input.resolution, 20) || !requiredText(input.quality, 20)) throw skeletonInvalid();
   if (Object.keys(input.requestedRoleCounts).length !== ROLE_ORDER.length
     || Object.keys(input.requestedRoleCounts).some((key) => !ROLE_KEYS.has(key))) throw skeletonInvalid();
+  const roleSubstitutions = input.roleSubstitutions ?? [];
+  if (!Array.isArray(roleSubstitutions) || roleSubstitutions.some((entry) => !exact(entry, SUBSTITUTION_KEYS)
+    || entry.requestedRole !== "SPECIFICATION" || !ROLE_KEYS.has(entry.actualRole)
+    || entry.actualRole === "SPECIFICATION" || !Number.isSafeInteger(entry.count) || entry.count < 1
+    || entry.reasonCode !== "PRODUCT_DIMENSIONS_UNAVAILABLE")) throw skeletonInvalid();
   const total = ROLE_ORDER.reduce((sum, role) => {
     const count = input.requestedRoleCounts[role];
     if (!Number.isSafeInteger(count) || count < 0 || count > 13) throw skeletonInvalid();
     return sum + count;
   }, 0);
   if (total !== input.imagesPerVisualGroup || total < 6 || total > 13) throw skeletonInvalid();
-  const group = input.visualGroups[0];
-  if (!group || !requiredText(group.visualGroupKey, 240) || !Array.isArray(group.referenceImages)
-    || !group.referenceImages.length || !Array.isArray(group.requiredPreserve) || !group.requiredPreserve.length) throw skeletonInvalid();
-  const referenceAssetIds = group.referenceImages.map((entry) => entry?.assetId);
-  if (referenceAssetIds.some((entry) => !requiredText(entry, 240))
-    || new Set(referenceAssetIds).size !== referenceAssetIds.length
-    || group.requiredPreserve.some((entry) => !requiredText(entry, 240))) throw skeletonInvalid();
+  for (const role of ROLE_ORDER) {
+    const substituted = roleSubstitutions.filter((entry) => entry.actualRole === role)
+      .reduce((sum, entry) => sum + entry.count, 0);
+    if (substituted > input.requestedRoleCounts[role]) throw skeletonInvalid();
+  }
+  if (roleSubstitutions.length && input.requestedRoleCounts.SPECIFICATION !== 0) throw skeletonInvalid();
   const facts = input.factRegistry.map((fact) => {
     if (!fact || !requiredText(fact.factId, 240) || !requiredText(fact.kind, 120)
       || !requiredText(fact.value, 2048) || !Array.isArray(fact.visualGroupKeys)
       || fact.visualGroupKeys.some((key) => !requiredText(key, 240))) throw skeletonInvalid();
     return fact;
-  }).filter((fact) => !fact.visualGroupKeys.length || fact.visualGroupKeys.includes(group.visualGroupKey));
-  if (!facts.length) throw skeletonInvalid();
-  if (input.requestedRoleCounts.SPECIFICATION > 0 && !facts.some((fact) => String(fact.kind).startsWith("DIMENSION_"))) {
-    throw error("AUTO_LISTING_FIXED_SKELETON_DIMENSION_REQUIRED", "尺寸图缺少可靠的商品尺寸依据");
+  });
+  const groupKeys = input.visualGroups.map((group) => group?.visualGroupKey);
+  if (groupKeys.some((key) => !requiredText(key, 240)) || new Set(groupKeys).size !== groupKeys.length) {
+    throw skeletonInvalid();
   }
-  return { input, group, facts, total, referenceAssetIds };
+  const groups = input.visualGroups.map((group) => {
+    if (!Array.isArray(group.referenceImages) || !group.referenceImages.length
+      || !Array.isArray(group.requiredPreserve) || !group.requiredPreserve.length) throw skeletonInvalid();
+    const referenceAssetIds = group.referenceImages.map((entry) => entry?.assetId);
+    if (referenceAssetIds.some((entry) => !requiredText(entry, 240))
+      || new Set(referenceAssetIds).size !== referenceAssetIds.length
+      || group.requiredPreserve.some((entry) => !requiredText(entry, 240))) throw skeletonInvalid();
+    const groupFacts = facts.filter((fact) => !fact.visualGroupKeys.length
+      || fact.visualGroupKeys.includes(group.visualGroupKey));
+    if (!groupFacts.length) throw skeletonInvalid();
+    return { group, facts: groupFacts, referenceAssetIds };
+  });
+  return { input, groups, total, roleSubstitutions };
 }
 
 export function buildFixedSkeleton({ plannerContext } = {}) {
-  const { input, group, facts, referenceAssetIds } = fixedContext(plannerContext);
+  const { input, groups, roleSubstitutions } = fixedContext(plannerContext);
   const slots = [];
   const allowedClaimsBySlot = Object.create(null);
-  let order = 1;
-  for (const role of ROLE_ORDER) {
-    const roleFacts = facts.filter((fact) => factAllowedForRole(fact, role));
-    const allowedFacts = roleFacts.length ? roleFacts : facts;
-    for (let occurrence = 1; occurrence <= input.requestedRoleCounts[role]; occurrence += 1) {
-      const slotKey = `${group.visualGroupKey}:${role.toLowerCase().replaceAll("_", "-")}:${String(occurrence).padStart(2, "0")}`;
-      const allowed = allowedFacts.map(({ factId, kind, value }) => ({ factId, kind, value }))
-        .sort((left, right) => compareText(left.factId, right.factId));
-      allowedClaimsBySlot[slotKey] = allowed;
-      slots.push({
-        slotKey,
-        visualGroupKey: group.visualGroupKey,
-        role,
-        order: order++,
-        textDensity: input.textDensityByRole[role],
-        claims: [],
-        sourceFactIds: allowed.map(({ factId }) => factId),
-        referenceAssetIds: [...referenceAssetIds],
-        preserve: [...group.requiredPreserve],
-        prohibitedClaims: [...input.prohibitedClaims],
-      });
+  for (const { group, facts, referenceAssetIds } of groups) {
+    const claimableFacts = facts.map((fact) => ({ ...fact, claimText: claimTextForFact(fact) }))
+      .filter((fact) => fact.claimText && !prohibitedClaimText(fact.claimText));
+    const identityAnchor = claimableFacts.find((fact) => fact.kind === "IDENTITY_NAME") || claimableFacts[0];
+    let order = 1;
+    for (const role of ROLE_ORDER) {
+      const usedClaimFactIds = new Set();
+      const substitutions = roleSubstitutions.filter((entry) => entry.actualRole === role);
+      const originalCount = input.requestedRoleCounts[role]
+        - substitutions.reduce((sum, entry) => sum + entry.count, 0);
+      const roleFacts = claimableFacts.filter((fact) => factAllowedForRole(fact, role));
+      const roleCandidates = role === "MAIN"
+        && input.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
+        ? prioritizedMainFacts(roleFacts)
+        : roleFacts;
+      for (let occurrence = 1; occurrence <= input.requestedRoleCounts[role]; occurrence += 1) {
+        const slotOrder = order++;
+        const slotKey = `${group.visualGroupKey}:${role.toLowerCase().replaceAll("_", "-")}:${String(occurrence).padStart(2, "0")}`;
+        let substitution = null;
+        let substitutedOccurrence = occurrence - originalCount;
+        if (substitutedOccurrence > 0) substitution = substitutions.find((entry) => {
+          if (substitutedOccurrence <= entry.count) return true;
+          substitutedOccurrence -= entry.count;
+          return false;
+        }) || null;
+        const distributedFacts = factsForOccurrence(
+          roleCandidates,
+          occurrence - 1,
+          input.requestedRoleCounts[role],
+        ).filter((fact) => !usedClaimFactIds.has(fact.factId));
+        const density = input.textDensityByRole[role];
+        const allowedFacts = density === "NONE" ? [] : distributedFacts;
+        allowedFacts.forEach((fact) => usedClaimFactIds.add(fact.factId));
+        const allowed = allowedFacts.map(({ factId, kind, claimText }) => ({ factId, kind, value: claimText }));
+        if (!(role === "MAIN" && input.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6")) {
+          allowed.sort((left, right) => compareText(left.factId, right.factId));
+        }
+        const sourceFactIds = allowed.length
+          ? allowed.map(({ factId }) => factId)
+          : [identityAnchor?.factId].filter(Boolean);
+        if (!sourceFactIds.length) throw skeletonInvalid();
+        allowedClaimsBySlot[slotKey] = allowed;
+        slots.push({
+          slotKey,
+          visualGroupKey: group.visualGroupKey,
+          role,
+          requestedRole: substitution?.requestedRole || role,
+          substitutionReasonCode: substitution?.reasonCode || null,
+          order: slotOrder,
+          textDensity: allowed.length ? density : "NONE",
+          claims: [],
+          sourceFactIds,
+          referenceAssetIds: referenceAssetIds.length === 1 || slotOrder === 1
+            ? [referenceAssetIds[0]]
+            : [referenceAssetIds[1 + ((slotOrder - 2) % (referenceAssetIds.length - 1))], referenceAssetIds[0]],
+          preserve: [...group.requiredPreserve],
+          prohibitedClaims: [...input.prohibitedClaims],
+        });
+      }
     }
   }
-  const plan = { version: 1, language: "ru", slots };
+  const plan = { version: 2, language: "ru", slots };
   const skeletonHash = sha256({
     contract: "FIXED_SKELETON_V1",
     generation: { language: input.language, ratio: input.ratio, resolution: input.resolution, quality: input.quality },
@@ -201,7 +382,21 @@ export function buildFixedSkeleton({ plannerContext } = {}) {
   return deepFreeze({ plan, skeletonHash, allowedClaimsBySlot });
 }
 
-function claimSchema(allowed, maximum) {
+function claimSchema(slot, allowed) {
+  const { minimum, maximum } = fixedClaimRange(slot, allowed.length);
+  if (allowed.length === 0) {
+    return {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        claims: {
+          type: "array", minItems: 0, maxItems: 0,
+          items: { type: "object", additionalProperties: false, properties: {}, required: [] },
+        },
+      },
+      required: ["claims"],
+    };
+  }
   const kinds = [...new Set(allowed.map(({ kind }) => kind))].sort(compareText);
   const factIds = allowed.map(({ factId }) => factId).sort(compareText);
   return {
@@ -209,11 +404,11 @@ function claimSchema(allowed, maximum) {
     additionalProperties: false,
     properties: {
       claims: {
-        type: "array", minItems: 0, maxItems: maximum,
+        type: "array", minItems: minimum, maxItems: maximum,
         items: {
           type: "object", additionalProperties: false,
           properties: {
-            text: { type: "string", minLength: 1, maxLength: 300 },
+            text: { type: "string", enum: [...new Set(allowed.map(({ value }) => value))].sort(compareText) },
             claimType: { type: "string", enum: kinds },
             sourceFactIds: { type: "array", minItems: 1, maxItems: factIds.length, items: { type: "string", enum: factIds } },
           },
@@ -243,7 +438,10 @@ export function buildContentPlanFillSchema(rawSkeleton) {
         type: "object", additionalProperties: false,
         properties: Object.fromEntries(skeleton.plan.slots.map((slot) => [
           slot.slotKey,
-          claimSchema(skeleton.allowedClaimsBySlot[slot.slotKey], CLAIM_LIMIT[slot.textDensity]),
+          claimSchema(
+            slot,
+            skeleton.allowedClaimsBySlot[slot.slotKey],
+          ),
         ])),
         required: slotKeys,
       },
@@ -277,24 +475,38 @@ export function mergeContentPlanFill({ skeleton: rawSkeleton, fill: rawFill, pla
     if (!exact(slotFill, SLOT_FILL_KEYS) || !Array.isArray(slotFill.claims)) {
       throw fillInvalid("FIXED_FILL_SLOT_SHAPE_INVALID", slot.slotKey, "claims");
     }
-    const limit = CLAIM_LIMIT[slot.textDensity];
-    if (!Number.isSafeInteger(limit) || slotFill.claims.length > limit
-      || (slot.role === "MAIN" && slotFill.claims.length !== 0)) {
+    const allowed = skeleton.allowedClaimsBySlot[slot.slotKey];
+    const { minimum, maximum } = fixedClaimRange(slot, allowed.length);
+    if (slotFill.claims.length < minimum || slotFill.claims.length > maximum) {
       throw fillInvalid("CLAIM_COUNT_MISMATCH", slot.slotKey, "claims");
     }
-    const allowed = skeleton.allowedClaimsBySlot[slot.slotKey];
     const allowedById = new Map(allowed.map((fact) => [fact.factId, fact]));
-    const claims = slotFill.claims.map((claim, claimIndex) => {
+    let claims = slotFill.claims.map((claim, claimIndex) => {
+      const citedFacts = Array.isArray(claim?.sourceFactIds)
+        ? claim.sourceFactIds.map((factId) => allowedById.get(factId)) : [];
       if (!exact(claim, CLAIM_KEYS) || !requiredText(claim.text, 300) || !requiredText(claim.claimType, 120)
         || !Array.isArray(claim.sourceFactIds) || !claim.sourceFactIds.length
         || claim.sourceFactIds.length !== new Set(claim.sourceFactIds).size
         || claim.sourceFactIds.some((factId) => !allowedById.has(factId))
-        || !claim.sourceFactIds.some((factId) => allowedById.get(factId)?.kind === claim.claimType)) {
+        || citedFacts.some((fact) => fact?.value !== claim.text)) {
         throw fillInvalid("FIXED_FILL_CLAIM_INVALID", slot.slotKey, `claims[${claimIndex}]`, claimIndex);
       }
-      return { text: claim.text, claimType: claim.claimType, sourceFactIds: [...claim.sourceFactIds] };
+      const derivedKind = [...citedFacts].sort((left, right) => compareText(left.factId, right.factId))[0].kind;
+      return { text: claim.text, claimType: derivedKind, sourceFactIds: [...claim.sourceFactIds] };
     });
+    const requiredDocumentaryFact = slot.role === "SPECIFICATION" ? allowed.find(documentaryFact) : null;
+    if (requiredDocumentaryFact
+      && !claims.some((claim) => claim.sourceFactIds.some((factId) => documentaryFact(allowedById.get(factId))))) {
+      const pinned = {
+        text: requiredDocumentaryFact.value,
+        claimType: requiredDocumentaryFact.kind,
+        sourceFactIds: [requiredDocumentaryFact.factId],
+      };
+      claims = claims.length >= maximum
+        ? [...claims.slice(0, maximum - 1), pinned]
+        : [...claims, pinned];
+    }
     return { ...slot, claims };
   });
-  return deepFreeze({ version: 1, language: "ru", slots });
+  return deepFreeze({ version: skeleton.plan.version, language: "ru", slots });
 }

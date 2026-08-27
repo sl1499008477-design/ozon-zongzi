@@ -51,7 +51,7 @@ test("loader follows only the exact active derived plan and returns verified imm
   const queries = [];
   const lists = [];
   const reads = [];
-  const record = accepted();
+  const record = accepted({ expectedStatusVersion: 6 });
   const loader = createActiveMaterializedSourceAssetLoader({
     pool: {
       async query(sql, values) {
@@ -60,7 +60,7 @@ test("loader follows only the exact active derived plan and returns verified imm
       },
     },
     repository: {
-      async listAcceptedSourceMaterializations(input) { lists.push(input); return [record]; },
+      async listAcceptedSourceMaterializationsForPlan(input) { lists.push(input); return [record]; },
     },
     storage: {
       async getObjectBuffer(key, options) { reads.push([key, options]); return Buffer.from(bytes); },
@@ -81,7 +81,7 @@ test("loader follows only the exact active derived plan and returns verified imm
   assert.match(queries[0][0], /plan\.derivation_kind\s*=\s*'SOURCE_MATERIALIZATION'/iu);
   assert.deepEqual(lists, [{
     accountId: "account-a", jobId: "job-a", itemId: "item-a",
-    parentPlanId: "plan-parent-a", expectedStatusVersion: 7,
+    parentPlanId: "plan-parent-a",
   }]);
   assert.deepEqual(reads, [[record.objectKey, { maxBytes: 8 * 1024 * 1024 }]]);
 });
@@ -96,7 +96,7 @@ test("loader fails closed on cross-scope, stale, duplicate, forged or changed so
     let effects = 0;
     const loader = createActiveMaterializedSourceAssetLoader({
       pool: { async query() { effects += 1; } },
-      repository: { async listAcceptedSourceMaterializations() { effects += 1; } },
+      repository: { async listAcceptedSourceMaterializationsForPlan() { effects += 1; } },
       storage: { async getObjectBuffer() { effects += 1; } },
     });
     await assert.rejects(loader.loadSourceAsset(invalidRequest), {
@@ -114,7 +114,7 @@ test("loader fails closed on cross-scope, stale, duplicate, forged or changed so
   for (const candidate of cases) {
     const loader = createActiveMaterializedSourceAssetLoader({
       pool: { async query() { return { rows: candidate.rows, rowCount: candidate.rows.length }; } },
-      repository: { async listAcceptedSourceMaterializations() { return candidate.records; } },
+      repository: { async listAcceptedSourceMaterializationsForPlan() { return candidate.records; } },
       storage: { async getObjectBuffer() { return Buffer.from(candidate.stored); } },
     });
     await assert.rejects(

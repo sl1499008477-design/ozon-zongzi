@@ -8,6 +8,10 @@ const frozen = normalizeAndHashAutoListingConfig({
   targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
   priceAdjustmentKopecks: "100",
 });
+const brandedFrozen = normalizeAndHashAutoListingConfig({
+  targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
+  priceAdjustmentKopecks: "100", brandMode: "PREFER_SOURCE",
+});
 
 function preferenceRow(overrides = {}) {
   return {
@@ -33,7 +37,9 @@ test("preference save validates owned active FBS inventory scope and records one
         warehouse_type: "FBS", warehouse_status: "active", is_active: true, is_archived: false,
         has_active_product_association: true,
       }] };
-      if (sql.includes("INSERT INTO auto_listing_preferences")) return { rows: [preferenceRow()] };
+      if (sql.includes("INSERT INTO auto_listing_preferences")) return { rows: [preferenceRow({
+        image_config: { ...brandedFrozen.config.image, brandMode: "PREFER_SOURCE", defaultsVersion: 2 },
+      })] };
       if (sql.includes("INSERT INTO audit_events")) return { rows: [{ event_id: params[0] }], rowCount: 1 };
       return { rows: [] };
     },
@@ -44,10 +50,17 @@ test("preference save validates owned active FBS inventory scope and records one
   });
   const result = await repository.savePreferences({
     accountId: "account-a", actorId: "account-a", expectedVersion: 0,
-    idempotencyKey: "pref-a", correlationId: "corr-a", config: frozen.config, configHash: frozen.configHash,
+    idempotencyKey: "pref-a", correlationId: "corr-a",
+    config: brandedFrozen.config, configHash: brandedFrozen.configHash,
   });
   assert.equal(result.configVersion, 1);
   assert.equal(result.accountId, "account-a");
+  assert.equal(result.brandMode, "PREFER_SOURCE");
+  assert.equal(result.imageDefaultsVersion, 2);
+  assert.deepEqual(result.image, brandedFrozen.config.image);
+  const preferenceInsert = calls.find(([sql]) => sql.includes("INSERT INTO auto_listing_preferences"));
+  assert.equal(JSON.parse(preferenceInsert[1][6]).brandMode, "PREFER_SOURCE");
+  assert.equal(JSON.parse(preferenceInsert[1][6]).defaultsVersion, 2);
   assert.ok(calls.some(([sql]) => sql.includes("has_active_product_association")));
   assert.ok(calls.some(([sql]) => sql.includes("INSERT INTO audit_events")));
   assert.deepEqual(calls.map(([sql]) => sql).filter((sql) => ["BEGIN", "COMMIT", "ROLLBACK", "RELEASE"].includes(sql)), [

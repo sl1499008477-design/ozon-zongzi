@@ -75,9 +75,7 @@ test("category strategy production adapter sends exact evidence and allows obser
     async getGateway() {
       return { async createTextResponse(input) {
         gatewayCalls.push(input);
-        if (input.timeoutMs < 180_000) throw Object.assign(new Error("representative 126 second response timed out"), {
-          code: "GATEWAY_TIMEOUT",
-        });
+        assert.equal(Object.hasOwn(input, "timeoutMs"), false);
         return { value: rawOutput };
       } };
     },
@@ -127,6 +125,7 @@ test("category strategy production adapter sends exact evidence and allows obser
   assert.equal(gatewayCalls[0].model, "vision-a");
   assert.equal(gatewayCalls[0].requestKey, "a".repeat(64));
   assert.equal(gatewayCalls[0].correlationId, "attempt-a");
+  assert.equal(Object.hasOwn(gatewayCalls[0], "timeoutMs"), false);
   assert.match(gatewayCalls[0].prompt, /evidence-a.+10001.+evidence-b.+10002/su);
   assert.match(gatewayCalls[0].prompt, /Russian.+Simplified Chinese/su);
   assert.equal(gatewayCalls[0].jsonSchema.properties.schemaVersion.const, 3);

@@ -19,10 +19,77 @@ const baseMessage = Object.freeze({
   correlationId: "correlation-a",
 });
 
+test("default paid phases keep concurrency and retry policy without application deadlines", () => {
+  assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.GENERATE_IMAGE_SLOT.concurrency, 1);
+  assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.GENERATE_IMAGE_SLOT.retryLimit, 0);
+  assert.equal(Object.hasOwn(AUTO_LISTING_AI_PHASE_POLICIES.GENERATE_IMAGE_SLOT, "timeoutMs"), false);
+  assert.equal(Object.hasOwn(AUTO_LISTING_AI_PHASE_POLICIES.PLAN_CONTENT, "timeoutMs"), false);
+});
+
+function manualTimers() {
+  let now = 0;
+  let sequence = 0;
+  const scheduled = [];
+  const timers = {
+    setTimeout(callback, delay) {
+      const handle = { at: now + delay, callback, cancelled: false, sequence: sequence += 1 };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) handle.cancelled = true;
+    },
+    async advanceBy(delay) {
+      const end = now + delay;
+      while (true) {
+        const next = scheduled
+          .filter((handle) => !handle.cancelled && handle.at <= end)
+          .sort((left, right) => left.at - right.at || left.sequence - right.sequence)[0];
+        if (!next) break;
+        next.cancelled = true;
+        now = next.at;
+        next.callback();
+        for (let index = 0; index < 8; index += 1) await Promise.resolve();
+      }
+      now = end;
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    },
+  };
+  return timers;
+}
+
+test("a paid rich phase may finish after the former outer deadline", async () => {
+  const harness = bossHarness();
+  const timers = manualTimers();
+  const message = { ...baseMessage, phase: "GENERATE_RICH_CONTENT" };
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    loadContext: async (value) => context(value, { status: "GENERATING" }),
+    orchestrate: async ({ message: current }) => new Promise((resolve) => {
+      timers.setTimeout(() => resolve(phaseOutcome(current, { outcome: "CONTENT_READY_FOR_REVIEW" })), 180_000);
+    }),
+    workflow: passthroughWorkflow,
+    logger: { log() {} },
+    timers,
+  });
+  await worker.start();
+
+  const processing = harness.handler()([{ id: "rich-boundary", data: message }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await timers.advanceBy(180_000);
+
+  assert.deepEqual(await processing, [{
+    id: "rich-boundary", status: "completed",
+    output: { disposition: "ACK", code: "CONTENT_READY_FOR_REVIEW" },
+  }]);
+  await worker.stop();
+});
+
 function phasePolicies(overrides = {}) {
   return Object.fromEntries(Object.keys(AUTO_LISTING_AI_PHASE_POLICIES).map((phase) => [
     phase,
-    { concurrency: 1, timeoutMs: 2_000, retryLimit: 0, retryDelayMs: 1, ...overrides[phase] },
+    { concurrency: 1, retryLimit: 0, retryDelayMs: 1, ...overrides[phase] },
   ]));
 }
 
@@ -261,10 +328,10 @@ test("a lost apply response returns failure, then the queue redelivery ACKs stal
   await worker.stop();
 });
 
-test("a never-resolving outcome persistence is bounded once and returned to pg-boss without recursive writes", async () => {
+test("outcome persistence may finish after the former database deadline without recursive writes", async () => {
   const harness = bossHarness();
   let applies = 0;
-  let lateResolve;
+  let finishPersistence;
   const worker = createAutoListingAiWorker({
     enabled: true,
     bossFactory: () => harness.boss,
@@ -273,28 +340,26 @@ test("a never-resolving outcome persistence is bounded once and returned to pg-b
     workflow: Object.freeze({
       async applyOutcome() {
         applies += 1;
-        await new Promise((resolve) => { lateResolve = resolve; });
+        await new Promise((resolve) => { finishPersistence = resolve; });
       },
     }),
     logger: { log() {} },
     phasePolicies: phasePolicies(),
-    timers: {
-      setTimeout(callback, delay) {
-        if (delay === 30_000) { queueMicrotask(callback); return Object.freeze({ persistence: true }); }
-        return setTimeout(callback, delay);
-      },
-      clearTimeout(handle) { if (!handle?.persistence) clearTimeout(handle); },
-    },
+    timers: { setTimeout, clearTimeout },
   });
   await worker.start();
 
-  assert.deepEqual(await harness.handler()([{ id: "stuck-persistence", data: baseMessage }]), [{
-    id: "stuck-persistence", status: "failed",
-    output: { disposition: "FAILED", code: "AUTO_LISTING_AI_PERSISTENCE_TIMEOUT" },
-  }]);
-  assert.equal(applies, 1);
-  lateResolve();
+  let settled = false;
+  const processing = harness.handler()([{ id: "slow-persistence", data: baseMessage }])
+    .then((result) => { settled = true; return result; });
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(applies, 1);
+  finishPersistence();
+  assert.deepEqual(await processing, [{
+    id: "slow-persistence", status: "completed",
+    output: { disposition: "ACK", code: "PLAN_READY" },
+  }]);
   assert.equal(applies, 1);
   await worker.stop();
 });
@@ -358,40 +423,78 @@ test("intermediate RETRY is not persisted, while exhausted RETRY and terminal FA
   }
 });
 
-test("retryable context and timeout failures are closed through the workflow before the queue job is acknowledged", async () => {
-  for (const scenario of ["context", "timeout"]) {
-    const harness = bossHarness();
-    const applied = [];
-    const worker = createAutoListingAiWorker({
-      enabled: true,
-      bossFactory: () => harness.boss,
-      loadContext: async (message) => {
-        if (scenario === "context") {
-          const error = new Error("postgres://raw-secret");
-          error.code = "AUTO_LISTING_AI_CONTEXT_DATABASE_FAILED";
-          error.retryable = true;
-          throw error;
-        }
-        return new Promise(() => {});
+test("gateway rate limiting is persisted after one attempt without consuming automatic retries", async () => {
+  const harness = bossHarness();
+  const applied = [];
+  let attempts = 0;
+  let retryTimers = 0;
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => {
+      attempts += 1;
+      return phaseOutcome(message, {
+        disposition: "RETRY", outcome: "FAILED", retryable: true,
+        failureCode: "AI_GATEWAY_RATE_LIMITED",
+      });
+    },
+    workflow: Object.freeze({ async applyOutcome(message, outcome) { applied.push([message, outcome]); } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 2 } }),
+    timers: {
+      setTimeout(callback, delay) {
+        if (delay === 1) { retryTimers += 1; queueMicrotask(callback); return Object.freeze({ retry: true }); }
+        return setTimeout(callback, delay);
       },
-      orchestrate: async () => { throw new Error("must not orchestrate"); },
-      workflow: Object.freeze({ async applyOutcome(message, outcome) { applied.push([message, outcome]); } }),
-      logger: { log() {} },
-      phasePolicies: phasePolicies({ PLAN_CONTENT: { timeoutMs: 5, retryLimit: 0 } }),
-      timers: { setTimeout, clearTimeout },
-    });
-    await worker.start();
-    const result = await harness.handler()([{ id: `closed-${scenario}`, data: baseMessage }]);
-    assert.equal(applied.length, 1);
-    assert.deepEqual(applied[0][0], baseMessage);
-    assert.equal(applied[0][1].disposition, "FAIL");
-    assert.equal(applied[0][1].retryable, true);
-    assert.equal(applied[0][1].failureCode, scenario === "timeout"
-      ? "AUTO_LISTING_AI_PHASE_TIMEOUT" : "AUTO_LISTING_AI_CONTEXT_DATABASE_FAILED");
-    assert.equal(result[0].status, "completed");
-    assert.equal(result[0].output.disposition, "FAIL");
-    await worker.stop();
-  }
+      clearTimeout(handle) { if (!handle?.retry) clearTimeout(handle); },
+    },
+  });
+  await worker.start();
+
+  const result = await harness.handler()([{ id: "rate-limited", data: baseMessage }]);
+
+  assert.equal(attempts, 1);
+  assert.equal(retryTimers, 0);
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0][1].disposition, "FAIL");
+  assert.equal(applied[0][1].retryable, true);
+  assert.equal(applied[0][1].failureCode, "AI_GATEWAY_RATE_LIMITED");
+  assert.deepEqual(result, [{
+    id: "rate-limited", status: "completed",
+    output: { disposition: "FAIL", code: "AI_GATEWAY_RATE_LIMITED" },
+  }]);
+  await worker.stop();
+});
+
+test("a retryable context failure is closed through the workflow before the queue job is acknowledged", async () => {
+  const harness = bossHarness();
+  const applied = [];
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    loadContext: async () => {
+      const error = new Error("postgres://raw-secret");
+      error.code = "AUTO_LISTING_AI_CONTEXT_DATABASE_FAILED";
+      error.retryable = true;
+      throw error;
+    },
+    orchestrate: async () => { throw new Error("must not orchestrate"); },
+    workflow: Object.freeze({ async applyOutcome(message, outcome) { applied.push([message, outcome]); } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 0 } }),
+    timers: { setTimeout, clearTimeout },
+  });
+  await worker.start();
+  const result = await harness.handler()([{ id: "closed-context", data: baseMessage }]);
+  assert.equal(applied.length, 1);
+  assert.deepEqual(applied[0][0], baseMessage);
+  assert.equal(applied[0][1].disposition, "FAIL");
+  assert.equal(applied[0][1].retryable, true);
+  assert.equal(applied[0][1].failureCode, "AUTO_LISTING_AI_CONTEXT_DATABASE_FAILED");
+  assert.equal(result[0].status, "completed");
+  assert.equal(result[0].output.disposition, "FAIL");
+  await worker.stop();
 });
 
 test("workflow persistence failure is returned to pg-boss so its durable retry policy can retry", async () => {
@@ -422,7 +525,7 @@ test("workflow persistence failure is returned to pg-boss so its durable retry p
   await worker.stop();
 });
 
-test("each phase retry policy must fit safely inside the dedicated queue job lifetime", () => {
+test("phase policy rejects obsolete application deadline fields", () => {
   let factories = 0;
   assert.throws(
     () => createAutoListingAiWorker({
@@ -554,7 +657,7 @@ test("stale and cancelled messages ACK after reload with zero orchestrator calls
     enabled: true,
     bossFactory: () => harness.boss,
     loadContext: async () => contexts.shift(),
-    orchestrate: async () => { orchestrations += 1; },
+    orchestrate: async ({ message }) => { orchestrations += 1; return phaseOutcome(message); },
     workflow: passthroughWorkflow,
     logger: { log() {} },
     phasePolicies: phasePolicies(),
@@ -669,37 +772,43 @@ test("phase policies independently bound concurrency and retry only stable retry
   await worker.stop();
 });
 
-test("a timed-out phase fails with one safe code and never starts an overlapping retry", async () => {
+test("a slow phase stays in flight and never starts an overlapping retry", async () => {
   const harness = bossHarness();
   const logs = [];
   let orchestrations = 0;
+  let finishPhase;
   const worker = createAutoListingAiWorker({
     enabled: true,
     bossFactory: () => harness.boss,
     loadContext: async (message) => context(message),
     orchestrate: async () => {
       orchestrations += 1;
-      return new Promise(() => {});
+      await new Promise((resolve) => { finishPhase = resolve; });
+      return phaseOutcome(baseMessage);
     },
     workflow: passthroughWorkflow,
     logger: { log(record) { logs.push(record); } },
-    phasePolicies: phasePolicies({ PLAN_CONTENT: { timeoutMs: 5, retryLimit: 2 } }),
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 2 } }),
     timers: { setTimeout, clearTimeout },
   });
   await worker.start();
 
-  assert.deepEqual(await harness.handler()([{ id: "timeout-a", data: baseMessage }]), [{
-    id: "timeout-a", status: "completed",
-    output: { disposition: "FAIL", code: "AUTO_LISTING_AI_PHASE_TIMEOUT" },
-  }]);
+  let settled = false;
+  const processing = harness.handler()([{ id: "slow-a", data: baseMessage }])
+    .then((result) => { settled = true; return result; });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(settled, false);
   assert.equal(orchestrations, 1);
-  assert.deepEqual(logs.at(-1), {
-    correlationId: "correlation-a", phase: "PLAN_CONTENT", code: "AUTO_LISTING_AI_PHASE_TIMEOUT",
-  });
+  finishPhase();
+  assert.deepEqual(await processing, [{
+    id: "slow-a", status: "completed",
+    output: { disposition: "ACK", code: "PLAN_READY" },
+  }]);
+  assert.equal(logs.some((entry) => entry.code === "AUTO_LISTING_AI_PHASE_TIMEOUT"), false);
   await worker.stop();
 });
 
-test("a stuck context reload is inside the phase timeout and cannot later start orchestration", async () => {
+test("a slow context reload may finish and then starts orchestration once", async () => {
   const harness = bossHarness();
   let releaseContext;
   let orchestrations = 0;
@@ -710,25 +819,25 @@ test("a stuck context reload is inside the phase timeout and cannot later start 
       await new Promise((resolve) => { releaseContext = resolve; });
       return context(message);
     },
-    orchestrate: async () => { orchestrations += 1; },
+    orchestrate: async ({ message }) => { orchestrations += 1; return phaseOutcome(message); },
     workflow: passthroughWorkflow,
     logger: { log() {} },
-    phasePolicies: phasePolicies({ PLAN_CONTENT: { timeoutMs: 5, retryLimit: 2 } }),
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 2 } }),
     timers: { setTimeout, clearTimeout },
   });
   await worker.start();
 
-  const result = await Promise.race([
-    harness.handler()([{ id: "context-timeout", data: baseMessage }]),
-    new Promise((resolve) => setTimeout(() => resolve("TEST_WAIT_EXCEEDED"), 50)),
-  ]);
-  assert.deepEqual(result, [{
-    id: "context-timeout", status: "completed",
-    output: { disposition: "FAIL", code: "AUTO_LISTING_AI_PHASE_TIMEOUT" },
-  }]);
+  let settled = false;
+  const processing = harness.handler()([{ id: "slow-context", data: baseMessage }])
+    .then((result) => { settled = true; return result; });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(settled, false);
   releaseContext();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(orchestrations, 0);
+  assert.deepEqual(await processing, [{
+    id: "slow-context", status: "completed",
+    output: { disposition: "ACK", code: "PLAN_READY" },
+  }]);
+  assert.equal(orchestrations, 1);
   await worker.stop();
 });
 

@@ -71,9 +71,10 @@ function categoryOf(item = {}) {
     const key = String(attribute?.key ?? attribute?.id ?? "").trim().slice(0, 80);
     if (!key) return [];
     const rawValue = attribute?.value ?? null;
-    const value = rawValue === null || typeof rawValue === "boolean"
-      || (typeof rawValue === "number" && Number.isFinite(rawValue))
-      || (typeof rawValue === "string" && rawValue.length <= 500) ? rawValue : null;
+    const value = typeof rawValue === "string" && rawValue.length <= 500
+      ? rawValue.replace(/[\u0000-\u0020\u007f]+/gu, " ").trim()
+      : rawValue === null || typeof rawValue === "boolean"
+        || (typeof rawValue === "number" && Number.isFinite(rawValue)) ? rawValue : null;
     const dictionaryValueId = Number(
       attribute?.dictionaryValueId ?? attribute?.dictionary_value_id,
     );

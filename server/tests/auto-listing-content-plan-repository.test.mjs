@@ -174,7 +174,7 @@ test("save accepts only closed persisted image evidence and rejects SOURCE_URL o
   assert.equal(db.queries.length, 0);
 });
 
-test("reserve locks the exact account job item, serializes all planner inputs, uses database time, and returns one fenced lease", async () => {
+test("reserve locks the exact account job item and its default lease covers the 240-second planner call", async () => {
   const db = scriptedPool((sql) => {
     if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };
     if (/FROM auto_listing_job_items/i.test(sql)) return { rows: [{ id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7, active_content_plan_id: null, planning_contract: "LEGACY_FULL_PLAN_V3" }], rowCount: 1 };
@@ -190,7 +190,6 @@ test("reserve locks the exact account job item, serializes all planner inputs, u
     token: () => "lease-a",
     id: () => "attempt-a",
     leaseOwner: "planner-a",
-    leaseMs: 90_000,
   });
 
   assert.deepEqual(await repository.reserveContentPlan(reservation()), {
@@ -210,11 +209,13 @@ test("reserve locks the exact account job item, serializes all planner inputs, u
   assert.doesNotMatch(sql, /new Date|Date\.now/i);
   const expireQuery = db.queries.find((entry) => /UPDATE auto_listing_content_plan_attempts/i.test(entry.text));
   const activeQuery = db.queries.find((entry) => /SELECT id(?:,input_hash)? FROM auto_listing_content_plan_attempts/i.test(entry.text));
+  assert.match(expireQuery.text, /planner_stage='FAILED'/i, "expired leases must satisfy the terminal stage constraint");
   assert.doesNotMatch(expireQuery.text, /input_hash=/i, "expired leases from a different planner input must not block this item");
   assert.doesNotMatch(activeQuery.text, /input_hash=/i, "only one live planner lease may exist per item across all inputs");
   const attemptInsert = db.queries.find((entry) => /INSERT INTO auto_listing_content_plan_attempts/i.test(entry.text));
   assert.match(attemptInsert.text, /planning_contract/i);
   assert.equal(attemptInsert.values.includes("LEGACY_FULL_PLAN_V3"), true);
+  assert.equal(attemptInsert.values.includes(300_000), true);
   assert.equal(db.releases(), 1);
 });
 

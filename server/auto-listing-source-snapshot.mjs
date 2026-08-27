@@ -79,6 +79,10 @@ function firstDefined(...values) {
   return values.at(-1);
 }
 
+function firstNonEmptyArray(...values) {
+  return values.find((value) => Array.isArray(value) && value.length > 0) || [];
+}
+
 function categorySnapshot({ accountId, categoryEvidence, sharedCategory }) {
   if (!plainObject(categoryEvidence) || !plainObject(sharedCategory)) {
     throw sourceError("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED");
@@ -119,7 +123,7 @@ function categorySnapshot({ accountId, categoryEvidence, sharedCategory }) {
   };
 }
 
-function priceEvidence(record, fallback, collectItem, currencyContext) {
+function priceEvidence(record, fallback, collectItem, currencyContext, { allowFallbackPrices = true } = {}) {
   const sourceCurrency = firstDefined(
     record?.currency,
     record?.currencyCode,
@@ -171,20 +175,27 @@ function priceEvidence(record, fallback, collectItem, currencyContext) {
     return String(result);
   };
   const explicitBlack = fact(record?.blackKopecks, record?.black_kopecks, record?.blackPriceKopecks,
-    fallback?.blackKopecks, fallback?.black_kopecks, fallback?.blackPriceKopecks, "");
+    ...(allowFallbackPrices
+      ? [fallback?.blackKopecks, fallback?.black_kopecks, fallback?.blackPriceKopecks]
+      : []), "");
   const explicitGreen = fact(record?.greenKopecks, record?.green_kopecks, record?.greenPriceKopecks,
-    fallback?.greenKopecks, fallback?.green_kopecks, fallback?.greenPriceKopecks, "");
+    ...(allowFallbackPrices
+      ? [fallback?.greenKopecks, fallback?.green_kopecks, fallback?.greenPriceKopecks]
+      : []), "");
+  const fallbackPrice = allowFallbackPrices ? fallback : null;
+  const collectedPrice = allowFallbackPrices ? collectItem : {};
+  const greenKopecks = explicitGreen === "" ? minorUnits(
+    record?.greenPrice, record?.green_price, record?.walletPrice, record?.wallet_price,
+    fallbackPrice?.greenPrice, fallbackPrice?.green_price, fallbackPrice?.walletPrice, fallbackPrice?.wallet_price,
+    collectedPrice.greenPrice, collectedPrice.green_price, collectedPrice.walletPrice, collectedPrice.wallet_price,
+  ) : explicitGreen;
   return {
     blackKopecks: explicitBlack === "" ? minorUnits(
       record?.blackPrice, record?.black_price, record?.marketingPrice, record?.marketing_price, record?.price,
-      fallback?.blackPrice, fallback?.black_price, fallback?.marketingPrice, fallback?.marketing_price, fallback?.price,
-      collectItem.blackPrice, collectItem.black_price, collectItem.marketingPrice, collectItem.marketing_price, collectItem.price,
+      fallbackPrice?.blackPrice, fallbackPrice?.black_price, fallbackPrice?.marketingPrice, fallbackPrice?.marketing_price, fallbackPrice?.price,
+      collectedPrice.blackPrice, collectedPrice.black_price, collectedPrice.marketingPrice, collectedPrice.marketing_price, collectedPrice.price,
     ) : explicitBlack,
-    greenKopecks: explicitGreen === "" ? minorUnits(
-      record?.greenPrice, record?.green_price, record?.walletPrice, record?.wallet_price,
-      fallback?.greenPrice, fallback?.green_price, fallback?.walletPrice, fallback?.wallet_price,
-      collectItem.greenPrice, collectItem.green_price, collectItem.walletPrice, collectItem.wallet_price,
-    ) : explicitGreen,
+    greenKopecks: greenKopecks === "" ? null : greenKopecks,
     currency,
     currencySource,
   };
@@ -214,7 +225,13 @@ function variantsSnapshot(draft, collectItem, currencyContext) {
       offerId: firstDefined(value.offerId, value.offer_id, ""),
       name: firstDefined(value.name, value.title, ""),
       price: firstDefined(value.price, value.priceKopecks, ""),
-      priceEvidence: priceEvidence(value, draft, collectItem, currencyContext),
+      priceEvidence: priceEvidence(
+        value,
+        sku === primarySku ? draft : null,
+        sku === primarySku ? collectItem : {},
+        currencyContext,
+        { allowFallbackPrices: sku === primarySku },
+      ),
       media: firstDefined(value.media, value.images, []),
       groupId: firstDefined(value.variantGroupId, value.groupId, value.group_id, null),
       relation: firstDefined(value.relation, value.variantRelation, value.groupEvidence, null),
@@ -335,6 +352,28 @@ export function verifyAutoListingSourceSnapshot(value = {}) {
   };
 }
 
+export function finalizeAutoListingSourceAttributes(capture, attributes) {
+  const verified = verifyAutoListingSourceSnapshot(capture);
+  if (!Array.isArray(attributes)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  const safeAttributes = jsonSafe(attributes);
+  const sourceVersion = crypto.createHash("sha256").update(JSON.stringify({
+    contract: "AUTO_LISTING_SOURCE_FACTS_V2",
+    sourceVersion: verified.snapshot.source.sourceVersion,
+    attributes: safeAttributes,
+  })).digest("hex");
+  const snapshot = normalizedSnapshot({
+    ...verified.snapshot,
+    identity: { ...verified.snapshot.identity, sourceVersion },
+    source: { ...verified.snapshot.source, sourceVersion },
+    attributes: safeAttributes,
+  });
+  return verifyAutoListingSourceSnapshot({
+    snapshot,
+    snapshotHash: crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+    rawResponseRef: verified.rawResponseRef,
+  });
+}
+
 export function verifyAutoListingBlockedSourceEvidence(value = {}) {
   const blockedEvidence = normalizedBlockedEvidence(value.blockedEvidence);
   assertBlockedEvidence(blockedEvidence);
@@ -423,7 +462,14 @@ export function buildAutoListingSourceSnapshot(input = {}) {
       productStyle: identifier(firstDefined(draft.productStyle, collectItem.productStyle, "UNKNOWN")) || "UNKNOWN",
     },
     targetCategory,
-    attributes: firstDefined(draft.attributes, draft.categoryAttributes, []),
+    attributes: firstNonEmptyArray(
+      draft.categoryAttributes,
+      draft.attributes,
+      draft.sourceCategory?.attributes,
+      collectItem.categoryAttributes,
+      collectItem.attributes,
+      collectItem.sourceCategory?.attributes,
+    ),
     logistics: firstDefined(draft.logistics, { packageWeight: draft.packageWeight || "", packageLength: draft.packageLength || "", packageWidth: draft.packageWidth || "", packageHeight: draft.packageHeight || "" }),
     productMeasurements: firstDefined(draft.productMeasurements, draft.product_measurements, draft.productDimensions, draft.product_dimensions, collectItem.productMeasurements, collectItem.productDimensions, {}),
     priceEvidence: priceEvidence(draft, null, collectItem, currencyContext),

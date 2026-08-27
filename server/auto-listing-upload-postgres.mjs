@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import { enqueueAutoListingUploadTask } from "./auto-listing-upload-task-postgres.mjs";
+import { normalizeAndHashAutoListingConfig } from "./auto-listing-contract.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const HASH = /^[a-f0-9]{64}$/u;
@@ -79,6 +80,47 @@ function canonical(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
 }
 const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
+const publicationPolicyDigest = (value) => crypto.createHash("sha256").update(JSON.stringify({
+  origin: value.origin,
+  baseUrl: value.baseUrl,
+  prefix: value.prefix,
+  publicationVersion: value.publicationVersion,
+}), "utf8").digest("hex");
+
+function effectiveFrozenConfig(row) {
+  const requested = Object.freeze({ config: row.config_snapshot, configHash: row.config_hash });
+  const audit = row.effective_image_config;
+  if (audit == null) return requested;
+  try {
+    if (!audit || typeof audit !== "object" || Array.isArray(audit)
+      || Reflect.ownKeys(audit).length !== 3
+      || !["roles", "total", "reasonCodes"].every((key) => Object.hasOwn(audit, key))
+      || !audit.roles || typeof audit.roles !== "object" || Array.isArray(audit.roles)
+      || !Array.isArray(audit.reasonCodes)) throw repositoryError();
+    const requestedRoles = row.config_snapshot?.image?.roles;
+    const roleKeys = ["main", "sellingPoint", "detail", "scene", "specification", "infographic"];
+    if (!requestedRoles || Reflect.ownKeys(audit.roles).length !== roleKeys.length
+      || roleKeys.some((key) => !Object.hasOwn(audit.roles, key)
+        || !Number.isSafeInteger(audit.roles[key]) || audit.roles[key] < 0
+        || (key !== "specification" && audit.roles[key] !== requestedRoles[key]))
+      || ![requestedRoles.specification, 0].includes(audit.roles.specification)) throw repositoryError();
+    const legacyReduced = requestedRoles.specification > 0 && audit.roles.specification === 0;
+    const dimensionsUnavailable = audit.reasonCodes.length === 1
+      && audit.reasonCodes[0] === "PRODUCT_DIMENSIONS_UNAVAILABLE";
+    if (audit.reasonCodes.length > 1
+      || (audit.reasonCodes.length === 1 && !dimensionsUnavailable)
+      || (dimensionsUnavailable && requestedRoles.specification === 0)
+      || (legacyReduced && !dimensionsUnavailable)
+      || audit.total !== roleKeys.reduce((sum, key) => sum + audit.roles[key], 0)) throw repositoryError();
+    return normalizeAndHashAutoListingConfig({
+      ...row.config_snapshot,
+      image: { ...row.config_snapshot.image, roles: audit.roles, total: audit.total },
+    });
+  } catch (error) {
+    if (isRepositoryError(error)) throw error;
+    throw repositoryError();
+  }
+}
 
 function mapLink(row) {
   if (!row) return null;
@@ -144,6 +186,11 @@ const CONTEXT_SQL = `
   SELECT item.id,item.id AS item_id,item.account_id,item.job_id,item.snapshot_id,item.status,item.status_version,
     item.target_store_id,item.target_warehouse_id,item.active_content_plan_id,
     job.config_snapshot,job.config_hash,job.upload_policy_version_id,job.warehouse_validation_evidence_id,
+    (SELECT event.details->'effectiveImageConfig'
+       FROM auto_listing_events AS event
+      WHERE event.account_id=item.account_id AND event.job_id=item.job_id AND event.item_id=item.id
+        AND event.event_type='SOURCE_CAPTURED'
+      ORDER BY event.created_at,event.id LIMIT 1) AS effective_image_config,
     source.snapshot_hash,
     base.id AS listing_base_id,base.source_snapshot_id,base.collect_item_id,base.product_draft_id,
     base.product_draft_version,base.product_draft_data_hash,base.ozon_ready_variants,
@@ -217,32 +264,61 @@ const CONTEXT_SQL = `
 `;
 
 const ASSETS_SQL = `
-  SELECT asset.id,asset.account_id,asset.job_id,asset.item_id,asset.plan_id,
+  SELECT DISTINCT ON (asset.visual_group_key,asset.slot_key)
+    asset.id,asset.account_id,asset.job_id,asset.item_id,asset.plan_id,
     asset.visual_group_key,asset.slot_key,asset.role,asset.status,asset.content_hash,asset.width,asset.height
   FROM ai_generation_assets AS asset
+  JOIN ai_content_plans AS plan
+    ON plan.account_id=asset.account_id AND plan.job_id=asset.job_id
+      AND plan.item_id=asset.item_id AND plan.id=asset.plan_id
+  CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'slots') AS planned_slot
   WHERE asset.account_id=$1 AND asset.item_id=$2 AND asset.plan_id=$3 AND asset.status='ACCEPTED'
-  ORDER BY asset.visual_group_key,asset.slot_key,asset.id
+    AND planned_slot->>'slotKey'=asset.slot_key
+    AND (plan.prompt_template_version NOT IN ('AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4','AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6')
+      OR jsonb_array_length(planned_slot->'claims')>0
+      OR asset.checker_result->>'textForbidden'='true')
+  ORDER BY asset.visual_group_key,asset.slot_key,asset.expected_status_version DESC NULLS LAST,
+    asset.created_at DESC,asset.id DESC
 `;
 
 const RICH_SQL = `
-  SELECT account_id,job_id,item_id,plan_id,rich_content,output_hash,asset_evidence,status
-  FROM ai_rich_content_results
-  WHERE account_id=$1 AND item_id=$2 AND plan_id=$3 AND status='ACCEPTED'
-  ORDER BY created_at,id
+  WITH accepted AS (
+    SELECT rich.*,MIN(asset->>'visualGroupKey') AS group_key,
+      COUNT(DISTINCT asset->>'visualGroupKey')::INTEGER AS group_count
+    FROM ai_rich_content_results AS rich
+    CROSS JOIN LATERAL jsonb_array_elements(rich.asset_evidence) AS asset
+    WHERE rich.account_id=$1 AND rich.item_id=$2 AND rich.plan_id=$3 AND rich.status='ACCEPTED'
+    GROUP BY rich.id
+  )
+  SELECT DISTINCT ON (group_key)
+    account_id,job_id,item_id,plan_id,rich_content,output_hash,asset_evidence,status
+  FROM accepted
+  WHERE group_count=1
+  ORDER BY group_key,accepted_at DESC NULLS LAST,created_at DESC,id DESC
 `;
 
 const PUBLICATIONS_SQL = `
-  SELECT asset.id,asset.account_id,asset.job_id,asset.item_id,asset.plan_id,
+  SELECT DISTINCT ON (asset.visual_group_key,asset.slot_key)
+    asset.id,asset.account_id,asset.job_id,asset.item_id,asset.plan_id,
     asset.visual_group_key,asset.slot_key,asset.role,asset.status,asset.content_hash,asset.width,asset.height,
     publication.public_url,publication.publication_version,publication.public_base_url,publication.public_prefix
   FROM ai_generation_assets AS asset
+  JOIN ai_content_plans AS plan
+    ON plan.account_id=asset.account_id AND plan.job_id=asset.job_id
+      AND plan.item_id=asset.item_id AND plan.id=asset.plan_id
+  CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'slots') AS planned_slot
   JOIN auto_listing_asset_publications AS publication
     ON publication.account_id=asset.account_id AND publication.job_id=asset.job_id
       AND publication.item_id=asset.item_id AND publication.plan_id=asset.plan_id
       AND publication.asset_id=asset.id AND publication.content_hash=asset.content_hash
   WHERE asset.account_id=$1 AND asset.item_id=$2 AND asset.plan_id=$3 AND asset.status='ACCEPTED'
     AND publication.publication_version=$4
-  ORDER BY asset.visual_group_key,asset.slot_key,asset.id
+    AND planned_slot->>'slotKey'=asset.slot_key
+    AND (plan.prompt_template_version NOT IN ('AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4','AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6')
+      OR jsonb_array_length(planned_slot->'claims')>0
+      OR asset.checker_result->>'textForbidden'='true')
+  ORDER BY asset.visual_group_key,asset.slot_key,asset.expected_status_version DESC NULLS LAST,
+    asset.created_at DESC,asset.id DESC
 `;
 
 const WAREHOUSE_SQL = `
@@ -256,6 +332,7 @@ const WAREHOUSE_SQL = `
 function contextFrom(row, assets, rich, warehouses, publications = []) {
   const base = listingBase(row);
   const selectedWarehouse = warehouses.find((warehouse) => warehouse.id === row.target_warehouse_id);
+  const effectiveConfig = effectiveFrozenConfig(row);
   return {
     item: { accountId: row.account_id, jobId: row.job_id, id: row.id, sourceSnapshotId: row.snapshot_id,
       status: row.status, statusVersion: Number(row.status_version), targetStoreId: row.target_store_id,
@@ -264,6 +341,7 @@ function contextFrom(row, assets, rich, warehouses, publications = []) {
     listingBaseId: row.listing_base_id,
     listingBase: base,
     frozenConfig: { config: row.config_snapshot, configHash: row.config_hash },
+    effectiveFrozenConfig: effectiveConfig,
     targetWarehousePlatformId: selectedWarehouse?.warehouse_id || null,
     warehouseFulfillmentType: String(selectedWarehouse?.warehouse_type || "").trim().toUpperCase() || null,
     creationWarehouseValidation: row.warehouse_validation_evidence_id ? {
@@ -491,7 +569,7 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
         || input.productDraft?.id !== id(input.productDraft?.id)
         || !Number.isSafeInteger(input.productDraft?.version) || input.productDraft.version < 1
         || !HASH.test(input.productDraft?.dataHash || "") || !publicationPolicy
-        || digest(publicationPolicy) !== values.publicationPolicyHash
+        || publicationPolicyDigest(publicationPolicy) !== values.publicationPolicyHash
         || !["FBS", "RFBS"].includes(values.warehouseFulfillmentType)
         || (values.warehouseFulfillmentType === "RFBS") !== Boolean(values.creationWarehouseValidationEvidenceId)
         || (values.warehouseFulfillmentType === "RFBS") !== Boolean(warehouseValidation)

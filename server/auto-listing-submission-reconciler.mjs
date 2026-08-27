@@ -65,6 +65,11 @@ function safeVariants(raw) {
   }));
 }
 
+function richContentRejected(submission) {
+  return safeVariants(submission?.items)
+    .some((item) => item.errorCode === "OZON_RICH_CONTENT_REJECTED");
+}
+
 function safeCategoryRecovery(value) {
   if (value === null || value === undefined) return null;
   const keys = ["attemptId", "status", "originalOzonTaskId", "retryOzonTaskId",
@@ -173,6 +178,11 @@ function mapping(evidence) {
       enqueueNextCheck: true, allowResubmission: false,
     };
   }
+  if (status === "SUCCEEDED" && richContentRejected(submission)) return {
+    itemStatus: "BLOCKED", linkStatus: "BLOCKED",
+    failureCode: "OZON_RICH_CONTENT_REJECTED_REQUIRES_REVIEW",
+    enqueueNextCheck: false, allowResubmission: false,
+  };
   if (status === "SUCCEEDED") return {
     itemStatus: "SUCCEEDED", linkStatus: "SUCCEEDED", failureCode: null,
     enqueueNextCheck: false, allowResubmission: false,

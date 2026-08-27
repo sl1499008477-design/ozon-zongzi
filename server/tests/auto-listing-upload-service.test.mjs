@@ -10,6 +10,12 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === "object"
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+const publishedPolicyDigest = (value) => crypto.createHash("sha256").update(JSON.stringify({
+  origin: value.origin,
+  baseUrl: value.baseUrl,
+  prefix: value.prefix,
+  publicationVersion: value.publicationVersion,
+})).digest("hex");
 const accountId = "account-a";
 const actor = { id: accountId, role: "admin" };
 
@@ -59,7 +65,8 @@ function evidence() {
   return {
     item: { accountId, jobId: "job-1", id: "item-1", sourceSnapshotId: "snapshot-source-1", status: "UPLOAD_QUEUED", statusVersion: 7,
       targetStoreId: "store-1", targetWarehouseId: "warehouse-db-1", activePlanId: "plan-1" },
-    sourceHash: "b".repeat(64), listingBaseId: "base-1", listingBase: base, frozenConfig,
+    sourceHash: "b".repeat(64), listingBaseId: "base-1", listingBase: base,
+    frozenConfig, effectiveFrozenConfig: frozenConfig,
     targetWarehousePlatformId: "warehouse-platform-1",
     warehouseFulfillmentType: "FBS",
     creationWarehouseValidation: null,
@@ -78,7 +85,7 @@ function evidence() {
       warehouseStocks: [{ warehouseId: "warehouse-platform-1", source: "fbs" }] }],
     uploadPolicy: { id: "policy-1", accountId, version: 1, mode: "REVIEW", enabled: true,
       publishedBy: accountId, publishedAt: "2026-08-08T00:00:00.000Z",
-      publicationPolicy, publicationPolicyHash: digest(publicationPolicy) },
+      publicationPolicy, publicationPolicyHash: publishedPolicyDigest(publicationPolicy) },
   };
 }
 
@@ -167,6 +174,10 @@ function harness(overrides = {}) {
       return { duplicate: false, job: { id: "submission-job-1", snapshotId: "submission-snapshot-1", status: "QUEUE_PENDING" } };
     },
     async findSubmission() { return null; },
+    async checkPublicationHealth(input) {
+      state.calls.push(["health", input]);
+      return { accountId: input.accountId, outcome: "PASSED", evidenceId: "health-evidence-current" };
+    },
     async assertDirectSystemReady() { return { ready: true }; },
     async assertDirectReady() { return { ready: true, evidenceId: "health-evidence-1" }; },
     rfbsWarehouseVerifier: {
@@ -209,13 +220,59 @@ test("review upload publishes accepted assets and delegates only the typed overl
   assert.equal(submission.collectItem.listingDraft.richContent, undefined);
   assert.equal(submission.normalizedItems[0].images.length, 6);
   assert.equal(submission.normalizedItems[0].primary_image, "https://cdn.example.com/asset-1.jpg");
+  assert.equal(submission.normalizedItems[0].attributes.some((attribute) => Number(attribute.id) === 11254), true);
   assert.equal(submission.stocks[0].warehouse_id, "warehouse-platform-1");
   assert.match(submission.idempotencyKey, /^auto-listing:item-1:[a-f0-9]{64}$/);
   assert.deepEqual(submission.versions, { categoryRuleVersion: "cat-v1", dictionaryVersion: "dict-v1",
-    richContentRuleVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V1_UNVERIFIED" });
+    richContentRuleVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V2" });
   assert.deepEqual(submission.frozenProductDraft, state.context.productDraft);
   assert.equal(state.calls.find(([kind]) => kind === "bind")[1].claimToken, "claim-1");
   assert.equal(state.attempts[0].outcome, "SUCCEEDED");
+  assert.ok(state.calls.findIndex(([kind]) => kind === "health")
+    < state.calls.findIndex(([kind]) => kind === "publish"));
+});
+
+test("review upload stops before publication when the public media endpoint is unavailable", async () => {
+  const { service, state } = harness({
+    async checkPublicationHealth(input) {
+      state.calls.push(["health", input]);
+      return { accountId: input.accountId, outcome: "FAILED", evidenceId: "health-evidence-failed" };
+    },
+  });
+
+  await assert.rejects(service.submitAutoListingItem(request()), {
+    code: "AUTO_LISTING_PUBLICATION_NOT_READY", retryable: true,
+  });
+  assert.equal(state.calls.some(([kind]) => ["publish", "reserve", "submit"].includes(kind)), false);
+});
+
+test("review upload accepts the exact policy hash emitted by the admin publication boundary", async () => {
+  const { service, state } = harness();
+  state.context.uploadPolicy.publicationPolicyHash = publishedPolicyDigest(
+    state.context.uploadPolicy.publicationPolicy,
+  );
+
+  const result = await service.submitAutoListingItem(request());
+
+  assert.equal(result.status, "SUBMITTED");
+});
+
+test("upload uses the frozen per-item image config when unavailable dimensions removed the size slot", async () => {
+  const { service, state } = harness();
+  state.context.frozenConfig = normalizeAndHashAutoListingConfig({
+    ...state.context.frozenConfig.config,
+    image: {
+      ...state.context.frozenConfig.config.image,
+      roles: { ...state.context.frozenConfig.config.image.roles, specification: 1 },
+      total: state.context.frozenConfig.config.image.total + 1,
+    },
+  });
+
+  const result = await service.submitAutoListingItem(request());
+
+  assert.equal(result.status, "SUBMITTED");
+  assert.equal(state.calls.find(([name]) => name === "reserve")[1].configHash,
+    state.context.frozenConfig.configHash);
 });
 
 test("RFBS revalidates before publication and binds the reserved fresh evidence to the standard submission", async () => {
@@ -404,12 +461,14 @@ test("a failed durable block write propagates instead of completing the upload t
   });
 });
 
-test("DIRECT blocks the current unverified rich-content upload contract before publication", async () => {
+test("DIRECT submits the verified rich-content contract through the shared idempotent pipeline", async () => {
   const { service, state } = harness({ directUploadAllowed: true });
   state.context.item.status = "UPLOAD_QUEUED";
   state.context.uploadPolicy.mode = "DIRECT";
-  await assert.rejects(service.submitAutoListingItem(request()), { code: "AUTO_LISTING_DIRECT_RICH_CONTENT_UNVERIFIED" });
-  assert.equal(state.calls.some(([kind]) => ["publish", "reserve", "submit"].includes(kind)), false);
+  const result = await service.submitAutoListingItem(request());
+  assert.equal(result.status, "SUBMITTED");
+  const submission = state.calls.find(([kind]) => kind === "submit")[1];
+  assert.equal(submission.normalizedItems[0].attributes.some((attribute) => Number(attribute.id) === 11254), true);
 });
 
 test("DIRECT rejects unknown rich-content contract versions instead of inferring verification from their names", async () => {
@@ -465,10 +524,6 @@ test("DIRECT freezes its current readiness evidence on the link and every upload
     directUploadAllowed: true,
     async assertDirectSystemReady() { readinessCalls.push("system"); return { ready: true }; },
     async assertDirectReady() { readinessCalls.push("publication"); return { ready: true, evidenceId: "health-evidence-current" }; },
-    buildSubmissionDraft(input) {
-      const draft = buildAutoListingSubmissionDraft(input);
-      return { ...draft, versions: { ...draft.versions, richContentRuleVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V1" } };
-    },
   });
   state.context.uploadPolicy.mode = "DIRECT";
 

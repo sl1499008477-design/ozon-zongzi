@@ -9,8 +9,19 @@ const ROLE_LABELS = Object.freeze({
   SELLING_POINT: "卖点图",
   DETAIL: "细节图",
   SCENE: "场景图",
-  SPECIFICATION: "尺寸图",
+  SPECIFICATION: "产品实拍图",
   INFOGRAPHIC: "信息图",
+});
+const SUBSTITUTION_REASON_LABELS = Object.freeze({
+  PRODUCT_DIMENSIONS_UNAVAILABLE: "历史任务缺少可信参数",
+});
+const MANUAL_REVIEW_WARNING_LABELS = Object.freeze({
+  CATEGORY_STYLE_MISMATCH: "与类目策略风格存在偏差",
+  ROLE_MISMATCH: "图片没有充分完成当前角色任务",
+  DETAIL_NOT_CLOSEUP: "细节图的局部特写不够明确",
+  SUBJECT_NOT_DOMINANT: "商品主体不够突出",
+  LABEL_OVERLAP: "信息标签遮挡了商品主体",
+  LABEL_READABILITY_LOW: "标签在缩略图下不易阅读",
 });
 const MAX_RICH_PREVIEW_BYTES = (20 * 8192) + 19;
 
@@ -97,11 +108,24 @@ function visualGroupsDto(groups) {
 }
 
 function imagesDto(images, accountId, itemId, visualGroupKeys) {
-  if (!Array.isArray(images) || images.length > 64) throw viewError();
+  if (!Array.isArray(images) || images.length > visualGroupKeys.size * 13) throw viewError();
   for (const image of images) scoped(image, accountId);
   return images.filter((image) => image.accepted === true).map((image) => {
     const role = text(image.role, 80);
     if (!Object.hasOwn(ROLE_LABELS, role)) throw viewError();
+    const requestedRole = image.requestedRole === undefined || image.requestedRole === null
+      ? role : text(image.requestedRole, 80);
+    if (!Object.hasOwn(ROLE_LABELS, requestedRole)) throw viewError();
+    const substitutionReasonCode = image.substitutionReasonCode === undefined || image.substitutionReasonCode === null
+      ? null : text(image.substitutionReasonCode, 160);
+    if ((requestedRole === role && substitutionReasonCode !== null)
+      || (requestedRole !== role && (requestedRole !== "SPECIFICATION"
+        || role === "SPECIFICATION" || substitutionReasonCode !== "PRODUCT_DIMENSIONS_UNAVAILABLE"))) throw viewError();
+    const warnings = image.manualReviewWarnings === undefined ? [] : image.manualReviewWarnings;
+    if (!Array.isArray(warnings) || warnings.length > 6 || new Set(warnings).size !== warnings.length
+      || warnings.some((code) => typeof code !== "string" || !Object.hasOwn(MANUAL_REVIEW_WARNING_LABELS, code))) {
+      throw viewError();
+    }
     const assetId = id(image.id);
     const visualGroupKey = id(image.visualGroupKey ?? image.visual_group_key);
     if (!visualGroupKeys.has(visualGroupKey)) throw viewError();
@@ -110,6 +134,13 @@ function imagesDto(images, accountId, itemId, visualGroupKeys) {
       visualGroupKey,
       role,
       roleLabel: ROLE_LABELS[role],
+      requestedRole,
+      requestedRoleLabel: ROLE_LABELS[requestedRole],
+      substitutionReasonCode,
+      substitutionReasonLabel: substitutionReasonCode === null
+        ? "" : `${SUBSTITUTION_REASON_LABELS[substitutionReasonCode]}，已改用${ROLE_LABELS[role]}`,
+      manualReviewWarnings: [...warnings],
+      manualReviewWarningLabels: warnings.map((code) => MANUAL_REVIEW_WARNING_LABELS[code]),
       slotKey: id(image.slotKey ?? image.slot_key),
       accepted: true,
       url: imageUrl(image.publicUrl ?? image.public_url, itemId, assetId),

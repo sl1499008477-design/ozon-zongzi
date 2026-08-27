@@ -7,15 +7,16 @@ const actor = Object.freeze({ id: "account-a", role: "user" });
 const config = Object.freeze({
   targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
   priceAdjustmentKopecks: "100",
+  brandMode: "PREFER_SOURCE",
   image: { ratio: "3:4", resolution: "1K", quality: "Medium", language: "ru",
     roles: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 } },
 });
 
-function harness() {
+function harness({ preference = null } = {}) {
   const calls = [];
   const service = createAutoListingUserWorkflowService({
     preferencesRepository: {
-      async getPreferences(input) { calls.push(["getPreferences", input]); return null; },
+      async getPreferences(input) { calls.push(["getPreferences", input]); return preference; },
       async savePreferences(input) { calls.push(["savePreferences", input]); return { ...input.config, configVersion: 1 }; },
     },
     importRepository: {
@@ -41,6 +42,35 @@ function harness() {
   return { service, calls };
 }
 
+test("preference overview migrates only the unversioned legacy eight-image default", async () => {
+  const legacy = {
+    accountId: "account-a",
+    ...config,
+    configVersion: 7,
+  };
+  const migrated = await harness({ preference: legacy }).service.getOverview({ actor, importLimit: 50 });
+  assert.deepEqual(migrated.preference.image.roles, {
+    main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1,
+  });
+  assert.equal(migrated.preference.image.total, 6);
+
+  const current = await harness({
+    preference: { ...legacy, imageDefaultsVersion: 2 },
+  }).service.getOverview({ actor, importLimit: 50 });
+  assert.equal(current.preference.image.total, 8);
+
+  const custom = await harness({
+    preference: {
+      ...legacy,
+      image: {
+        ...legacy.image,
+        roles: { main: 1, sellingPoint: 2, detail: 2, scene: 1, specification: 1, infographic: 1 },
+      },
+    },
+  }).service.getOverview({ actor, importLimit: 50 });
+  assert.equal(custom.preference.image.total, 8);
+});
+
 test("ordinary users read only their preferences and safe import progress", async () => {
   const { service, calls } = harness();
   const result = await service.getOverview({ actor, importLimit: 50 });
@@ -62,12 +92,14 @@ test("preference writes freeze the normalized config and version authority", asy
     actor, config, expectedVersion: 0, idempotencyKey: "pref-a", correlationId: "corr-a",
   });
   assert.equal(result.configVersion, 1);
+  assert.equal(result.brandMode, "PREFER_SOURCE");
   const saved = calls[0][1];
   assert.equal(saved.accountId, "account-a");
   assert.equal(saved.actorId, "account-a");
   assert.equal(saved.expectedVersion, 0);
   assert.match(saved.configHash, /^[a-f0-9]{64}$/u);
   assert.deepEqual(saved.config.image.total, 8);
+  assert.equal(saved.config.brandMode, "PREFER_SOURCE");
 });
 
 test("Excel creation injects only the authenticated actor and returns a safe DTO", async () => {

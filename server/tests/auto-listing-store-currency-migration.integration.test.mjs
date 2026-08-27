@@ -10,8 +10,16 @@ const databaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(databaseUrl);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migration = path.join(__dirname, "../db/migrations/062_auto_listing_store_currency.sql");
+const v3Migration = path.join(__dirname, "../db/migrations/092_auto_listing_listing_base_v3_currency.sql");
 const schema = `store_currency_${crypto.randomUUID().replaceAll("-", "")}`;
 const quote = (value) => `"${value.replaceAll('"', '""')}"`;
+
+test("092 admits only currency-consistent V3 listing bases", async () => {
+  const sql = await readFile(v3Migration, "utf8");
+  assert.match(sql, /AUTO_LISTING_LISTING_BASE_V3/u);
+  assert.match(sql, /variant->'pricingEvidence'->>'currency' IS DISTINCT FROM evidence_currency/u);
+  assert.doesNotMatch(sql, /DROP\s+(?:TABLE|COLUMN)|TRUNCATE|DELETE\s+FROM/iu);
+});
 
 test("062 preserves V1 RUB and enforces V2 store and variant currency", { skip: !enabled }, async () => {
   const pool = new Pool({ connectionString: databaseUrl });
@@ -73,6 +81,26 @@ test("062 preserves V1 RUB and enforces V2 store and variant currency", { skip: 
         "INSERT INTO auto_listing_listing_bases VALUES ($1,$2,$3,$4,$5,true,$6)",
         [id, accountId, storeId, JSON.stringify(evidence), JSON.stringify(variants), version],
       ), (error) => ["23514", "23503"].includes(error?.code), id);
+    }
+
+    await client.query(await readFile(v3Migration, "utf8"));
+    const cnyV3Variants = [{
+      item: { currency_code: "CNY" },
+      pricingEvidence: { ...cnyEvidence, evidenceHash: "c".repeat(64) },
+    }];
+    await client.query(
+      "INSERT INTO auto_listing_listing_bases VALUES ('v3-cny','account-a','cny',$1,$2,true,'AUTO_LISTING_LISTING_BASE_V3')",
+      [cnyEvidence, JSON.stringify(cnyV3Variants)],
+    );
+    for (const [id, evidence, variants, version] of [
+      ["v3-item-mismatch", cnyEvidence, [{ ...cnyV3Variants[0], item: { currency_code: "RUB" } }], "AUTO_LISTING_LISTING_BASE_V3"],
+      ["v3-price-mismatch", cnyEvidence, [{ ...cnyV3Variants[0], pricingEvidence: { ...cnyV3Variants[0].pricingEvidence, currency: "RUB" } }], "AUTO_LISTING_LISTING_BASE_V3"],
+      ["v4-unknown", cnyEvidence, cnyV3Variants, "AUTO_LISTING_LISTING_BASE_V4"],
+    ]) {
+      await assert.rejects(client.query(
+        "INSERT INTO auto_listing_listing_bases VALUES ($1,'account-a','cny',$2,$3,true,$4)",
+        [id, JSON.stringify(evidence), JSON.stringify(variants), version],
+      ), { code: "23514" }, id);
     }
     await assert.rejects(client.query("UPDATE auto_listing_listing_bases SET target_store_id='rub' WHERE id='v2-cny'"), { code: "23514" });
   } finally {

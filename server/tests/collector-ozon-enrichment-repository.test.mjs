@@ -588,6 +588,59 @@ test("JSON claim prioritizes the polling session preferred job before older gene
   assert.equal(claimed.id, "job-preferred-newer");
 });
 
+test("JSON claim prioritizes new linked collection work before retries and unlinked requests", async () => {
+  const due = "2026-07-31T00:00:00.000Z";
+  const deadline = "9999-12-31T23:59:59.999Z";
+  const job = (overrides) => ({
+    accountId: "account-a",
+    status: "PENDING",
+    preferredSessionId: null,
+    claimedSessionId: null,
+    claimExpiresAt: null,
+    nextAttemptAt: due,
+    deadlineAt: deadline,
+    createdAt: due,
+    attemptCount: 0,
+    refreshBundle: {},
+    ...overrides,
+  });
+  const state = {
+    collectorSessions: [activeSession("collector-a", "account-a")],
+    collectorOzonEnrichmentJobs: [
+      job({
+        id: "job-unlinked-preferred",
+        requestId: "request-unlinked-preferred",
+        sku: "sku-unlinked-preferred",
+        preferredSessionId: "collector-a",
+      }),
+      job({
+        id: "job-linked-retry",
+        collectItemId: "collect-linked-retry",
+        requestId: "request-linked-retry",
+        sku: "sku-linked-retry",
+        attemptCount: 3,
+      }),
+      job({
+        id: "job-linked-new",
+        collectItemId: "collect-linked-new",
+        requestId: "request-linked-new",
+        sku: "sku-linked-new",
+        createdAt: "2026-07-31T00:00:00.500Z",
+      }),
+    ],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+
+  const claimed = await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    now: new Date("2026-07-31T00:00:00.750Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:05.750Z"),
+  });
+
+  assert.equal(claimed.id, "job-linked-new");
+});
+
 test("JSON drops an expired cached executor preference instead of blocking a new job", async () => {
   const state = {
     collectorSessions: [activeSession("collector-expired", "account-a", {
@@ -1608,6 +1661,10 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
   assert.match(calls[5].sql, /account_id=\$1/);
   assert.match(calls[5].sql, /claimed_session_id=\$2/);
   assert.match(calls[5].sql, /job\.created_at \+ INTERVAL '1 second'<=\$3/);
+  assert.match(
+    calls[5].sql,
+    /ORDER BY CASE WHEN job\.collect_item_id IS NOT NULL THEN 0 ELSE 1 END, CASE WHEN job\.attempt_count=0 THEN 0 ELSE 1 END, CASE WHEN job\.preferred_session_id=\$2 THEN 0 ELSE 1 END/,
+  );
   assert.match(calls[5].sql, /claim_expires_at=LEAST\(\$4, job\.deadline_at\)/);
   assert.equal(calls.at(-1).sql, "COMMIT");
 

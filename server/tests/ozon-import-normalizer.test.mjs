@@ -545,6 +545,25 @@ async function testFollowSellPayloadToOzonImportItem() {
   assert.equal(item.complex_attributes[0].attributes[0].id, 100001);
 }
 
+async function testListingDraftTitleWinsBeforeSkuFallback() {
+  const result = await normalize([{
+    offer_id: "jz-test-2916074139",
+    title: "Светильник с датчиком движения, 50 см, свет холодный, набор 2 штуки",
+    scraped_sku: "2916074139",
+    price: "100.00",
+    images: ["https://cdn.example.test/title-fallback.jpg"],
+    description_category_id: 17031664,
+    type_id: 971001,
+  }]);
+
+  assert.equal(result.warnings.length, 0);
+  assert.equal(result.items.length, 1);
+  assert.equal(
+    result.items[0].name,
+    "Светильник с датчиком движения, 50 см, свет холодный, набор 2 штуки",
+  );
+}
+
 async function testStrictTypeMatchFailsFast() {
   await assert.rejects(
     () => normalize([
@@ -1016,6 +1035,7 @@ async function testNonCategoryFailureKeepsWarningWhenStrictTypeMatchIsFalse() {
 }
 
 await testFollowSellPayloadToOzonImportItem();
+await testListingDraftTitleWinsBeforeSkuFallback();
 await testStrictTypeMatchFailsFast();
 await testSourceCategoryStrictUsesOnlyFrozenUniqueMatch();
 await testSourceCategoryStrictRequiresEveryRequiredAttribute();

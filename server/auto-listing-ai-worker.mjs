@@ -10,12 +10,11 @@ import {
   isSafeAutoListingAiIdentifier,
   normalizeAutoListingAiMessage,
 } from "./auto-listing-ai-message.mjs";
-
 const FACTORY_KEYS = new Set([
   "enabled", "bossFactory", "loadContext", "orchestrate", "workflow", "logger", "phasePolicies", "timers",
 ]);
 const WORKFLOW_KEYS = new Set(["applyOutcome"]);
-const POLICY_KEYS = new Set(["concurrency", "timeoutMs", "retryLimit", "retryDelayMs"]);
+const POLICY_KEYS = new Set(["concurrency", "retryLimit", "retryDelayMs"]);
 const CONTEXT_KEYS = new Set([
   "accountId", "jobId", "itemId", "status", "statusVersion", "activeContentPlanId", "phaseInput",
 ]);
@@ -26,24 +25,21 @@ const OUTCOME_DISPOSITIONS = new Set(["ACK", "RETRY", "FAIL"]);
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
 const SENSITIVE_CODE_FRAGMENT = /(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|CREDENTIAL|AUTHORIZATION|BEARER|COOKIE|SESSION_?ID|PRIVATE_?KEY)/u;
 const MAX_CONCURRENCY = 16;
-const MAX_TIMEOUT_MS = 300_000;
 const MAX_RETRY_LIMIT = 2;
 const MAX_RETRY_DELAY_MS = 60_000;
-const QUEUE_EXECUTION_MARGIN_MS = Math.max(
-  60_000,
-  AUTO_LISTING_AI_QUEUE_OPTIONS.heartbeatSeconds * 2 * 1_000,
-);
-const MAX_PHASE_BUDGET_MS = (AUTO_LISTING_AI_QUEUE_OPTIONS.expireInSeconds * 1_000)
-  - QUEUE_EXECUTION_MARGIN_MS;
-const PERSISTENCE_TIMEOUT_MS = 30_000;
 const STOP_TIMEOUT_MS = 300_000;
+const RETRY_AFTER_EXTERNAL_ACTION = new Set(["AI_GATEWAY_RATE_LIMITED"]);
 
 export const AUTO_LISTING_AI_PHASE_POLICIES = Object.freeze({
-  PLAN_CONTENT: Object.freeze({ concurrency: 2, timeoutMs: 120_000, retryLimit: 2, retryDelayMs: 1_000 }),
-  MATERIALIZE_SOURCE_ASSET: Object.freeze({ concurrency: 4, timeoutMs: 60_000, retryLimit: 2, retryDelayMs: 500 }),
-  FINALIZE_MATERIALIZED_PLAN: Object.freeze({ concurrency: 2, timeoutMs: 30_000, retryLimit: 2, retryDelayMs: 500 }),
-  GENERATE_IMAGE_SLOT: Object.freeze({ concurrency: 4, timeoutMs: 180_000, retryLimit: 2, retryDelayMs: 2_000 }),
-  GENERATE_RICH_CONTENT: Object.freeze({ concurrency: 2, timeoutMs: 120_000, retryLimit: 2, retryDelayMs: 1_000 }),
+  PLAN_CONTENT: Object.freeze({ concurrency: 2, retryLimit: 2, retryDelayMs: 1_000 }),
+  MATERIALIZE_SOURCE_ASSET: Object.freeze({ concurrency: 4, retryLimit: 2, retryDelayMs: 500 }),
+  FINALIZE_MATERIALIZED_PLAN: Object.freeze({ concurrency: 2, retryLimit: 2, retryDelayMs: 500 }),
+  GENERATE_IMAGE_SLOT: Object.freeze({ concurrency: 1, retryLimit: 0, retryDelayMs: 2_000 }),
+  GENERATE_RICH_CONTENT: Object.freeze({
+    concurrency: 2,
+    retryLimit: 2,
+    retryDelayMs: 1_000,
+  }),
 });
 
 function failureOutcome(message, error) {
@@ -130,12 +126,9 @@ function normalizePolicies(value) {
     const policy = value[phase];
     if (!exactKeys(policy, POLICY_KEYS)
       || !Number.isInteger(policy.concurrency) || policy.concurrency < 1 || policy.concurrency > MAX_CONCURRENCY
-      || !Number.isInteger(policy.timeoutMs) || policy.timeoutMs < 1 || policy.timeoutMs > MAX_TIMEOUT_MS
       || !Number.isInteger(policy.retryLimit) || policy.retryLimit < 0 || policy.retryLimit > MAX_RETRY_LIMIT
       || !Number.isInteger(policy.retryDelayMs) || policy.retryDelayMs < 1
-      || policy.retryDelayMs > MAX_RETRY_DELAY_MS
-      || (policy.timeoutMs * (policy.retryLimit + 1))
-        + (policy.retryDelayMs * ((2 ** policy.retryLimit) - 1)) >= MAX_PHASE_BUDGET_MS) {
+      || policy.retryDelayMs > MAX_RETRY_DELAY_MS) {
       throw workerError("AUTO_LISTING_AI_WORKER_INVALID");
     }
     result[phase] = Object.freeze({ ...policy });
@@ -175,30 +168,6 @@ function createLimiter(limit) {
     active += 1;
     try { return await operation(); } finally { release(); }
   };
-}
-
-function withTimeout(operationFactory, timeoutMs, timers, timeoutCode = "AUTO_LISTING_AI_PHASE_TIMEOUT") {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let timedOut = false;
-    const timeout = timers.setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      timedOut = true;
-      reject(workerError(timeoutCode, true));
-    }, timeoutMs);
-    Promise.resolve().then(() => operationFactory(() => timedOut)).then((value) => {
-      if (settled) return;
-      settled = true;
-      timers.clearTimeout(timeout);
-      resolve(value);
-    }, (error) => {
-      if (settled) return;
-      settled = true;
-      timers.clearTimeout(timeout);
-      reject(error);
-    });
-  });
 }
 
 function waitBeforeRetry(policy, attempt, timers) {
@@ -291,42 +260,34 @@ export function createAutoListingAiWorker(config = {}) {
     } catch {}
   }
 
-  async function executePhaseAttempt(message, policy, finalAttempt) {
-    return withTimeout(async (timedOut) => {
-      const loaded = await loadContext(message);
-      if (timedOut()) throw workerError("AUTO_LISTING_AI_PHASE_TIMEOUT", true);
-      const context = normalizeContext(loaded, message);
-      if (!context || context.statusVersion !== message.expectedStatusVersion) {
-        return Object.freeze({
-          persist: false,
-          outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
-        });
-      }
-      if (context.status === "CANCELLED") {
-        return Object.freeze({
-          persist: false,
-          outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_ITEM_CANCELLED" }),
-        });
-      }
-      assertCurrentPhaseInput(context);
-      if (timedOut()) throw workerError("AUTO_LISTING_AI_PHASE_TIMEOUT", true);
-      const outcome = await orchestrate({ message, context });
-      let normalized = normalizeOrchestratorOutcome(outcome, message);
-      if (normalized.disposition === "RETRY" && !finalAttempt) {
-        return Object.freeze({ persist: false, outcome: normalized });
-      }
-      if (normalized.disposition === "RETRY") normalized = terminalizeRetryOutcome(normalized);
-      return Object.freeze({ persist: true, outcome: normalized });
-    }, policy.timeoutMs, timers);
+  async function executePhaseAttempt(message, finalAttempt) {
+    const loaded = await loadContext(message);
+    const context = normalizeContext(loaded, message);
+    if (!context || context.statusVersion !== message.expectedStatusVersion) {
+      return Object.freeze({
+        persist: false,
+        outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
+      });
+    }
+    if (context.status === "CANCELLED") {
+      return Object.freeze({
+        persist: false,
+        outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_ITEM_CANCELLED" }),
+      });
+    }
+    assertCurrentPhaseInput(context);
+    const outcome = await orchestrate({ message, context });
+    let normalized = normalizeOrchestratorOutcome(outcome, message);
+    if (normalized.disposition === "RETRY" && !finalAttempt
+      && !RETRY_AFTER_EXTERNAL_ACTION.has(normalized.failureCode)) {
+      return Object.freeze({ persist: false, outcome: normalized });
+    }
+    if (normalized.disposition === "RETRY") normalized = terminalizeRetryOutcome(normalized);
+    return Object.freeze({ persist: true, outcome: normalized });
   }
 
   async function persistOutcome(message, outcome) {
-    return withTimeout(
-      () => workflow.applyOutcome(message, outcome),
-      PERSISTENCE_TIMEOUT_MS,
-      timers,
-      "AUTO_LISTING_AI_PERSISTENCE_TIMEOUT",
-    );
+    return workflow.applyOutcome(message, outcome);
   }
 
   async function processJob(job) {
@@ -344,7 +305,7 @@ export function createAutoListingAiWorker(config = {}) {
         while (attempt <= policy.retryLimit) {
           attempt += 1;
           try {
-            const result = await executePhaseAttempt(message, policy, attempt > policy.retryLimit);
+            const result = await executePhaseAttempt(message, attempt > policy.retryLimit);
             if (result.outcome.disposition !== "RETRY") {
               terminal = result;
               break;
@@ -352,10 +313,8 @@ export function createAutoListingAiWorker(config = {}) {
             log(message, result.outcome.failureCode);
             await waitBeforeRetry(policy, attempt, timers);
           } catch (error) {
-            // A timed-out operation may still be completing externally. Do not overlap it
-            // with another attempt; fence the item through the durable workflow instead.
             const errorCode = safeErrorCode(error);
-            const retryable = safeErrorRetryable(error) && errorCode !== "AUTO_LISTING_AI_PHASE_TIMEOUT";
+            const retryable = safeErrorRetryable(error);
             if (!retryable || attempt > policy.retryLimit) {
               terminal = Object.freeze({ persist: true, outcome: failureOutcome(message, error) });
               break;

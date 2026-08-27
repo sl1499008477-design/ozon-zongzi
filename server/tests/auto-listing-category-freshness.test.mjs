@@ -99,3 +99,36 @@ test("keeps a current exact pair read-only and rejects ambiguous relocation befo
     assert.equal(writes, 0);
   }
 });
+
+test("accepts different product evidence ids that resolve to one current shared category", async () => {
+  let writes = 0;
+  const secondSource = {
+    ...source,
+    id: "collect-b",
+    categoryEvidence: { ...source.categoryEvidence, id: "evidence-b" },
+  };
+  const fresh = createAutoListingCategoryFreshness({
+    loadStoreAccess: async () => ({ id: "store-a", ownerAccountId: accountId,
+      clientId: "client-a", currencyCode: "CNY", apiKey: "test-key" }),
+    categoryService: {
+      getCategorySnapshot: async () => ({
+        items: [{ description_category_id: 17033252, disabled: false,
+          children: [{ type_id: 94453, disabled: false }] }],
+        taxonomyFingerprint: "c".repeat(64),
+        stale: false,
+      }),
+      getCategoryAttributes: async () => ({ items: [{ id: 85 }] }),
+    },
+    repository: {
+      invalidateSharedCategory: async () => { writes += 1; },
+      activateRefreshedCategory: async () => { writes += 1; },
+    },
+  });
+
+  assert.deepEqual(await fresh({
+    accountId,
+    targetStoreId: "store-a",
+    sources: [source, secondSource],
+  }), { status: "CURRENT" });
+  assert.equal(writes, 0);
+});

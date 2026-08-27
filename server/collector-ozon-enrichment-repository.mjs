@@ -36,6 +36,10 @@ const COLLECTED_PUBLIC_EVIDENCE_RESULT = Object.freeze({
   status: "COMPLETE",
   source: "COLLECTED_PUBLIC_EVIDENCE",
 });
+const ORPHAN_EXPIRED_ERROR = Object.freeze({
+  code: "OZON_ENRICHMENT_ORPHAN_EXPIRED",
+  status: 410,
+});
 
 function repositoryError(message, code = "OZON_ENRICHMENT_PERSISTENCE_FAILED", status = 500) {
   return Object.assign(new Error(message), { code, status });
@@ -987,9 +991,15 @@ export function createJsonCollectorOzonEnrichmentRepository({
             || new Date(record.createdAt).getTime() + 1000 <= at.getTime()
           ))
         .sort((left, right) => {
+          const linked = Number(Boolean(right.collectItemId))
+            - Number(Boolean(left.collectItemId));
+          const attempts = Number(Number(left.attemptCount || 0) > 0)
+            - Number(Number(right.attemptCount || 0) > 0);
           const preference = Number(right.preferredSessionId === sessionId)
             - Number(left.preferredSessionId === sessionId);
-          return preference
+          return linked
+            || attempts
+            || preference
             || String(left.nextAttemptAt ?? left.createdAt)
               .localeCompare(String(right.nextAttemptAt ?? right.createdAt))
             || left.createdAt.localeCompare(right.createdAt)
@@ -1095,6 +1105,35 @@ export function createJsonCollectorOzonEnrichmentRepository({
     const found = jobEntries().find((record) =>
       record.accountId === lookup.accountId && record.id === lookup.jobId);
     return found ? copy(found) : null;
+  }
+
+  async function expireUnlinkedJob({ accountId, jobId, now }) {
+    const lookup = jobLookupInput({ accountId, jobId });
+    const at = requiredDate(now, "now");
+    return serializeJsonOperation(async () => {
+      const record = jobEntries().find((item) =>
+        item.accountId === lookup.accountId && item.id === lookup.jobId);
+      if (
+        !record
+        || record.collectItemId
+        || !["PENDING", "PROCESSING"].includes(record.status)
+        || new Date(record.deadlineAt).getTime() > at.getTime()
+      ) return null;
+      return commitMutation(["collectorOzonEnrichmentJobs"], () => {
+        record.status = "FAILED";
+        record.result = null;
+        record.error = copy(ORPHAN_EXPIRED_ERROR);
+        record.lastError = copy(ORPHAN_EXPIRED_ERROR);
+        record.preferredSessionId = null;
+        record.claimedSessionId = null;
+        record.claimExpiresAt = null;
+        record.claimFence = null;
+        record.captureContext = null;
+        record.completedAt = at.toISOString();
+        record.updatedAt = at.toISOString();
+        return record;
+      });
+    });
   }
 
   async function finishJobAndCache({
@@ -1212,6 +1251,7 @@ export function createJsonCollectorOzonEnrichmentRepository({
     completeJobAndCache,
     failJobAndCache,
     readJob,
+    expireUnlinkedJob,
   });
 }
 
@@ -1812,7 +1852,9 @@ export function createPostgresCollectorOzonEnrichmentRepository({
                 OR job.preferred_session_id=$2
                 OR job.created_at + INTERVAL '1 second'<=$3
               )
-            ORDER BY CASE WHEN job.preferred_session_id=$2 THEN 0 ELSE 1 END,
+            ORDER BY CASE WHEN job.collect_item_id IS NOT NULL THEN 0 ELSE 1 END,
+                     CASE WHEN job.attempt_count=0 THEN 0 ELSE 1 END,
+                     CASE WHEN job.preferred_session_id=$2 THEN 0 ELSE 1 END,
                      job.next_attempt_at,
                      job.created_at,
                      job.id
@@ -2036,6 +2078,24 @@ export function createPostgresCollectorOzonEnrichmentRepository({
     return result.rows[0] ? jobFromRow(result.rows[0]) : null;
   }
 
+  async function expireUnlinkedJob({ accountId, jobId, now }) {
+    const lookup = jobLookupInput({ accountId, jobId });
+    const at = requiredDate(now, "now");
+    const result = await query(
+      `UPDATE collector_ozon_enrichment_jobs
+          SET status='FAILED', result_json=NULL,
+              error_json=$4::jsonb, last_error_json=$4::jsonb,
+              preferred_session_id=NULL, claimed_session_id=NULL,
+              claim_expires_at=NULL, claim_fence=NULL,
+              capture_context_json=NULL, completed_at=$3, updated_at=$3
+        WHERE account_id=$1 AND id=$2 AND collect_item_id IS NULL
+          AND status IN ('PENDING','PROCESSING') AND deadline_at<=$3
+        RETURNING *`,
+      [lookup.accountId, lookup.jobId, at, JSON.stringify(ORPHAN_EXPIRED_ERROR)],
+    );
+    return result.rows[0] ? jobFromRow(result.rows[0]) : null;
+  }
+
   async function finishJobAndCache({
     accountId,
     collectorSessionId,
@@ -2239,5 +2299,6 @@ export function createPostgresCollectorOzonEnrichmentRepository({
     completeJobAndCache,
     failJobAndCache,
     readJob,
+    expireUnlinkedJob,
   });
 }

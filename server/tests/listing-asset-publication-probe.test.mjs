@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 
 import { createListingAssetPublicationProbe } from "../listing-asset-publication-probe.mjs";
@@ -72,6 +73,36 @@ test("probe explicitly publishes, reads exact HTTPS bytes without redirects, the
   assert.equal(h.calls[2][1].init.redirect, "manual");
   assert.equal(h.calls[2][1].init.method, "GET");
   assert.deepEqual(h.calls[2][1].init.address, { address: "203.0.113.10", family: 4 });
+});
+
+test("probe supplies an address array when Node requests all pinned DNS results", async () => {
+  const requestHttps = (_url, options, onResponse) => {
+    const request = new EventEmitter();
+    request.end = () => {
+      options.lookup("media.example.com", { all: true }, (error, addresses) => {
+        if (error) return request.emit("error", error);
+        assert.deepEqual(addresses, [{ address: "203.0.113.10", family: 4 }]);
+        onResponse(response());
+      });
+    };
+    return request;
+  };
+  const probe = createListingAssetPublicationProbe({
+    storage: {
+      async putObjectFromBuffer(input) {
+        return { key: input.key, sha256: crypto.createHash("sha256").update(input.buffer).digest("hex"),
+          contentType: input.contentType, size: input.buffer.length };
+      },
+      async removeObject() {},
+    },
+    async resolveHostname() { return [{ address: "203.0.113.10", family: 4 }]; },
+    requestHttps,
+    randomUUID: () => "123e4567-e89b-12d3-a456-426614174000",
+    randomBytes: () => Buffer.from("probe-bytes"),
+    timers: { setTimeout() { return 1; }, clearTimeout() {} },
+  });
+
+  assert.equal((await probe(policy)).ok, true);
 });
 
 test("probe fails closed on wrong bytes, MIME, redirects, oversized responses, cleanup ambiguity, or unsafe policy", async () => {
@@ -147,6 +178,72 @@ test("probe rejects a hostname resolving to a private address before any HTTPS r
   });
   assert.equal((await probe(policy)).ok, false);
   assert.deepEqual(calls, ["put", "resolve", "remove"]);
+});
+
+test("probe replaces only system proxy fake-IP answers with public HTTPS DNS answers", async () => {
+  const calls = [];
+  const probe = createListingAssetPublicationProbe({
+    storage: {
+      async putObjectFromBuffer(input) {
+        calls.push(["put", input.key]);
+        return { key: input.key, sha256: crypto.createHash("sha256").update(input.buffer).digest("hex"),
+          contentType: input.contentType, size: input.buffer.length };
+      },
+      async removeObject(key) { calls.push(["remove", key]); },
+    },
+    async resolveHostname(hostname) {
+      calls.push(["system-resolve", hostname]);
+      return [{ address: "198.18.0.14", family: 4 }];
+    },
+    async resolvePublicHostname(hostname) {
+      calls.push(["https-resolve", hostname]);
+      return [{ address: "104.16.231.132", family: 4 }];
+    },
+    async requestPublicObject(_url, init) {
+      calls.push(["fetch", init.address]);
+      return response();
+    },
+    randomUUID: () => "123e4567-e89b-12d3-a456-426614174000",
+    randomBytes: () => Buffer.from("probe-bytes"),
+    timers: { setTimeout() { return 1; }, clearTimeout() {} },
+  });
+
+  assert.equal((await probe(policy)).ok, true);
+  assert.deepEqual(calls, [
+    ["put", "listing-media/v1/health/123e4567-e89b-12d3-a456-426614174000.bin"],
+    ["system-resolve", "media.example.com"],
+    ["https-resolve", "media.example.com"],
+    ["fetch", { address: "104.16.231.132", family: 4 }],
+    ["remove", "listing-media/v1/health/123e4567-e89b-12d3-a456-426614174000.bin"],
+  ]);
+});
+
+test("HTTPS DNS fallback is still rejected when it returns a private destination", async () => {
+  const calls = [];
+  const probe = createListingAssetPublicationProbe({
+    storage: {
+      async putObjectFromBuffer(input) {
+        calls.push("put");
+        return { key: input.key, sha256: crypto.createHash("sha256").update(input.buffer).digest("hex"),
+          contentType: input.contentType, size: input.buffer.length };
+      },
+      async removeObject() { calls.push("remove"); },
+    },
+    async resolveHostname() {
+      calls.push("system-resolve");
+      return [{ address: "198.19.255.254", family: 4 }];
+    },
+    async resolvePublicHostname() {
+      calls.push("https-resolve");
+      return [{ address: "127.0.0.1", family: 4 }];
+    },
+    async requestPublicObject() { calls.push("fetch"); return response(); },
+    randomUUID: () => "123e4567-e89b-12d3-a456-426614174000",
+    randomBytes: () => Buffer.from("probe-bytes"),
+  });
+
+  assert.equal((await probe(policy)).ok, false);
+  assert.deepEqual(calls, ["put", "system-resolve", "https-resolve", "remove"]);
 });
 
 test("probe total timeout also aborts a response body that never finishes", async () => {

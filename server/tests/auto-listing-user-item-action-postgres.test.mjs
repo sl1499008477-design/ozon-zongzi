@@ -15,7 +15,7 @@ function requestHash(value, action) {
   return crypto.createHash("sha256").update(JSON.stringify({ ...value, action }), "utf8").digest("hex");
 }
 
-function db({ status = "READY_FOR_REVIEW", existing = null } = {}) {
+function db({ status = "READY_FOR_REVIEW", failureCode = null, existing = null } = {}) {
   const queries = [];
   const client = {
     async query(sql, values = []) {
@@ -26,7 +26,7 @@ function db({ status = "READY_FOR_REVIEW", existing = null } = {}) {
         return existing ? { rows: [existing], rowCount: 1 } : { rows: [], rowCount: 0 };
       }
       if (/FROM auto_listing_job_items AS i[\s\S]*FOR UPDATE OF i/i.test(sql)) {
-        return { rows: [{ status, status_version: 5 }], rowCount: 1 };
+        return { rows: [{ status, status_version: 5, failure_code: failureCode }], rowCount: 1 };
       }
       if (/UPDATE auto_listing_job_items/i.test(sql)) {
         const next = values[4];
@@ -71,6 +71,21 @@ test("cancel atomically closes only a cancellable exact version without queueing
   assert.equal(harness.queries.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/i.test(sql)), false);
 });
 
+test("cancel closes a content-planning block that cannot have reached Ozon but keeps unsafe blocks terminal", async () => {
+  const safe = db({ status: "BLOCKED", failureCode: "AUTO_LISTING_CONTENT_PLAN_INVALID" });
+  assert.deepEqual(await createPostgresAutoListingUserItemActionRepository({ pool: safe.pool }).cancelItem(command()), {
+    status: "CANCELLED", statusVersion: 6, action: "CANCEL", duplicate: false,
+  });
+  assert.equal(safe.queries.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/i.test(sql)), false);
+
+  const unsafe = db({ status: "BLOCKED", failureCode: "AUTO_LISTING_UPLOAD_RESULT_UNCERTAIN" });
+  await assert.rejects(
+    createPostgresAutoListingUserItemActionRepository({ pool: unsafe.pool }).cancelItem(command()),
+    { code: "AUTO_LISTING_USER_ACTION_NOT_ALLOWED" },
+  );
+  assert.equal(unsafe.queries.some(({ sql }) => /UPDATE auto_listing_job_items/i.test(sql)), false);
+});
+
 test("approve atomically queues only the exact reviewed version for upload", async () => {
   const harness = db({ status: "READY_FOR_REVIEW" });
   const repository = createPostgresAutoListingUserItemActionRepository({ pool: harness.pool });
@@ -86,6 +101,30 @@ test("approve atomically queues only the exact reviewed version for upload", asy
   assert.equal(harness.queries.some(({ sql }) => /INSERT INTO auto_listing_upload_task_events/i.test(sql)), true);
   const event = harness.queries.find(({ sql }) => /INSERT INTO auto_listing_events/i.test(sql));
   assert.equal(event.values[7], "APPROVE_UPLOAD");
+});
+
+test("approve safely requeues only a policy-preflight block that never reached Ozon", async () => {
+  for (const failureCode of [
+    "AUTO_LISTING_UPLOAD_POLICY_BLOCKED",
+    "AUTO_LISTING_UPLOAD_EVIDENCE_INVALID",
+    "AUTO_LISTING_DIRECT_UPLOAD_DISABLED",
+  ]) {
+    const harness = db({ status: "BLOCKED", failureCode });
+    const repository = createPostgresAutoListingUserItemActionRepository({ pool: harness.pool });
+    assert.deepEqual(await repository.approveItem(command()), {
+      status: "UPLOAD_QUEUED", statusVersion: 6, action: "APPROVE_UPLOAD", duplicate: false,
+    });
+    const uploadTask = harness.queries.find(({ sql }) => /INSERT INTO auto_listing_upload_tasks/i.test(sql));
+    assert.ok(uploadTask);
+    assert.equal(uploadTask.values[7], "SAFE_RETRY");
+  }
+
+  const unsafe = db({ status: "BLOCKED", failureCode: "AUTO_LISTING_UPLOAD_RESULT_UNCERTAIN" });
+  await assert.rejects(
+    createPostgresAutoListingUserItemActionRepository({ pool: unsafe.pool }).approveItem(command()),
+    { code: "AUTO_LISTING_USER_ACTION_NOT_ALLOWED" },
+  );
+  assert.equal(unsafe.queries.some(({ sql }) => /INSERT INTO auto_listing_upload_tasks/i.test(sql)), false);
 });
 
 test("an exact command replay returns the stored result without locking or updating the item", async () => {

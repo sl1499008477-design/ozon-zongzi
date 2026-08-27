@@ -17,7 +17,7 @@ test("runtime composes publication health, standard submission, durable task rep
     publicationPolicy: { origin: "https://cdn.example.com", baseUrl: "https://cdn.example.com/",
       prefix: "listing-media/v1", publicationVersion: "LISTING_MEDIA_V1" },
     richContentPublicationPolicy: { origin: "https://cdn.example.com" },
-    async publishListingAsset() {}, async assertDirectReady() {},
+    async publishListingAsset() {}, async assertDirectReady() {}, async checkPublicationHealth() {},
   };
   const standardSubmissionPort = { async createSubmission() {}, async findSubmission() {} };
   const assertDirectSystemReady = async () => ({ ready: true });
@@ -41,6 +41,7 @@ test("runtime composes publication health, standard submission, durable task rep
   });
   assert.equal(captured.service.publishListingAsset, publicationRuntime.publishListingAsset);
   assert.equal(captured.service.assertDirectReady, publicationRuntime.assertDirectReady);
+  assert.equal(captured.service.checkPublicationHealth, publicationRuntime.checkPublicationHealth);
   assert.equal(captured.service.assertDirectSystemReady, assertDirectSystemReady);
   assert.equal(captured.service.createSubmission, standardSubmissionPort.createSubmission);
   assert.equal(captured.service.findSubmission, standardSubmissionPort.findSubmission);
@@ -72,7 +73,7 @@ test("disabled runtime worker remains inert but the explicit upload service rema
   const runtime = createAutoListingUploadRuntime({
     pool: { async connect() {}, async query() {} },
     publicationRuntime: { publicationPolicy: {}, richContentPublicationPolicy: { origin: "https://cdn.example.com" },
-      async publishListingAsset() {}, async assertDirectReady() {} },
+      async publishListingAsset() {}, async assertDirectReady() {}, async checkPublicationHealth() {} },
     assertDirectSystemReady: async () => ({ ready: true }),
     standardSubmissionPort: { async createSubmission() {}, async findSubmission() {} },
     readStoreCredential: async () => { sensitiveCalls += 1; throw new Error("must stay lazy"); },
@@ -97,7 +98,7 @@ test("runtime rejects open or proxied verifier factories instead of exposing sen
   const base = {
     pool: { async connect() {}, async query() { return { rows: [] }; } },
     publicationRuntime: { publicationPolicy: {}, richContentPublicationPolicy: { origin: "https://cdn.example.com" },
-      async publishListingAsset() {}, async assertDirectReady() {} },
+      async publishListingAsset() {}, async assertDirectReady() {}, async checkPublicationHealth() {} },
     assertDirectSystemReady: async () => ({ ready: true }),
     standardSubmissionPort: { async createSubmission() {}, async findSubmission() {} },
     createUploadRepository() { return {}; }, createTaskRepository() { return {}; },

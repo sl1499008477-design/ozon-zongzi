@@ -3,6 +3,13 @@ import { assertPermission, PERMISSIONS } from "./permissions.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const CURRENT_IMAGE_DEFAULTS_VERSION = 2;
+const LEGACY_DEFAULT_IMAGE_ROLES = Object.freeze({
+  main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1,
+});
+const CURRENT_DEFAULT_IMAGE_ROLES = Object.freeze({
+  main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1,
+});
 
 function workflowError(code) {
   const error = new Error(code);
@@ -39,20 +46,44 @@ function safeImport(row, accountId) {
   });
 }
 
-function safePreference(row, accountId) {
+function migrateLegacyDefaultImage(config, imageDefaultsVersion) {
+  const image = config.image;
+  const exactLegacyDefault = imageDefaultsVersion !== CURRENT_IMAGE_DEFAULTS_VERSION
+    && image.ratio === "3:4" && image.resolution === "1K"
+    && image.quality === "Medium" && image.language === "ru"
+    && Object.entries(LEGACY_DEFAULT_IMAGE_ROLES)
+      .every(([role, count]) => image.roles[role] === count);
+  if (!exactLegacyDefault) return config;
+  return normalizeAutoListingConfig({
+    ...config,
+    image: {
+      ratio: image.ratio,
+      resolution: image.resolution,
+      quality: image.quality,
+      language: image.language,
+      roles: CURRENT_DEFAULT_IMAGE_ROLES,
+    },
+  });
+}
+
+function safePreference(row, accountId, { migrateLegacyDefaults = false } = {}) {
   if (row === null || row === undefined) return null;
   if (!row || typeof row !== "object" || Array.isArray(row)
     || (row.accountId !== undefined && row.accountId !== accountId)) {
     throw workflowError("AUTO_LISTING_USER_DATA_BOUNDARY");
   }
-  const config = normalizeAutoListingConfig({
+  let config = normalizeAutoListingConfig({
     targetStoreId: row.targetStoreId,
     targetWarehouseId: row.targetWarehouseId,
     stock: row.stock,
     priceAdjustmentKopecks: row.priceAdjustmentKopecks,
     priceMultiplierMicros: row.priceMultiplierMicros,
+    ...(row.brandMode !== undefined ? { brandMode: row.brandMode } : {}),
     image: row.image,
   });
+  if (migrateLegacyDefaults) {
+    config = migrateLegacyDefaultImage(config, row.imageDefaultsVersion);
+  }
   const configVersion = Number(row.configVersion);
   if (!Number.isInteger(configVersion) || configVersion < 1) {
     throw workflowError("AUTO_LISTING_USER_DATA_BOUNDARY");
@@ -89,7 +120,7 @@ export function createAutoListingUserWorkflowService({
         importRepository.listImports({ accountId, limit: importLimit }),
       ]);
       return Object.freeze({
-        preference: safePreference(preference, accountId),
+        preference: safePreference(preference, accountId, { migrateLegacyDefaults: true }),
         limits: Object.freeze({ maxBytes: limits.maxBytes, maxRows: limits.maxRows }),
         imports: Object.freeze((Array.isArray(imports) ? imports : []).map((row) => safeImport(row, accountId))),
       });

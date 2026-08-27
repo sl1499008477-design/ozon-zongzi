@@ -75,6 +75,7 @@ const noCredentialStoreId = `test_store_no_credential_${suffix}`;
 const collectId = `test_collect_${suffix}`;
 const changedPayloadCollectId = `test_collect_changed_payload_${suffix}`;
 const raceCollectId = `test_collect_race_${suffix}`;
+const raceEnrichmentJobId = `test_collect_race_enrichment_${suffix}`;
 const autoListingCollectId = `test_collect_auto_listing_${suffix}`;
 const foreignScopeSnapshotId = `test_foreign_scope_snapshot_${suffix}`;
 const foreignScopeJobId = `test_foreign_scope_job_${suffix}`;
@@ -108,6 +109,10 @@ async function requestJson(handle, pathname, body, token) {
 }
 
 async function cleanup() {
+  await pool.query(
+    "DELETE FROM collector_ozon_enrichment_jobs WHERE collect_item_id=ANY($1::text[])",
+    [collectIds],
+  );
   await pool.query("DELETE FROM submission_jobs WHERE id=$1", [foreignScopeJobId]);
   await pool.query("DELETE FROM submission_snapshots WHERE id=$1", [foreignScopeSnapshotId]);
   const jobs = await pool.query("SELECT id, snapshot_id FROM submission_jobs WHERE collect_item_id=ANY($1::text[])", [collectIds]);
@@ -1001,6 +1006,19 @@ try {
     listingDraft: { ...baseItem.listingDraft, sku: "source-sku-race" },
   };
   await mirrorCollectItemV3(raceItem, { accountId, storeId, captureRaw: true });
+  await pool.query(
+    `INSERT INTO collector_ozon_enrichment_jobs (
+       id,account_id,collect_item_id,request_id,sku,status,refresh_bundle,
+       deadline_at,next_attempt_at,created_at,updated_at
+     ) VALUES ($1,$2,$3,$4,$5,'PENDING','{}'::jsonb,'9999-12-31T23:59:59.999Z',NOW(),NOW(),NOW())`,
+    [
+      raceEnrichmentJobId,
+      accountId,
+      raceCollectId,
+      `request_${raceEnrichmentJobId}`,
+      "source-sku-race",
+    ],
+  );
   const raceIdempotencyKey = `delete-race-${suffix}`;
   const raceDatabaseKey = crypto.createHash("sha256")
     .update(["listing-prepare", accountId, raceIdempotencyKey].join("|"))
@@ -1055,6 +1073,18 @@ try {
   const deletedRaceItem = await pool.query("SELECT deleted_at,status FROM collect_items WHERE id=$1", [raceCollectId]);
   assert.ok(deletedRaceItem.rows[0].deleted_at);
   assert.equal(deletedRaceItem.rows[0].status, "DELETED");
+  const deletedEnrichmentJob = await pool.query(
+    `SELECT status,error_json,completed_at
+       FROM collector_ozon_enrichment_jobs
+      WHERE id=$1 AND account_id=$2`,
+    [raceEnrichmentJobId, accountId],
+  );
+  assert.equal(deletedEnrichmentJob.rows[0].status, "FAILED");
+  assert.deepEqual(deletedEnrichmentJob.rows[0].error_json, {
+    code: "OZON_ENRICHMENT_COLLECT_ITEM_DELETED",
+    status: 410,
+  });
+  assert.ok(deletedEnrichmentJob.rows[0].completed_at);
   await assert.rejects(
     prepareCollectItemForListing({
       collectItem: raceItem,

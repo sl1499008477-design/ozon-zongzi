@@ -6,11 +6,16 @@ const scopeKeys = ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "
 const clean = (value) => typeof value === "string" && value.trim() && value === value.trim()
   && value.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : "";
 const validGenerationSize = (value) => typeof value === "string" && /^[1-9][0-9]*x[1-9][0-9]*$/u.test(value);
+const recoverableCheckerFailures = new Set([
+  "CHECKER_UNAVAILABLE", "CHECKER_RESPONSE_INVALID", "CHECKER_EVIDENCE_INVALID",
+]);
 const copy = (value) => structuredClone(value);
 const keyOf = (input) => [...scopeKeys.map((key) => input[key]), input.expectedStatusVersion ?? "legacy"].join("\u0001");
 function invalid() { const error = new Error("图片生成尝试无效"); error.code = "AUTO_LISTING_IMAGE_ATTEMPT_INVALID"; return error; }
 function fence(input, hashKey = "attemptIdentityHash") {
   if (!input || !scopeKeys.every((key) => clean(input[key])) || !HASH.test(input[hashKey] || "")
+    || (Object.hasOwn(input, "legacyAttemptIdentityHash")
+      && (!HASH.test(input.legacyAttemptIdentityHash || "") || input.legacyAttemptIdentityHash === input.attemptIdentityHash))
     || !validGenerationSize(input.generationSize)
     || (Object.hasOwn(input, "expectedStatusVersion") && (!Number.isInteger(input.expectedStatusVersion)
       || input.expectedStatusVersion < 1 || input.expectedStatusVersion > 2_147_483_647))) throw invalid();
@@ -43,7 +48,10 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       || state.activeContentPlanId !== input.planId) return "STALE";
     return "CURRENT";
   };
-  const matching = (input) => rows.filter((row) => keyOf(row) === keyOf(input) && row.attemptIdentityHash === input.attemptIdentityHash);
+  const matching = (input) => {
+    const compatibleIdentities = new Set([input.attemptIdentityHash, input.legacyAttemptIdentityHash].filter(Boolean));
+    return rows.filter((row) => keyOf(row) === keyOf(input) && compatibleIdentities.has(row.attemptIdentityHash));
+  };
   const own = (input) => {
     fence(input);
     const row = rows.find((candidate) => candidate.attemptNo === input.attemptNo && keyOf(candidate) === keyOf(input)
@@ -93,7 +101,16 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       }
       row.inputHash = input.inputHash;
       row.finalInputBoundAt = now();
-      return { status: "BOUND", inputHash: input.inputHash };
+      const recoveryRecord = rows.find((candidate) => candidate !== row
+        && scopeKeys.every((key) => candidate[key] === input[key])
+        && candidate.attemptIdentityHash === input.attemptIdentityHash
+        && candidate.inputHash === input.inputHash && candidate.generationSize === input.generationSize
+        && candidate.status === "FAILED" && recoverableCheckerFailures.has(candidate.errorCode)
+        && candidate.errorRetryable === true && candidate.finalInputBoundAt !== null
+        && candidate.objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
+        && verifyGeneratedAssetObjectKey(candidate) && candidate.modelEvidence);
+      return { status: "BOUND", inputHash: input.inputHash,
+        ...(recoveryRecord ? { recoveryRecord: copy(recoveryRecord) } : {}) };
     },
     async recordStoredGenerationAsset(input) {
       const row = own(input);
@@ -110,7 +127,14 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       return copy(row);
     },
     async rejectGenerationAttempt(input) { const row = own(input); if (row.finalInputBoundAt === null) throw invalid(); Object.assign(row, copy(input), { status: "REJECTED", leaseToken: null, leaseExpiresAt: null }); return copy(row); },
-    async failGenerationAttempt(input) { const row = own(input); Object.assign(row, copy(input), { status: "FAILED", leaseToken: null, leaseExpiresAt: null }); return copy(row); },
+    async failGenerationAttempt(input) {
+      const row = own(input);
+      Object.assign(row, copy(input), {
+        status: "FAILED", errorCode: input.code, errorRetryable: input.retryable,
+        leaseToken: null, leaseExpiresAt: null,
+      });
+      return copy(row);
+    },
     async releaseGenerationLease(input) { const row = own(input); Object.assign(row, { status: "FAILED", errorCode: clean(input.errorCode) || "AUTO_LISTING_IMAGE_FAILED", errorRetryable: true, leaseToken: null, leaseExpiresAt: null }); return copy(row); },
     async findStoredGenerationAsset(input) {
       fence(input, "inputHash");

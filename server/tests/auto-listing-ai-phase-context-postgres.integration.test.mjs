@@ -138,7 +138,7 @@ if (!enabled) {
         generationRepository: inert(), richContentRepository: inert(), downloader: inert(), storage: inert(),
         sourceAssetLoader: inert(), logger: null, planPromptTemplateVersion: "planner-v1",
         prohibitedClaims: ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"],
-        maxAttempts: 3, richContentLeaseOwner: "rich-worker",
+        maxAttempts: 3, richContentMaxAttempts: 5, richContentLeaseOwner: "rich-worker",
       };
       const countedPool = {
         calls: 0,

@@ -160,6 +160,24 @@ test("published drafts require a new draft while stale analysis never enables pu
   assert.equal(staleView.analysisIsCurrent, false);
 });
 
+test("rejected AI analysis exposes a persistent administrator-facing failure reason", () => {
+  const detail = {
+    draftId: "draft-rejected", scope: SCOPE, draftVersion: 6, status: "NEEDS_REVIEW", sampleCount: 8,
+    sourceCollectItemId: "collect-rejected", expectedSourceVersion: "draft:1",
+  };
+  const rejectedView = categoryStrategyPageModel({ detail, analysis: {
+    attemptId: "attempt-rejected", resultId: "result-rejected", status: "NEEDS_REVIEW", draftVersion: 6,
+    duplicate: false, safeCode: "AUTO_LISTING_CATEGORY_STRATEGY_AI_CALL_FAILED",
+    guidance: GUIDANCE, evidenceSummary: null,
+    provenance: "AI", editedAt: null, baseAnalysisAttemptId: null,
+  }, published: null });
+
+  assert.equal(rejectedView.analysisIssue,
+    "当前 AI 模型通道调用失败，未生成类目策略草稿。请检查模型通道可用性后重试。");
+  assert.equal(rejectedView.analysisIsCurrent, false);
+  assert.equal(rejectedView.canPublish, false);
+});
+
 test("strategy-required and resume projections preserve only the exact safe creation draft", () => {
   const required = projectStrategyRequired({
     ok: false,

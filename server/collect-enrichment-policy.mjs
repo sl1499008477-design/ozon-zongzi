@@ -150,22 +150,52 @@ function mergeEvidenceOnlyIntoBlanks(current, incoming) {
   return merged;
 }
 
+function categoryTypeEvidenceFromAttributes(category = {}) {
+  const attributes = Array.isArray(category?.attributes) ? category.attributes : [];
+  const typeAttribute = attributes.find(
+    (attribute) => cleanText(attribute?.key) === "8229",
+  );
+  return {
+    typeName: cleanText(typeAttribute?.value),
+    typeIdCandidate: firstPositive(
+      typeAttribute?.dictionary_value_id,
+      typeAttribute?.dictionaryValueId,
+    ),
+  };
+}
+
 function sourceCategoryEvidence(value = {}) {
-  const resolutionSource = plainObject(value?.categoryResolution?.source)
+  const rawResolutionSource = plainObject(value?.categoryResolution?.source)
     ? value.categoryResolution.source
     : {};
-  const directSource = plainObject(value?.sourceCategory) ? value.sourceCategory : {};
+  const resolutionSource = mergeEvidenceOnlyIntoBlanks(
+    rawResolutionSource,
+    categoryTypeEvidenceFromAttributes(rawResolutionSource),
+  );
+  const rawDirectSource = plainObject(value?.sourceCategory) ? value.sourceCategory : {};
+  const directSource = mergeEvidenceOnlyIntoBlanks(
+    rawDirectSource,
+    categoryTypeEvidenceFromAttributes(rawDirectSource),
+  );
   const variant = plainObject(value?.variantData) ? value.variantData : {};
+  const variantAttributes = Array.isArray(variant.attributes) ? variant.attributes : [];
+  const variantTypeEvidence = categoryTypeEvidenceFromAttributes({ attributes: variantAttributes });
   const variantCategories = Array.isArray(variant.categories) ? variant.categories : [];
   const variantEvidence = {
     descriptionCategoryId: firstPositive(
       variant.description_category_id,
       variant.descriptionCategoryId,
     ),
+    typeName: variantTypeEvidence.typeName,
+    typeIdCandidate: firstPositive(
+      variantTypeEvidence.typeIdCandidate,
+      variant.type_id,
+      variant.typeId,
+    ),
     path: variantCategories
       .map((category) => cleanText(category?.title || category?.name))
       .filter(Boolean),
-    attributes: Array.isArray(variant.attributes) ? variant.attributes : [],
+    attributes: variantAttributes,
   };
   return mergeEvidenceOnlyIntoBlanks(
     mergeEvidenceOnlyIntoBlanks(resolutionSource, directSource),

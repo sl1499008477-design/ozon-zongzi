@@ -20,8 +20,8 @@ test("item runtime lazily composes one shared action and retry service", async (
   const retryRepository = { retryAutoListingAiItem() {} };
   const retryService = { retry() {} };
   const reviewRepository = { loadReviewEvidence() {} };
-  const reviewService = { getReview() {} };
-  const itemService = { cancelItem() {}, regenerateItem() {}, retryItem() {}, getReview() {} };
+  const reviewService = { getReview() {}, getAcceptedAsset() {} };
+  const itemService = { cancelItem() {}, regenerateItem() {}, retryItem() {}, getReview() {}, getAcceptedAsset() {} };
   const runtime = createAutoListingItemRuntime({
     env: { AUTO_LISTING_ENABLED: "true" },
     async getPostgresPool() { calls.push(["pool"]); return pool; },

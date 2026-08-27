@@ -4,10 +4,19 @@ import test from "node:test";
 import sharp from "sharp";
 import { buildGeneratedAssetObjectKey, normalizeListingImage, sha256 } from "../auto-listing-asset-store.mjs";
 import { createMemoryGenerationAttemptRepository } from "../auto-listing-generation-attempt-repository.mjs";
-import { buildImageGenerationInput, generateImageSlot, summarizeGeneratedImageSlots } from "../auto-listing-image-generator.mjs";
+import { buildImageGenerationInput, generateImageSlot } from "../auto-listing-image-generator.mjs";
 
 const scope = Object.freeze({ accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-a", visualGroupKey: "main", slotKey: "cover" });
 const planHash = "a".repeat(64);
+const categoryStyle = Object.freeze({
+  overallStyle: "明亮的高级科技产品展示",
+  prohibitedPatterns: ["避免竞品标志"],
+  role: "MAIN",
+  composition: "产品居中，信息层级清晰",
+  background: "蓝紫渐变科技背景",
+  textDensity: "LIGHT",
+  layout: "标题位于上方，产品保持完整可见",
+});
 const reserved = (attemptNo = 1, generationSize = "768x1024") => ({ status: "RESERVED", attemptNo, leaseToken: "lease-a", generationSize });
 async function image() { return sharp({ create: { width: 768, height: 1024, channels: 4, background: "#445566" } }).png().toBuffer(); }
 async function setup({ loaderEvidence = "CONTENT_HASH", existing = null } = {}) {
@@ -17,7 +26,7 @@ async function setup({ loaderEvidence = "CONTENT_HASH", existing = null } = {}) 
   let gatewayCalls = 0; let loaderCalls = 0; let objectBytes = (await normalizeListingImage({ bytes, ratio: "3:4", resolution: "1K" })).bytes; const calls = []; const bindCalls = [];
   const input = {
     scope, plan: { id: scope.planId, jobId: scope.jobId, itemId: scope.itemId, sourceAccountId: scope.accountId, profileId: "profile-a", profileVersion: 3, plannerModel: "checker", promptTemplateVersion: "image-v1", planHash, sourceHash: "b".repeat(64), strategyHash: "c".repeat(64), configHash: "d".repeat(64), visualGroupsHash: "e".repeat(64), visualGroups: { groups: [{ visualGroupKey: "main", referenceImages: [asset] }] }, plan: { slots: [{ slotKey: "cover", visualGroupKey: "main", role: "MAIN", textDensity: "LIGHT", preserve: ["shape"], referenceAssetIds: ["asset-a"] }] }, factRegistry: [{ ...fact, visualGroupKeys: ["main"] }] },
-    slot: { slotKey: "cover", visualGroupKey: "main", role: "MAIN", textDensity: "LIGHT", preserve: ["shape"], referenceAssetIds: ["asset-a"] }, profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3, textModel: "checker", imageModel: "image-model" }, imageModel: "image-model", ratio: "3:4", resolution: "1K", size: "768x1024", quality: "high", templateVersion: "image-v1",
+    slot: { slotKey: "cover", visualGroupKey: "main", role: "MAIN", textDensity: "LIGHT", preserve: ["shape"], referenceAssetIds: ["asset-a"] }, categoryStyle: null, profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3, textModel: "checker", imageModel: "image-model" }, imageModel: "image-model", ratio: "3:4", resolution: "1K", size: "768x1024", quality: "high", templateVersion: "image-v1",
     sourceAssetLoader: { async loadSourceAsset(request) { loaderCalls += 1; assert.equal(request.sourceRef, asset.sourceRef); return { assetId: asset.assetId, sourceRef: asset.sourceRef, evidenceKind: loaderEvidence, bytes, contentType: "image/png", width: 768, height: 1024 }; } },
     repository: {
       async reserveGenerationAttempt() { return existing ? { status: "EXISTING_ACCEPTED", record: existing } : reserved(); },
@@ -28,7 +37,7 @@ async function setup({ loaderEvidence = "CONTENT_HASH", existing = null } = {}) 
       async blockItem() {}, async countAcceptedAssets() { return 0; },
     },
     storage: { async putObjectFromBuffer(value) { objectBytes = Buffer.from(value.buffer); return { key: value.key, sha256: sha256(value.buffer), contentType: value.contentType, size: value.buffer.length }; }, async getObjectBuffer() { return objectBytes; } },
-    gateway: { async generateImage(request) { gatewayCalls += 1; assert.doesNotMatch(request.prompt, /https:\/\//); assert.equal(request.sourceImages[0].bytes.equals(bytes), true); return { bytes, requestId: "generate-1", modelEvidence: { requestedImageModel: "image-model", gatewayReportedImageModel: "image-model", gatewayReportedImageModelPresent: true, orchestratorModel: "" } }; }, async inspectImage() { return { requestId: "check-1", modelEvidence: { requestedTextModel: "checker", gatewayReportedTextModel: "checker", gatewayReportedTextModelPresent: true }, value: { matchesProduct: true, claimsVerified: true, russianText: true, quality: "PASS", prohibitedContent: false, reasons: [], evidence: { identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] }, claims: [claim], detectedTexts: ["товар"], language: "ru", qualityFlags: [], prohibitedFlags: [] } } }; } },
+    gateway: { async generateImage(request) { gatewayCalls += 1; assert.equal(Object.hasOwn(request, "timeoutMs"), false); assert.doesNotMatch(request.prompt, /https:\/\//); assert.equal(request.sourceImages[0].bytes.equals(bytes), true); return { bytes, requestId: "generate-1", modelEvidence: { requestedImageModel: "image-model", gatewayReportedImageModel: "image-model", gatewayReportedImageModelPresent: true, orchestratorModel: "" } }; }, async inspectImage(request) { const styleIds = request.prompt.includes("categoryStyleReferenceEvidenceIds") ? fixtureStyleIds(request.prompt) : []; return { requestId: "check-1", modelEvidence: { requestedTextModel: "checker", gatewayReportedTextModel: "checker", gatewayReportedTextModelPresent: true }, value: { matchesProduct: true, matchesCategoryStyle: true, claimsVerified: true, russianText: true, quality: "PASS", prohibitedContent: false, reasons: [], evidence: { identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] }, categoryStyle: { matches: true, referenceEvidenceIds: styleIds }, claims: [claim], detectedTexts: ["товар"], language: "ru", qualityFlags: [], prohibitedFlags: [] } } }; } },
   };
   return { input, calls, bindCalls, bytes, asset, fact, claim, gatewayCalls: () => gatewayCalls, loaderCalls: () => loaderCalls };
 }
@@ -39,6 +48,7 @@ function checkerResponse(fixture, overrides = {}, evidenceOverrides = {}) {
     modelEvidence: { requestedTextModel: "checker", gatewayReportedTextModel: "checker", gatewayReportedTextModelPresent: true },
     value: {
       matchesProduct: true,
+      matchesCategoryStyle: true,
       claimsVerified: true,
       russianText: true,
       quality: "PASS",
@@ -46,6 +56,7 @@ function checkerResponse(fixture, overrides = {}, evidenceOverrides = {}) {
       reasons: [],
       evidence: {
         identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] },
+        categoryStyle: { matches: true, referenceEvidenceIds: [] },
         claims: [fixture.claim],
         detectedTexts: ["товар"],
         language: "ru",
@@ -58,12 +69,473 @@ function checkerResponse(fixture, overrides = {}, evidenceOverrides = {}) {
   };
 }
 
+function fixtureStyleIds(prompt) {
+  const line = prompt.split("\n").find((entry) => entry.startsWith("{") && entry.includes("categoryStyleReferenceEvidenceIds"));
+  return line ? JSON.parse(line).categoryStyleReferenceEvidenceIds : [];
+}
+
 test("generates an accepted slot from server-loaded bytes and does not expose source URLs", async () => {
   const fixture = await setup();
   const result = await generateImageSlot(fixture.input);
   assert.equal(result.accepted, true); assert.equal(fixture.gatewayCalls(), 1);
   assert.equal(result.objectKeyVersion, "ATTEMPT_V2");
   assert.deepEqual(fixture.calls.map(([name]) => name), ["stored", "complete"]);
+});
+
+test("passes the frozen category style for the current image role to the final image prompt", async () => {
+  const fixture = await setup();
+  fixture.input.categoryStyle = categoryStyle;
+  let promptPayload;
+  const generate = fixture.input.gateway.generateImage;
+  fixture.input.gateway.generateImage = async (request) => {
+    const jsonLine = request.prompt.split("\n").find((line) => line.startsWith("{"));
+    promptPayload = JSON.parse(jsonLine);
+    return generate(request);
+  };
+
+  await generateImageSlot(fixture.input);
+
+  assert.deepEqual(promptPayload.categoryStyle, categoryStyle);
+  assert.equal(promptPayload.categoryStyle.role, fixture.input.slot.role);
+  assert.equal(promptPayload.categoryStyle.textDensity, fixture.input.slot.textDensity);
+  assert.equal(promptPayload.facts[0].value, fixture.fact.value);
+});
+
+test("sends cited category samples after product references without treating them as product facts", async () => {
+  const fixture = await setup();
+  fixture.input.categoryStyle = categoryStyle;
+  const styleA = await sharp({ create: { width: 900, height: 1200, channels: 4, background: "#cc3366" } }).webp().toBuffer();
+  const styleB = await sharp({ create: { width: 1200, height: 1200, channels: 4, background: "#3366cc" } }).webp().toBuffer();
+  fixture.input.categoryStyleReferences = [
+    { evidenceId: "sample-style-a", sku: "sample-sku-a", objectKey: "category-strategy/account-a/draft-a/set-a/sample-a/style-a.webp", contentHash: sha256(styleA), contentType: "image/webp", width: 900, height: 1200 },
+    { evidenceId: "sample-style-b", sku: "sample-sku-b", objectKey: "category-strategy/account-a/draft-a/set-a/sample-b/style-b.webp", contentHash: sha256(styleB), contentType: "image/webp", width: 1200, height: 1200 },
+  ];
+  const readGenerated = fixture.input.storage.getObjectBuffer;
+  fixture.input.storage.getObjectBuffer = async (key, options) => {
+    if (key.endsWith("style-a.webp")) return styleA;
+    if (key.endsWith("style-b.webp")) return styleB;
+    return readGenerated(key, options);
+  };
+  let request;
+  const generate = fixture.input.gateway.generateImage;
+  fixture.input.gateway.generateImage = async (value) => {
+    request = value;
+    return generate(value);
+  };
+
+  await generateImageSlot(fixture.input);
+
+  assert.equal(request.sourceImages.length, 3);
+  assert.equal(request.sourceImages[0].bytes.equals(fixture.bytes), true);
+  assert.equal(request.sourceImages[1].bytes.equals(styleA), true);
+  assert.equal(request.sourceImages[2].bytes.equals(styleB), true);
+  assert.match(request.prompt, /前 1 张图片是当前商品真实性参考/u);
+  assert.match(request.prompt, /后 2 张图片是类目风格参考/u);
+  assert.match(request.prompt, /sample-style-a/u);
+  assert.match(request.prompt, /sample-style-b/u);
+  assert.doesNotMatch(request.prompt, /category-strategy\//u);
+});
+
+test("V3 generation prompt separates contextual props from unsupported product claims", async () => {
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V3";
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.slot.claims = [{ text: "Красный товар", claimType: "IDENTITY_NAME", sourceFactIds: ["f1"] }];
+  fixture.input.categoryStyle = {
+    ...categoryStyle,
+    composition: "商品旁边放手机、语音助手和 Wi-Fi 图标",
+  };
+  fixture.input.plan.plan.slots[0] = structuredClone(fixture.input.slot);
+  let prompt;
+  const generate = fixture.input.gateway.generateImage;
+  fixture.input.gateway.generateImage = async (request) => {
+    prompt = request.prompt;
+    return generate(request);
+  };
+
+  await generateImageSlot(fixture.input);
+
+  assert.match(prompt, /文案只能逐字使用 slot\.claims\[\]\.text/u);
+  assert.match(prompt, /手机界面、礼盒、赠品和包装不能被复制成商品事实/u);
+  assert.match(prompt, /允许使用能辅助展示商品功能的环境物品/u);
+  assert.match(prompt, /不得把环境物品排成随附套装/u);
+  assert.match(prompt, /四周至少保留 10% 的安全边距/u);
+  assert.match(prompt, /商品主体和全部文案必须完整位于安全区内/u);
+  assert.match(prompt, /不得通过文字或新道具暗示/u);
+  assert.match(prompt, /类目风格.*不是当前商品事实/u);
+  assert.match(prompt, /手机、语音助手、兼容性图标/u);
+  assert.match(prompt, /允许出现的全部营销文案逐字白名单：\["Красный товар"\]/u);
+  assert.match(prompt, /白名单之外的来源图文字.*必须删除/u);
+  assert.match(prompt, /REFERENCE IMAGE IS PHYSICAL-PRODUCT EVIDENCE ONLY/u);
+  assert.match(prompt, /Do not copy promotional text, warranty, discount, gift, phone UI or compatibility icons/u);
+  assert.match(prompt, /FINAL HARD CONSTRAINT: render no editable marketing text except the exact whitelist/u);
+  assert.equal(prompt.split("\n").at(-1).startsWith("FINAL HARD CONSTRAINT:"), true);
+});
+
+test("V5 detail generation receives a concrete close-up brief instead of only a role name", async () => {
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V5";
+  fixture.input.scope = { ...fixture.input.scope, slotKey: "main:detail:01" };
+  fixture.input.slot = {
+    ...fixture.input.slot,
+    slotKey: "main:detail:01",
+    role: "DETAIL",
+    textDensity: "LIGHT",
+    claims: [{ text: fixture.fact.value, claimType: fixture.fact.kind, sourceFactIds: [fixture.fact.factId] }],
+  };
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.plan.plan.slots = [structuredClone(fixture.input.slot)];
+  let generationPayload;
+  let checkerPrompt;
+  const generate = fixture.input.gateway.generateImage;
+  const inspect = fixture.input.gateway.inspectImage;
+  fixture.input.gateway.generateImage = async (request) => {
+    generationPayload = JSON.parse(request.prompt.split("\n").find((line) => line.startsWith("{")));
+    return generate(request);
+  };
+  fixture.input.gateway.inspectImage = async (request) => {
+    checkerPrompt = request.prompt;
+    return inspect(request);
+  };
+
+  await generateImageSlot(fixture.input);
+
+  assert.deepEqual(generationPayload.visualBrief, {
+    role: "DETAIL",
+    compositionVariant: "DETAIL_MACRO_01",
+    productView: "局部微距特写，不使用完整商品主图式构图",
+    subjectScale: "目标细节占画面 70% 至 90%",
+    annotationMode: "CALLOUT_LINES",
+    requiredClaimTexts: [fixture.fact.value],
+  });
+  assert.match(checkerPrompt, /DETAIL_MACRO_01/u);
+  assert.match(checkerPrompt, /局部微距特写/u);
+});
+
+test("V6 prompt uses the universal product-led edge-label contract and configured output size", async () => {
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.slot.claims = [{
+    text: fixture.fact.value,
+    claimType: fixture.fact.kind,
+    sourceFactIds: [fixture.fact.factId],
+  }];
+  fixture.input.slot.sourceFactIds = [fixture.fact.factId];
+  fixture.input.plan.plan.slots[0] = structuredClone(fixture.input.slot);
+  fixture.input.size = "960x1280";
+  fixture.input.repository.reserveGenerationAttempt = async () => reserved(1, fixture.input.size);
+  let payload;
+  let prompt;
+  const generate = fixture.input.gateway.generateImage;
+  fixture.input.gateway.generateImage = async (request) => {
+    prompt = request.prompt;
+    payload = JSON.parse(request.prompt.split("\n").find((line) => line.startsWith("{")));
+    return generate(request);
+  };
+
+  await generateImageSlot(fixture.input);
+
+  assert.equal(payload.visualBrief.layoutMode, "EDGE_GLASS_LABELS");
+  assert.deepEqual(payload.visualBrief.subject.frameSharePercent, [55, 68]);
+  assert.deepEqual(payload.visualBrief.labels, {
+    anchor: "EDGE_SAFE_ZONE",
+    maxCards: 4,
+    opacityRange: [0.8, 0.94],
+    avoidSubject: true,
+    keepReadableAtThumbnail: true,
+    presentation: "ICON_TEXT_CHIP",
+    iconRule: "每条卖点使用与事实语义对应的简洁线性图标；图标不能暗示未验证功能",
+  });
+  assert.deepEqual(payload.visualBrief.output, {
+    ratio: "3:4",
+    resolution: "1K",
+    targetSize: "960x1280",
+  });
+  assert.match(prompt, /同组图片.*构图、视角和信息任务必须不同/u);
+  assert.match(prompt, /主图最多 4 个图标\+短文字卖点/u);
+});
+
+test("V6 image generation limits checker claim evidence to the slot's planned facts", async () => {
+  const fixture = await setup();
+  const equivalent = {
+    factId: "f2", field: "attributes[0].values[0]", kind: "ATTRIBUTE:product-type",
+    value: fixture.fact.value, numericValue: null, unit: null,
+    sourcePath: "attributes[0].values[0]", visualGroupKeys: ["main"],
+  };
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  fixture.input.slot.claims = [{
+    text: fixture.fact.value, claimType: fixture.fact.kind, sourceFactIds: [fixture.fact.factId],
+  }];
+  fixture.input.slot.sourceFactIds = [fixture.fact.factId, equivalent.factId];
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.plan.factRegistry.push(equivalent);
+  fixture.input.plan.plan.slots[0] = structuredClone(fixture.input.slot);
+  let checkerSchema;
+  const inspect = fixture.input.gateway.inspectImage;
+  fixture.input.gateway.inspectImage = async (request) => {
+    checkerSchema = request.jsonSchema;
+    return inspect(request);
+  };
+
+  await generateImageSlot(fixture.input);
+
+  assert.deepEqual(
+    checkerSchema.properties.evidence.properties.claims.items.properties.sourceFactId.enum,
+    [fixture.fact.factId],
+  );
+});
+
+test("V5 specification becomes a product documentary image with optional verified facts", async () => {
+  const fixture = await setup();
+  const fact = {
+    factId: "fact.attribute.dimensions",
+    field: "attributes[20].values[0]",
+    kind: "ATTRIBUTE:dimensions",
+    value: "Размер (ДхШхВ), см: 19×14×5",
+    numericValue: null,
+    unit: null,
+    sourcePath: "attributes[20].values[0]",
+  };
+  const claim = {
+    text: fact.value,
+    sourceFactId: fact.factId,
+    field: fact.field,
+    value: fact.value,
+    numericValue: null,
+    unit: null,
+  };
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V5";
+  fixture.input.scope = { ...fixture.input.scope, slotKey: "main:specification:01" };
+  fixture.input.slot = {
+    ...fixture.input.slot,
+    slotKey: "main:specification:01",
+    role: "SPECIFICATION",
+    textDensity: "MEDIUM",
+    claims: [{ text: claim.text, claimType: fact.kind, sourceFactIds: [fact.factId] }],
+  };
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.plan.factRegistry = [{ ...fact, visualGroupKeys: ["main"] }];
+  fixture.input.plan.plan.slots = [structuredClone(fixture.input.slot)];
+  let generationPayload;
+  let checkerPrompt;
+  const generate = fixture.input.gateway.generateImage;
+  fixture.input.gateway.generateImage = async (request) => {
+    generationPayload = JSON.parse(request.prompt.split("\n").find((line) => line.startsWith("{")));
+    return generate(request);
+  };
+  fixture.input.gateway.inspectImage = async (request) => {
+    checkerPrompt = request.prompt;
+    return checkerResponse(fixture, {}, {
+      claims: [claim],
+      detectedTexts: [claim.text],
+    });
+  };
+
+  await generateImageSlot(fixture.input);
+
+  assert.equal(generationPayload.visualBrief.annotationMode, "PRODUCT_DOCUMENTARY_FACTS");
+  assert.match(generationPayload.visualBrief.factPresentation, /可信尺寸或配件/u);
+  assert.match(generationPayload.visualBrief.productView, /产品实拍/u);
+  assert.deepEqual(generationPayload.visualBrief.requiredClaimTexts, [claim.text]);
+  assert.match(checkerPrompt, /产品实拍图/u);
+});
+
+test("V6 product documentary with trusted dimensions requires endpoint dimension lines", async () => {
+  const fixture = await setup();
+  const fact = {
+    factId: "fact.dimension.length",
+    field: "productMeasurements.length",
+    kind: "DIMENSION_LENGTH",
+    value: "Длина, см: 104",
+    numericValue: 104,
+    unit: "см",
+    sourcePath: "productMeasurements.length",
+  };
+  const claim = {
+    text: fact.value,
+    sourceFactId: fact.factId,
+    field: fact.field,
+    value: fact.value,
+    numericValue: fact.numericValue,
+    unit: fact.unit,
+  };
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  fixture.input.scope = { ...fixture.input.scope, slotKey: "main:specification:01" };
+  fixture.input.slot = {
+    ...fixture.input.slot,
+    slotKey: "main:specification:01",
+    role: "SPECIFICATION",
+    textDensity: "MEDIUM",
+    claims: [{ text: claim.text, claimType: fact.kind, sourceFactIds: [fact.factId] }],
+  };
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.plan.factRegistry = [{ ...fact, visualGroupKeys: ["main"] }];
+  fixture.input.plan.plan.slots = [structuredClone(fixture.input.slot)];
+  let generationPayload;
+  let checkerPrompt;
+  const generate = fixture.input.gateway.generateImage;
+  fixture.input.gateway.generateImage = async (request) => {
+    generationPayload = JSON.parse(request.prompt.split("\n").find((line) => line.startsWith("{")));
+    return generate(request);
+  };
+  fixture.input.gateway.inspectImage = async (request) => {
+    checkerPrompt = request.prompt;
+    return checkerResponse(fixture, {}, { claims: [claim], detectedTexts: [claim.text] });
+  };
+
+  await generateImageSlot(fixture.input);
+
+  assert.equal(generationPayload.visualBrief.annotationMode, "PRODUCT_DOCUMENTARY_DIMENSIONS");
+  assert.equal(generationPayload.visualBrief.backgroundMode, "PURE_WHITE");
+  assert.match(generationPayload.visualBrief.background, /#FFFFFF/u);
+  assert.deepEqual(generationPayload.visualBrief.dimensionClaimTexts, [claim.text]);
+  assert.match(generationPayload.visualBrief.factPresentation, /尺寸标线/u);
+  assert.match(generationPayload.visualBrief.factPresentation, /端点/u);
+  assert.match(checkerPrompt, /每项可信尺寸/u);
+  assert.match(checkerPrompt, /DIMENSION_ANNOTATION_MISSING/u);
+  assert.match(checkerPrompt, /纯白背景/u);
+});
+
+test("V6 product documentary does not require dimension lines for non-dimension facts", async () => {
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  fixture.input.scope = { ...fixture.input.scope, slotKey: "main:specification:01" };
+  fixture.input.slot = {
+    ...fixture.input.slot,
+    slotKey: "main:specification:01",
+    role: "SPECIFICATION",
+    textDensity: "LIGHT",
+    claims: [{ text: fixture.fact.value, claimType: fixture.fact.kind, sourceFactIds: [fixture.fact.factId] }],
+  };
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.plan.plan.slots = [structuredClone(fixture.input.slot)];
+  let generationPayload;
+  let checkerPrompt;
+  const generate = fixture.input.gateway.generateImage;
+  const inspect = fixture.input.gateway.inspectImage;
+  fixture.input.gateway.generateImage = async (request) => {
+    generationPayload = JSON.parse(request.prompt.split("\n").find((line) => line.startsWith("{")));
+    return generate(request);
+  };
+  fixture.input.gateway.inspectImage = async (request) => {
+    checkerPrompt = request.prompt;
+    return inspect(request);
+  };
+
+  await generateImageSlot(fixture.input);
+
+  assert.equal(generationPayload.visualBrief.annotationMode, "PRODUCT_DOCUMENTARY_FACTS");
+  assert.equal(Object.hasOwn(generationPayload.visualBrief, "dimensionClaimTexts"), false);
+  assert.doesNotMatch(checkerPrompt, /每项可信尺寸/u);
+});
+
+test("V6 product documentary prompt allows clearly contextual demonstration objects", async () => {
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  fixture.input.scope = { ...fixture.input.scope, slotKey: "main:specification:01" };
+  fixture.input.slot = {
+    ...fixture.input.slot,
+    slotKey: "main:specification:01",
+    role: "SPECIFICATION",
+    textDensity: "NONE",
+    claims: [],
+  };
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.plan.plan.slots = [structuredClone(fixture.input.slot)];
+  let prompt;
+  let payload;
+  const generate = fixture.input.gateway.generateImage;
+  fixture.input.gateway.generateImage = async (request) => {
+    prompt = request.prompt;
+    payload = JSON.parse(request.prompt.split("\n").find((line) => line.startsWith("{")));
+    return generate(request);
+  };
+  fixture.input.gateway.inspectImage = async () => checkerResponse(fixture, {}, {
+    claims: [], detectedTexts: [],
+  });
+
+  await generateImageSlot(fixture.input);
+
+  assert.equal(payload.visualBrief.annotationMode, "PRODUCT_DOCUMENTARY_PLAIN");
+  assert.match(payload.visualBrief.productView, /单独、清晰地展示商品/u);
+  assert.match(prompt, /允许使用能辅助展示商品功能的环境物品/u);
+  assert.match(prompt, /不得把环境物品排成随附套装/u);
+});
+
+test("V5 repeated selling-point slots receive distinct shot assignments", async () => {
+  const briefs = [];
+  for (let occurrence = 1; occurrence <= 3; occurrence += 1) {
+    const fixture = await setup();
+    const suffix = String(occurrence).padStart(2, "0");
+    const slotKey = `main:selling-point:${suffix}`;
+    fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V5";
+    fixture.input.scope = { ...fixture.input.scope, slotKey };
+    fixture.input.slot = {
+      ...fixture.input.slot,
+      slotKey,
+      role: "SELLING_POINT",
+      textDensity: "LIGHT",
+      claims: [{ text: fixture.fact.value, claimType: fixture.fact.kind, sourceFactIds: [fixture.fact.factId] }],
+    };
+    fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+    fixture.input.plan.plan.slots = [structuredClone(fixture.input.slot)];
+    const generate = fixture.input.gateway.generateImage;
+    fixture.input.gateway.generateImage = async (request) => {
+      briefs.push(JSON.parse(request.prompt.split("\n").find((line) => line.startsWith("{"))).visualBrief);
+      return generate(request);
+    };
+    await generateImageSlot(fixture.input);
+  }
+
+  assert.equal(new Set(briefs.map(({ compositionVariant }) => compositionVariant)).size, 3);
+  assert.equal(new Set(briefs.map(({ productView }) => productView)).size, 3);
+});
+
+test("V3 does not require Russian text when the slot has no allowed copy", async () => {
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V3";
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.slot = { ...fixture.input.slot, textDensity: "LIGHT", claims: [] };
+  fixture.input.plan.plan.slots[0] = structuredClone(fixture.input.slot);
+  let reservationInput;
+  fixture.input.repository.reserveGenerationAttempt = async (value) => {
+    reservationInput = value;
+    return reserved();
+  };
+  fixture.input.gateway.inspectImage = async () => ({
+    requestId: "check-no-copy",
+    modelEvidence: {
+      requestedTextModel: "checker",
+      gatewayReportedTextModel: "checker",
+      gatewayReportedTextModelPresent: true,
+    },
+    value: {
+      matchesProduct: true,
+      matchesCategoryStyle: true,
+      claimsVerified: true,
+      russianText: false,
+      quality: "PASS",
+      prohibitedContent: false,
+      reasons: [],
+      evidence: {
+        identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] },
+        categoryStyle: { matches: true, referenceEvidenceIds: [] },
+        claims: [],
+        detectedTexts: [],
+        language: "other",
+        qualityFlags: [],
+        prohibitedFlags: [],
+      },
+    },
+  });
+
+  const result = await generateImageSlot(fixture.input);
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.checkerEvidence.textRequired, false);
+  assert.equal(result.checkerEvidence.textForbidden, true);
+  assert.equal("legacyAttemptIdentityHash" in reservationInput, false);
 });
 
 test("rejects a pure SOURCE_URL before reservation, loading, gateway, or storage", async () => {
@@ -191,6 +663,35 @@ test("pure accepted-asset evidence verification rejects every incomplete or cros
   assert.equal(verifyAcceptedGeneratedAssetEvidence(legacy), false);
 });
 
+test("V6 accepted replay canonicalizes only redundant checker claim projection", async () => {
+  const { verifyAcceptedGeneratedAssetEvidence } = await import("../auto-listing-image-generator.mjs");
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.slot.claims = [{
+    text: fixture.claim.text,
+    claimType: fixture.fact.kind,
+    sourceFactIds: [fixture.fact.factId],
+  }];
+  fixture.input.plan.plan.slots[0] = structuredClone(fixture.input.slot);
+  const accepted = structuredClone(await generateImageSlot(fixture.input));
+  const verification = {
+    record: accepted,
+    scope: fixture.input.scope,
+    plan: fixture.input.plan,
+    slot: fixture.input.slot,
+    profile: fixture.input.profile,
+    imageModel: fixture.input.imageModel,
+    templateVersion: fixture.input.templateVersion,
+  };
+
+  verification.record.checkerEvidence.checkerResult.evidence.claims[0].field = "identity.primaryName#legacy-projection";
+  assert.equal(verifyAcceptedGeneratedAssetEvidence(verification), true);
+
+  verification.record.checkerEvidence.checkerResult.evidence.claims[0].text = "Синий товар";
+  assert.equal(verifyAcceptedGeneratedAssetEvidence(verification), false);
+});
+
 test("pure accepted-asset evidence verification recomputes both frozen generation identities", async () => {
   const { verifyAcceptedGeneratedAssetEvidence } = await import("../auto-listing-image-generator.mjs");
   const fixture = await setup();
@@ -248,6 +749,87 @@ test("replays an immutable pre-030 accepted object with null version only throug
   assert.equal(corrupt.gatewayCalls(), 0);
 });
 
+test("pure verification accepts the exact pre-category-style generation hashes", async () => {
+  const { verifyAcceptedGeneratedAssetEvidence } = await import("../auto-listing-image-generator.mjs");
+  const fixture = await setup();
+  const accepted = structuredClone(await generateImageSlot(fixture.input));
+  const canonical = (value) => Array.isArray(value)
+    ? value.map(canonical)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]))
+      : value;
+  const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+  const sourceAssets = accepted.sourceAssetEvidence.map(({ assetId, contentHash }) => ({ assetId, contentHash }));
+  accepted.attemptIdentityHash = hash({
+    scope: fixture.input.scope,
+    planHash: fixture.input.plan.planHash,
+    sourceHash: fixture.input.plan.sourceHash,
+    strategyHash: fixture.input.plan.strategyHash,
+    configHash: fixture.input.plan.configHash,
+    visualGroupsHash: fixture.input.plan.visualGroupsHash,
+    slot: fixture.input.slot,
+    preliminaryEvidence: [{ assetId: fixture.asset.assetId, evidenceKind: "CONTENT_HASH", evidenceRefHash: fixture.asset.contentHash }],
+    profileId: fixture.input.profile.id,
+    profileVersion: fixture.input.profile.configVersion,
+    imageModel: fixture.input.imageModel,
+    ratio: fixture.input.ratio,
+    resolution: fixture.input.resolution,
+    size: fixture.input.size,
+    quality: fixture.input.quality,
+    templateVersion: fixture.input.templateVersion,
+    regeneration: null,
+  });
+  accepted.inputHash = hash({
+    planHash: fixture.input.plan.planHash,
+    slot: fixture.input.slot,
+    sourceAssets,
+    sourceHash: fixture.input.plan.sourceHash,
+    strategyHash: fixture.input.plan.strategyHash,
+    configHash: fixture.input.plan.configHash,
+    visualGroupsHash: fixture.input.plan.visualGroupsHash,
+    templateVersion: fixture.input.templateVersion,
+    profileId: fixture.input.profile.id,
+    profileVersion: fixture.input.profile.configVersion,
+    imageModel: fixture.input.imageModel,
+    ratio: fixture.input.ratio,
+    resolution: fixture.input.resolution,
+    size: fixture.input.size,
+    quality: fixture.input.quality,
+    regeneration: null,
+  });
+  accepted.promptHash = hash({
+    templateVersion: fixture.input.templateVersion,
+    planHash: fixture.input.plan.planHash,
+    slot: fixture.input.slot,
+    sourceAssets,
+  });
+  accepted.objectKey = buildGeneratedAssetObjectKey({ ...accepted, contentHash: accepted.contentHash });
+
+  assert.equal(verifyAcceptedGeneratedAssetEvidence({
+    record: accepted,
+    scope: fixture.input.scope,
+    plan: fixture.input.plan,
+    slot: fixture.input.slot,
+    profile: fixture.input.profile,
+    imageModel: fixture.input.imageModel,
+    templateVersion: fixture.input.templateVersion,
+  }), true);
+
+  let reservationInput;
+  const replay = await setup();
+  replay.input.repository.reserveGenerationAttempt = async (value) => {
+    reservationInput = value;
+    return value.legacyAttemptIdentityHash === accepted.attemptIdentityHash
+      ? { status: "EXISTING_ACCEPTED", record: accepted }
+      : reserved();
+  };
+  const reused = await generateImageSlot(replay.input);
+  assert.equal(reservationInput.legacyAttemptIdentityHash, accepted.attemptIdentityHash);
+  assert.equal(reused.inputHash, accepted.inputHash);
+  assert.equal(replay.loaderCalls(), 0);
+  assert.equal(replay.gatewayCalls(), 0);
+});
+
 test("direct accepted reuse binds persisted references to the immutable selected asset identity", async () => {
   const first = await setup();
   const accepted = structuredClone(await generateImageSlot(first.input));
@@ -264,7 +846,7 @@ test("direct accepted reuse binds persisted references to the immutable selected
 });
 
 test("required bind port is fenced before reservation or source loading", async () => {
-  for (const method of ["bindGenerationAttemptInput", "findStoredGenerationAsset", "recordStoredGenerationAsset", "recordAssetCleanupRequired", "completeGenerationAttempt", "rejectGenerationAttempt", "failGenerationAttempt", "blockItem", "countAcceptedAssets"]) {
+  for (const method of ["bindGenerationAttemptInput", "findStoredGenerationAsset", "recordStoredGenerationAsset", "recordAssetCleanupRequired", "completeGenerationAttempt", "rejectGenerationAttempt", "failGenerationAttempt"]) {
     const fixture = await setup();
     delete fixture.input.repository[method];
     const effects = [];
@@ -273,6 +855,12 @@ test("required bind port is fenced before reservation or source loading", async 
     await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_IMAGE_INPUT_INVALID", method);
     assert.deepEqual(effects, [], method);
   }
+});
+
+test("image generation leaves item-state transitions to the workflow repository", async () => {
+  const fixture = await setup();
+  delete fixture.input.repository.blockItem;
+  assert.equal((await generateImageSlot(fixture.input)).status, "ACCEPTED");
 });
 
 test("quality is canonicalized once for attempt identity, final input, gateway, and accepted reuse", async () => {
@@ -294,13 +882,12 @@ test("mismatched source evidence consumes its reserved lease without calling an 
   assert.equal(fixture.gatewayCalls(), 0); assert.deepEqual(fixture.calls.map(([name]) => name), ["failed"]);
 });
 
-test("source loading failure is terminalized through its lease and final exhaustion blocks MAIN", async () => {
+test("source loading failure is terminalized through its lease and reports MAIN blocked to the workflow", async () => {
   const fixture = await setup();
   fixture.input.repository.reserveGenerationAttempt = async () => reserved(3);
-  let blocks = 0; fixture.input.repository.blockItem = async () => { blocks += 1; };
   fixture.input.sourceAssetLoader.loadSourceAsset = async () => { throw new Error("network detail must not escape"); };
   await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_SOURCE_ASSET_UNAVAILABLE" && error?.retryable === false && error?.itemOutcome === "BLOCKED");
-  assert.equal(fixture.gatewayCalls(), 0); assert.deepEqual(fixture.calls.map(([name]) => name), ["failed"]); assert.equal(blocks, 1);
+  assert.equal(fixture.gatewayCalls(), 0); assert.deepEqual(fixture.calls.map(([name]) => name), ["failed"]);
 });
 
 test("the complete plan, profile, group, and slot scope fence runs before every side effect", async () => {
@@ -360,7 +947,11 @@ test("loads only the slot's ordered unique 1..7 references even when its visual 
     assert.equal(request.sourceImages.length, 2);
     return { bytes: fixture.bytes, requestId: "generate-1", modelEvidence: { requestedImageModel: "image-model", gatewayReportedImageModel: "image-model", gatewayReportedImageModelPresent: true, orchestratorModel: "" } };
   };
-  fixture.input.gateway.inspectImage = async () => checkerResponse(fixture, {}, { identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: ["asset-3", "asset-1"] } });
+  fixture.input.gateway.inspectImage = async (request) => {
+    assert.equal(request.sourceImages.length, 1);
+    assert.equal(request.sourceImages.every(({ bytes }) => bytes.equals(fixture.bytes)), true);
+    return checkerResponse(fixture, {}, { identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: ["asset-3"] } });
+  };
   await generateImageSlot(fixture.input);
   assert.deepEqual(loaded, ["asset-3", "asset-1"]);
 });
@@ -395,12 +986,63 @@ test("source reference aggregate is capped at 32 MiB before reservation or gatew
   assert.deepEqual(fixture.calls.map(([name]) => name), ["failed"]);
 });
 
-test("gateway size is the exact validated ratio-resolution contract and is frozen in accepted evidence", async () => {
+test("combined product and category-style references are capped before a paid image call", async () => {
   const fixture = await setup();
-  const generate = fixture.input.gateway.generateImage;
-  fixture.input.gateway.generateImage = async (request) => { assert.equal(request.size, "768x1024"); return generate(request); };
-  const accepted = await generateImageSlot(fixture.input);
-  assert.equal(accepted.generationSize, "768x1024");
+  const raw = crypto.randomBytes(1700 * 2268 * 3);
+  const large = await sharp(raw, { raw: { width: 1700, height: 2268, channels: 3 } }).png({ compressionLevel: 0 }).toBuffer();
+  assert.ok(large.length > 10 * 1024 * 1024 && large.length < 16 * 1024 * 1024);
+  const product = { assetId: "asset-a", sourceRef: null, contentHash: sha256(large), evidenceKind: "CONTENT_HASH" };
+  fixture.input.plan.visualGroups.groups[0].referenceImages = [product];
+  fixture.input.sourceAssetLoader.loadSourceAsset = async () => ({
+    ...product, bytes: large, contentType: "image/png", width: 1700, height: 2268,
+  });
+  fixture.input.categoryStyle = categoryStyle;
+  fixture.input.categoryStyleReferences = ["a", "b"].map((suffix) => ({
+    evidenceId: `style-large-${suffix}`, sku: `sample-large-${suffix}`,
+    objectKey: `category-strategy/account-a/draft-a/set-a/sample-${suffix}/style-large-${suffix}.png`,
+    contentHash: sha256(large), contentType: "image/png", width: 1700, height: 2268,
+  }));
+  fixture.input.storage.getObjectBuffer = async (key) => key.includes("style-large-") ? large : fixture.bytes;
+  let gatewayCalls = 0;
+  fixture.input.gateway.generateImage = async () => { gatewayCalls += 1; return null; };
+
+  await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_ASSET_TOO_LARGE");
+
+  assert.equal(gatewayCalls, 0);
+});
+
+test("gpt-image-2 derives its request size from each image-generation configuration", async () => {
+  for (const configured of [
+    { ratio: "3:4", resolution: "1K", size: "768x1024", gatewaySize: "768x1024" },
+    { ratio: "4:3", resolution: "2K", size: "2048x1536", gatewaySize: "2048x1536" },
+    { ratio: "2:3", resolution: "1K", size: "683x1024", gatewaySize: "672x1008" },
+    { ratio: "3:4", resolution: "4K", size: "3072x4096", gatewaySize: "2448x3264" },
+  ]) {
+    const fixture = await setup();
+    Object.assign(fixture.input, {
+      ratio: configured.ratio,
+      resolution: configured.resolution,
+      size: configured.size,
+      imageModel: "gpt-image-2",
+      profile: { ...fixture.input.profile, imageModel: "gpt-image-2" },
+    });
+    fixture.input.repository.reserveGenerationAttempt = async () => reserved(1, configured.size);
+    const generate = fixture.input.gateway.generateImage;
+    fixture.input.gateway.generateImage = async (request) => {
+      assert.equal(request.size, configured.gatewaySize);
+      const result = await generate(request);
+      return {
+        ...result,
+        modelEvidence: {
+          ...result.modelEvidence,
+          requestedImageModel: "gpt-image-2",
+          gatewayReportedImageModel: "gpt-image-2",
+        },
+      };
+    };
+    const accepted = await generateImageSlot(fixture.input);
+    assert.equal(accepted.generationSize, configured.size);
+  }
   for (const size of ["1024x1024", " 768x1024", "768x1024 ", "768X1024", "1x1"]) {
     const invalid = await setup(); invalid.input.size = size;
     await assert.rejects(generateImageSlot(invalid.input), (error) => error?.code === "AUTO_LISTING_IMAGE_INPUT_INVALID");
@@ -465,15 +1107,6 @@ test("does not reuse a corrupt accepted record", async () => {
   assert.equal(fixture.gatewayCalls(), 0);
 });
 
-test("main image and minimum-six policy blocks only the item while valid sibling coverage remains ready", () => {
-  const slots = ["main", "a", "b", "c", "d", "e", "f"].map((slotKey, index) => ({ slotKey, role: index === 0 ? "MAIN" : "DETAIL" }));
-  assert.deepEqual(summarizeGeneratedImageSlots({ slots, results: slots.slice(1).map(({ slotKey }) => ({ slotKey, accepted: true })) }), { status: "BLOCKED", code: "MAIN_IMAGE_REQUIRED", acceptedSlotKeys: ["a", "b", "c", "d", "e", "f"] });
-  assert.deepEqual(summarizeGeneratedImageSlots({ slots, results: slots.slice(0, 6).map(({ slotKey }) => ({ slotKey, accepted: true })) }), { status: "READY", acceptedSlotKeys: ["a", "b", "c", "d", "e", "main"] });
-  assert.deepEqual(summarizeGeneratedImageSlots({ slots, results: slots.slice(0, 5).map(({ slotKey }) => ({ slotKey, accepted: true })) }), { status: "BLOCKED", code: "MINIMUM_IMAGE_COUNT_NOT_MET", acceptedSlotKeys: ["a", "b", "c", "d", "main"] });
-  assert.throws(() => summarizeGeneratedImageSlots({ slots, results: [{ slotKey: "main", accepted: true }], minimumAccepted: 5 }), (error) => error?.code === "AUTO_LISTING_IMAGE_INPUT_INVALID");
-  assert.deepEqual(summarizeGeneratedImageSlots({ slots: [{ slotKey: "main", role: "MAIN" }], results: [{ slotKey: "main", accepted: true }] }), { status: "BLOCKED", code: "MINIMUM_IMAGE_COUNT_NOT_MET", acceptedSlotKeys: ["main"] });
-});
-
 test("an occupied lease has no external call and gateway failure is terminalized through its own lease token", async () => {
   const occupied = await setup();
   occupied.input.repository.reserveGenerationAttempt = async () => ({ status: "IN_PROGRESS" });
@@ -485,6 +1118,21 @@ test("an occupied lease has no external call and gateway failure is terminalized
   await assert.rejects(generateImageSlot(failing.input), (error) => error?.code === "AI_GATEWAY_UNAVAILABLE");
   assert.deepEqual(failing.calls.map(([name]) => name), ["failed"]);
   assert.equal(failing.calls[0][1].leaseToken, "lease-a");
+});
+
+test("a malformed successful image response remains rejected but uses the bounded slot retry", async () => {
+  const fixture = await setup();
+  fixture.input.gateway.generateImage = async () => {
+    const error = new Error("malformed provider response");
+    error.code = "INVALID_GATEWAY_RESPONSE";
+    error.retryable = false;
+    throw error;
+  };
+  await assert.rejects(
+    generateImageSlot(fixture.input),
+    (error) => error?.code === "AUTO_LISTING_IMAGE_GATEWAY_INVALID" && error?.retryable === true,
+  );
+  assert.equal(fixture.calls.find(([name]) => name === "failed")[1].code, "AUTO_LISTING_IMAGE_GATEWAY_INVALID");
 });
 
 test("malformed reserved attempt numbers fail closed before gateway, storage, or terminal mutation", async () => {
@@ -530,7 +1178,7 @@ test("transport, storage, checker, policy, and exhausted reservations share one 
   for (const [role, failureKind, acceptedCount, expectedOutcome, expectedCode] of [
     ["MAIN", "transport", 0, "BLOCKED", "AI_GATEWAY_UNAVAILABLE"],
     ["DETAIL", "storage", 6, "CONTINUE_WITHOUT_SLOT", "AUTO_LISTING_ASSET_STORAGE_UNAVAILABLE"],
-    ["DETAIL", "checker", 5, "ITEM_INCOMPLETE", "CHECKER_UNAVAILABLE"],
+    ["DETAIL", "checker", 5, "CONTINUE_WITHOUT_SLOT", "CHECKER_UNAVAILABLE"],
     ["MAIN", "exhausted", 0, "BLOCKED", "AUTO_LISTING_IMAGE_ATTEMPTS_EXHAUSTED"],
   ]) {
     const fixture = await setup();
@@ -539,14 +1187,11 @@ test("transport, storage, checker, policy, and exhausted reservations share one 
     fixture.input.repository.reserveGenerationAttempt = async () => failureKind === "exhausted"
       ? { status: "ATTEMPTS_EXHAUSTED" }
       : reserved(3);
-    let blocks = 0;
-    fixture.input.repository.blockItem = async () => { blocks += 1; };
     fixture.input.repository.countAcceptedAssets = async () => acceptedCount;
     if (failureKind === "transport") fixture.input.gateway.generateImage = async () => { const error = new Error("temporary"); error.code = "AI_GATEWAY_UNAVAILABLE"; error.retryable = true; throw error; };
     if (failureKind === "storage") fixture.input.storage.putObjectFromBuffer = async () => { const error = new Error("temporary"); error.code = "offline"; throw error; };
     if (failureKind === "checker") fixture.input.gateway.inspectImage = async () => { const error = new Error("temporary"); error.requestId = "checker-failed-1"; throw error; };
     await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === expectedCode && error?.itemOutcome === expectedOutcome);
-    assert.equal(blocks, role === "MAIN" ? 1 : 0);
   }
 });
 
@@ -558,17 +1203,96 @@ test("checker policy rejection uses the reserved attempt and remains distinct fr
   assert.equal(fixture.calls[1][1].leaseToken, "lease-a");
 });
 
-test("final policy failure blocks MAIN once, while non-main only reports bounded coverage and never touches siblings", async () => {
-  for (const [role, attemptNo, count, outcome, blocked] of [["MAIN", 1, 0, undefined, 0], ["MAIN", 3, 0, "BLOCKED", 1], ["DETAIL", 3, 5, "ITEM_INCOMPLETE", 0], ["DETAIL", 3, 6, "CONTINUE_WITHOUT_SLOT", 0]]) {
+test("V6 accepts a soft presentation warning immediately without another paid generation", async () => {
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.slot.claims = [{ text: fixture.fact.value, claimType: fixture.fact.kind, sourceFactIds: [fixture.fact.factId] }];
+  fixture.input.slot.sourceFactIds = [fixture.fact.factId];
+  fixture.input.plan.plan.slots[0] = structuredClone(fixture.input.slot);
+  fixture.input.repository.reserveGenerationAttempt = async () => reserved(2);
+  fixture.input.gateway.inspectImage = async () => checkerResponse(fixture, { quality: "FAIL" }, {
+    qualityFlags: ["SUBJECT_NOT_DOMINANT"],
+  });
+
+  const result = await generateImageSlot(fixture.input);
+  assert.equal(result.status, "ACCEPTED");
+  assert.equal(result.acceptedWithWarnings, true);
+  assert.deepEqual(result.manualReviewWarnings, ["SUBJECT_NOT_DOMINANT"]);
+  assert.equal(fixture.gatewayCalls(), 1);
+  assert.deepEqual(fixture.calls.map(([name]) => name), ["stored", "complete"]);
+});
+
+test("V6 sends a third soft presentation failure to manual review with tamper-evident warning evidence", async () => {
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.slot.claims = [{ text: fixture.fact.value, claimType: fixture.fact.kind, sourceFactIds: [fixture.fact.factId] }];
+  fixture.input.slot.sourceFactIds = [fixture.fact.factId];
+  fixture.input.plan.plan.slots[0] = structuredClone(fixture.input.slot);
+  fixture.input.repository.reserveGenerationAttempt = async () => reserved(3);
+  fixture.input.gateway.inspectImage = async () => checkerResponse(fixture, { quality: "FAIL" }, {
+    qualityFlags: ["SUBJECT_NOT_DOMINANT"],
+  });
+
+  const result = await generateImageSlot(fixture.input);
+
+  assert.equal(result.status, "ACCEPTED");
+  assert.equal(result.acceptedWithWarnings, true);
+  assert.deepEqual(result.manualReviewWarnings, ["SUBJECT_NOT_DOMINANT"]);
+  assert.equal(result.checkerEvidence.checkerResult.quality, "PASS");
+  assert.deepEqual(result.checkerEvidence.checkerResult.evidence.qualityFlags, []);
+  assert.ok(result.checkerEvidence.checkerResult.reasons.includes("AUTO_LISTING_MANUAL_REVIEW_WARNING:SUBJECT_NOT_DOMINANT"));
+  assert.deepEqual(fixture.calls.map(([name]) => name), ["stored", "complete"]);
+});
+
+test("V6 never converts a final hard checker failure into a manual-review warning", async () => {
+  const fixture = await setup();
+  fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
+  fixture.input.slot.claims = [{ text: fixture.fact.value, claimType: fixture.fact.kind, sourceFactIds: [fixture.fact.factId] }];
+  fixture.input.slot.sourceFactIds = [fixture.fact.factId];
+  fixture.input.plan.plan.slots[0] = structuredClone(fixture.input.slot);
+  fixture.input.repository.reserveGenerationAttempt = async () => reserved(3);
+  fixture.input.gateway.inspectImage = async () => checkerResponse(fixture, {}, {
+    identity: { color: false, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] },
+  });
+
+  await assert.rejects(
+    generateImageSlot(fixture.input),
+    (error) => error?.code === "PRODUCT_IDENTITY_MISMATCH" && error?.retryable === false,
+  );
+  assert.equal(fixture.calls.some(([name, value]) => name === "complete"
+    && value.checkerEvidence?.checkerResult?.reasons?.some((reason) => reason.startsWith("AUTO_LISTING_MANUAL_REVIEW_WARNING:"))), false);
+});
+
+test("final policy failure reports MAIN blocked, while non-main reports bounded coverage", async () => {
+  for (const [role, attemptNo, count, outcome] of [["MAIN", 1, 0, undefined], ["MAIN", 3, 0, "BLOCKED"], ["DETAIL", 3, 5, "CONTINUE_WITHOUT_SLOT"], ["DETAIL", 3, 6, "CONTINUE_WITHOUT_SLOT"]]) {
     const fixture = await setup(); fixture.input.slot = { ...fixture.input.slot, role };
     fixture.input.plan.plan.slots = [{ ...fixture.input.slot }];
     fixture.input.repository.reserveGenerationAttempt = async () => reserved(attemptNo);
-    let blocks = 0; fixture.input.repository.blockItem = async () => { blocks += 1; }; fixture.input.repository.countAcceptedAssets = async () => count;
+    fixture.input.repository.countAcceptedAssets = async () => count;
     fixture.input.gateway.inspectImage = async () => checkerResponse(fixture, {}, { identity: { color: false, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] }, detectedTexts: [] });
     await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "PRODUCT_IDENTITY_MISMATCH" && error.itemOutcome === outcome && error.retryable === (attemptNo < 3));
-    assert.equal(blocks, blocked); assert.equal(fixture.calls.filter(([name]) => name === "rejected").length, 1);
+    assert.equal(fixture.calls.filter(([name]) => name === "rejected").length, 1);
     assert.equal(fixture.calls.find(([name]) => name === "rejected")[1].retryable, attemptNo < 3);
   }
+});
+
+test("a final non-main rejection is skipped until the workflow evaluates the complete group", async () => {
+  const fixture = await setup();
+  fixture.input.slot = { ...fixture.input.slot, role: "DETAIL" };
+  fixture.input.plan.plan.slots = [{ ...fixture.input.slot }];
+  fixture.input.repository.reserveGenerationAttempt = async () => reserved(3);
+  delete fixture.input.repository.countAcceptedAssets;
+  fixture.input.gateway.inspectImage = async () => checkerResponse(fixture, {}, {
+    identity: { color: false, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] },
+  });
+  await assert.rejects(
+    generateImageSlot(fixture.input),
+    (error) => error?.code === "PRODUCT_IDENTITY_MISMATCH"
+      && error?.retryable === false && error?.itemOutcome === "CONTINUE_WITHOUT_SLOT",
+  );
 });
 
 test("a max-attempt transport failure is persisted as non-retryable before item finalization", async () => {
@@ -577,6 +1301,26 @@ test("a max-attempt transport failure is persisted as non-retryable before item 
   fixture.input.repository.blockItem = async () => {};
   fixture.input.gateway.generateImage = async () => { const value = new Error("offline"); value.code = "AI_GATEWAY_UNAVAILABLE"; value.retryable = true; throw value; };
   await assert.rejects(generateImageSlot(fixture.input), (error) => error?.retryable === false);
+  assert.equal(fixture.calls.find(([name]) => name === "failed")[1].retryable, false);
+});
+
+test("a non-retryable gateway failure skips a non-main slot instead of blocking the item", async () => {
+  const fixture = await setup();
+  fixture.input.slot = { ...fixture.input.slot, role: "INFOGRAPHIC" };
+  fixture.input.plan.plan.slots = [{ ...fixture.input.slot }];
+  fixture.input.repository.reserveGenerationAttempt = async () => reserved(2);
+  fixture.input.gateway.generateImage = async () => {
+    const error = new Error("provider rejected this image request");
+    error.code = "NON_RETRYABLE_GATEWAY";
+    error.retryable = false;
+    throw error;
+  };
+
+  await assert.rejects(
+    generateImageSlot(fixture.input),
+    (error) => error?.code === "NON_RETRYABLE_GATEWAY"
+      && error?.retryable === false && error?.itemOutcome === "CONTINUE_WITHOUT_SLOT",
+  );
   assert.equal(fixture.calls.find(([name]) => name === "failed")[1].retryable, false);
 });
 
@@ -589,6 +1333,119 @@ test("checker transport and reject-record failure remain recoverable and never t
   rejectFailure.input.repository.blockItem = async () => { throw new Error("must not block"); };
   rejectFailure.input.gateway.inspectImage = async () => checkerResponse(rejectFailure, {}, { identity: { color: false, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] }, detectedTexts: [] });
   await assert.rejects(generateImageSlot(rejectFailure.input), (error) => error?.code === "AUTO_LISTING_IMAGE_REPOSITORY_FAILED" && !String(error.message).includes("db unavailable"));
+});
+
+test("one transient checker failure defers to the worker retry and preserves the generated image", async () => {
+  const fixture = await setup();
+  const inspect = fixture.input.gateway.inspectImage;
+  const checkerKeys = [];
+  fixture.input.gateway.inspectImage = async (request) => {
+    checkerKeys.push(request.requestKey);
+    if (checkerKeys.length === 1) throw new Error("temporary checker failure");
+    return inspect(request);
+  };
+
+  await assert.rejects(generateImageSlot(fixture.input),
+    (error) => error?.code === "CHECKER_UNAVAILABLE" && error?.retryable === true);
+  assert.equal(fixture.gatewayCalls(), 1);
+  assert.equal(checkerKeys.length, 1);
+  assert.match(checkerKeys[0], /attempt-1$/u);
+  assert.deepEqual(fixture.calls.map(([name]) => name), ["stored", "failed"]);
+});
+
+test("terminal checker retry preserves the first known external request id", async () => {
+  const fixture = await setup();
+  let checkerCalls = 0;
+  fixture.input.gateway.inspectImage = async () => {
+    checkerCalls += 1;
+    const error = new Error("temporary checker failure");
+    if (checkerCalls === 1) error.requestId = "checker-failed-1";
+    throw error;
+  };
+
+  await assert.rejects(
+    generateImageSlot(fixture.input),
+    (error) => error?.code === "CHECKER_UNAVAILABLE" && error?.retryable === true,
+  );
+
+  assert.equal(fixture.gatewayCalls(), 1);
+  assert.equal(checkerCalls, 1);
+  const failed = fixture.calls.find(([name]) => name === "failed")[1];
+  assert.equal(failed.checkerRequestId, "checker-failed-1");
+  assert.equal(failed.objectKeyVersion, "ATTEMPT_V2");
+  assert.equal(failed.contentType, "image/png");
+  assert.equal(failed.modelEvidence.requestedImageModel, "image-model");
+});
+
+test("terminal structured checker failure keeps the generated image and safe repair diagnostic", async () => {
+  const fixture = await setup();
+  let checkerCalls = 0;
+  fixture.input.gateway.inspectImage = async () => {
+    checkerCalls += 1;
+    throw Object.assign(new Error("private malformed response"), {
+      code: "INVALID_GATEWAY_RESPONSE",
+      requestId: `checker-invalid-${checkerCalls}`,
+      failureField: "/evidence/claims/0/unit",
+    });
+  };
+
+  await assert.rejects(generateImageSlot(fixture.input), (error) => {
+    assert.equal(error?.code, "CHECKER_RESPONSE_INVALID");
+    assert.equal(error?.requestId, "checker-invalid-2");
+    return true;
+  });
+
+  assert.equal(fixture.gatewayCalls(), 1);
+  assert.equal(checkerCalls, 2);
+  const failed = fixture.calls.find(([name]) => name === "failed")[1];
+  assert.equal(failed.code, "CHECKER_RESPONSE_INVALID");
+  assert.equal(failed.checkerRequestId, "checker-invalid-2");
+  assert.equal(failed.objectKeyVersion, "ATTEMPT_V2");
+  assert.equal(failed.modelEvidence.requestedImageModel, "image-model");
+  assert.deepEqual(failed.checkerEvidence, {
+    version: "CHECKER_FAILURE_V1",
+    failureCode: "CHECKER_RESPONSE_INVALID",
+    detailCode: "STRUCTURED_RESPONSE_INVALID",
+    failureField: "/evidence/claims/0/unit",
+    requestIds: ["checker-invalid-1", "checker-invalid-2"],
+    callCount: 2,
+  });
+});
+
+test("a later task attempt reuses an image stored before checker outage without another paid generation", async () => {
+  const first = await setup();
+  first.input.gateway.inspectImage = async () => { throw new Error("temporary checker failure"); };
+  await assert.rejects(
+    generateImageSlot(first.input),
+    (error) => error?.code === "CHECKER_UNAVAILABLE" && error?.retryable === true,
+  );
+  const failed = first.calls.find(([name]) => name === "failed")[1];
+
+  const retry = await setup();
+  retry.input.repository.bindGenerationAttemptInput = async (value) => ({
+    status: "BOUND",
+    inputHash: value.inputHash,
+    recoveryRecord: {
+      ...failed,
+      ...failed.storedAsset,
+      status: "FAILED",
+      errorCode: "CHECKER_UNAVAILABLE",
+      errorRetryable: true,
+      finalInputBoundAt: "2026-08-24T10:00:00.000Z",
+      profileId: retry.input.profile.id,
+      profileVersion: retry.input.profile.configVersion,
+      modelName: retry.input.imageModel,
+    },
+  });
+  retry.input.gateway.generateImage = async () => { throw new Error("paid image generation must not run"); };
+
+  const result = await generateImageSlot(retry.input);
+
+  assert.equal(result.accepted, true);
+  assert.equal(retry.gatewayCalls(), 0);
+  assert.equal(retry.calls.filter(([name]) => name === "stored").length, 1);
+  assert.equal(retry.calls.filter(([name]) => name === "complete").length, 1);
+  assert.equal(retry.calls.find(([name]) => name === "complete")[1].gatewayRequestId, "generate-1");
 });
 
 test("every accepted audit column is fail-closed on a corrupt completion row", async () => {
@@ -618,7 +1475,6 @@ test("existing accepted reuse revalidates the full evidence matrix and actual st
     (row) => { row.checkerEvidence.checkerResult.russianText = false; },
     (row) => { row.checkerEvidence.checkerResult.quality = "FAIL"; },
     (row) => { row.checkerEvidence.checkerResult.prohibitedContent = true; },
-    (row) => { row.checkerEvidence.checkerResult.reasons = ["corrupt"]; },
     (row) => { row.checkerEvidence.checkerResult.evidence.detectedTexts = ["Best choice"]; },
     (row) => { row.checkerEvidence.textRequired = false; },
     (row) => { row.generationSize = "900x1200"; },

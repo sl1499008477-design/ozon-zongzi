@@ -84,6 +84,42 @@ test("reservation locks the exact active plan and version before creating a data
   assert.match(insert.text, /NOW\(\)\+\(/i);
 });
 
+test("reservation checks a compatible legacy identity while inserting only the current identity", async () => {
+  const legacyAttemptIdentityHash = "9".repeat(64);
+  const db = fakePool(reserveHandler());
+  const repository = createPostgresGenerationAttemptRepository({
+    pool: db.pool, token: () => "lease-a", id: () => "generation-a", leaseMs: 60_000,
+  });
+
+  await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, legacyAttemptIdentityHash, generationSize, maxAttempts: 3,
+  });
+
+  const accepted = db.queries.find(({ text }) => /status='ACCEPTED'/iu.test(text) && /^\s*SELECT/iu.test(text));
+  assert.match(accepted.text, /attempt_identity_hash=ANY\(\$9::TEXT\[\]\)/iu);
+  assert.deepEqual(accepted.parameters, [
+    ...Object.values(scope),
+    generationSize,
+    [attemptIdentityHash, legacyAttemptIdentityHash],
+  ]);
+  const insert = db.queries.find(({ text }) => /INSERT INTO ai_generation_assets/iu.test(text));
+  assert.equal(insert.parameters[7], attemptIdentityHash);
+});
+
+test("the default image lease outlives the 13 minute worker budget", async () => {
+  const db = fakePool(reserveHandler());
+  const repository = createPostgresGenerationAttemptRepository({
+    pool: db.pool, token: () => "lease-a", id: () => "generation-a",
+  });
+  await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3,
+  });
+
+  const insert = db.queries.find(({ text }) => /INSERT INTO ai_generation_assets/i.test(text));
+  assert.ok(insert.parameters[16] > 780_000);
+  assert.equal(insert.parameters[16], 840_000);
+});
+
 test("cancelled, stale, and non-active plans stop before any generation-attempt read or write", async () => {
   for (const [state, expected] of [
     [{ ...itemRow, status: "CANCELLED" }, "CANCELLED"],
@@ -130,6 +166,24 @@ test("the PostgreSQL adapter honors the image-generator retry limit from one thr
   }
 });
 
+test("the PostgreSQL adapter counts accepted images for the exact active plan", async () => {
+  const db = fakePool((sql, values) => {
+    assert.match(sql, /FROM ai_generation_assets AS attempt/iu);
+    assert.match(sql, /attempt\.status='ACCEPTED'/iu);
+    assert.match(sql, /item\.active_content_plan_id=attempt\.plan_id/iu);
+    assert.deepEqual(values, [scope.accountId, scope.jobId, scope.itemId, scope.planId]);
+    return { rows: [{ accepted_count: 6 }], rowCount: 1 };
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  assert.equal(await repository.countAcceptedAssets({
+    accountId: scope.accountId,
+    jobId: scope.jobId,
+    itemId: scope.itemId,
+    planId: scope.planId,
+  }), 6);
+});
+
 test("owner transitions carry the full scope, active-plan, version, lease-token and unexpired-lease CAS", async () => {
   const completedRow = reservedRow({
     input_hash: inputHash, status: "ACCEPTED", final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
@@ -172,6 +226,88 @@ test("owner transitions carry the full scope, active-plan, version, lease-token 
     /attempt\.lease_expires_at > NOW\(\)/i, /item\.active_content_plan_id=attempt\.plan_id/i,
     /item\.status_version=attempt\.expected_status_version/i,
   ]) assert.match(transition.text, pattern);
+});
+
+test("a checker contract failure persists its generated image, request id, and safe diagnostic for retry", async () => {
+  const objectKey = buildGeneratedAssetObjectKey({
+    ...scope, attemptIdentityHash, inputHash, attemptNo: 1, contentHash,
+  });
+  const checkerEvidence = {
+    version: "CHECKER_FAILURE_V1",
+    failureCode: "CHECKER_RESPONSE_INVALID",
+    detailCode: "STRUCTURED_RESPONSE_INVALID",
+    failureField: "/evidence/claims/0/unit",
+    requestIds: ["checker-1", "checker-2"],
+    callCount: 2,
+  };
+  const failedRow = reservedRow({
+    input_hash: inputHash, status: "FAILED", final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    lease_token: null, lease_expires_at: null, error_code: "CHECKER_RESPONSE_INVALID", error_retryable: true,
+    object_key_version: "ATTEMPT_V2", object_key: objectKey, content_hash: contentHash,
+    content_type: "image/png", width: 768, height: 1024, size_bytes: 123,
+    gateway_request_id: "gateway-1", checker_request_id: "checker-2",
+    model_evidence: { requestedImageModel: "image-a" }, checker_result: checkerEvidence,
+  });
+  const db = fakePool((sql) => {
+    if (/SET status='FAILED'/iu.test(sql)) return { rows: [failedRow], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  const result = await repository.failGenerationAttempt({
+    ...scope, attemptIdentityHash, inputHash, generationSize, attemptNo: 1, leaseToken: "lease-a:1",
+    role: "MAIN", code: "CHECKER_RESPONSE_INVALID", retryable: true,
+    gatewayRequestId: "gateway-1", checkerRequestId: "checker-2",
+    objectKeyVersion: "ATTEMPT_V2", objectKey, contentHash, contentType: "image/png",
+    width: 768, height: 1024, size: 123,
+    modelEvidence: { requestedImageModel: "image-a" }, checkerEvidence,
+  });
+
+  assert.equal(result.errorCode, "CHECKER_RESPONSE_INVALID");
+  assert.deepEqual(result.checkerEvidence, checkerEvidence);
+  const transition = db.queries.find(({ text }) => /SET status='FAILED'/iu.test(text));
+  assert.match(transition.text, /checker_result=COALESCE\(\$26::JSONB,attempt\.checker_result\)/iu);
+  assert.deepEqual(JSON.parse(transition.parameters[25]), checkerEvidence);
+});
+
+test("binding a later PostgreSQL attempt recovers a specific checker-contract failure", async () => {
+  const objectKey = buildGeneratedAssetObjectKey({
+    ...scope, attemptIdentityHash, inputHash, attemptNo: 1, contentHash,
+  });
+  const ownedRow = reservedRow({
+    id: "generation-b", input_hash: inputHash, attempt_no: 2, lease_token: "lease-b:2",
+    final_input_bound_at: new Date("2026-08-04T00:00:30.000Z"),
+  });
+  const recoveryRow = reservedRow({
+    id: "generation-a", input_hash: inputHash, status: "FAILED", attempt_no: 1,
+    lease_token: null, lease_expires_at: null, final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    error_code: "CHECKER_EVIDENCE_INVALID", error_retryable: true,
+    object_key_version: "ATTEMPT_V2", object_key: objectKey, content_hash: contentHash,
+    content_type: "image/png", width: 768, height: 1024, size_bytes: 123,
+    gateway_request_id: "gateway-1", checker_request_id: "checker-2",
+    model_evidence: { requestedImageModel: "image-a" },
+    checker_result: { version: "CHECKER_FAILURE_V1", failureCode: "CHECKER_EVIDENCE_INVALID" },
+  });
+  const db = fakePool((sql) => {
+    if (/FROM auto_listing_job_items AS item/iu.test(sql)) return { rows: [itemRow], rowCount: 1 };
+    if (/lease_token=\$12.*status='GENERATING'/isu.test(sql) && /^\s*SELECT/iu.test(sql)) {
+      return { rows: [ownedRow], rowCount: 1 };
+    }
+    if (/id<>\$10/iu.test(sql)) return { rows: [recoveryRow], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  const result = await repository.bindGenerationAttemptInput({
+    ...scope, attemptIdentityHash, inputHash, generationSize, attemptNo: 2, leaseToken: "lease-b:2",
+  });
+
+  assert.equal(result.status, "BOUND");
+  assert.equal(result.recoveryRecord.errorCode, "CHECKER_EVIDENCE_INVALID");
+  assert.equal(result.recoveryRecord.objectKey, objectKey);
+  const recoveryQuery = db.queries.find(({ text }) => /id<>\$10/iu.test(text));
+  assert.match(recoveryQuery.text, /CHECKER_RESPONSE_INVALID/iu);
+  assert.match(recoveryQuery.text, /CHECKER_EVIDENCE_INVALID/iu);
 });
 
 test("a stale owner transition fails with a safe retryable claim error", async () => {

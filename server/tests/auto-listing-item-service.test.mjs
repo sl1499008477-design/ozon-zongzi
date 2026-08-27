@@ -22,6 +22,7 @@ test("item service derives account authority only from the actor for all command
     },
     reviewService: {
       async getReview(value) { calls.push(["review", value]); return { itemId: "item-a", statusVersion: 5, images: [] }; },
+      async getAcceptedAsset(value) { calls.push(["asset", value]); return { itemId: "item-a", assetId: "asset-a" }; },
     },
   });
   assert.equal((await service.cancelItem(input)).status, "CANCELLED");
@@ -29,6 +30,7 @@ test("item service derives account authority only from the actor for all command
   assert.equal((await service.approveItem(input)).status, "UPLOAD_QUEUED");
   assert.equal((await service.retryItem(input)).status, "GENERATING");
   assert.equal((await service.getReview({ actor, itemId: "item-a" })).itemId, "item-a");
+  assert.equal((await service.getAcceptedAsset({ actor, itemId: "item-a", assetId: "asset-a" })).assetId, "asset-a");
   const expectedAction = {
     accountId: "account-a", actorAccountId: "account-a", jobId: "job-a", itemId: "item-a",
     expectedStatusVersion: 5, idempotencyKey: "command-a", correlationId: "correlation-a",
@@ -42,6 +44,7 @@ test("item service derives account authority only from the actor for all command
       expectedStatusVersion: 5, idempotencyKey: "command-a",
     }],
     ["review", { actor, itemId: "item-a" }],
+    ["asset", { actor, itemId: "item-a", assetId: "asset-a" }],
   ]);
 });
 
@@ -50,7 +53,7 @@ test("item service rejects permission and open or forged command input before de
   const service = createAutoListingItemService({
     actionRepository: { async cancelItem() { calls += 1; }, async regenerateItem() { calls += 1; }, async approveItem() { calls += 1; } },
     retryService: { async retry() { calls += 1; } },
-    reviewService: { async getReview() { calls += 1; } },
+    reviewService: { async getReview() { calls += 1; }, async getAcceptedAsset() { calls += 1; } },
   });
   for (const value of [
     { ...input, actor: { id: "", role: "readonly" } },
@@ -68,6 +71,7 @@ test("item service passes review authority only as the authenticated actor and i
     retryService: { async retry() {} },
     reviewService: {
       async getReview(value) { calls.push(value); return { itemId: "item-a", statusVersion: 5 }; },
+      async getAcceptedAsset() {},
     },
   });
   assert.deepEqual(await service.getReview({ actor, itemId: "item-a" }), {

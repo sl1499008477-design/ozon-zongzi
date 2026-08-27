@@ -24,7 +24,7 @@ test("automatic listing page owns the complete review-mode ordinary-user workflo
     "卖点图",
     "细节图",
     "场景图",
-    "尺寸图",
+    "产品实拍图",
     "信息图",
     "任务进度",
     "生成结果审核",
@@ -45,6 +45,8 @@ test("automatic listing separates creation from a filterable task center", () =>
   assert.match(page, /任务用时/u);
   assert.match(page, /<Progress/u);
   assert.match(page, /sourceThumbnailUrl/u);
+  assert.doesNotMatch(page, /<span title=\{value \|\| row\.itemId\}>\{shortSourceId\(value \|\| row\.itemId\)\}<\/span>/u);
+  assert.match(page, /row\.sourceTitle \|\| row\.sourceSku \|\| shortSourceId\(value \|\| row\.itemId\)/u);
   assert.doesNotMatch(page, /title=\{`已选择 \$\{collectIds\.length\} 个采集箱商品`\}/u);
 });
 
@@ -94,6 +96,12 @@ test("preference save sends the backend version and idempotency contract and kee
   assert.match(page, /correlationId/);
   assert.match(page, /setPreferenceVersion\(savedPreference\?\.data\?\.configVersion\)/);
   assert.doesNotMatch(page, /String\(Number\(preference\.priceAdjustmentKopecks\) \/ 100\)/);
+});
+
+test("image total follows nested role values after preference hydration", () => {
+  assert.match(page, /const imageTotal = Form\.useWatch\(/u);
+  assert.match(page, /values\?\.roles \|\| DEFAULT_FORM\.roles/u);
+  assert.doesNotMatch(page, /const roles = Form\.useWatch\("roles", form\)/u);
 });
 
 test("store currency drives the adjustment label, preview symbol, and cross-currency reset", () => {
@@ -207,6 +215,7 @@ test("App wires one AI-tools route and collect-box navigation without duplicatin
   assert.match(app, /推送到自动上架/);
   assert.match(app, /buildAutoListingCollectPush/);
   const collectPage = app.slice(app.indexOf("function CollectPage"), app.indexOf("function ImportHistoryPage"));
+  assert.match(collectPage, /SKU：\{row\.sku \|\| "未提供"\}/u);
   assert.doesNotMatch(collectPage, /\/auto-listing\/jobs\/from-collect-box|\/auto-listing\/imports\/excel/);
 });
 

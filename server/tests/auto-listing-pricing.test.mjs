@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateAutoListingPrice } from "../auto-listing-pricing.mjs";
+import {
+  calculateAutoListingActualPrice,
+  calculateAutoListingPrice,
+} from "../auto-listing-pricing.mjs";
 
 const expectPriceError = (input, code) => {
   assert.throws(
@@ -37,6 +40,18 @@ test("price adjustment is applied before an exact six-decimal multiplier", () =>
     realPriceKopecks: "14500", adjustmentKopecks: "100",
     preMultiplierPriceKopecks: "14600", priceMultiplierMicros: "1250000",
     finalPriceKopecks: "18250",
+  });
+});
+
+test("applies the same adjustment and multiplier to a variant carrying only its actual price", () => {
+  assert.deepEqual(calculateAutoListingActualPrice({
+    currency: "RUB", sourcePriceKopecks: "25000",
+    adjustmentKopecks: "100", priceMultiplierMicros: "1250000",
+  }), {
+    currency: "RUB", branch: "SOURCE_PRICE_ONLY", sourcePriceKopecks: "25000",
+    realPriceKopecks: "25000", adjustmentKopecks: "100",
+    preMultiplierPriceKopecks: "25100", priceMultiplierMicros: "1250000",
+    finalPriceKopecks: "31375",
   });
 });
 

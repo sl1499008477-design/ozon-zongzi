@@ -84,6 +84,7 @@ class FakeRepository {
     this.atomicCompleteCount = 0;
     this.atomicFailCount = 0;
     this.deferCount = 0;
+    this.expiredJobCount = 0;
     this.lastSellerContextAdvance = null;
     this.lastCompleteInput = null;
     this.leaseAttempts = [];
@@ -364,6 +365,30 @@ class FakeRepository {
     return clone(job);
   }
 
+  async expireUnlinkedJob({ accountId, jobId, now }) {
+    const job = this.jobs.find((value) => value.accountId === accountId && value.id === jobId);
+    if (
+      !job
+      || job.collectItemId
+      || !["PENDING", "PROCESSING"].includes(job.status)
+      || new Date(job.deadlineAt).getTime() > now.getTime()
+    ) return null;
+    Object.assign(job, {
+      status: "FAILED",
+      result: null,
+      error: { code: "OZON_ENRICHMENT_ORPHAN_EXPIRED", status: 410 },
+      lastError: { code: "OZON_ENRICHMENT_ORPHAN_EXPIRED", status: 410 },
+      claimedSessionId: null,
+      claimExpiresAt: null,
+      claimFence: null,
+      captureContext: null,
+      completedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    });
+    this.expiredJobCount += 1;
+    return clone(job);
+  }
+
   async readJob({ accountId, jobId }) {
     return clone(this.jobs.find((job) => job.accountId === accountId && job.id === jobId) || null);
   }
@@ -610,9 +635,15 @@ test("fails a cold request at the shared twenty-second deadline without real sle
       && error?.retryable === true,
   );
   assert.equal(h.clock.value, START + 20_000);
+  assert.equal(h.repository.expiredJobCount, 1);
+  assert.equal(h.repository.jobs[0].status, "FAILED");
+  assert.deepEqual(h.repository.jobs[0].error, {
+    code: "OZON_ENRICHMENT_ORPHAN_EXPIRED",
+    status: 410,
+  });
 });
 
-test("same request id recovers its expired nonterminal job after a twenty-second timeout", async () => {
+test("an expired request stays terminal and a new request id can create fresh work", async () => {
   let clock = START;
   let sequence = 0;
   const state = {
@@ -640,23 +671,25 @@ test("same request id recovers its expired nonterminal job after a twenty-second
   };
   await assert.rejects(service.enrichOne(input), (error) => error?.status === 504);
   assert.equal(state.collectorOzonEnrichmentJobs.length, 1);
-  const originalJobId = state.collectorOzonEnrichmentJobs[0].id;
-  assert.equal(state.collectorOzonEnrichmentJobs[0].deadlineAt, new Date(clock).toISOString());
+  assert.equal(state.collectorOzonEnrichmentJobs[0].status, "FAILED");
 
-  const retried = service.enrichOne(input);
+  await assert.rejects(service.enrichOne(input), (error) =>
+    error?.status === 409 && error?.code === "OZON_ENRICH_REQUEST_EXPIRED");
+
+  const retried = service.enrichOne({ ...input, requestId: "request-retry-new" });
   await waitFor(
-    () => state.collectorOzonEnrichmentJobs[0].createdAt === new Date(START + 20_000).toISOString(),
-    "requeued stable job",
+    () => state.collectorOzonEnrichmentJobs.length === 2,
+    "fresh replacement job",
   );
   const claim = await service.claimNext({ session: session("collector-retry") });
-  assert.equal(claim.id, originalJobId);
+  assert.equal(claim.id, state.collectorOzonEnrichmentJobs[1].id);
   await service.completeClaim({
     session: session("collector-retry"),
     jobId: claim.id,
     variantData: variantData(799),
   });
   assert.equal((await retried).descriptionCategoryId, 799);
-  assert.equal(state.collectorOzonEnrichmentJobs.length, 1);
+  assert.equal(state.collectorOzonEnrichmentJobs.length, 2);
 });
 
 test("late lease acquisition requeues an expired stable job from acquiredAt within the original deadline", async () => {
@@ -1778,6 +1811,63 @@ test("retryable failures defer linked jobs and expose the correct recoverable it
     }, code);
     assert.equal(JSON.stringify(h.repository.jobs[0]).includes("must-not-be-stored"), false, code);
   }
+});
+
+test("the fifth retryable linked failure becomes terminal and releases its worker slot", async () => {
+  const saved = [];
+  let terminalRepository = null;
+  const h = harness({
+    collectItems: {
+      async read() { throw new Error("failure status must not rewrite the draft"); },
+      async save() { throw new Error("terminal failure must use the atomic port"); },
+      async complete() { throw new Error("terminal failure must not complete the draft"); },
+      async defer() { throw new Error("the fifth failure must not be deferred"); },
+      async fail(input) {
+        const job = await terminalRepository.failJobAndCache(input.failure);
+        saved.push({
+          status: input.status,
+          enrichment: { ...clone(input.enrichment), attemptCount: job.attemptCount },
+        });
+        return { item: { id: input.collectItemId }, job };
+      },
+      async retry() { throw new Error("unused"); },
+    },
+    start: Date.parse("2026-08-01T08:00:01.000Z"),
+  });
+  terminalRepository = h.repository;
+  h.repository.jobs.push({
+    id: "job-retry-exhausted",
+    accountId: "account-a",
+    collectItemId: "collect-retry-exhausted",
+    requestId: "request-retry-exhausted",
+    sku: "sku-retry-exhausted",
+    status: "PROCESSING",
+    claimedSessionId: "collector-fallback",
+    claimExpiresAt: "2026-08-01T08:01:00.000Z",
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    attemptCount: 4,
+    createdAt: "2026-08-01T08:00:00.000Z",
+  });
+
+  const failed = await h.service.failClaim({
+    session: session("collector-fallback"),
+    jobId: "job-retry-exhausted",
+    code: "NETWORK_ERROR",
+  });
+
+  assert.equal(failed.status, "FAILED");
+  assert.equal(h.repository.deferCount, 0);
+  assert.equal(h.repository.atomicFailCount, 1);
+  assert.deepEqual(saved, [{
+    status: "NEEDS_ATTENTION",
+    enrichment: {
+      status: "NEEDS_ATTENTION",
+      missingFields: [],
+      attemptCount: 5,
+      nextAttemptAt: "",
+      lastErrorCode: "OZON_ENRICH_RETRY_EXHAUSTED",
+    },
+  }]);
 });
 
 test("retryable linked failure uses one atomic port so a completed recollect cannot be overwritten", async () => {

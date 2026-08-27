@@ -8,10 +8,14 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
 const GENERATION_SIZE = /^[1-9][0-9]*x[1-9][0-9]*$/u;
 const ROLES = new Set(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
+const RECOVERABLE_CHECKER_FAILURES = new Set([
+  "CHECKER_UNAVAILABLE", "CHECKER_RESPONSE_INVALID", "CHECKER_EVIDENCE_INVALID",
+]);
 const SCOPE_KEYS = Object.freeze([
   "accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "expectedStatusVersion",
 ]);
 const RESERVE_KEYS = new Set([...SCOPE_KEYS, "attemptIdentityHash", "generationSize", "maxAttempts"]);
+const LEGACY_RESERVE_KEYS = new Set([...RESERVE_KEYS, "legacyAttemptIdentityHash"]);
 const OWNER_KEYS = Object.freeze([
   ...SCOPE_KEYS, "attemptIdentityHash", "inputHash", "generationSize", "attemptNo", "leaseToken",
 ]);
@@ -33,7 +37,10 @@ const REJECT_KEYS = new Set([
 const FAIL_KEYS = new Set([
   ...OWNER_KEYS, "role", "code", "retryable", "gatewayRequestId", "checkerRequestId",
 ]);
+const RECOVERABLE_FAIL_KEYS = new Set([...FAIL_KEYS, ...STORED_KEYS, "modelEvidence"]);
+const DIAGNOSTIC_RECOVERABLE_FAIL_KEYS = new Set([...RECOVERABLE_FAIL_KEYS, "checkerEvidence"]);
 const RELEASE_KEYS = new Set([...OWNER_KEYS, "errorCode"]);
+const COUNT_KEYS = new Set(["accountId", "jobId", "itemId", "planId"]);
 const FACTORY_KEYS = new Set(["pool", "leaseMs", "token", "id"]);
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 67_108_864;
@@ -92,9 +99,11 @@ function validateScope(input) {
   }
 }
 function validateReserve(input) {
-  if (!exactObject(input, RESERVE_KEYS)) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
+  if (!exactObject(input, RESERVE_KEYS) && !exactObject(input, LEGACY_RESERVE_KEYS)) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
   validateScope(input);
   if (!HASH.test(input.attemptIdentityHash || "") || !GENERATION_SIZE.test(input.generationSize || "")
+    || (Object.hasOwn(input, "legacyAttemptIdentityHash")
+      && (!HASH.test(input.legacyAttemptIdentityHash || "") || input.legacyAttemptIdentityHash === input.attemptIdentityHash))
     || !Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 3) {
     throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
   }
@@ -149,10 +158,18 @@ function validateReject(input) {
   return input;
 }
 function validateFail(input) {
-  validateOwner(input, FAIL_KEYS);
+  const diagnosticRecoveryFieldsPresent = exactObject(input, DIAGNOSTIC_RECOVERABLE_FAIL_KEYS);
+  const recoveryFieldsPresent = diagnosticRecoveryFieldsPresent || exactObject(input, RECOVERABLE_FAIL_KEYS);
+  validateOwner(input, diagnosticRecoveryFieldsPresent
+    ? DIAGNOSTIC_RECOVERABLE_FAIL_KEYS : recoveryFieldsPresent ? RECOVERABLE_FAIL_KEYS : FAIL_KEYS);
   if (!ROLES.has(input.role) || !ERROR_CODE.test(input.code || "") || typeof input.retryable !== "boolean"
     || !(input.gatewayRequestId === null || safeIdentifier(input.gatewayRequestId))
-    || !(input.checkerRequestId === null || safeIdentifier(input.checkerRequestId))) {
+    || !(input.checkerRequestId === null || safeIdentifier(input.checkerRequestId))
+    || (recoveryFieldsPresent && (!validStoredEvidence(input)
+      || !safeJson(input.modelEvidence, { nonempty: true }) || !RECOVERABLE_CHECKER_FAILURES.has(input.code)))
+    || (diagnosticRecoveryFieldsPresent && !safeJson(input.checkerEvidence, { nonempty: true }))
+    || (RECOVERABLE_CHECKER_FAILURES.has(input.code) && input.code !== "CHECKER_UNAVAILABLE"
+      && !diagnosticRecoveryFieldsPresent)) {
     throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
   }
   return input;
@@ -202,6 +219,19 @@ function acceptedRecordValid(record) {
     && safeJson(record.regeneration, { nullable: true });
 }
 
+function recoverableCheckerRecordValid(record, input, runtime) {
+  return record?.status === "FAILED" && RECOVERABLE_CHECKER_FAILURES.has(record.errorCode)
+    && record.errorRetryable === true && record.finalInputBoundAt !== null
+    && record.attemptIdentityHash === input.attemptIdentityHash && record.inputHash === input.inputHash
+    && record.generationSize === input.generationSize && record.role === runtime.state.role
+    && record.profileId === runtime.state.profile_id && record.profileVersion === runtime.state.profile_version
+    && record.modelName === runtime.state.image_model && safeIdentifier(record.gatewayRequestId)
+    && safeJson(record.modelEvidence, { nonempty: true }) && validStoredEvidence(record)
+    && (record.errorCode === "CHECKER_UNAVAILABLE" || safeJson(record.checkerEvidence, { nonempty: true }))
+    && ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey"]
+      .every((key) => record[key] === input[key]);
+}
+
 function scopeValues(input) {
   return SCOPE_KEYS.map((key) => input[key]);
 }
@@ -214,7 +244,7 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
     plainObject(options) && Object.keys(options).every((key) => FACTORY_KEYS.has(key))
   )) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
   const { pool } = options;
-  const leaseMs = options.leaseMs ?? 60_000;
+  const leaseMs = options.leaseMs ?? 840_000;
   const token = options.token ?? (() => crypto.randomUUID());
   const id = options.id ?? (() => `generation-${crypto.randomUUID()}`);
   if ((typeof pool?.connect !== "function" && typeof pool?.query !== "function")
@@ -290,12 +320,14 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       const runtime = await lockRuntimeScope(client, input);
       if (runtime.disposition !== "CURRENT") return { status: runtime.disposition };
       const values = [...scopeValues(input), input.attemptIdentityHash, input.generationSize];
+      const compatibleIdentities = [input.attemptIdentityHash, input.legacyAttemptIdentityHash].filter(Boolean);
+      const lookupValues = [...scopeValues(input), input.generationSize, compatibleIdentities];
       const accepted = await client.query(
         `SELECT * FROM ai_generation_assets
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
            AND visual_group_key=$5 AND slot_key=$6 AND expected_status_version=$7
-           AND attempt_identity_hash=$8 AND generation_size=$9 AND status='ACCEPTED'
-         FOR UPDATE`, values,
+           AND attempt_identity_hash=ANY($9::TEXT[]) AND generation_size=$8 AND status='ACCEPTED'
+         FOR UPDATE`, lookupValues,
       );
       if (accepted.rowCount) {
         const record = fromRow(accepted.rows[0]);
@@ -308,9 +340,9 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
         `SELECT id FROM ai_generation_assets
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
            AND visual_group_key=$5 AND slot_key=$6 AND expected_status_version=$7
-           AND attempt_identity_hash=$8 AND generation_size=$9
+           AND attempt_identity_hash=ANY($9::TEXT[]) AND generation_size=$8
            AND status='GENERATING' AND lease_expires_at > NOW()
-         FOR UPDATE`, values,
+         FOR UPDATE`, lookupValues,
       );
       if (active.rowCount) return { status: "IN_PROGRESS" };
       await client.query(
@@ -319,15 +351,15 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
              error_code='AUTO_LISTING_IMAGE_LEASE_EXPIRED',error_retryable=TRUE,updated_at=NOW()
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
            AND visual_group_key=$5 AND slot_key=$6 AND expected_status_version=$7
-           AND attempt_identity_hash=$8 AND generation_size=$9
-           AND status='GENERATING' AND lease_expires_at <= NOW()`, values,
+           AND attempt_identity_hash=ANY($9::TEXT[]) AND generation_size=$8
+           AND status='GENERATING' AND lease_expires_at <= NOW()`, lookupValues,
       );
       const attempts = await client.query(
         `SELECT COALESCE(MAX(attempt_no),0)::INTEGER AS attempt_no
          FROM ai_generation_assets
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
            AND visual_group_key=$5 AND slot_key=$6 AND expected_status_version=$7
-           AND attempt_identity_hash=$8 AND generation_size=$9`, values,
+           AND attempt_identity_hash=ANY($9::TEXT[]) AND generation_size=$8`, lookupValues,
       );
       const attemptNo = Number(attempts.rows?.[0]?.attempt_no || 0) + 1;
       if (attemptNo > input.maxAttempts) return { status: "ATTEMPTS_EXHAUSTED" };
@@ -372,9 +404,33 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       );
       const row = fromRow(owned.rows?.[0]);
       if (owned.rowCount !== 1 || !row) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED");
+      const findRecoveryRecord = async () => {
+        const candidates = await client.query(
+          `SELECT * FROM ai_generation_assets
+           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
+             AND visual_group_key=$5 AND slot_key=$6 AND attempt_identity_hash=$7
+             AND input_hash=$8 AND generation_size=$9 AND id<>$10
+             AND status='FAILED'
+             AND error_code IN ('CHECKER_UNAVAILABLE','CHECKER_RESPONSE_INVALID','CHECKER_EVIDENCE_INVALID')
+             AND error_retryable=TRUE
+             AND final_input_bound_at IS NOT NULL AND object_key_version='ATTEMPT_V2'
+             AND object_key IS NOT NULL AND content_hash IS NOT NULL AND content_type='image/png'
+             AND width IS NOT NULL AND height IS NOT NULL AND size_bytes IS NOT NULL
+             AND gateway_request_id IS NOT NULL AND model_evidence IS NOT NULL
+           ORDER BY expected_status_version DESC,attempt_no DESC,updated_at DESC
+           FOR UPDATE`, [...scopeValues(input).slice(0, 6), input.attemptIdentityHash,
+            input.inputHash, input.generationSize, row.id],
+        );
+        for (const candidate of candidates.rows || []) {
+          const record = fromRow(candidate);
+          if (recoverableCheckerRecordValid(record, input, runtime)) return publicRecord(record);
+        }
+        return null;
+      };
       if (row.finalInputBoundAt !== null) {
         if (row.inputHash !== input.inputHash) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CONFLICT");
-        return { status: "BOUND", inputHash: row.inputHash };
+        const recoveryRecord = await findRecoveryRecord();
+        return { status: "BOUND", inputHash: row.inputHash, ...(recoveryRecord ? { recoveryRecord } : {}) };
       }
       const conflict = await client.query(
         `SELECT * FROM ai_generation_assets
@@ -422,7 +478,8 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       if (bound.rowCount !== 1 || record?.inputHash !== input.inputHash || record.finalInputBoundAt === null) {
         throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED");
       }
-      return { status: "BOUND", inputHash: record.inputHash };
+      const recoveryRecord = await findRecoveryRecord();
+      return { status: "BOUND", inputHash: record.inputHash, ...(recoveryRecord ? { recoveryRecord } : {}) };
     });
   }
 
@@ -520,7 +577,13 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       statement = `UPDATE ai_generation_assets AS attempt
         SET status='FAILED',lease_token=NULL,lease_expires_at=NULL,updated_at=NOW(),role=$13,
             error_code=$14,error_retryable=$15,gateway_request_id=COALESCE($16::TEXT,attempt.gateway_request_id),
-            checker_request_id=COALESCE($17::TEXT,attempt.checker_request_id)
+            checker_request_id=COALESCE($17::TEXT,attempt.checker_request_id),
+            object_key_version=COALESCE($18::TEXT,attempt.object_key_version),
+            object_key=COALESCE($19::TEXT,attempt.object_key),content_hash=COALESCE($20::TEXT,attempt.content_hash),
+            content_type=COALESCE($21::TEXT,attempt.content_type),width=COALESCE($22::INTEGER,attempt.width),
+            height=COALESCE($23::INTEGER,attempt.height),size_bytes=COALESCE($24::BIGINT,attempt.size_bytes),
+            model_evidence=COALESCE($25::JSONB,attempt.model_evidence),
+            checker_result=COALESCE($26::JSONB,attempt.checker_result)
         FROM auto_listing_job_items AS item,ai_content_plans AS plan
         WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.plan_id=$4
           AND attempt.visual_group_key=$5 AND attempt.slot_key=$6 AND attempt.expected_status_version=$7
@@ -535,7 +598,10 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
             WHERE slot->>'visualGroupKey'=attempt.visual_group_key AND slot->>'slotKey'=attempt.slot_key
               AND slot->>'role'=$13)
         RETURNING attempt.*`;
-      parameters = [...base, input.role, input.code, input.retryable, input.gatewayRequestId, input.checkerRequestId];
+      parameters = [...base, input.role, input.code, input.retryable, input.gatewayRequestId, input.checkerRequestId,
+        ...STORED_KEYS.map((key) => input[key] ?? null),
+        input.modelEvidence == null ? null : JSON.stringify(input.modelEvidence),
+        input.checkerEvidence == null ? null : JSON.stringify(input.checkerEvidence)];
     }
     const result = await query(statement, parameters);
     const record = fromRow(result.rows?.[0]);
@@ -598,6 +664,26 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       const record = fromRow(result.rows[0]);
       if (result.rowCount !== 1 || !validStoredEvidence(record)) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CONFLICT");
       return publicRecord(record);
+    },
+    async countAcceptedAssets(input) {
+      if (!exactObject(input, COUNT_KEYS)
+        || ![input.accountId, input.jobId, input.itemId, input.planId].every((value) => safeIdentifier(value))) {
+        throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
+      }
+      const result = await query(
+        `SELECT COUNT(*)::INTEGER AS accepted_count
+           FROM ai_generation_assets AS attempt
+           JOIN auto_listing_job_items AS item
+             ON item.account_id=attempt.account_id AND item.job_id=attempt.job_id AND item.id=attempt.item_id
+          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.plan_id=$4
+            AND attempt.status='ACCEPTED' AND item.active_content_plan_id=attempt.plan_id`,
+        [input.accountId, input.jobId, input.itemId, input.planId],
+      );
+      const count = Number(result.rows?.[0]?.accepted_count);
+      if (result.rowCount !== 1 || !Number.isInteger(count) || count < 0) {
+        throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CONFLICT");
+      }
+      return count;
     },
   });
 }

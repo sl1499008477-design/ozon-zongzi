@@ -268,6 +268,35 @@ test("image aggregation waits until every active-plan slot is terminal and then 
   assert.equal(JSON.parse(complete.calls[4].values[7]).phase, "GENERATE_RICH_CONTENT");
 });
 
+test("image aggregation continues after optional slots are skipped when MAIN plus six accepted remain", async () => {
+  const plan = {
+    ...imagePlan(),
+    plan: { slots: [
+      ...imagePlan().plan.slots,
+      { slotKey: "slot-7", role: "SELLING_POINT" },
+      { slotKey: "slot-8", role: "SPECIFICATION" },
+    ] },
+  };
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{ status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived" }] },
+    { rowCount: 1, rows: [plan] },
+    { rowCount: 1, rows: [{ id: "audit" }] },
+    { rowCount: 8, rows: [
+      { slot_key: "slot-main", role: "MAIN", terminal_status: "ACCEPTED" },
+      ...[2, 3, 4, 5, 6].map((n) => ({ slot_key: `slot-${n}`, role: "DETAIL", terminal_status: "ACCEPTED" })),
+      { slot_key: "slot-7", role: "SELLING_POINT", terminal_status: "SKIPPED" },
+      { slot_key: "slot-8", role: "SPECIFICATION", terminal_status: "SKIPPED" },
+    ] },
+    { rowCount: 1, rows: [{ id: "rich" }] },
+  ]);
+
+  assert.deepEqual(await applyAutoListingAiPhaseOutcome(applyInput(client,
+    "GENERATE_IMAGE_SLOT", "IMAGE_SLOT_SKIPPED", { phaseTargetId: "slot-8", expectedStatusVersion: 3 })),
+  { disposition: "APPLIED", status: "GENERATING", statusVersion: 3, enqueued: 1 });
+  assert.equal(JSON.parse(client.calls[4].values[7]).phase, "GENERATE_RICH_CONTENT");
+  assert.equal(client.calls.some(({ sql }) => /UPDATE auto_listing_job_items/iu.test(sql)), false);
+});
+
 test("same-correlation image audits are target-bound across accepted, skipped, and exact duplicate slots", async () => {
   function auditFixture(terminalStatus, target = "slot-main") {
     return scriptedClient([
@@ -316,11 +345,11 @@ test("all-terminal insufficient image evidence closes safely as BLOCKED", async 
   assert.equal(client.calls.some(({ sql }) => /auto_listing_ai_outbox/iu.test(sql)), false);
 });
 
-test("accepted rich content atomically enters READY_FOR_REVIEW and never queues upload", async () => {
+test("latest accepted rich content per visual group enters READY_FOR_REVIEW while older accepted history remains auditable", async () => {
   const client = scriptedClient([
     { rowCount: 1, rows: [{ status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived" }] },
     { rowCount: 1, rows: [imagePlan()] },
-    { rowCount: 1, rows: [{ planned_group_count: "1", accepted_group_count: "1", invalid_result_count: "0", duplicate_group_count: "0" }] },
+    { rowCount: 1, rows: [{ planned_group_count: "1", accepted_group_count: "1", invalid_result_count: "0", duplicate_group_count: "4" }] },
     { rowCount: 1, rows: [{ mode: "REVIEW", enabled: true }] },
     { rowCount: 1, rows: [{ status: "READY_FOR_REVIEW", status_version: 4 }] },
     { rowCount: 1, rows: [{ id: "ready-event" }] },
@@ -331,6 +360,7 @@ test("accepted rich content atomically enters READY_FOR_REVIEW and never queues 
   assert.equal(client.calls.some(({ sql }) => /auto_listing_ai_outbox/iu.test(sql)), false);
   assert.match(client.calls[2].sql, /visual_groups->'groups'/iu);
   assert.match(client.calls[2].sql, /jsonb_array_elements\(r\.asset_evidence\)/iu);
+  assert.match(client.calls[2].sql, /DISTINCT ON \(group_key\)/iu);
 });
 
 test("a frozen DIRECT policy enters UPLOAD_QUEUED only while the server kill switch is enabled", async () => {
@@ -367,7 +397,7 @@ test("a frozen DIRECT policy enters UPLOAD_QUEUED only while the server kill swi
   assert.equal(blocked.calls[4].values[6], "AUTO_LISTING_DIRECT_UPLOAD_DISABLED");
 });
 
-test("a fixed-skeleton item always stops at review even when DIRECT upload is enabled", async () => {
+test("a fixed-skeleton item follows a frozen DIRECT policy when the server kill switch is enabled", async () => {
   const client = scriptedClient([
     { rowCount: 1, rows: [{
       status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived",
@@ -376,23 +406,24 @@ test("a fixed-skeleton item always stops at review even when DIRECT upload is en
     { rowCount: 1, rows: [imagePlan()] },
     { rowCount: 1, rows: [{ planned_group_count: "1", accepted_group_count: "1", invalid_result_count: "0", duplicate_group_count: "0" }] },
     { rowCount: 1, rows: [{ mode: "DIRECT", enabled: true }] },
-    { rowCount: 1, rows: [{ status: "READY_FOR_REVIEW", status_version: 4 }] },
-    { rowCount: 1, rows: [{ id: "fixed-review-event" }] },
+    { rowCount: 1, rows: [{ status: "UPLOAD_QUEUED", status_version: 4 }] },
+    { rowCount: 1, rows: [{ id: "fixed-direct-event" }] },
+    (_sql, values) => ({ rowCount: 1, rows: [{ id: values[0] }] }),
+    { rowCount: 1, rows: [{ id: "fixed-upload-task-event" }] },
   ]);
   assert.deepEqual(await applyAutoListingAiPhaseOutcome(applyInput(client,
     "GENERATE_RICH_CONTENT", "CONTENT_READY_FOR_REVIEW", { expectedStatusVersion: 3 }),
   { directUploadAllowed: true }), {
-    disposition: "APPLIED", status: "READY_FOR_REVIEW", statusVersion: 4, enqueued: 0,
+    disposition: "APPLIED", status: "UPLOAD_QUEUED", statusVersion: 4, enqueued: 1,
   });
-  assert.equal(client.calls.some(({ sql }) => /INSERT INTO auto_listing_upload_tasks/iu.test(sql)), false);
-  assert.equal(client.calls[5].values[7], "CONTENT_READY_FOR_REVIEW");
+  assert.equal(client.calls.some(({ sql }) => /INSERT INTO auto_listing_upload_tasks/iu.test(sql)), true);
+  assert.equal(client.calls[5].values[7], "CONTENT_READY_FOR_DIRECT_UPLOAD");
 });
 
 test("accepted rich content requires exactly one independently scoped result for every planned visual group", async () => {
   for (const coverage of [
     { planned_group_count: "2", accepted_group_count: "1", invalid_result_count: "0", duplicate_group_count: "0" },
     { planned_group_count: "2", accepted_group_count: "2", invalid_result_count: "1", duplicate_group_count: "0" },
-    { planned_group_count: "2", accepted_group_count: "2", invalid_result_count: "0", duplicate_group_count: "1" },
   ]) {
     const client = scriptedClient([
       { rowCount: 1, rows: [{ status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived" }] },

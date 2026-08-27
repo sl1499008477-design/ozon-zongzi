@@ -17,6 +17,10 @@ const PARENT_KEYS = new Set([
   "promptTemplateVersion", "plan", "planHash", "visualGroupsHash", "visualGroups", "factRegistry", "regeneration",
   "gatewayRequestId", "planningContract", "skeletonHash",
 ]);
+const PERSISTED_PARENT_KEYS = new Set([
+  ...[...PARENT_KEYS].filter((key) => key !== "sourceAccountId"),
+  "accountId", "factRegistryHash", "parentPlanId", "derivationKind", "materializationSetHash", "createdAt",
+]);
 const MATERIALIZATION_KEYS = new Set([
   "accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId", "sourceRefHash", "inputHash",
   "expectedStatusVersion", "attemptId", "attemptNo", "status", "leaseOwner", "leaseToken",
@@ -26,10 +30,11 @@ const MATERIALIZATION_KEYS = new Set([
 const DERIVED_KEYS = new Set([...PARENT_KEYS, "parentPlanId", "derivationKind", "materializationSetHash"]);
 const REGENERATION_KEYS = new Set(["requestId", "reason"]);
 const PLAN_KEYS = new Set(["version", "language", "slots"]);
-const SLOT_KEYS = new Set([
+const SLOT_KEYS_V1 = new Set([
   "slotKey", "visualGroupKey", "role", "order", "textDensity", "claims", "sourceFactIds",
   "referenceAssetIds", "preserve", "prohibitedClaims",
 ]);
+const SLOT_KEYS_V2 = new Set([...SLOT_KEYS_V1, "requestedRole", "substitutionReasonCode"]);
 const CLAIM_KEYS = new Set(["text", "claimType", "sourceFactIds"]);
 const FACT_KEYS = new Set([
   "factId", "field", "kind", "value", "numericValue", "unit", "sourcePath", "dictionaryValueId", "visualGroupKeys",
@@ -126,8 +131,25 @@ function validateScope(value) {
   return value;
 }
 
+function projectParentPlan(value, scope) {
+  if (exactObject(value, PARENT_KEYS)) return value;
+  if (!exactObject(value, PERSISTED_PARENT_KEYS)
+    || value.accountId !== scope.accountId
+    || !HASH.test(value.factRegistryHash || "")
+    || value.factRegistryHash !== sha256(value.factRegistry)
+    || value.parentPlanId !== null || value.derivationKind !== null || value.materializationSetHash !== null
+    || !(value.createdAt instanceof Date) || !Number.isFinite(value.createdAt.getTime())) {
+    throw materializedPlanError();
+  }
+  return Object.fromEntries([...PARENT_KEYS].map((key) => [
+    key,
+    key === "sourceAccountId" ? value.accountId : value[key],
+  ]));
+}
+
 function validateParentPlan(value, scope) {
   try {
+    value = projectParentPlan(value, scope);
     assertJsonSafe(value);
     if (!exactObject(value, PARENT_KEYS)
       || !["id", "sourceAccountId", "jobId", "itemId", "sourceSnapshotId", "strategyVersionId", "profileId", "plannerModel", "promptTemplateVersion"]
@@ -139,7 +161,7 @@ function validateParentPlan(value, scope) {
       || (value.planningContract === "LEGACY_FULL_PLAN_V3" && value.skeletonHash !== null)
       || (value.planningContract === "FIXED_SKELETON_V1" && !HASH.test(value.skeletonHash || ""))
       || !Number.isInteger(value.profileVersion) || value.profileVersion < 1
-      || !exactObject(value.plan, PLAN_KEYS) || value.plan.version !== 1 || value.plan.language !== "ru"
+      || !exactObject(value.plan, PLAN_KEYS) || ![1, 2].includes(value.plan.version) || value.plan.language !== "ru"
       || sha256(value.plan) !== value.planHash
       || !Array.isArray(value.factRegistry) || value.factRegistry.length < 1 || value.factRegistry.length > 10_000
       || !safeOptionalText(value.gatewayRequestId)
@@ -178,10 +200,15 @@ function validateParentPlan(value, scope) {
     if (!Array.isArray(value.plan.slots)) throw materializedPlanError();
     for (const slot of value.plan.slots) {
       const group = groupByKey.get(slot?.visualGroupKey);
-      if (!exactObject(slot, SLOT_KEYS) || !safeIdentifier(slot.slotKey) || !safeIdentifier(slot.visualGroupKey)
+      const slotKeys = value.plan.version === 2 ? SLOT_KEYS_V2 : SLOT_KEYS_V1;
+      if (!exactObject(slot, slotKeys) || !safeIdentifier(slot.slotKey) || !safeIdentifier(slot.visualGroupKey)
         || !group || !Array.isArray(slot.referenceAssetIds) || !slot.referenceAssetIds.length
         || !Array.isArray(slot.sourceFactIds) || !slot.sourceFactIds.length
         || slot.sourceFactIds.some((factId) => !factIds.has(factId)) || !Array.isArray(slot.claims)) throw materializedPlanError();
+      if (value.plan.version === 2 && (!safeIdentifier(slot.requestedRole)
+        || !(slot.substitutionReasonCode === null || slot.substitutionReasonCode === "PRODUCT_DIMENSIONS_UNAVAILABLE"))) {
+        throw materializedPlanError();
+      }
       for (const claim of slot.claims) {
         if (!exactObject(claim, CLAIM_KEYS) || typeof claim.text !== "string" || !claim.text.trim()
           || typeof claim.claimType !== "string" || !claim.claimType.trim()

@@ -483,9 +483,17 @@ export async function applyAutoListingAiPhaseOutcome(rawInput = {}, runtime = {}
            FROM ai_content_plans p CROSS JOIN LATERAL jsonb_array_elements(p.plan->'slots') AS slot
           WHERE p.account_id=$1 AND p.job_id=$2 AND p.item_id=$3 AND p.id=$4
        ), accepted AS (
-         SELECT DISTINCT slot_key,role FROM ai_generation_assets
-          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
-            AND status='ACCEPTED'
+         SELECT DISTINCT asset.slot_key,asset.role
+           FROM ai_generation_assets AS asset
+           JOIN ai_content_plans AS plan
+             ON plan.account_id=asset.account_id AND plan.job_id=asset.job_id
+               AND plan.item_id=asset.item_id AND plan.id=asset.plan_id
+           CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'slots') AS planned_slot
+          WHERE asset.account_id=$1 AND asset.job_id=$2 AND asset.item_id=$3 AND asset.plan_id=$4
+            AND asset.status='ACCEPTED' AND planned_slot->>'slotKey'=asset.slot_key
+            AND (plan.prompt_template_version NOT IN ('AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4','AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6')
+              OR jsonb_array_length(planned_slot->'claims')>0
+              OR asset.checker_result->>'textForbidden'='true')
        ), skipped AS (
          SELECT DISTINCT details->>'slotKey' AS slot_key FROM auto_listing_events
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND event_type='AI_IMAGE_SLOT_SKIPPED'
@@ -532,28 +540,29 @@ export async function applyAutoListingAiPhaseOutcome(rawInput = {}, runtime = {}
          CROSS JOIN LATERAL jsonb_array_elements(p.visual_groups->'groups') AS group_row
         WHERE p.account_id=$1 AND p.job_id=$2 AND p.item_id=$3 AND p.id=$4
      ), accepted_results AS (
-       SELECT r.id,MIN(asset->>'visualGroupKey') AS group_key,
+       SELECT r.id,r.accepted_at,r.created_at,MIN(asset->>'visualGroupKey') AS group_key,
               COUNT(DISTINCT asset->>'visualGroupKey')::INTEGER AS group_count
          FROM ai_rich_content_results r
          CROSS JOIN LATERAL jsonb_array_elements(r.asset_evidence) AS asset
         WHERE r.account_id=$1 AND r.job_id=$2 AND r.item_id=$3 AND r.plan_id=$4 AND r.status='ACCEPTED'
-        GROUP BY r.id
+        GROUP BY r.id,r.accepted_at,r.created_at
      ), accepted_groups AS (
-       SELECT group_key,COUNT(*)::INTEGER AS result_count
-         FROM accepted_results WHERE group_count=1 GROUP BY group_key
+       SELECT DISTINCT ON (group_key) group_key
+         FROM accepted_results
+        WHERE group_count=1
+        ORDER BY group_key,accepted_at DESC NULLS LAST,created_at DESC,id DESC
      )
      SELECT (SELECT COUNT(*) FROM planned) AS planned_group_count,
             (SELECT COUNT(*) FROM accepted_groups a JOIN planned p USING(group_key)) AS accepted_group_count,
             (SELECT COUNT(*) FROM accepted_results a
               WHERE group_count<>1 OR NOT EXISTS (SELECT 1 FROM planned p WHERE p.group_key=a.group_key)) AS invalid_result_count,
-            (SELECT COUNT(*) FROM accepted_groups WHERE result_count<>1) AS duplicate_group_count`,
+            0::INTEGER AS duplicate_group_count`,
     [input.accountId, input.jobId, input.itemId, plan.id]);
   const coverage = evidence?.rowCount === 1 ? evidence.rows?.[0] : null;
   const plannedCount = Number(coverage?.planned_group_count);
   if (!Number.isSafeInteger(plannedCount) || plannedCount < 1
     || Number(coverage?.accepted_group_count) !== plannedCount
-    || Number(coverage?.invalid_result_count) !== 0
-    || Number(coverage?.duplicate_group_count) !== 0) throw conflict();
+    || Number(coverage?.invalid_result_count) !== 0) throw conflict();
   const policy = await query(input.client,
     `SELECT policy.mode,policy.enabled
        FROM auto_listing_jobs AS job
@@ -564,11 +573,9 @@ export async function applyAutoListingAiPhaseOutcome(rawInput = {}, runtime = {}
       FOR SHARE OF policy`,
     [input.accountId, input.jobId]);
   const mode = policy?.rowCount === 1 ? policy.rows?.[0]?.mode : null;
-  if (row.planning_contract === "FIXED_SKELETON_V1") {
-    const nextVersion = await transition(input, row, "CONTENT_READY_FOR_REVIEW", "READY_FOR_REVIEW");
-    return applied("READY_FOR_REVIEW", nextVersion, 0);
-  }
-  if (row.planning_contract !== "LEGACY_FULL_PLAN_V3" && row.planning_contract !== undefined) {
+  if (row.planning_contract !== "FIXED_SKELETON_V1"
+    && row.planning_contract !== "LEGACY_FULL_PLAN_V3"
+    && row.planning_contract !== undefined) {
     throw conflict();
   }
   if (mode === "DIRECT" && !directUploadAllowed) {

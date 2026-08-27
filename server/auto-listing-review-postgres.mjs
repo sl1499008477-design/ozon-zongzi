@@ -1,3 +1,6 @@
+import { hasCompleteReviewImageGroups } from "./auto-listing-review-evidence.mjs";
+import { manualReviewWarningsFromCheckerEvidence } from "./auto-listing-result-checker.mjs";
+
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 
 function reviewError(code = "AUTO_LISTING_REVIEW_NOT_READY") {
@@ -77,11 +80,18 @@ function itemFrom(row, accountId, price) {
 }
 
 function assetEvidence(row, accountId, itemId) {
+  const manualReviewWarnings = row.prompt_template_version === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
+    && Number(row.attempt_no) === 3
+    ? manualReviewWarningsFromCheckerEvidence(row.checker_result)
+    : [];
   return {
     accountId,
     id: row.id,
     visualGroupKey: row.visual_group_key,
     role: row.role,
+    requestedRole: row.requested_role || row.role,
+    substitutionReasonCode: row.substitution_reason_code || null,
+    manualReviewWarnings,
     slotKey: row.slot_key,
     accepted: true,
     publicUrl: publicAssetUrl(itemId, row.id),
@@ -126,24 +136,44 @@ const REVIEW_ITEM_SQL = `
 `;
 
 const REVIEW_ASSETS_SQL = `
-  SELECT asset.id, asset.account_id, asset.visual_group_key, asset.role, asset.slot_key
+  SELECT DISTINCT ON (asset.slot_key)
+    asset.id, asset.account_id, asset.visual_group_key, asset.role, asset.slot_key,
+    asset.attempt_no, asset.checker_result, plan.prompt_template_version,
+    planned_slot->>'requestedRole' AS requested_role,
+    planned_slot->>'substitutionReasonCode' AS substitution_reason_code
   FROM ai_generation_assets AS asset
   INNER JOIN auto_listing_job_items AS item
     ON item.id=$2 AND item.account_id=$1 AND asset.plan_id=item.active_content_plan_id
       AND asset.job_id=item.job_id AND asset.item_id=item.id
+  INNER JOIN ai_content_plans AS plan
+    ON plan.account_id=asset.account_id AND plan.job_id=asset.job_id
+      AND plan.item_id=asset.item_id AND plan.id=asset.plan_id
+  CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'slots') AS planned_slot
   WHERE asset.account_id = $1 AND asset.status='ACCEPTED'
-  ORDER BY asset.slot_key ASC, asset.id ASC
+    AND planned_slot->>'slotKey'=asset.slot_key
+    AND (plan.prompt_template_version NOT IN ('AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4','AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6')
+      OR jsonb_array_length(planned_slot->'claims')>0
+      OR asset.checker_result->>'textForbidden'='true')
+  ORDER BY asset.slot_key ASC,asset.expected_status_version DESC NULLS LAST,
+    asset.created_at DESC,asset.id DESC
 `;
 
 const REVIEW_RICH_CONTENT_SQL = `
-  SELECT rich.account_id, rich.rich_content
-  FROM ai_rich_content_results AS rich
-  INNER JOIN auto_listing_job_items AS item
-    ON item.id=$2 AND item.account_id=$1 AND rich.plan_id=item.active_content_plan_id
-      AND rich.job_id=item.job_id AND rich.item_id=item.id
-  WHERE rich.account_id = $1 AND rich.status = 'ACCEPTED'
-  ORDER BY rich.created_at DESC
-  LIMIT 1
+  WITH accepted AS (
+    SELECT rich.*,MIN(asset->>'visualGroupKey') AS group_key,
+      COUNT(DISTINCT asset->>'visualGroupKey')::INTEGER AS group_count
+    FROM ai_rich_content_results AS rich
+    INNER JOIN auto_listing_job_items AS item
+      ON item.id=$2 AND item.account_id=$1 AND rich.plan_id=item.active_content_plan_id
+        AND rich.job_id=item.job_id AND rich.item_id=item.id
+    CROSS JOIN LATERAL jsonb_array_elements(rich.asset_evidence) AS asset
+    WHERE rich.account_id=$1 AND rich.status='ACCEPTED'
+    GROUP BY rich.id
+  )
+  SELECT DISTINCT ON (group_key) account_id,group_key,rich_content
+  FROM accepted
+  WHERE group_count=1
+  ORDER BY group_key,accepted_at DESC NULLS LAST,created_at DESC,id DESC
 `;
 
 const REVIEW_EVENTS_SQL = `
@@ -161,7 +191,15 @@ const ACCEPTED_ASSET_SQL = `
   INNER JOIN auto_listing_job_items AS item
     ON item.id=$2 AND item.account_id=$1 AND asset.plan_id=item.active_content_plan_id
       AND asset.job_id=item.job_id AND asset.item_id=item.id
+  INNER JOIN ai_content_plans AS plan
+    ON plan.account_id=asset.account_id AND plan.job_id=asset.job_id
+      AND plan.item_id=asset.item_id AND plan.id=asset.plan_id
+  CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'slots') AS planned_slot
   WHERE asset.account_id = $1 AND asset.id = $3 AND asset.status='ACCEPTED'
+    AND planned_slot->>'slotKey'=asset.slot_key
+    AND (plan.prompt_template_version NOT IN ('AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4','AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6')
+      OR jsonb_array_length(planned_slot->'claims')>0
+      OR asset.checker_result->>'textForbidden'='true')
   LIMIT 1
 `;
 
@@ -191,20 +229,28 @@ export function createPostgresAutoListingReviewRepository({ pool } = {}) {
         const richResult = await client.query(REVIEW_RICH_CONTENT_SQL, [accountId, itemId]);
         const eventsResult = await client.query(REVIEW_EVENTS_SQL, [accountId, itemId]);
         const assets = assetsResult.rows.map((asset) => assetEvidence(asset, accountId, itemId));
-        const rich = richResult.rows[0];
+        const visualGroups = visualGroupsFrom(row);
+        const richByGroup = new Map((richResult.rows || [])
+          .map((rich) => [rich.group_key, rich]));
         const price = eventsResult.rows
           .map((event) => object(event.details).price)
           .find((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate));
-        if (assets.length < 6 || !rich || !price) throw reviewError();
+        if (!hasCompleteReviewImageGroups({ visualGroups, images: assets })
+          || richByGroup.size !== visualGroups.length
+          || visualGroups.some((group) => !richByGroup.has(group.key)) || !price) throw reviewError();
+        const richPreview = visualGroups.map((group, index) => {
+          const text = previewText(richByGroup.get(group.key).rich_content);
+          return visualGroups.length > 1 ? `商品组 ${index + 1}\n${text}` : text;
+        }).join("\n\n");
         const evidence = Object.freeze({
           accountId,
           item: itemFrom(row, accountId, price),
           source: sourceFrom(row, accountId),
           store: { accountId, id: row.store_id, label: row.store_label?.trim() || row.store_company_name?.trim() || "" },
           warehouse: { accountId, id: row.warehouse_id, name: row.warehouse_name ?? "" },
-          visualGroups: visualGroupsFrom(row),
+          visualGroups,
           images: assets,
-          richContent: { accountId, accepted: true, previewText: previewText(rich.rich_content) },
+          richContent: { accountId, accepted: true, previewText: richPreview },
           events: eventsResult.rows.map((event) => eventEvidence(event, accountId)),
         });
         await client.query("COMMIT");

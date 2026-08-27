@@ -11,7 +11,7 @@ export const AUTO_LISTING_AI_QUEUE_OPTIONS = Object.freeze({
   retryLimit: 5,
   retryDelay: 30,
   retryBackoff: true,
-  expireInSeconds: 900,
+  expireInSeconds: 86_399,
   retentionSeconds: 1_209_600,
   deleteAfterSeconds: 604_800,
   heartbeatSeconds: 30,

@@ -24,6 +24,7 @@ const EVIDENCE_KEYS = Object.freeze([
 const STORE_KEYS = new Set([...OWNER_KEYS, ...EVIDENCE_KEYS]);
 const FAIL_KEYS = new Set([...OWNER_KEYS, "errorCode", "errorRetryable"]);
 const LIST_KEYS = new Set(["accountId", "jobId", "itemId", "parentPlanId", "expectedStatusVersion"]);
+const IMMUTABLE_LIST_KEYS = new Set(["accountId", "jobId", "itemId", "parentPlanId"]);
 const FACTORY_KEYS = new Set(["now", "leaseMs", "token", "id", "readItemState", "maxRows", "leaseOwner"]);
 const POSTGRES_FACTORY_KEYS = new Set(["pool", "leaseMs", "token", "id", "maxRows", "leaseOwner"]);
 const CLEANUP_KEYS = new Set([
@@ -125,6 +126,13 @@ function validateList(input) {
   if (!exactObject(input, LIST_KEYS) || !["accountId", "jobId", "itemId", "parentPlanId"].every((key) => safeIdentifier(input[key]))
     || !Number.isInteger(input.expectedStatusVersion) || input.expectedStatusVersion < 1
     || input.expectedStatusVersion > 2_147_483_647) {
+    throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID");
+  }
+  return input;
+}
+function validateImmutableList(input) {
+  if (!exactObject(input, IMMUTABLE_LIST_KEYS)
+    || !["accountId", "jobId", "itemId", "parentPlanId"].every((key) => safeIdentifier(input[key]))) {
     throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID");
   }
   return input;
@@ -303,6 +311,16 @@ export function createMemorySourceMaterializationRepository(options = {}) {
       const found = rows.filter((row) => row.accountId === input.accountId && row.jobId === input.jobId
         && row.itemId === input.itemId && row.parentPlanId === input.parentPlanId
         && row.expectedStatusVersion === input.expectedStatusVersion && row.status === "ACCEPTED")
+        .sort((left, right) => left.sourceAssetId.localeCompare(right.sourceAssetId) || left.attemptNo - right.attemptNo);
+      if (found.length > maxRows || found.some((row) => !acceptedRecord(row))) {
+        throw failure(found.length > maxRows ? "AUTO_LISTING_SOURCE_MATERIALIZATION_BATCH_EXCEEDED" : "AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
+      }
+      return found.map(publicRecord);
+    },
+    async listAcceptedSourceMaterializationsForPlan(rawInput) {
+      const input = validateImmutableList(rawInput);
+      const found = rows.filter((row) => row.accountId === input.accountId && row.jobId === input.jobId
+        && row.itemId === input.itemId && row.parentPlanId === input.parentPlanId && row.status === "ACCEPTED")
         .sort((left, right) => left.sourceAssetId.localeCompare(right.sourceAssetId) || left.attemptNo - right.attemptNo);
       if (found.length > maxRows || found.some((row) => !acceptedRecord(row))) {
         throw failure(found.length > maxRows ? "AUTO_LISTING_SOURCE_MATERIALIZATION_BATCH_EXCEEDED" : "AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
@@ -563,6 +581,21 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
            AND expected_status_version=$5 AND status='ACCEPTED'
          ORDER BY source_asset_id,attempt_no LIMIT $6`,
         [input.accountId, input.jobId, input.itemId, input.parentPlanId, input.expectedStatusVersion, maxRows + 1],
+      );
+      const rows = (result.rows || []).map(fromRow);
+      if (rows.length > maxRows || rows.some((row) => !acceptedRecord(row))) {
+        throw failure(rows.length > maxRows ? "AUTO_LISTING_SOURCE_MATERIALIZATION_BATCH_EXCEEDED" : "AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
+      }
+      return rows.map(publicRecord);
+    },
+    async listAcceptedSourceMaterializationsForPlan(rawInput) {
+      const input = validateImmutableList(rawInput);
+      const result = await query(
+        `SELECT * FROM auto_listing_source_materialization_attempts
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND parent_plan_id=$4
+           AND status='ACCEPTED'
+         ORDER BY source_asset_id,attempt_no LIMIT $5`,
+        [input.accountId, input.jobId, input.itemId, input.parentPlanId, maxRows + 1],
       );
       const rows = (result.rows || []).map(fromRow);
       if (rows.length > maxRows || rows.some((row) => !acceptedRecord(row))) {

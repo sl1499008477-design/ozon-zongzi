@@ -3,7 +3,7 @@ import test from "node:test";
 import { createAutoListingService as createProductionAutoListingService } from "../auto-listing-service.mjs";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { createAutoListingRfbsWarehouseVerifier } from "../auto-listing-rfbs-warehouse-verifier.mjs";
-import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
+import { buildAutoListingSourceSnapshot, verifyAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 import {
   normalizeAndHashAutoListingConfig,
   verifyAutoListingFrozenConfig,
@@ -377,6 +377,49 @@ test("RFBS zero-product job verifies once immediately before graph persistence a
   assert.equal(repository.calls[graphIndex][1].warehouseValidation.fulfillmentType, "RFBS");
 });
 
+test("passes the frozen brand mode to the authoritative listing-base preparation boundary", async () => {
+  const repository = fakeRepository();
+  let preparationInput;
+  await createAutoListingService({
+    repository,
+    listingBasePreparer: async (input) => {
+      preparationInput = input;
+      return prepareListingBase(input);
+    },
+  }).createAutoListingJob({
+    actor,
+    collectItemIds: ["collect-1"],
+    idempotencyKey: "brand-mode",
+    correlationId: "corr-brand-mode",
+    config: { ...config, brandMode: "FORCE_NO_BRAND" },
+  });
+
+  assert.equal(preparationInput.brandMode, "FORCE_NO_BRAND");
+});
+
+test("passes every captured variant price to the listing-base preparation boundary", async () => {
+  const repository = fakeRepository();
+  let preparationInput;
+  await createAutoListingService({
+    repository,
+    listingBasePreparer: async (input) => {
+      preparationInput = input;
+      return prepareListingBase(input);
+    },
+  }).createAutoListingJob({
+    actor,
+    collectItemIds: ["collect-1"],
+    idempotencyKey: "variant-price-evidence",
+    correlationId: "corr-variant-price-evidence",
+    config,
+  });
+
+  assert.deepEqual(preparationInput.variantPricingEvidence, [{
+    sourceSku: "sku-collect-1", currency: "RUB", currencySource: "SOURCE",
+    blackKopecks: "10000", greenKopecks: "8000",
+  }]);
+});
+
 test("FBS keeps its product-association rule and never invokes the RFBS verifier", async () => {
   let verifyCalls = 0;
   const rfbsWarehouseVerifier = Object.freeze({
@@ -614,6 +657,64 @@ test("uses only actor scope, freezes server strategy and persists valid plus blo
   assert.doesNotMatch(JSON.stringify(result), /raw-collect|credentialsSaved|textDensityByRole/);
 });
 
+test("creation freezes exact multiplier price evidence", async () => {
+  const repository = fakeRepository();
+  const result = await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "multiplier-key", correlationId: "multiplier-corr",
+    config: { ...config, priceMultiplierMicros: "1250000" },
+  });
+
+  assert.deepEqual(result.items[0].price, {
+    currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000",
+    realPriceKopecks: "14500", adjustmentKopecks: "0", preMultiplierPriceKopecks: "14500",
+    priceMultiplierMicros: "1250000", finalPriceKopecks: "18125",
+  });
+});
+
+test("freezes category-labeled source facts before planning without persisting the temporary field", async () => {
+  const repository = fakeRepository();
+  const contentAttributes = [
+    { id: 8145, name: "Мощность, Вт", value: "80", values: ["80"], required: false, dictionaryId: 0, multiple: false },
+  ];
+  const listingBasePreparer = async (input) => ({
+    ...await prepareListingBase(input), contentAttributes,
+  });
+  await createAutoListingService({ repository, listingBasePreparer }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "category-labeled-facts",
+    correlationId: "corr-category-labeled-facts", config,
+  });
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.deepEqual(graph.items[0].snapshot.attributes, contentAttributes);
+  assert.equal(graph.items[0].sourceVersion, graph.items[0].snapshot.source.sourceVersion);
+  assert.notEqual(graph.items[0].sourceVersion, "3");
+  assert.equal(Object.hasOwn(graph.items[0].listingBaseTemplate, "contentAttributes"), false);
+  assert.doesNotThrow(() => verifyAutoListingSourceSnapshot(graph.items[0]));
+});
+
+test("keeps real manual category facts but does not let empty edit rows hide collected facts", async () => {
+  for (const [categoryAttributes, expectedValue] of [
+    [[{ id: 8145, name: "Мощность, Вт", value: "100", values: ["100"], required: false, dictionaryId: 0, multiple: false }], "100"],
+    [[{ id: 8145, name: "Мощность, Вт", value: "", values: [], required: false, dictionaryId: 0, multiple: false }], "80"],
+  ]) {
+    const raw = source("collect-1");
+    raw.collectItem.listingDraft.categoryAttributes = categoryAttributes;
+    raw.collectItem.listingDraft.sourceCategory = { attributes: [{ key: "8145", value: "80" }] };
+    const repository = fakeRepository({ sources: [raw] });
+    const contentAttributes = [
+      { id: 8145, name: "Мощность, Вт", value: "80", values: ["80"], required: false, dictionaryId: 0, multiple: false },
+    ];
+    const listingBasePreparer = async (input) => ({
+      ...await prepareListingBase(input), contentAttributes,
+    });
+    await createAutoListingService({ repository, listingBasePreparer }).createAutoListingJob({
+      actor, collectItemIds: ["collect-1"], idempotencyKey: `manual-facts-${expectedValue}`,
+      correlationId: `corr-manual-facts-${expectedValue}`, config,
+    });
+    const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+    assert.equal(graph.items[0].snapshot.attributes[0].value, expectedValue);
+  }
+});
+
 test("assigns planning contracts per item on the server without adding authority to config", async () => {
   const repository = fakeRepository({ sources: [source("collect-1"), source("collect-2")] });
   await createAutoListingService({
@@ -636,19 +737,6 @@ test("assigns planning contracts per item on the server without adding authority
     "LEGACY_FULL_PLAN_V3",
   ]);
   assert.equal(Object.hasOwn(graph.configSnapshot, "planningContract"), false);
-});
-test("creation freezes exact multiplier price evidence", async () => {
-  const repository = fakeRepository();
-  const result = await createAutoListingService({ repository }).createAutoListingJob({
-    actor, collectItemIds: ["collect-1"], idempotencyKey: "multiplier-key", correlationId: "multiplier-corr",
-    config: { ...config, priceMultiplierMicros: "1250000" },
-  });
-
-  assert.deepEqual(result.items[0].price, {
-    currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000",
-    realPriceKopecks: "14500", adjustmentKopecks: "0", preMultiplierPriceKopecks: "14500",
-    priceMultiplierMicros: "1250000", finalPriceKopecks: "18125",
-  });
 });
 
 test("orders replay, exact category strategy gate, store/currency, warehouse, then paid graph", async () => {
@@ -817,11 +905,24 @@ test("keeps low-branch and missing-price source evidence isolated per sibling", 
   assert.equal(result.items[1].price.branch, "BLACK_LT_80");
   assert.equal(result.items[2].failureCode, "PRICE_INPUT_MISSING");
   const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
-  assert.equal(graph.items[1].snapshot.priceEvidence.greenKopecks, "");
+  assert.equal(graph.items[1].snapshot.priceEvidence.greenKopecks, null);
   assert.equal(graph.items[2].snapshot.priceEvidence.blackKopecks, "");
 });
 
-test("mixed product dimensions derive independent effective image counts and persist the graph", async () => {
+test("mixed product dimensions preserve requested image counts and persist the evidence gap", async () => {
+  const requestedConfig = {
+    ...config,
+    image: {
+      roles: {
+        main: 1,
+        sellingPoint: 3,
+        detail: 1,
+        scene: 1,
+        specification: 1,
+        infographic: 1,
+      },
+    },
+  };
   const unavailable = source("collect-no-product-size");
   unavailable.collectItem.listingDraft.productMeasurements = {};
   unavailable.collectItem.listingDraft.logistics = {
@@ -833,7 +934,7 @@ test("mixed product dimensions derive independent effective image counts and per
     collectItemIds: ["collect-product-size", "collect-no-product-size"],
     idempotencyKey: "mixed-sizes",
     correlationId: "corr",
-    config,
+    config: requestedConfig,
   });
   assert.deepEqual(result.items.map((item) => item.status), ["SOURCE_READY", "SOURCE_READY"]);
   const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
@@ -843,7 +944,7 @@ test("mixed product dimensions derive independent effective image counts and per
     reasonCodes: item.effectiveImageConfig.reasonCodes,
   })), [
     { total: 8, specification: 1, reasonCodes: [] },
-    { total: 7, specification: 0, reasonCodes: ["PRODUCT_DIMENSIONS_UNAVAILABLE"] },
+    { total: 8, specification: 1, reasonCodes: ["PRODUCT_DIMENSIONS_UNAVAILABLE"] },
   ]);
 });
 
@@ -1692,6 +1793,20 @@ test("job DTO exposes only server-authorized item actions and hides recovery evi
       { id: "retry", status: "RETRYABLE_ERROR", statusVersion: 3, recoveryPoint: "GENERATION" },
       { id: "upload", status: "UPLOADING", statusVersion: 7, activeContentPlanId: "plan-b" },
       { id: "blocked", status: "BLOCKED", statusVersion: 2, activeContentPlanId: "plan-c" },
+      { id: "blocked-plan", status: "BLOCKED", statusVersion: 3,
+        failureCode: "AUTO_LISTING_CONTENT_PLAN_INVALID" },
+      { id: "blocked-main", status: "BLOCKED", statusVersion: 4, activeContentPlanId: "plan-d",
+        failureCode: "AUTO_LISTING_MAIN_IMAGE_REQUIRED" },
+      { id: "blocked-images", status: "BLOCKED", statusVersion: 4, activeContentPlanId: "plan-images",
+        failureCode: "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET" },
+      { id: "blocked-rich", status: "BLOCKED", statusVersion: 5, activeContentPlanId: "plan-e",
+        failureCode: "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID" },
+      { id: "blocked-rich-exhausted", status: "BLOCKED", statusVersion: 6, activeContentPlanId: "plan-f",
+        failureCode: "AUTO_LISTING_RICH_CONTENT_ATTEMPTS_EXHAUSTED" },
+      { id: "blocked-context", status: "BLOCKED", statusVersion: 7, activeContentPlanId: "plan-context",
+        failureCode: "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID" },
+      { id: "blocked-policy", status: "BLOCKED", statusVersion: 7, activeContentPlanId: "plan-g",
+        failureCode: "AUTO_LISTING_UPLOAD_POLICY_BLOCKED" },
     ],
   } });
   const result = await createAutoListingService({ repository }).getAutoListingJob({ actor, jobId: "job-actions" });
@@ -1700,6 +1815,13 @@ test("job DTO exposes only server-authorized item actions and hides recovery evi
     { itemId: "retry", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: true } },
     { itemId: "upload", actions: { review: false, approve: false, retry: false, regenerate: false, cancel: false } },
     { itemId: "blocked", actions: { review: false, approve: false, retry: false, regenerate: false, cancel: false } },
+    { itemId: "blocked-plan", actions: { review: false, approve: false, retry: false, regenerate: false, cancel: true } },
+    { itemId: "blocked-main", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: false } },
+    { itemId: "blocked-images", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: false } },
+    { itemId: "blocked-rich", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: false } },
+    { itemId: "blocked-rich-exhausted", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: false } },
+    { itemId: "blocked-context", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: false } },
+    { itemId: "blocked-policy", actions: { review: false, approve: true, retry: false, regenerate: false, cancel: false } },
   ]);
   assert.doesNotMatch(JSON.stringify(result), /recoveryPoint|activeContentPlanId|plan-[abc]/u);
 });

@@ -51,7 +51,7 @@ import "./category-strategy.css";
 
 const ROLE_LABELS = Object.freeze({
   MAIN: "主图", SELLING_POINT: "卖点图", DETAIL: "细节图", SCENE: "场景图",
-  SPECIFICATION: "尺寸图", INFOGRAPHIC: "信息图",
+  SPECIFICATION: "产品实拍图", INFOGRAPHIC: "信息图",
 });
 const STATUS_LABELS = Object.freeze({
   NOT_CONFIGURED: "未配置", COLLECTING: "选样中", SAMPLES_READY: "样本已就绪",
@@ -440,6 +440,8 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
       </Space>
     </header>
     {error ? <Alert type="error" showIcon title="操作没有完成" description={error} closable onClose={() => setError("")} /> : null}
+    {!error && view?.analysisIssue
+      ? <Alert type="error" showIcon title="类目策略草稿生成失败" description={view.analysisIssue} /> : null}
     <Spin spinning={loading}>
       {!detail ? <Card title="类目策略列表"><Table rowKey="draftId" columns={columns} dataSource={strategies}
         locale={{ emptyText: <Empty description="暂无类目策略" /> }} /></Card> : <>
@@ -490,7 +492,9 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
             options={[{ label: "中文管理说明", value: "zh" }, { label: "俄文执行规则", value: "ru" }]} />
           : null}>
           {!analysis || !view?.analysisIsCurrent
-            ? <Empty description={analysis ? "样本已变化，请重新生成策略草稿" : "生成草稿后可逐角色检查和编辑"} />
+            ? <Empty description={view?.analysisIssue
+              ? "本次未生成可用策略草稿，请按上方提示处理后重试"
+              : analysis ? "样本已变化，请重新生成策略草稿" : "生成草稿后可逐角色检查和编辑"} />
             : guidanceLanguage === "zh" && managementZh ? <div className="category-strategy-management-guidance">
               <Alert type={analysis.provenance === "MANUAL" ? "warning" : "info"} showIcon
                 title="中文管理说明（只读）" description={analysis.provenance === "MANUAL"

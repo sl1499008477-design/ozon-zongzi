@@ -282,6 +282,24 @@ assert.equal(exactValueCalls.length, 3, "text matches scan to the terminal page 
 assert.equal(exactValueCalls[1].body.last_value_id, 10);
 assert.equal(exactValueCalls[2].body.last_value_id, 20);
 
+test("matches a legitimate Ozon dictionary label longer than 500 characters", async () => {
+  const customsValue = "9405410039 - ".padEnd(575, "А");
+  const longDictionaryValueService = createOzonCategoryService({
+    callOzonSellerApi: async () => ({
+      result: [{ id: 972128205, value: customsValue }],
+      has_next: false,
+    }),
+  });
+
+  const result = await longDictionaryValueService.getCategoryAttributeValues({
+    ...valuesInput,
+    store: { id: "long-dictionary-value-store", ownerAccountId: "acct-a" },
+    matchCandidates: [{ value: customsValue }],
+  });
+
+  assert.deepEqual(result.items.map(({ id }) => id), [972128205]);
+});
+
 const ambiguousTextPages = [
   { result: [{ id: 40, value: "Same" }], has_next: true },
   { result: [{ id: 41, value: " same " }], has_next: false },
@@ -295,14 +313,23 @@ assert.deepEqual((await ambiguousTextService.getCategoryAttributeValues({
   matchCandidates: [{ value: "same" }],
 })).items.map(({ id }) => id), [40, 41]);
 
+const exactIdCalls = [];
 const exactIdService = createOzonCategoryService({
-  callOzonSellerApi: async () => ({ result: [{ id: 50, value: "same" }], has_next: false }),
+  callOzonSellerApi: async (_store, _apiPath, body) => {
+    exactIdCalls.push(body);
+    return {
+      result: [{ id: 999, value: "same" }, { id: 1_000, value: "later" }],
+      has_next: true,
+    };
+  },
 });
 assert.deepEqual((await exactIdService.getCategoryAttributeValues({
   ...valuesInput,
   store: { id: "exact-id-store", ownerAccountId: "acct-a" },
   matchCandidates: [{ id: 999, value: "same" }],
-})).items, [], "an exact source ID must never fall back to matching display text");
+})).items, [{ id: 999, value: "same", info: "", picture: "" }]);
+assert.equal(exactIdCalls.length, 1, "an exact ID must not scan the full dictionary");
+assert.equal(exactIdCalls[0].last_value_id, 998);
 
 const duplicateValuesService = createOzonCategoryService({
   callOzonSellerApi: async () => ({

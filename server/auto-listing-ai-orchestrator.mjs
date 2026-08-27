@@ -21,7 +21,7 @@ const PHASE_INPUT_KEYS = Object.freeze({
   ]),
   FINALIZE_MATERIALIZED_PLAN: Object.freeze(["parentPlan", "repository"]),
   GENERATE_IMAGE_SLOT: Object.freeze([
-    "plan", "slot", "sourceAssetLoader", "repository", "gateway", "profile", "imageModel", "ratio",
+    "plan", "slot", "categoryStyle", "categoryStyleReferences", "sourceAssetLoader", "repository", "gateway", "profile", "imageModel", "ratio",
     "resolution", "size", "quality", "templateVersion", "regeneration", "storage", "logger", "maxAttempts",
   ]),
   GENERATE_RICH_CONTENT: Object.freeze([
@@ -53,6 +53,7 @@ const FALLBACK_FAILURE = Object.freeze({
 const HASH = /^[a-f0-9]{64}$/u;
 const SAFE_FAILURE_CODES = Object.freeze({
   PLAN_CONTENT: new Set([
+    "AI_GATEWAY_RATE_LIMITED",
     "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID", "AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED",
     "AUTO_LISTING_CONTENT_PLAN_INVALID", "AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED",
     "AUTO_LISTING_CONTENT_PLAN_RESERVATION_FAILED", "AUTO_LISTING_CONTENT_PLAN_VERSION_CONFLICT",
@@ -80,6 +81,12 @@ const SAFE_FAILURE_CODES = Object.freeze({
     "AUTO_LISTING_ASSET_REPOSITORY_FAILED", "AUTO_LISTING_ASSET_SCOPE_INVALID",
     "AUTO_LISTING_ASSET_STORAGE_UNAVAILABLE", "AUTO_LISTING_ASSET_STORAGE_UNVERIFIED",
     "AUTO_LISTING_ASSET_TOO_LARGE", "AUTO_LISTING_IMAGE_ATTEMPTS_EXHAUSTED",
+    "CHECKER_UNAVAILABLE", "CHECKER_RESPONSE_INVALID", "CHECKER_EVIDENCE_INVALID", "RETRYABLE_GATEWAY",
+    "PRODUCT_IDENTITY_MISMATCH", "UNVERIFIED_CLAIM", "LANGUAGE_MISMATCH",
+    "PROHIBITED_CONTENT", "IMAGE_QUALITY_FAILED", "CATEGORY_STYLE_MISMATCH",
+    "BLUR", "CROP", "OBSTRUCTION", "TEXT_DISTORTION", "DIMENSION_ANNOTATION_MISSING",
+    "ROLE_MISMATCH", "DETAIL_NOT_CLOSEUP", "SUBJECT_NOT_DOMINANT",
+    "LABEL_OVERLAP", "LABEL_READABILITY_LOW",
     "AUTO_LISTING_IMAGE_EXISTING_CORRUPT", "AUTO_LISTING_IMAGE_GATEWAY_INVALID",
     "AUTO_LISTING_IMAGE_INPUT_INVALID", "AUTO_LISTING_IMAGE_REPOSITORY_FAILED",
     "AUTO_LISTING_IMAGE_RESERVATION_FAILED", "AUTO_LISTING_IMAGE_VERSION_CONFLICT",
@@ -312,13 +319,13 @@ function assertSuccessfulResult(result, phase, context, message, phaseInput) {
 function serviceFailure(message, error) {
   if (message.phase === "GENERATE_IMAGE_SLOT" && error?.retryable !== true) {
     if (error?.itemOutcome === "BLOCKED") {
-      return outcome(message, "FAIL", "BLOCKED", "AUTO_LISTING_MAIN_IMAGE_REQUIRED", false);
+      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MAIN_IMAGE_REQUIRED", true);
     }
     if (error?.itemOutcome === "CONTINUE_WITHOUT_SLOT") {
       return outcome(message, "ACK", "IMAGE_SLOT_SKIPPED", "AUTO_LISTING_IMAGE_POLICY_REJECTED", false);
     }
     if (error?.itemOutcome === "ITEM_INCOMPLETE") {
-      return outcome(message, "FAIL", "ITEM_INCOMPLETE", "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET", false);
+      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET", true);
     }
   }
   const retryable = error?.retryable === true;

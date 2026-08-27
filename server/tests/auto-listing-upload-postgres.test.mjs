@@ -25,6 +25,8 @@ test("PostgreSQL evidence read is account-scoped and joins every frozen/accepted
   assert.match(sql, /store_credentials/);
   assert.match(sql, /ai_generation_assets/);
   assert.match(sql, /ai_rich_content_results/);
+  assert.match(sql, /DISTINCT ON \(group_key\)/);
+  assert.match(sql, /expected_status_version DESC NULLS LAST/);
 });
 
 test("reserve and bind use short transactions, lock item/version/source evidence, and never call Ozon", async () => {

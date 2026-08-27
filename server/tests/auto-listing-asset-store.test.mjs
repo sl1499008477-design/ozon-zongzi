@@ -33,6 +33,83 @@ test("normalizes real image bytes and stores them only after storage confirms ev
   assert.equal(stored.objectKey, `auto-listing/v2/YWNjb3VudC1h/am9iLWE/aXRlbS1h/cGxhbi1h/bWFpbg/Y292ZXI/${scope.attemptIdentityHash}/attempt-1/${scope.inputHash}/${normalized.contentHash}.png`);
 });
 
+test("normalizes the provider portrait size to the exact 3:4 listing target", async () => {
+  const providerImage = await sharp({
+    create: { width: 1024, height: 1536, channels: 4, background: "#336699" },
+  }).png().toBuffer();
+  const normalized = await normalizeListingImage({
+    bytes: providerImage,
+    ratio: "3:4",
+    resolution: "1K",
+    targetSize: "768x1024",
+  });
+  assert.equal(normalized.width, 768);
+  assert.equal(normalized.height, 1024);
+});
+
+test("preserves the full provider image when its aspect ratio differs from the configured target", async () => {
+  const providerImage = await sharp({
+    create: { width: 1024, height: 1536, channels: 3, background: "#00ff00" },
+  }).composite([
+    { input: { create: { width: 1024, height: 80, channels: 3, background: "#ff0000" } }, top: 0, left: 0 },
+    { input: { create: { width: 1024, height: 80, channels: 3, background: "#0000ff" } }, top: 1456, left: 0 },
+  ]).png().toBuffer();
+  const normalized = await normalizeListingImage({
+    bytes: providerImage,
+    ratio: "3:4",
+    resolution: "1K",
+    targetSize: "768x1024",
+  });
+  const { data, info } = await sharp(normalized.bytes).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const pixel = (x, y) => {
+    const offset = (y * info.width + x) * info.channels;
+    return [...data.subarray(offset, offset + 3)];
+  };
+  const top = pixel(Math.floor(info.width / 2), 4);
+  const bottom = pixel(Math.floor(info.width / 2), info.height - 5);
+  assert.ok(top[0] > 200 && top[1] < 50 && top[2] < 50, `top edge was cropped: ${top}`);
+  assert.ok(bottom[2] > 200 && bottom[0] < 50 && bottom[1] < 50, `bottom edge was cropped: ${bottom}`);
+});
+
+test("normalizes transparent provider images onto an opaque configured canvas", async () => {
+  const providerImage = await sharp({
+    create: { width: 1024, height: 1536, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  }).composite([
+    { input: { create: { width: 400, height: 400, channels: 4, background: "#ff0000" } }, top: 568, left: 312 },
+  ]).png().toBuffer();
+  const normalized = await normalizeListingImage({
+    bytes: providerImage,
+    ratio: "3:4",
+    resolution: "1K",
+    targetSize: "768x1024",
+  });
+  const metadata = await sharp(normalized.bytes).metadata();
+  assert.equal(metadata.hasAlpha, false);
+});
+
+test("uses EXIF-oriented dimensions before taking the exact-size normalization shortcut", async () => {
+  const providerImage = await sharp({
+    create: { width: 768, height: 1024, channels: 3, background: "#336699" },
+  }).jpeg().withMetadata({ orientation: 6 }).toBuffer();
+  const normalized = await normalizeListingImage({
+    bytes: providerImage,
+    ratio: "3:4",
+    resolution: "1K",
+    targetSize: "768x1024",
+  });
+  assert.equal(normalized.width, 768);
+  assert.equal(normalized.height, 1024);
+});
+
+test("rejects configured output above the current 4K pixel budget before normalization", async () => {
+  await assert.rejects(normalizeListingImage({
+    bytes: await image(),
+    ratio: "1:1",
+    resolution: "4K",
+    targetSize: "5000x5000",
+  }), (error) => error?.code === "AUTO_LISTING_ASSET_INVALID");
+});
+
 test("ATTEMPT_V2 keys physically isolate identical bytes by trusted attempt identity and number", async () => {
   const contentHash = "b".repeat(64);
   const first = buildGeneratedAssetObjectKey({ ...scope, attemptNo: 1, contentHash });

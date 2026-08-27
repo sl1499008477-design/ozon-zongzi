@@ -37,7 +37,7 @@ test("AI queue starts only its dedicated queue and publishes one closed V1 messa
     retryLimit: 5,
     retryDelay: 30,
     retryBackoff: true,
-    expireInSeconds: 900,
+    expireInSeconds: 86_399,
     retentionSeconds: 1_209_600,
     deleteAfterSeconds: 604_800,
     heartbeatSeconds: 30,

@@ -109,6 +109,48 @@ test("uses safe user-facing copy for known and unknown row failures", () => {
   assert.equal(autoListingItemPresentation({
     itemId: "item-a", status: "BLOCKED", failureCode: "RAW_PRIVATE_DATABASE_ERROR",
   }).failureLabel, "商品暂时无法继续处理，请检查资料或联系管理员");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "RETRYABLE_ERROR", failureCode: "AI_GATEWAY_RATE_LIMITED",
+  }).failureLabel, "AI 网关额度或频率受限，请检查额度后重试");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "RETRYABLE_ERROR", failureCode: "CHECKER_UNAVAILABLE",
+  }).failureLabel, "图片已生成，但质量检查服务暂时不可用，可以重试");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "RETRYABLE_ERROR", failureCode: "CHECKER_RESPONSE_INVALID",
+  }).failureLabel, "图片已生成，但质检结果格式异常；系统自动纠正后仍未通过，可以重试");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "RETRYABLE_ERROR", failureCode: "CHECKER_EVIDENCE_INVALID",
+  }).failureLabel, "图片已生成，但质检证据不一致；系统自动纠正后仍未通过，可以重试");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "RETRYABLE_ERROR", failureCode: "RETRYABLE_GATEWAY",
+  }).failureLabel, "当前 AI 图片通道暂时不可用，请检查通道后重试");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "RETRYABLE_ERROR",
+    failureCode: "AUTO_LISTING_IMAGE_GATEWAY_INVALID",
+  }).failureLabel, "图片服务返回异常结果，可以重试；已通过的图片不会重复生成");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "BLOCKED",
+    failureCode: "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID",
+  }).failureLabel, "图片生成规则校验失败，可以重试；已通过的图片不会重复生成");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "BLOCKED",
+    failureCode: "OZON_RICH_CONTENT_REJECTED_REQUIRES_REVIEW",
+  }).failureLabel, "商品和库存已提交，但 Ozon 拒绝了富文本内容，请检查后重试");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "RETRYABLE_ERROR",
+    failureCode: "AUTO_LISTING_RICH_CONTENT_REPOSITORY_FAILED",
+  }).failureLabel, "保存生成内容失败，可以重试；已通过的图片不会重复生成");
+  const imageFailures = [
+    ["PRODUCT_IDENTITY_MISMATCH", "生成图片中的商品与采集来源不一致，请重新生成"],
+    ["UNVERIFIED_CLAIM", "生成图片含有商品资料未支持的文案或功能信息，请重新生成"],
+    ["LANGUAGE_MISMATCH", "生成图片文案不符合俄语或已确认名称，请重新生成"],
+    ["PROHIBITED_CONTENT", "生成图片含有不受商品资料支持的承诺、配件关系或推广内容，请重新生成"],
+    ["IMAGE_QUALITY_FAILED", "生成图片存在模糊、裁切、遮挡或文字失真，请重新生成"],
+    ["CATEGORY_STYLE_MISMATCH", "生成图片与已发布的类目图片策略风格不一致，请重新生成"],
+  ];
+  for (const [failureCode, expected] of imageFailures) assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "RETRYABLE_ERROR", failureCode,
+  }).failureLabel, expected);
 });
 
 test("uses fixed category recovery copy without exposing backend details", () => {

@@ -12,6 +12,7 @@ const SAFE_CODES = new Set([
   "AUTO_LISTING_AI_RETRY_NOT_RECOVERABLE",
   "AUTO_LISTING_AI_RETRY_NOT_FOUND",
 ]);
+const MAX_PLAN_SLOTS = 1_000;
 
 function retryError(code, retryable = false) {
   const error = new Error("自动上架 AI 重试操作失败");
@@ -52,7 +53,7 @@ function result(raw) {
     || !new Set(["PLANNING", "GENERATION"]).has(value.recoveryPoint)
     || (value.status === "PLANNING") !== (value.recoveryPoint === "PLANNING")
     || !Number.isInteger(value.statusVersion) || value.statusVersion < 2
-    || !Number.isInteger(value.enqueued) || value.enqueued < 1 || value.enqueued > 20
+    || !Number.isInteger(value.enqueued) || value.enqueued < 1 || value.enqueued > MAX_PLAN_SLOTS
     || typeof value.duplicate !== "boolean") throw retryError("AUTO_LISTING_AI_RETRY_FAILED", true);
   return Object.freeze(value);
 }

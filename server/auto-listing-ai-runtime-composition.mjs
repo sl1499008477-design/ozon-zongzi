@@ -16,6 +16,7 @@ import { createPostgresContentPlanRepository } from "./auto-listing-content-plan
 import { createPostgresContentPlanEvidenceRepository } from "./auto-listing-content-plan-evidence-postgres.mjs";
 import { createContentPlan } from "./auto-listing-content-planner.mjs";
 import { createPostgresGenerationAttemptRepository } from "./auto-listing-generation-attempt-postgres.mjs";
+import { createPostgresAssetCleanupRepository } from "./auto-listing-asset-cleanup-repository.mjs";
 import { generateImageSlot } from "./auto-listing-image-generator.mjs";
 import { finalizeMaterializedPlan } from "./auto-listing-materialized-plan.mjs";
 import { createActiveMaterializedSourceAssetLoader } from "./auto-listing-materialized-source-loader.mjs";
@@ -183,6 +184,7 @@ function closedConfiguration(env) {
       gatewayPolicy,
       legacySecretEnvNames: Object.freeze([...legacySecretEnvNames]),
       allowLocalGateway,
+      directUploadAllowed: strictBoolean(env, "AUTO_LISTING_DIRECT_UPLOAD_ALLOWED", false),
       credentialKeyVersion,
       queue: Object.freeze({
         schema,
@@ -233,14 +235,21 @@ const DEFAULT_PORTS = Object.freeze({
     allowedGatewayBaseUrls: gatewayPolicy.allowedGatewayBaseUrls,
     allowedGatewayOrigins: gatewayPolicy.allowedGatewayOrigins,
   }),
-  async createWorkflow({ pool }) {
+  async createWorkflow({ pool, directUploadAllowed }) {
     const { createPostgresAutoListingAiWorkflow } = await import("./auto-listing-ai-workflow-postgres.mjs");
-    return createPostgresAutoListingAiWorkflow({ pool });
+    return createPostgresAutoListingAiWorkflow({ pool, directUploadAllowed });
   },
   createContentPlanRepository: ({ pool }) => createPostgresContentPlanRepository({ pool }),
   createContentPlanEvidenceRepository: ({ pool }) => createPostgresContentPlanEvidenceRepository({ pool }),
   createSourceMaterializationRepository: ({ pool }) => createPostgresSourceMaterializationRepository({ pool }),
-  createGenerationRepository: ({ pool }) => createPostgresGenerationAttemptRepository({ pool }),
+  createGenerationRepository: ({ pool }) => {
+    const attempts = createPostgresGenerationAttemptRepository({ pool });
+    const cleanup = createPostgresAssetCleanupRepository({ pool });
+    return Object.freeze({
+      ...attempts,
+      recordAssetCleanupRequired: (input) => cleanup.recordAssetCleanupRequired(input),
+    });
+  },
   createRichContentRepository: ({ pool }) => createPostgresRichContentRepository({ pool }),
   createDownloader: () => createAutoListingSourceImageDownloader(),
   createStorage: () => storagePort,
@@ -324,7 +333,10 @@ export async function createAutoListingAiProductionDependencies(input = {}) {
       repository: credentialRepository,
       cipher: credentialCipher,
     }), ["resolveSecret"]);
-    const aiWorkflow = assertWorkflowPort(await ports.createWorkflow({ pool }));
+    const aiWorkflow = assertWorkflowPort(await ports.createWorkflow({
+      pool,
+      directUploadAllowed: config.directUploadAllowed,
+    }));
     const gateway = assertPortShape(ports.createGateway({
       readSecret: secretReader(env, config.legacySecretEnvNames),
       resolveSecret: (scope) => credentialResolver.resolveSecret(scope),
@@ -369,6 +381,7 @@ export async function createAutoListingAiProductionDependencies(input = {}) {
       planPromptTemplateVersion: PLAN_PROMPT_TEMPLATE_VERSION,
       prohibitedClaims: REQUIRED_PROHIBITED_CLAIMS,
       maxAttempts: 3,
+      richContentMaxAttempts: 5,
       richContentLeaseOwner: RICH_CONTENT_LEASE_OWNER,
       referenceProjector: projectAutoListingGenerationReferences,
     });

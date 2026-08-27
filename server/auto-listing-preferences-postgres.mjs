@@ -4,6 +4,8 @@ import { listingWarehouseEligibility } from "./listing-warehouse-eligibility.mjs
 import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
+const BRAND_MODES = new Set(["PREFER_SOURCE", "FORCE_NO_BRAND"]);
+const CURRENT_IMAGE_DEFAULTS_VERSION = 2;
 
 function preferenceError(code, status = 422, retryable = false) {
   const error = new Error(code === "AUTO_LISTING_PREFERENCES_PERSIST_FAILED"
@@ -22,14 +24,20 @@ function id(value) {
 
 function fromRow(row) {
   if (!row) return null;
+  const storedImage = row.image_config && typeof row.image_config === "object" && !Array.isArray(row.image_config)
+    ? row.image_config : {};
+  const { brandMode, defaultsVersion, ...image } = storedImage;
   return Object.freeze({
     accountId: row.account_id,
     targetStoreId: row.target_store_id,
     targetWarehouseId: row.target_warehouse_id,
     stock: Number(row.stock),
     priceAdjustmentKopecks: String(row.price_adjustment_kopecks),
-    image: row.image_config,
     priceMultiplierMicros: String(row.price_multiplier_micros ?? 1_000_000),
+    image,
+    imageDefaultsVersion: Number.isInteger(defaultsVersion) && defaultsVersion > 0
+      ? defaultsVersion : null,
+    ...(BRAND_MODES.has(brandMode) ? { brandMode } : {}),
     configVersion: Number(row.config_version),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -199,13 +207,18 @@ export function createPostgresAutoListingPreferencesRepository({ pool } = {}) {
         );
         validateTarget(target.rows?.[0], input);
         const nextVersion = currentVersion + 1;
+        const storedImage = JSON.stringify({
+          ...input.config.image,
+          ...(input.config.brandMode ? { brandMode: input.config.brandMode } : {}),
+          defaultsVersion: CURRENT_IMAGE_DEFAULTS_VERSION,
+        });
         const savedResult = current ? await client.query(
           `UPDATE auto_listing_preferences
               SET target_store_id=$2,target_warehouse_id=$3,stock=$4,price_adjustment_kopecks=$5,
                   price_multiplier_micros=$6,image_config=$7::JSONB,config_version=$8,updated_by=$1,updated_at=NOW()
             WHERE account_id=$1 AND config_version=$9 RETURNING *`,
           [input.accountId, input.config.targetStoreId, input.config.targetWarehouseId, input.config.stock,
-            input.config.priceAdjustmentKopecks, input.config.priceMultiplierMicros ?? "1000000", JSON.stringify(input.config.image),
+            input.config.priceAdjustmentKopecks, input.config.priceMultiplierMicros ?? "1000000", storedImage,
             nextVersion, currentVersion],
         ) : await client.query(
           `INSERT INTO auto_listing_preferences (
@@ -213,7 +226,7 @@ export function createPostgresAutoListingPreferencesRepository({ pool } = {}) {
              price_multiplier_micros,image_config,config_version,updated_by
            ) VALUES ($1,$2,$3,$4,$5,$6,$7::JSONB,1,$1) RETURNING *`,
           [input.accountId, input.config.targetStoreId, input.config.targetWarehouseId, input.config.stock,
-            input.config.priceAdjustmentKopecks, input.config.priceMultiplierMicros ?? "1000000", JSON.stringify(input.config.image)],
+            input.config.priceAdjustmentKopecks, input.config.priceMultiplierMicros ?? "1000000", storedImage],
         );
         const saved = fromRow(savedResult.rows?.[0]);
         if (!saved || saved.accountId !== input.accountId || saved.configVersion !== nextVersion) {

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { convertAutoListingRichContentToOzon } from "../auto-listing-ozon-rich-content.mjs";
+import {
+  AUTO_LISTING_OZON_RICH_CONTENT_VERSION,
+  convertAutoListingRichContentToOzon,
+  isVerifiedAutoListingOzonRichContentVersion,
+} from "../auto-listing-ozon-rich-content.mjs";
 import { testExports as normalizerTestExports } from "../ozon-import-normalizer.mjs";
 
 const publishedAsset = (assetId, role, url, overrides = {}) => ({
@@ -65,28 +69,46 @@ const fixture = () => ({
   publicationPolicy: { origin: "https://listing.example.test" },
 });
 
-test("converts accepted Russian blocks in source order to one deterministic raShowcase widget", () => {
+test("releases only the current Ozon rich-content adapter after real acceptance", () => {
+  assert.equal(isVerifiedAutoListingOzonRichContentVersion(AUTO_LISTING_OZON_RICH_CONTENT_VERSION), true);
+  assert.equal(isVerifiedAutoListingOzonRichContentVersion("AUTO_LISTING_OZON_RICH_CONTENT_V1"), false);
+});
+
+test("converts accepted Russian blocks in source order to the official Ozon 0.3 envelope", () => {
   const input = fixture();
   const first = convertAutoListingRichContentToOzon(input);
   const second = convertAutoListingRichContentToOzon(structuredClone(input));
 
   assert.deepEqual(first, second);
-  assert.equal(first.version, "AUTO_LISTING_OZON_RICH_CONTENT_V1_UNVERIFIED");
+  assert.equal(first.version, "AUTO_LISTING_OZON_RICH_CONTENT_V2");
   assert.match(first.valueHash, /^[a-f0-9]{64}$/);
-  const widget = JSON.parse(first.value);
-  assert.equal(widget.widgetName, "raShowcase");
-  assert.equal(widget.type, "roll");
-  assert.equal(widget.blocks.length, 4);
-  assert.deepEqual(widget.blocks[0], {
-    img: { src: "https://listing.example.test/main.webp", width: 1200, height: 1600 },
+  const document = JSON.parse(first.value);
+  assert.equal(document.version, 0.3);
+  assert.equal(document.content.length, 4);
+  assert.deepEqual(document.content[0], {
+    widgetName: "raShowcase", type: "billboard",
+    blocks: [{ img: {
+      src: "https://listing.example.test/main.webp",
+      srcMobile: "https://listing.example.test/main.webp",
+    } }],
   });
-  assert.deepEqual(widget.blocks[1], { title: { content: "Удобная бутылка" } });
-  assert.deepEqual(widget.blocks[2], {
-    img: { src: "https://listing.example.test/detail.webp", width: 1200, height: 1600 },
-    title: { content: "Корпус из стали" },
+  assert.deepEqual(document.content[1], {
+    widgetName: "raTextBlock", title: { content: ["Удобная бутылка"] },
   });
-  assert.deepEqual(widget.blocks[3], { text: { content: "Подходит для ежедневного использования" } });
-  assert.equal(first.value, JSON.stringify(widget));
+  assert.deepEqual(document.content[2], {
+    widgetName: "raShowcase", type: "billboard",
+    blocks: [{
+      img: {
+        src: "https://listing.example.test/detail.webp",
+        srcMobile: "https://listing.example.test/detail.webp",
+      },
+      title: { content: ["Корпус из стали"] },
+    }],
+  });
+  assert.deepEqual(document.content[3], {
+    widgetName: "raTextBlock", text: { content: ["Подходит для ежедневного использования"] },
+  });
+  assert.equal(first.value, JSON.stringify(document));
   assert.equal(normalizerTestExports.normalizeRichContentValue(first.value), first.value);
   assert.equal(Object.isFrozen(first), true);
 });

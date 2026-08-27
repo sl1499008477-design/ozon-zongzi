@@ -136,6 +136,54 @@ test("Ozon ingress promotes legacy root category aliases into source evidence an
   }
 });
 
+test("Ozon ingress promotes Seller attribute 8229 into canonical source type evidence", () => {
+  const normalized = normalizeOzonCollectedSourceEvidence({
+    sku: "2916074139",
+    variantData: {
+      description_category_id: 17_033_980,
+      attributes: [
+        {
+          key: "8229",
+          value: "Светильник с датчиком движения",
+          dictionary_value_id: 91_637,
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(normalized.sourceCategory, {
+    descriptionCategoryId: 17_033_980,
+    typeName: "Светильник с датчиком движения",
+    typeIdCandidate: 91_637,
+    attributes: [
+      {
+        key: "8229",
+        value: "Светильник с датчиком движения",
+        dictionary_value_id: 91_637,
+      },
+    ],
+  });
+});
+
+test("Ozon ingress repairs historical source category type evidence from attribute 8229", () => {
+  const normalized = normalizeOzonCollectedSourceEvidence({
+    sku: "2916074139",
+    sourceCategory: {
+      descriptionCategoryId: 17_033_980,
+      attributes: [
+        {
+          key: "8229",
+          value: "Настольный светильник",
+          dictionary_value_id: 91_637,
+        },
+      ],
+    },
+  });
+
+  assert.equal(normalized.sourceCategory.typeName, "Настольный светильник");
+  assert.equal(normalized.sourceCategory.typeIdCandidate, 91_637);
+});
+
 test("Ozon ingress keeps only a canonical buyer category URL from the public product breadcrumb", () => {
   const valid = normalizeOzonCollectedSourceEvidence({
     buyerCategoryUrl: "https://www.ozon.ru/category/nabory-skladnoy-mebeli-11504/?at=tracking#fragment",

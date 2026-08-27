@@ -168,6 +168,48 @@ if (!postgresEnabled()) {
     assert.equal(first.duplicate, false, "an account with zero operating stores can upload");
     assert.equal(first.enrichment.status, "COMPLETE");
 
+    const extensionEvidenceSku = `extension-evidence-${suffix}`;
+    const extensionEvidenceRequestId = `extension-evidence-request-${suffix}`;
+    const extensionEvidenceResult = await ingestCollectRequestV4({
+      authenticatedAccount: { id: accountA },
+      input: {
+        source: "ozon",
+        sourceSku: extensionEvidenceSku,
+        requestId: extensionEvidenceRequestId,
+        payload: {
+          sku: extensionEvidenceSku,
+          name: "Extension evidence item",
+          description_category_id: 17000002,
+          type_id: 910002,
+          weight: 450,
+          depth: 240,
+          width: 160,
+          height: 80,
+          variantData: {
+            description_category_id: 17000002,
+            type_id: 910002,
+            attributes: [
+              { key: "4497", value: "450" },
+              { key: "9454", value: "240" },
+              { key: "9455", value: "160" },
+              { key: "9456", value: "80" },
+            ],
+          },
+        },
+      },
+    });
+    collectItemIds.add(extensionEvidenceResult.collectItemId);
+    assert.equal(extensionEvidenceResult.enrichment.status, "COMPLETE");
+    assert.deepEqual(extensionEvidenceResult.enrichment.missingFields, []);
+    const extensionEvidenceJobs = await pool.query(
+      `SELECT COUNT(*)::int AS count
+         FROM collector_ozon_enrichment_jobs
+        WHERE account_id=$1 AND request_id=$2 AND sku=$3
+          AND status IN ('PENDING','RUNNING','RETRY')`,
+      [accountA, extensionEvidenceRequestId, extensionEvidenceSku],
+    );
+    assert.equal(extensionEvidenceJobs.rows[0].count, 0);
+
     const publicSourceSku = `public-${suffix}`;
     const publicRequestId = `public-request-${suffix}`;
     const publicResult = await ingestCollectRequestV4({
@@ -189,6 +231,34 @@ if (!postgresEnabled()) {
       "widthMm",
       "heightMm",
     ]);
+
+    const partialEvidenceSku = `partial-evidence-${suffix}`;
+    const partialEvidenceRequestId = `partial-evidence-request-${suffix}`;
+    const partialEvidenceResult = await ingestCollectRequestV4({
+      authenticatedAccount: { id: accountA },
+      input: {
+        source: "ozon",
+        sourceSku: partialEvidenceSku,
+        requestId: partialEvidenceRequestId,
+        payload: {
+          sku: partialEvidenceSku,
+          name: "Partial extension evidence item",
+          description_category_id: 17000003,
+          type_id: 910003,
+          variantData: {
+            description_category_id: 17000003,
+            type_id: 910003,
+            attributes: [{ key: "8229", value: "Fixture type" }],
+          },
+        },
+      },
+    });
+    collectItemIds.add(partialEvidenceResult.collectItemId);
+    assert.equal(partialEvidenceResult.enrichment.status, "PENDING_ENRICHMENT");
+    assert.deepEqual(partialEvidenceResult.enrichment.missingFields, [
+      "weightG", "lengthMm", "widthMm", "heightMm",
+    ]);
+    assert.equal(partialEvidenceResult.item.sourceCategory.descriptionCategoryId, 17000003);
     const publicReplay = await ingestCollectRequestV4({
       authenticatedAccount: { id: accountA },
       input: {

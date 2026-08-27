@@ -34,7 +34,7 @@ function exactSource(value, accountId) {
   const shared = value?.sharedCategory;
   if (!plainData(value) || !plainData(evidence) || !plainData(shared)
     || evidence.accountId !== accountId || shared.accountId !== accountId
-    || !text(evidence.id) || shared.evidenceId !== evidence.id || !text(shared.id)
+    || !text(evidence.id) || !text(shared.evidenceId) || !text(shared.id)
     || shared.status !== "ACTIVE" || !positive(shared.version)
     || shared.taxonomyScope !== "OZON:DEFAULT" || evidence.taxonomyScope !== "OZON:DEFAULT"
     || !positive(shared.currentDescriptionCategoryId) || !positive(shared.currentTypeId)
@@ -94,8 +94,7 @@ export function createAutoListingCategoryFreshness({
     for (const rawSource of sources) {
       const current = exactSource(rawSource, scope);
       const previous = uniqueShared.get(current.shared.id);
-      if (previous && (previous.shared.version !== current.shared.version
-        || previous.evidence.id !== current.evidence.id)) {
+      if (previous && previous.shared.version !== current.shared.version) {
         throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT");
       }
       uniqueShared.set(current.shared.id, current);

@@ -82,8 +82,8 @@ function testPorts(events) {
         async inspectImage() { throw new Error("real AI must not be called by composition"); },
       });
     },
-    createWorkflow({ pool }) {
-      events.push(["workflow", pool]);
+    createWorkflow(input) {
+      events.push(["workflow", input]);
       return Object.freeze({
         async stageInitialPlanWork() { throw new Error("job staging must not be called by worker composition"); },
         async applyPhaseOutcome(input) {
@@ -139,6 +139,21 @@ function testPorts(events) {
   });
 }
 
+test("production worker passes the enabled DIRECT server gate into its durable workflow", async () => {
+  const events = [];
+  const pool = Object.freeze({ async query() {}, async connect() {} });
+  await createAutoListingAiProductionDependencies({
+    env: enabledEnv({ AUTO_LISTING_DIRECT_UPLOAD_ALLOWED: "true" }),
+    resolvePool: async () => pool,
+    ports: testPorts(events),
+  });
+
+  assert.deepEqual(events.find(([name]) => name === "workflow")[1], {
+    pool,
+    directUploadAllowed: true,
+  });
+});
+
 test("production composition keeps account/job-frozen profiles per message and has no global profile selector", async () => {
   const events = [];
   const env = enabledEnv({
@@ -161,9 +176,11 @@ test("production composition keeps account/job-frozen profiles per message and h
   assert.deepEqual(Object.keys(options).sort(), [
     "contentPlanEvidenceRepository", "contentPlanRepository", "downloader", "gateway", "generationRepository", "logger", "maxAttempts",
     "planPromptTemplateVersion", "pool", "prohibitedClaims", "referenceProjector", "richContentLeaseOwner",
-    "richContentRepository", "sourceAssetLoader", "sourceMaterializationRepository", "storage",
+    "richContentMaxAttempts", "richContentRepository", "sourceAssetLoader", "sourceMaterializationRepository", "storage",
   ]);
   assert.equal(options.planPromptTemplateVersion, "AUTO_LISTING_CONTENT_PLAN_V3");
+  assert.equal(options.maxAttempts, 3);
+  assert.equal(options.richContentMaxAttempts, 5);
   assert.equal(typeof options.referenceProjector, "function");
 
   const message = (accountId, itemId) => ({

@@ -59,7 +59,15 @@ test("uses the approved ordinary-user defaults and derives total image count", (
   });
 
   assert.deepEqual(config.image, AUTO_LISTING_IMAGE_DEFAULTS);
-  assert.equal(config.image.total, 8);
+  assert.equal(config.image.total, 6);
+  assert.deepEqual(config.image.roles, {
+    main: 1,
+    sellingPoint: 2,
+    detail: 1,
+    scene: 1,
+    specification: 0,
+    infographic: 1,
+  });
   assert.equal(config.image.ratio, "3:4");
   assert.equal(config.image.language, "ru");
   assert.equal(config.image.resolution, "1K");
@@ -67,7 +75,19 @@ test("uses the approved ordinary-user defaults and derives total image count", (
   assert.equal("strategy" in config, false);
   assert.equal("model" in config, false);
   assert.equal("apiKey" in config, false);
+  assert.equal(config.brandMode, "FORCE_NO_BRAND");
   assert.equal(config.priceMultiplierMicros, "1000000");
+});
+
+test("the brand toggle freezes only the two approved upload modes", () => {
+  const base = {
+    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
+  };
+  assert.equal(deriveAutoListingConfig({ ...base, brandMode: "PREFER_SOURCE" }).brandMode, "PREFER_SOURCE");
+  assert.equal(deriveAutoListingConfig({ ...base, brandMode: "FORCE_NO_BRAND" }).brandMode, "FORCE_NO_BRAND");
+  assert.throws(() => deriveAutoListingConfig({ ...base, brandMode: "RAW_TEXT" }), {
+    code: "AUTO_LISTING_CONFIG_INVALID",
+  });
 });
 
 test("removes the product-size image when reliable product dimensions are unavailable", () => {
@@ -79,7 +99,7 @@ test("removes the product-size image when reliable product dimensions are unavai
   }, { hasReliableProductDimensions: false });
 
   assert.equal(config.image.roles.specification, 0);
-  assert.equal(config.image.total, 7);
+  assert.equal(config.image.total, 6);
   assert.deepEqual(normalizeAutoListingConfig(config), config);
 });
 
@@ -239,7 +259,7 @@ test("task creation explains unresolved missing-brand fallback without raw backe
   assert.equal(autoListingTaskErrorMessage({
     code: "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED",
     message: "raw missing-brand dictionary secret",
-  }), "商品缺少品牌，且 Ozon 当前类目未提供唯一的“无品牌”选项，请补全品牌后重试");
+  }), "Ozon 当前类目无法唯一确认“Нет бренда（无品牌）”字典值；请开启“使用采集品牌”并确认商品有品牌，或稍后重试");
 });
 
 test("reads a bounded workbook once and returns only request-safe metadata", async () => {

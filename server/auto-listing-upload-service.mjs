@@ -44,6 +44,12 @@ function canonical(value) {
 }
 
 const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
+const publicationPolicyDigest = (value) => crypto.createHash("sha256").update(JSON.stringify({
+  origin: value.origin,
+  baseUrl: value.baseUrl,
+  prefix: value.prefix,
+  publicationVersion: value.publicationVersion,
+}), "utf8").digest("hex");
 
 function actionFor(context, expectedStatusVersion) {
   const item = context?.item;
@@ -67,12 +73,14 @@ function policyAction(context) {
 }
 
 function assertFrozenEvidence(context, accountId, itemId, action) {
-  const { item, listingBase, frozenConfig, uploadPolicy, store, productDraft } = context || {};
+  const { item, listingBase, frozenConfig, effectiveFrozenConfig, uploadPolicy, store, productDraft } = context || {};
   if (item?.accountId !== accountId || item?.id !== itemId || !SAFE_ID.test(item.jobId || "")
     || listingBase?.accountId !== accountId || listingBase?.jobId !== item.jobId || listingBase?.itemId !== itemId
     || listingBase?.targetStoreId !== item.targetStoreId || listingBase?.sourceSnapshotId !== item.sourceSnapshotId
     || frozenConfig?.config?.targetStoreId !== item.targetStoreId
     || frozenConfig?.config?.targetWarehouseId !== item.targetWarehouseId
+    || effectiveFrozenConfig?.config?.targetStoreId !== item.targetStoreId
+    || effectiveFrozenConfig?.config?.targetWarehouseId !== item.targetWarehouseId
     || !SAFE_ID.test(context.targetWarehousePlatformId || "")
     || context.visualGroups?.planId !== item.activePlanId
     || context.visualGroups?.accountId !== accountId || context.visualGroups?.itemId !== itemId
@@ -89,7 +97,8 @@ function assertFrozenEvidence(context, accountId, itemId, action) {
     || uploadPolicy.publishedBy !== accountId || !uploadPolicy.publishedAt
     || !Number.isFinite(Date.parse(uploadPolicy.publishedAt))
     || uploadPolicy.enabled !== true
-    || !uploadPolicy.publicationPolicy || uploadPolicy.publicationPolicyHash !== digest(uploadPolicy.publicationPolicy)
+    || !uploadPolicy.publicationPolicy
+    || uploadPolicy.publicationPolicyHash !== publicationPolicyDigest(uploadPolicy.publicationPolicy)
     || (action === "REVIEW_APPROVE" && uploadPolicy.mode !== "REVIEW")
     || (action === "DIRECT_UPLOAD" && uploadPolicy.mode !== "DIRECT")) {
     throw uploadError("AUTO_LISTING_UPLOAD_POLICY_BLOCKED", 409);
@@ -199,6 +208,7 @@ export function createAutoListingUploadService({
   publishListingAsset,
   createSubmission,
   findSubmission,
+  checkPublicationHealth,
   assertDirectSystemReady,
   assertDirectReady,
   buildSubmissionDraft = buildAutoListingSubmissionDraft,
@@ -213,7 +223,8 @@ export function createAutoListingUploadService({
   if (![repository?.loadUploadEvidence, repository?.reserveSubmission, repository?.bindSubmission,
     repository?.recordAttempt, repository?.blockSubmission, repository?.releaseSubmissionForRetry,
     publishListingAsset, createSubmission, assertDirectSystemReady, assertDirectReady,
-    findSubmission, buildSubmissionDraft, assertWarehouseEligible].every((value) => typeof value === "function")
+    checkPublicationHealth, findSubmission, buildSubmissionDraft, assertWarehouseEligible]
+    .every((value) => typeof value === "function")
     || !richContentPublicationPolicy) {
     throw new TypeError("Auto-listing upload dependencies are required");
   }
@@ -237,8 +248,8 @@ export function createAutoListingUploadService({
       assertFrozenEvidence(context, accountId, itemId, frozenAction);
       const configuredPublication = publicationConfig(publicationPolicy);
       const frozenPublication = publicationConfig(context.uploadPolicy.publicationPolicy);
-      if (digest(configuredPublication) !== context.uploadPolicy.publicationPolicyHash
-        || digest(configuredPublication) !== digest(frozenPublication)
+      if (publicationPolicyDigest(configuredPublication) !== context.uploadPolicy.publicationPolicyHash
+        || publicationPolicyDigest(configuredPublication) !== publicationPolicyDigest(frozenPublication)
         || richPublicationOrigin(richContentPublicationPolicy) !== frozenPublication.origin) {
         throw uploadError("AUTO_LISTING_UPLOAD_PUBLICATION_POLICY_CHANGED", 409);
       }
@@ -248,7 +259,7 @@ export function createAutoListingUploadService({
         try {
           terminalDraft = buildSubmissionDraft({ listingBase: context.listingBase,
             visualGroups: context.visualGroups, acceptedAssets: context.terminalPublishedAssets,
-            acceptedRichContent: context.acceptedRichContent, frozenConfig: context.frozenConfig,
+            acceptedRichContent: context.acceptedRichContent, frozenConfig: context.effectiveFrozenConfig,
             targetWarehousePlatformId: context.targetWarehousePlatformId,
             publicationPolicy: { origin: frozenPublication.origin } });
         } catch {
@@ -278,6 +289,18 @@ export function createAutoListingUploadService({
       if (action !== frozenAction) throw uploadError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
       if (action === "DIRECT_UPLOAD" && directUploadAllowed !== true) {
         throw uploadError("AUTO_LISTING_DIRECT_UPLOAD_BLOCKED", 503);
+      }
+      let publicationHealth;
+      try {
+        publicationHealth = await checkPublicationHealth({
+          accountId, checkedByAccountId: accountId,
+        });
+      } catch {
+        throw uploadError("AUTO_LISTING_PUBLICATION_NOT_READY", 503, true);
+      }
+      if (publicationHealth?.accountId !== accountId || publicationHealth?.outcome !== "PASSED"
+        || !SAFE_ID.test(publicationHealth?.evidenceId || "")) {
+        throw uploadError("AUTO_LISTING_PUBLICATION_NOT_READY", 503, true);
       }
       const warehouseCreation = creationWarehouseValidation(context, accountId);
       let directHealthEvidenceId = null;
@@ -334,7 +357,7 @@ export function createAutoListingUploadService({
             publicationVersion: frozenPublication.publicationVersion,
           })),
           acceptedRichContent: context.acceptedRichContent,
-          frozenConfig: context.frozenConfig,
+          frozenConfig: context.effectiveFrozenConfig,
           targetWarehousePlatformId: context.targetWarehousePlatformId,
           publicationPolicy: { origin: frozenPublication.origin },
         });
@@ -373,7 +396,7 @@ export function createAutoListingUploadService({
           visualGroups: context.visualGroups,
           acceptedAssets: publishedAssets,
           acceptedRichContent: context.acceptedRichContent,
-          frozenConfig: context.frozenConfig,
+          frozenConfig: context.effectiveFrozenConfig,
           targetWarehousePlatformId: context.targetWarehousePlatformId,
           publicationPolicy: { origin: frozenPublication.origin },
         });

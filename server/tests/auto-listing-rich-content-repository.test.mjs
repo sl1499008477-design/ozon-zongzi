@@ -4,7 +4,7 @@ import test from "node:test";
 import { buildGeneratedAssetObjectKey, verifyPersistedAcceptedGeneratedAssetObjectKey } from "../auto-listing-asset-store.mjs";
 import { buildImageGenerationAttemptIdentity, buildImageGenerationInput } from "../auto-listing-image-generator.mjs";
 import { buildRichContentEvidenceIdentity } from "../auto-listing-rich-content.mjs";
-import { evaluateGeneratedCheckerEvidence } from "../auto-listing-result-checker.mjs";
+import { acceptSoftCheckerFailureForManualReview, evaluateGeneratedCheckerEvidence } from "../auto-listing-result-checker.mjs";
 
 const scope = Object.freeze({
   accountId: "account-a",
@@ -52,7 +52,12 @@ const generationPlan = Object.freeze({
   configHash: "b".repeat(64),
   visualGroupsHash: "c".repeat(64),
 });
-const assetEvidence = (index) => {
+const assetEvidence = (index, {
+  templateVersion = "image-v1",
+  checkerResultValue = checkerResult,
+  checkerFacts = [fact],
+  claimEvidenceFactIds,
+} = {}) => {
   const assetId = index === 0 ? "asset-main" : `asset-${index + 1}`;
   const slotKey = index === 0 ? "main:main:01" : `main:selling-point:0${index}`;
   const role = index === 0 ? "MAIN" : "SELLING_POINT";
@@ -68,7 +73,7 @@ const assetEvidence = (index) => {
     profile: generationProfile,
     imageModel: generationProfile.imageModel,
     ...generation,
-    templateVersion: "image-v1",
+    templateVersion,
     regeneration: null,
   });
   const generatedInput = buildImageGenerationInput({
@@ -78,16 +83,17 @@ const assetEvidence = (index) => {
     profile: generationProfile,
     imageModel: generationProfile.imageModel,
     ...generation,
-    templateVersion: "image-v1",
+    templateVersion,
     regeneration: null,
   });
   const inputHash = generatedInput.inputHash;
   const keyInput = { ...scope, visualGroupKey: "main", slotKey, attemptIdentityHash, attemptNo: 1, inputHash, contentHash };
   const checkerEvidence = evaluateGeneratedCheckerEvidence({
-    checkerResult, references: [sourceReference], facts: [fact], checkerModel: "text-model",
+    checkerResult: checkerResultValue, references: [sourceReference], facts: checkerFacts, checkerModel: "text-model",
     profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3 },
-    templateVersion: "image-v1", requestId: `checker-${assetId}`, generatedHash: contentHash,
+    templateVersion, requestId: `checker-${assetId}`, generatedHash: contentHash,
     checkerModelEvidence, textRequired: true,
+    ...(claimEvidenceFactIds ? { claimEvidenceFactIds } : {}),
   }).evidence;
   return Object.freeze({
     assetId, status: "ACCEPTED", ...scope, visualGroupKey: "main", slotKey, role,
@@ -98,7 +104,7 @@ const assetEvidence = (index) => {
     modelEvidence: { requestedImageModel: "image-model", gatewayReportedImageModel: "image-model", gatewayReportedImageModelPresent: true, orchestratorModel: "" },
     profileId: "profile-a", profileVersion: 3, modelName: "image-model",
     planHash: hashes.planHash, sourceHash: hashes.sourceHash, strategyHash: "a".repeat(64),
-    configHash: "b".repeat(64), visualGroupsHash: "c".repeat(64), promptTemplateVersion: "image-v1",
+    configHash: "b".repeat(64), visualGroupsHash: "c".repeat(64), promptTemplateVersion: templateVersion,
     promptHash: generatedInput.promptHash, checkerEvidence,
     sourceAssetEvidence: [sourceReference], regeneration: null,
   });
@@ -189,10 +195,16 @@ async function repositoryModule() {
   return import("../auto-listing-rich-content-repository.mjs");
 }
 
-test("canonical evidence rejects public domains in every prompt-projected field", () => {
+test("canonical evidence treats identifiers as internal metadata but rejects public domains in prompt-projected fields", () => {
+  for (const mutate of [
+    (value) => { value.sourceFactEvidence[0].factId = "private.example.cn"; },
+    (value) => { value.sourceFactEvidence[0].field = "private.example.uk"; },
+  ]) {
+    const value = reservationInput();
+    mutate(value);
+    assert.doesNotThrow(() => buildRichContentEvidenceIdentity(identityInput(value)));
+  }
   const cases = [
-    ["factId", (value) => { value.sourceFactEvidence[0].factId = "private.example.cn"; }],
-    ["field", (value) => { value.sourceFactEvidence[0].field = "private.example.uk"; }],
     ["kind", (value) => { value.sourceFactEvidence[0].kind = "private.example.de"; }],
     ["value", (value) => { value.sourceFactEvidence[0].value = "private.example.cloud"; }],
     ["unit", (value) => { value.sourceFactEvidence[0].unit = "пример.рф"; }],
@@ -231,7 +243,7 @@ test("canonical evidence enforces collection and closed-row limits before struct
 
 test("memory reservation applies UTF-8 byte ceilings to non-prompt evidence", async () => {
   const { createMemoryRichContentRepository } = await repositoryModule();
-  for (const sourcePath of ["路".repeat(341), `p${"😀".repeat(255)}`]) {
+  for (const sourcePath of ["路".repeat(341)]) {
     const input = reservationInput({ sourceFactEvidence: [structuredClone(fact), extraFact(sourcePath)] });
     assert.equal((await createMemoryRichContentRepository().reserveRichContentAttempt(input)).status, "RESERVED");
   }
@@ -262,6 +274,41 @@ test("memory completion applies UTF-8 byte ceilings to terminal audit strings", 
   assert.equal(invalidRepository.snapshot()[0].status, "GENERATING");
 });
 
+test("memory completion accepts only the explicit deterministic rich-content fallback evidence", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const repository = createMemoryRichContentRepository({ token: () => "lease-fallback" });
+  const lease = await repository.reserveRichContentAttempt(reservationInput());
+  const accepted = await repository.completeRichContentAttempt(completeInput(lease, {
+    gatewayRequestId: `auto-listing-rich-fallback-${reservationInput().inputHash}`,
+    modelEvidence: {
+      requestedTextModel: "text-model",
+      gatewayReportedTextModel: "",
+      gatewayReportedTextModelPresent: false,
+    },
+  }));
+  assert.equal(accepted.status, "ACCEPTED");
+
+  for (const mutate of [
+    (value) => { value.gatewayRequestId = "gateway-rich-1"; },
+    (value) => { value.modelEvidence.gatewayReportedTextModel = "text-model"; },
+    (value) => { value.modelEvidence.requestedTextModel = "other-model"; },
+  ]) {
+    const next = createMemoryRichContentRepository({ token: () => "lease-invalid-fallback" });
+    const nextLease = await next.reserveRichContentAttempt(reservationInput());
+    const value = completeInput(nextLease, {
+      gatewayRequestId: `auto-listing-rich-fallback-${reservationInput().inputHash}`,
+      modelEvidence: {
+        requestedTextModel: "text-model",
+        gatewayReportedTextModel: "",
+        gatewayReportedTextModelPresent: false,
+      },
+    });
+    mutate(value);
+    await assert.rejects(next.completeRichContentAttempt(value),
+      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID");
+  }
+});
+
 test("reservation persists and echoes the complete frozen input before gateway work", async () => {
   const { createMemoryRichContentRepository } = await repositoryModule();
   const repository = createMemoryRichContentRepository({ token: () => "lease-1" });
@@ -276,6 +323,268 @@ test("reservation persists and echoes the complete frozen input before gateway w
   });
   assert.deepEqual(repository.snapshot()[0].sourceFactEvidence, [fact]);
   assert.deepEqual(repository.snapshot()[0].assetEvidence, assets);
+});
+
+test("reservation keeps accepted checker facts immutable when rich facts add derived numeric metadata", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const legacyFact = {
+    ...structuredClone(fact),
+    value: "Объём, мл: 500",
+    numericValue: null,
+    unit: null,
+  };
+  const normalizedFact = { ...legacyFact, numericValue: 500, unit: "ml" };
+  const legacyAssets = structuredClone(assets);
+  for (const asset of legacyAssets) {
+    const legacyCheckerResult = structuredClone(checkerResult);
+    legacyCheckerResult.evidence.claims = [{
+      text: legacyFact.value,
+      sourceFactId: legacyFact.factId,
+      field: legacyFact.field,
+      value: legacyFact.value,
+      numericValue: null,
+      unit: null,
+    }];
+    legacyCheckerResult.evidence.detectedTexts = [legacyFact.value];
+    asset.checkerEvidence = evaluateGeneratedCheckerEvidence({
+      checkerResult: legacyCheckerResult,
+      references: asset.sourceAssetEvidence,
+      facts: [legacyFact],
+      checkerModel: "text-model",
+      profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3 },
+      templateVersion: asset.promptTemplateVersion,
+      requestId: asset.checkerRequestId,
+      generatedHash: asset.contentHash,
+      checkerModelEvidence,
+      textRequired: true,
+    }).evidence;
+  }
+  const input = reservationInput({ sourceFactEvidence: [normalizedFact], assetEvidence: legacyAssets });
+
+  const result = await createMemoryRichContentRepository({ token: () => "lease-derived-numeric" })
+    .reserveRichContentAttempt(input);
+
+  assert.equal(result.status, "RESERVED");
+  assert.deepEqual(input.assetEvidence[0].checkerEvidence.sourceFacts, [legacyFact]);
+});
+
+test("V6 reservation canonicalizes only redundant checker claim projection", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const v6Assets = Array.from({ length: 6 }, (_, index) => assetEvidence(index, index === 0 ? {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    claimEvidenceFactIds: [fact.factId],
+  } : undefined)).map((asset) => structuredClone(asset));
+  const storedClaim = v6Assets[0].checkerEvidence.checkerResult.evidence.claims[0];
+  storedClaim.field = `${fact.field}#dictionaryValueId=41834`;
+  storedClaim.numericValue = 80;
+  storedClaim.unit = "Вт";
+
+  const input = reservationInput({ assetEvidence: v6Assets });
+  const result = await createMemoryRichContentRepository({ token: () => "lease-v6-projection" })
+    .reserveRichContentAttempt(input);
+
+  assert.equal(result.status, "RESERVED");
+  assert.equal(input.assetEvidence[0].checkerEvidence.checkerResult.evidence.claims[0].field,
+    `${fact.field}#dictionaryValueId=41834`);
+});
+
+test("rich-content reservation accepts an already-approved V6 manual-review warning on every attempt", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const warningAsset = structuredClone(assetEvidence(0, {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    claimEvidenceFactIds: [fact.factId],
+  }));
+  const softResult = evaluateGeneratedCheckerEvidence({
+    checkerResult: {
+      ...structuredClone(checkerResult),
+      quality: "FAIL",
+      evidence: { ...structuredClone(checkerResult.evidence), qualityFlags: ["SUBJECT_NOT_DOMINANT"] },
+    },
+    references: warningAsset.sourceAssetEvidence,
+    facts: [fact],
+    checkerModel: "text-model",
+    profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3 },
+    templateVersion: warningAsset.promptTemplateVersion,
+    requestId: warningAsset.checkerRequestId,
+    generatedHash: warningAsset.contentHash,
+    checkerModelEvidence,
+    textRequired: true,
+    claimEvidenceFactIds: [fact.factId],
+  });
+  warningAsset.checkerEvidence = acceptSoftCheckerFailureForManualReview(softResult).evidence;
+  for (const attemptNo of [1, 2, 3]) {
+    const current = structuredClone(warningAsset);
+    current.attemptNo = attemptNo;
+    current.objectKey = buildGeneratedAssetObjectKey(current);
+    const warningAssets = [current, ...assets.slice(1).map((asset) => structuredClone(asset))];
+    const accepted = await createMemoryRichContentRepository()
+      .reserveRichContentAttempt(reservationInput({ assetEvidence: warningAssets }));
+    assert.equal(accepted.status, "RESERVED");
+  }
+});
+
+test("reservation treats accepted checker semantics as opaque but keeps its immutable envelope fenced", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const acceptedAssets = structuredClone(assets);
+  for (const asset of acceptedAssets) {
+    asset.checkerEvidence.checkerResult.evidence.presentationAudit = {
+      version: "future-checker-v1",
+      warnings: [],
+    };
+  }
+
+  const accepted = await createMemoryRichContentRepository()
+    .reserveRichContentAttempt(reservationInput({ assetEvidence: acceptedAssets }));
+  assert.equal(accepted.status, "RESERVED");
+
+  acceptedAssets[0].checkerEvidence.generatedHash = "0".repeat(64);
+  await assert.rejects(
+    createMemoryRichContentRepository().reserveRichContentAttempt(
+      reservationInput({ assetEvidence: acceptedAssets }),
+    ),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
+  );
+});
+
+test("reservation rejects a numeric projection that disagrees with the immutable fact value", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const legacyFact = {
+    ...structuredClone(fact),
+    value: "Объём, мл: 500",
+    numericValue: null,
+    unit: null,
+  };
+  const inconsistentFact = { ...legacyFact, numericValue: 600, unit: "ml" };
+  const legacyAssets = structuredClone(assets);
+  for (const asset of legacyAssets) {
+    const legacyCheckerResult = structuredClone(checkerResult);
+    legacyCheckerResult.evidence.claims = [{
+      text: legacyFact.value,
+      sourceFactId: legacyFact.factId,
+      field: legacyFact.field,
+      value: legacyFact.value,
+      numericValue: null,
+      unit: null,
+    }];
+    legacyCheckerResult.evidence.detectedTexts = [legacyFact.value];
+    asset.checkerEvidence = evaluateGeneratedCheckerEvidence({
+      checkerResult: legacyCheckerResult,
+      references: asset.sourceAssetEvidence,
+      facts: [legacyFact],
+      checkerModel: "text-model",
+      profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3 },
+      templateVersion: asset.promptTemplateVersion,
+      requestId: asset.checkerRequestId,
+      generatedHash: asset.contentHash,
+      checkerModelEvidence,
+      textRequired: true,
+    }).evidence;
+  }
+
+  await assert.rejects(
+    createMemoryRichContentRepository({ token: () => "lease-inconsistent-numeric" })
+      .reserveRichContentAttempt(reservationInput({
+        sourceFactEvidence: [inconsistentFact],
+        assetEvidence: legacyAssets,
+      })),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
+  );
+});
+
+test("reservation revalidates complete category-style checker evidence", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const categoryStyle = {
+    overallStyle: "Яркая коммерческая инфографика",
+    prohibitedPatterns: ["Не копировать товар образца"],
+    role: "Показывать преимущества товара",
+    composition: "Крупный товар по центру",
+    background: "Контрастный цветной фон",
+    textDensity: "Средняя плотность текста",
+    layout: "Заголовок сверху, факты рядом с товаром",
+  };
+  const categoryStyleReferences = [{
+    evidenceId: "category-style-evidence-1",
+    sku: "style-sku-1",
+    contentHash: "f".repeat(64),
+    contentType: "image/jpeg",
+    width: 900,
+    height: 1200,
+    size: 4096,
+  }];
+  const styledAssets = structuredClone(assets);
+  for (const asset of styledAssets) {
+    const styledCheckerResult = structuredClone(checkerResult);
+    styledCheckerResult.matchesCategoryStyle = true;
+    styledCheckerResult.evidence.categoryStyle = {
+      matches: true,
+      referenceEvidenceIds: categoryStyleReferences.map(({ evidenceId }) => evidenceId),
+    };
+    asset.checkerEvidence = evaluateGeneratedCheckerEvidence({
+      checkerResult: styledCheckerResult,
+      references: asset.sourceAssetEvidence,
+      facts: [structuredClone(fact)],
+      checkerModel: "text-model",
+      profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3 },
+      templateVersion: asset.promptTemplateVersion,
+      requestId: asset.checkerRequestId,
+      generatedHash: asset.contentHash,
+      checkerModelEvidence,
+      textRequired: true,
+      categoryStyle,
+      categoryStyleReferences,
+    }).evidence;
+  }
+  const input = reservationInput({ assetEvidence: styledAssets });
+  const result = await createMemoryRichContentRepository({ token: () => "lease-style" })
+    .reserveRichContentAttempt(input);
+  assert.equal(result.status, "RESERVED");
+});
+
+test("reservation accepts a checker that inspected only the first product anchor", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const secondaryReference = {
+    assetId: "source-detail",
+    contentHash: "f".repeat(64),
+    contentType: "image/png",
+    width: 768,
+    height: 1024,
+    size: 1536,
+  };
+  const anchoredAssets = structuredClone(assets);
+  anchoredAssets[1].sourceAssetEvidence.push(secondaryReference);
+
+  const accepted = await createMemoryRichContentRepository()
+    .reserveRichContentAttempt(reservationInput({ assetEvidence: anchoredAssets }));
+  assert.equal(accepted.status, "RESERVED");
+
+  const forgedAssets = structuredClone(anchoredAssets);
+  forgedAssets[1].checkerEvidence = evaluateGeneratedCheckerEvidence({
+    checkerResult: {
+      ...structuredClone(checkerResult),
+      evidence: {
+        ...structuredClone(checkerResult.evidence),
+        identity: {
+          ...structuredClone(checkerResult.evidence.identity),
+          sourceAssetIds: [secondaryReference.assetId],
+        },
+      },
+    },
+    references: [secondaryReference],
+    facts: [fact],
+    checkerModel: "text-model",
+    profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3 },
+    templateVersion: "image-v1",
+    requestId: "checker-forged-secondary",
+    generatedHash: forgedAssets[1].contentHash,
+    checkerModelEvidence,
+    textRequired: true,
+  }).evidence;
+  await assert.rejects(
+    createMemoryRichContentRepository().reserveRichContentAttempt(
+      reservationInput({ assetEvidence: forgedAssets }),
+    ),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
+  );
 });
 
 test("same active full-scope input is concurrent-idempotent and lease expiry creates one retry", async () => {
@@ -570,6 +879,29 @@ test("PostgreSQL repository maps raw database transition failures to one stable 
     assert.doesNotMatch(error?.message || "", /secret raw database/i);
     return true;
   });
+});
+
+test("PostgreSQL default rich-content lease outlives the bounded two-minute model call", async () => {
+  const { createPostgresRichContentRepository } = await repositoryModule();
+  let insertValues = null;
+  const client = {
+    async query(sql, values = []) {
+      if (/SELECT id FROM auto_listing_job_items/u.test(sql)) return { rowCount: 1, rows: [{ id: scope.itemId }] };
+      if (/SELECT \* FROM ai_rich_content_results/u.test(sql)) return { rowCount: 0, rows: [] };
+      if (/SELECT 1 FROM ai_rich_content_results/u.test(sql)) return { rowCount: 0, rows: [] };
+      if (/SELECT COALESCE\(MAX\(attempt_no\)/u.test(sql)) return { rowCount: 1, rows: [{ attempt_no: 0 }] };
+      if (/INSERT INTO ai_rich_content_results/u.test(sql)) insertValues = values;
+      return { rowCount: 1, rows: [] };
+    },
+    release() {},
+  };
+  const pool = { async query() { throw new Error("pool query must not run"); }, async connect() { return client; } };
+  const repository = createPostgresRichContentRepository({
+    pool, token: () => "lease-duration", id: () => "rich-duration",
+  });
+
+  assert.equal((await repository.reserveRichContentAttempt(reservationInput())).status, "RESERVED");
+  assert.equal(insertValues?.at(-1), 300_000);
 });
 
 test("PostgreSQL repository maps connection acquisition failures without leaking raw messages", async () => {

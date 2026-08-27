@@ -208,6 +208,31 @@ test("a paid call is made only after durable reservation with a frozen redacted 
   assert.equal(calls.complete[0].evidenceSummary.managementZh.commonPatterns[0], "商品居中");
 });
 
+test("analysis sends representative evidence instead of every image from every sample", async () => {
+  const loaded = evidence();
+  for (const [sampleIndex, sample] of loaded.samples.entries()) {
+    sample.images.push(...Array.from({ length: 5 }, (_, detailIndex) => ({
+      evidenceId: `detail-${sampleIndex + 1}-${detailIndex + 1}`,
+      state: "READY",
+      role: "DETAIL",
+      ordinal: detailIndex + 1,
+      analysisObjectKey: `category-strategy/${ACCOUNT}/draft-a/sample-set-a/${sample.sampleId}/detail-${detailIndex + 1}.webp`,
+      analysisContentHash: HASH,
+      contentType: "image/webp",
+    })));
+  }
+
+  const { analyzer, calls } = makeHarness({ loaded });
+  const result = await analyzer.analyze(command());
+
+  assert.equal(result.status, "DRAFT_READY");
+  assert.equal(calls.read.length, 7);
+  assert.deepEqual(calls.analyze[0].images.map(({ evidenceId }) => evidenceId), [
+    "image-1", "image-2", "image-3", "image-4", "image-5",
+    "detail-1-1", "detail-5-1",
+  ]);
+});
+
 test("a standardized object hash/read failure records NEEDS_REVIEW without AI or a stuck attempt", async () => {
   const { calls } = makeHarness();
   const failingAnalyzer = createCategoryStrategyAnalyzer({

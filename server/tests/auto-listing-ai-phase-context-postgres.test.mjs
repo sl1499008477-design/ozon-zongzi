@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import sharp from "sharp";
 
 import {
   createPostgresAutoListingAiContextLoader,
@@ -7,6 +8,7 @@ import {
   projectAutoListingGenerationReferences,
 } from "../auto-listing-ai-phase-context-postgres.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
+import { sha256 } from "../auto-listing-asset-store.mjs";
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 
 const H = (character) => character.repeat(64);
@@ -261,12 +263,12 @@ function dependencies(pool, overrides = {}) {
     sourceAssetLoader: { name: "source-loader" }, logger: null,
     referenceProjector: projectAutoListingGenerationReferences,
     planPromptTemplateVersion: "planner-v1", prohibitedClaims: PROHIBITED,
-    maxAttempts: 3, richContentLeaseOwner: "rich-worker",
+    maxAttempts: 3, richContentMaxAttempts: 5, richContentLeaseOwner: "rich-worker",
     ...overrides,
   };
 }
 
-function publishedV2Rule() {
+function publishedV2Rule(mainDensity = "NONE") {
   return {
     matchType: "EXACT_CATEGORY_TYPE_V2",
     scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99 },
@@ -276,7 +278,7 @@ function publishedV2Rule() {
       "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
     ].map((role) => [role, {
       composition: `${role} composition`, background: `${role} background`,
-      textDensity: role === "MAIN" ? "NONE" : "LIGHT", layout: `${role} layout`,
+      textDensity: role === "MAIN" ? mainDensity : "LIGHT", layout: `${role} layout`,
     }])),
     sampleSetHash: H("a"),
     analysisAttemptId: "category-analysis-attempt-a",
@@ -433,15 +435,41 @@ test("MATERIALIZE and FINALIZE load only the explicit active plan, never a lates
     assert.equal(context.phaseInput.parentPlan.id, "plan-parent");
     assert.equal(context.phaseInput.parentPlan.planningContract, "LEGACY_FULL_PLAN_V3");
     assert.equal(context.phaseInput.parentPlan.skeletonHash, null);
-    assert.equal(context.phaseInput.repository, phase === "MATERIALIZE_SOURCE_ASSET"
-      ? options.sourceMaterializationRepository : options.contentPlanRepository);
     if (phase === "MATERIALIZE_SOURCE_ASSET") {
+      assert.equal(context.phaseInput.repository, options.sourceMaterializationRepository);
       assert.equal(context.phaseInput.sourceSnapshot.sourceSnapshotId, "snapshot-a");
       assert.equal(context.phaseInput.downloader, options.downloader);
     }
     assert.deepEqual(pool.calls[1].values.slice(0, 5), ["account-a", "job-a", "item-a", "plan-parent", "snapshot-a"]);
     assert.doesNotMatch(pool.calls[1].sql, /ORDER\s+BY|LIMIT\s+1|MAX\s*\(/iu);
   }
+});
+
+test("FINALIZE exposes the source-materialization read and content-plan write as one use-case repository", async () => {
+  const pool = scriptedPool([
+    [boundary({ active_content_plan_id: "plan-parent" })],
+    [planBundle(basePlanRow())],
+  ]);
+  const accepted = [{ sourceAssetId: "source-a", status: "ACCEPTED" }];
+  const derived = { id: "plan-derived" };
+  const options = dependencies(pool, {
+    sourceMaterializationRepository: {
+      async listAcceptedSourceMaterializations(input) {
+        return input.parentPlanId === "plan-parent" ? accepted : [];
+      },
+    },
+    contentPlanRepository: {
+      async createDerivedMaterializedPlan(input) {
+        return input.derivedPlan.id === "plan-derived" ? derived : null;
+      },
+    },
+  });
+
+  const context = await createPostgresAutoListingAiPhaseContextLoader(options)(message("FINALIZE_MATERIALIZED_PLAN"));
+  assert.equal(typeof context.phaseInput.repository.listAcceptedSourceMaterializations, "function");
+  assert.equal(typeof context.phaseInput.repository.createDerivedMaterializedPlan, "function");
+  assert.equal(await context.phaseInput.repository.listAcceptedSourceMaterializations({ parentPlanId: "plan-parent" }), accepted);
+  assert.equal(await context.phaseInput.repository.createDerivedMaterializedPlan({ derivedPlan: { id: "plan-derived" } }), derived);
 });
 
 test("MATERIALIZE rejects a sourceAssetId that is not evidence in the active plan", async () => {
@@ -458,8 +486,20 @@ test("MATERIALIZE rejects a sourceAssetId that is not evidence in the active pla
 });
 
 test("GENERATE_IMAGE_SLOT uses the active derived plan, exact slot and frozen image config", async () => {
-  const row = planBundle(derivedPlanRow());
-  const pool = scriptedPool([[boundary({ status: "GENERATING", active_content_plan_id: "plan-derived" })], [row]]);
+  const plan = derivedPlanRow();
+  plan.strategy_version_id = "strategy-frozen-v2";
+  plan.plan.slots[0].textDensity = "MEDIUM";
+  const row = planBundle(plan);
+  const pool = scriptedPool([
+    [boundary({ status: "GENERATING", active_content_plan_id: "plan-derived" })],
+    [row],
+    [{
+      id: "category-rule-row-a", rule_order: 7, rule_kind: "EXACT_CATEGORY",
+      category_id: "170", ancestor_category_id: null, product_style: null,
+      rule: publishedV2Rule("MEDIUM"),
+    }],
+    [],
+  ]);
   const options = dependencies(pool);
   const context = await createPostgresAutoListingAiPhaseContextLoader(options)(message("GENERATE_IMAGE_SLOT"));
   assert.equal(context.phaseInput.plan.id, "plan-derived");
@@ -470,13 +510,163 @@ test("GENERATE_IMAGE_SLOT uses the active derived plan, exact slot and frozen im
   assert.equal(context.phaseInput.resolution, "1K");
   assert.equal(context.phaseInput.size, "768x1024");
   assert.equal(context.phaseInput.quality, "medium");
+  assert.equal(context.phaseInput.maxAttempts, 3);
+  assert.deepEqual(context.phaseInput.categoryStyle, {
+    overallStyle: "clean commercial catalogue",
+    prohibitedPatterns: ["avoid competitor branding"],
+    role: "MAIN",
+    composition: "MAIN composition",
+    background: "MAIN background",
+    textDensity: "MEDIUM",
+    layout: "MAIN layout",
+  });
+  assert.deepEqual(context.phaseInput.categoryStyleReferences, []);
   assert.equal(context.phaseInput.repository, options.generationRepository);
   assert.equal(context.phaseInput.slot, context.phaseInput.plan.plan.slots[0]);
   assert.deepEqual(Object.keys(context.phaseInput.plan.factRegistry[0]).sort(), [
     "factId", "kind", "sourcePath", "value", "visualGroupKeys",
   ]);
   assert.deepEqual(pool.calls[1].values, ["account-a", "job-a", "item-a", "plan-derived", "snapshot-a"]);
+  assert.deepEqual(pool.calls[2].values, ["account-a", "strategy-frozen-v2"]);
   assert.doesNotMatch(pool.calls[1].sql, /latest|ORDER\s+BY|LIMIT\s+1/iu);
+});
+
+test("V6 main image may raise copy density without discarding the frozen category style", async () => {
+  const plan = derivedPlanRow();
+  plan.strategy_version_id = "strategy-frozen-v2";
+  plan.prompt_template_version = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  plan.planning_contract = "FIXED_SKELETON_V1";
+  plan.skeleton_hash = H("9");
+  plan.plan.slots[0].textDensity = "HEAVY";
+  const pool = scriptedPool([
+    [boundary({ status: "GENERATING", active_content_plan_id: "plan-derived" })],
+    [planBundle(plan)],
+    [{
+      id: "category-rule-row-a", rule_order: 7, rule_kind: "EXACT_CATEGORY",
+      category_id: "170", ancestor_category_id: null, product_style: null,
+      rule: publishedV2Rule("NONE"),
+    }],
+    [],
+  ]);
+
+  const context = await createPostgresAutoListingAiPhaseContextLoader(dependencies(pool))(
+    message("GENERATE_IMAGE_SLOT"),
+  );
+
+  assert.equal(context.phaseInput.categoryStyle.textDensity, "HEAVY");
+  assert.equal(context.phaseInput.categoryStyle.composition, "MAIN composition");
+  assert.equal(context.phaseInput.categoryStyle.background, "MAIN background");
+});
+
+test("V6 copy-free slots keep category style while overriding text density to NONE", async () => {
+  const plan = derivedPlanRow();
+  plan.strategy_version_id = "strategy-frozen-v2";
+  plan.prompt_template_version = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  plan.planning_contract = "FIXED_SKELETON_V1";
+  plan.skeleton_hash = H("9");
+  const slot = plan.plan.slots.find(({ slotKey }) => slotKey === "sell-1");
+  slot.textDensity = "NONE";
+  slot.claims = [];
+  const pool = scriptedPool([
+    [boundary({ status: "GENERATING", active_content_plan_id: "plan-derived" })],
+    [planBundle(plan)],
+    [{
+      id: "category-rule-row-a", rule_order: 7, rule_kind: "EXACT_CATEGORY",
+      category_id: "170", ancestor_category_id: null, product_style: null,
+      rule: publishedV2Rule(),
+    }],
+    [],
+  ]);
+
+  const context = await createPostgresAutoListingAiPhaseContextLoader(dependencies(pool))(
+    message("GENERATE_IMAGE_SLOT", { slotKey: "sell-1" }),
+  );
+
+  assert.equal(context.phaseInput.slot.claims.length, 0);
+  assert.equal(context.phaseInput.maxAttempts, 2);
+  assert.equal(context.phaseInput.categoryStyle.textDensity, "NONE");
+  assert.equal(context.phaseInput.categoryStyle.composition, "SELLING_POINT composition");
+  assert.equal(context.phaseInput.categoryStyle.background, "SELLING_POINT background");
+});
+
+test("GENERATE_IMAGE_SLOT loads clear cross-SKU style evidence cited by the frozen published rule", async () => {
+  const plan = derivedPlanRow();
+  plan.strategy_version_id = "strategy-frozen-v2";
+  plan.plan.slots[0].textDensity = "MEDIUM";
+  const row = planBundle(plan);
+  const styleBytes = await sharp({ create: { width: 900, height: 1200, channels: 4, background: "#cc3366" } }).webp().toBuffer();
+  const styleHash = sha256(styleBytes);
+  const roleEvidence = {
+    MAIN: { confidence: 0.95, evidenceIds: ["tiny-main-a", "clear-main-a", "clear-main-b"] },
+  };
+  const pool = scriptedPool([
+    [boundary({ status: "GENERATING", active_content_plan_id: "plan-derived" })],
+    [row],
+    [{
+      id: "category-rule-row-a", rule_order: 7, rule_kind: "EXACT_CATEGORY",
+      category_id: "170", ancestor_category_id: null, product_style: null,
+      rule: publishedV2Rule("MEDIUM"),
+    }],
+    [{
+      id: "category-analysis-result-a", account_id: "account-a", sample_set_id: "sample-set-a",
+      sample_set_hash: H("a"), raw_response: { evidenceSummary: { roleEvidence, commonPatterns: [] } },
+    }],
+    [
+      { id: "tiny-main-a", sample_id: "sample-a", sku: "sku-a", role: "MAIN", ordinal: 0, analysis_object_key: "category-strategy/account-a/draft-a/sample-set-a/sample-a/tiny.webp", analysis_content_hash: styleHash, content_type: "image/webp", width: 50, height: 50 },
+      { id: "clear-main-a", sample_id: "sample-a", sku: "sku-a", role: "DETAIL", ordinal: 1, analysis_object_key: "category-strategy/account-a/draft-a/sample-set-a/sample-a/clear-a.webp", analysis_content_hash: styleHash, content_type: "image/webp", width: 900, height: 1200 },
+      { id: "clear-main-b", sample_id: "sample-b", sku: "sku-b", role: "DETAIL", ordinal: 1, analysis_object_key: "category-strategy/account-a/draft-a/sample-set-a/sample-b/clear-b.webp", analysis_content_hash: styleHash, content_type: "image/webp", width: 900, height: 1200 },
+    ],
+  ]);
+  const options = dependencies(pool, {
+    storage: { async getObjectBuffer() { throw new Error("database context must not read object storage"); } },
+  });
+
+  const context = await createPostgresAutoListingAiPhaseContextLoader(options)(message("GENERATE_IMAGE_SLOT"));
+
+  assert.deepEqual(context.phaseInput.categoryStyleReferences.map(({ evidenceId, sku, width, height, objectKey }) => ({ evidenceId, sku, width, height, objectKey })), [
+    { evidenceId: "clear-main-a", sku: "sku-a", width: 900, height: 1200, objectKey: "category-strategy/account-a/draft-a/sample-set-a/sample-a/clear-a.webp" },
+  ]);
+  assert.equal(context.phaseInput.categoryStyleReferences.some(({ bytes }) => bytes), false);
+  assert.deepEqual(pool.calls[3].values, ["account-a", "category-analysis-result-a", H("a")]);
+  assert.deepEqual(pool.calls[4].values, ["account-a", "sample-set-a", ["tiny-main-a", "clear-main-a", "clear-main-b"]]);
+});
+
+test("different visual groups reuse one stable cited category style anchor", async () => {
+  const styleBytes = await sharp({ create: { width: 900, height: 1200, channels: 4, background: "#3366cc" } }).webp().toBuffer();
+  const styleHash = sha256(styleBytes);
+  const evidenceIds = ["style-a", "style-b", "style-c", "style-d"];
+  const rows = evidenceIds.map((id, index) => ({
+    id, sample_id: `sample-${index}`, sku: `sku-${index}`, role: "DETAIL", ordinal: 1,
+    analysis_object_key: `category-strategy/account-a/draft-a/sample-set-a/sample-${index}/${id}.webp`,
+    analysis_content_hash: styleHash, content_type: "image/webp", width: 900, height: 1200,
+  }));
+  const load = async ({ visualGroupKey, slotKey }) => {
+    const plan = derivedPlanRow();
+    plan.strategy_version_id = "strategy-frozen-v2";
+    plan.visual_groups.groups[0].visualGroupKey = visualGroupKey;
+    plan.plan.slots = plan.plan.slots.map((slot, index) => ({
+      ...slot, visualGroupKey, ...(index === 0 ? { slotKey, textDensity: "MEDIUM" } : {}),
+    }));
+    plan.fact_registry[0].visualGroupKeys = [visualGroupKey];
+    const pool = scriptedPool([
+      [boundary({ status: "GENERATING", active_content_plan_id: "plan-derived" })],
+      [planBundle(plan)],
+      [{ id: "category-rule-row-a", rule_order: 7, rule_kind: "EXACT_CATEGORY", category_id: "170",
+        ancestor_category_id: null, product_style: null, rule: publishedV2Rule("MEDIUM") }],
+      [{ id: "category-analysis-result-a", account_id: "account-a", sample_set_id: "sample-set-a",
+        sample_set_hash: H("a"), raw_response: { evidenceSummary: {
+          roleEvidence: { MAIN: { confidence: 0.95, evidenceIds } }, commonPatterns: [],
+        } } }],
+      rows,
+    ]);
+    const context = await createPostgresAutoListingAiPhaseContextLoader(dependencies(pool, {
+      storage: { async getObjectBuffer() { throw new Error("database context must not read object storage"); } },
+    }))(message("GENERATE_IMAGE_SLOT", { slotKey }));
+    return context.phaseInput.categoryStyleReferences.map(({ evidenceId }) => evidenceId);
+  };
+
+  assert.deepEqual(await load({ visualGroupKey: "group-a", slotKey: "main-1" }), ["style-a"]);
+  assert.deepEqual(await load({ visualGroupKey: "group-b", slotKey: "main-b" }), ["style-a"]);
 });
 
 test("GENERATE_IMAGE_SLOT rejects category-sample object keys before any image-model call", async () => {
@@ -610,6 +800,26 @@ test("generation reference projector accepts only closed current-source material
   assert.equal(proxyTraps, 0);
 });
 
+test("generation reference projector accepts closed V2 role-substitution metadata", () => {
+  const plan = generationProjectionPlan();
+  plan.plan.version = 2;
+  plan.plan.slots = plan.plan.slots.map((slot, index) => ({
+    ...slot,
+    requestedRole: index === 3 ? "SPECIFICATION" : slot.role,
+    substitutionReasonCode: index === 3 ? "PRODUCT_DIMENSIONS_UNAVAILABLE" : null,
+  }));
+  const slot = plan.plan.slots[3];
+
+  const projected = projectAutoListingGenerationReferences({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived", plan, slot,
+  });
+
+  assert.equal(projected.plan.plan.version, 2);
+  assert.equal(projected.slot.role, "DETAIL");
+  assert.equal(projected.slot.requestedRole, "SPECIFICATION");
+  assert.equal(projected.slot.substitutionReasonCode, "PRODUCT_DIMENSIONS_UNAVAILABLE");
+});
+
 test("GENERATE_RICH_CONTENT loads accepted assets only inside the exact active-plan scope", async () => {
   const plan = derivedPlanRow();
   const pool = scriptedPool([
@@ -626,6 +836,7 @@ test("GENERATE_RICH_CONTENT loads accepted assets only inside the exact active-p
   assert.equal(context.phaseInput.acceptedAssets[0].errorCode, undefined);
   assert.equal(context.phaseInput.factRegistry, context.phaseInput.plan.factRegistry);
   assert.equal(context.phaseInput.repository, options.richContentRepository);
+  assert.equal(context.phaseInput.maxAttempts, 5);
   assert.deepEqual(pool.calls[2].values, ["account-a", "job-a", "item-a", "plan-derived"]);
   assert.match(pool.calls[2].sql, /status='ACCEPTED'/u);
   assert.doesNotMatch(pool.calls[2].sql, /latest|ORDER\s+BY.*created|LIMIT\s+1/iu);

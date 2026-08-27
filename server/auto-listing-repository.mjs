@@ -162,8 +162,7 @@ function effectiveImageAuditDetails(value) {
   }
   const reasonCodes = closedRepositoryArray(audit.reasonCodes, 1);
   if (reasonCodes.some((code) => code !== "PRODUCT_DIMENSIONS_UNAVAILABLE")
-    || reasonCodes.length !== new Set(reasonCodes).size
-    || (reasonCodes.length > 0 && roles.specification !== 0)) {
+    || reasonCodes.length !== new Set(reasonCodes).size) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
   return Object.freeze({
@@ -886,12 +885,29 @@ function verifiedListingBaseTemplate({ accountId, collectItemId, targetStoreId, 
   } catch {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
+  const frozenVariantPrices = frozen.variants.every((variant) => Object.hasOwn(variant, "pricingEvidence"));
+  const snapshotVariants = new Map(item.snapshot.variants.map((variant) => [variant.sku, variant]));
+  const variantPricesMatchSnapshot = !frozenVariantPrices || (
+    snapshotVariants.size === frozen.variants.length
+    && frozen.variants.every((variant) => {
+      const sourceVariant = snapshotVariants.get(variant.sourceSku);
+      const sourcePrice = sourceVariant?.priceEvidence;
+      return sourcePrice
+        && variant.pricingEvidence.currency === sourcePrice.currency
+        && variant.pricingEvidence.currencySource === sourcePrice.currencySource
+        && variant.pricingEvidence.blackKopecks === String(sourcePrice.blackKopecks)
+        && variant.pricingEvidence.greenKopecks === (
+          sourcePrice.greenKopecks === null ? null : String(sourcePrice.greenKopecks)
+        );
+    })
+  );
   if (frozen.productDraft.id !== item.snapshot.source.productDraftId
     || frozen.productDraft.version !== item.snapshot.source.productDraftVersion
     || frozen.pricingEvidence.currency !== item.snapshot.priceEvidence.currency
     || frozen.pricingEvidence.currencySource !== item.snapshot.priceEvidence.currencySource
     || frozen.pricingEvidence.blackKopecks !== item.snapshot.priceEvidence.blackKopecks
     || frozen.pricingEvidence.greenKopecks !== (item.snapshot.priceEvidence.greenKopecks || null)
+    || !variantPricesMatchSnapshot
     || frozen.variants.some((variant) =>
       Number(variant.item?.description_category_id) !== Number(item.snapshot.targetCategory.descriptionCategoryId)
       || Number(variant.item?.type_id) !== Number(item.snapshot.targetCategory.typeId))) {

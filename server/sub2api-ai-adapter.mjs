@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import Ajv from "ajv";
 import sharp from "sharp";
+import { isCompatibleAiModelIdentity } from "./auto-listing-ai-model-identity.mjs";
 import {
   createSub2ApiGatewayPolicy,
   normalizeSub2ApiGatewayBaseUrl,
@@ -108,12 +109,16 @@ function gatewayError(code, options = {}) {
     GATEWAY_REDIRECT_BLOCKED: "AI 网关重定向被安全策略阻止",
     GATEWAY_TIMEOUT: "AI 网关请求超时",
     GATEWAY_CANCELLED: "AI 网关请求已取消",
+    AI_GATEWAY_RATE_LIMITED: "AI 网关额度或频率受限",
     RETRYABLE_GATEWAY: "AI 网关暂时不可用",
     NON_RETRYABLE_AUTH: "AI 网关鉴权失败",
     NON_RETRYABLE_GATEWAY: "AI 网关拒绝请求",
     INVALID_GATEWAY_RESPONSE: "AI 网关返回了无法识别的结果",
   };
-  return new AiGatewayError(code, { ...options, message: messages[code] || "AI 网关调用失败" });
+  const error = new AiGatewayError(code, { ...options, message: messages[code] || "AI 网关调用失败" });
+  const failureField = clean(options.failureField);
+  if (/^(?:\$|\/[A-Za-z0-9_.~\/-]{1,239})$/u.test(failureField)) error.failureField = failureField;
+  return error;
 }
 
 function profileField(profile, camel, snake = "") {
@@ -467,7 +472,10 @@ function terminalFailure(event) {
   if (status === 401 || status === 403 || tokens.some((token) => AUTH_TERMINAL_TOKENS.has(token))) {
     return gatewayError("NON_RETRYABLE_AUTH", { status });
   }
-  if (status === 408 || status === 429 || (status !== null && status >= 500)
+  if (status === 429) {
+    return gatewayError("AI_GATEWAY_RATE_LIMITED", { retryable: true, status });
+  }
+  if (status === 408 || (status !== null && status >= 500)
     || tokens.some((token) => RETRYABLE_TERMINAL_TOKENS.has(token))) {
     return gatewayError("RETRYABLE_GATEWAY", { retryable: true, status });
   }
@@ -481,7 +489,7 @@ function terminalFailure(event) {
 
 function verifiedReportedModel(expectedModel, candidates) {
   const reportedModels = [...new Set(candidates.map((value) => clean(value)).filter(Boolean))];
-  if (reportedModels.some((model) => model !== expectedModel)) {
+  if (reportedModels.some((model) => !isCompatibleAiModelIdentity(expectedModel, model))) {
     throw gatewayError("AI_GATEWAY_MODEL_MISMATCH");
   }
   return {
@@ -514,7 +522,8 @@ function safeLog(logger, level, event, fields) {
 }
 
 function abortContext(callerSignal, timeoutMs) {
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
+  const hasDeadline = timeoutMs !== undefined;
+  if (hasDeadline && (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000)) {
     throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
   }
   const controller = new AbortController();
@@ -526,16 +535,16 @@ function abortContext(callerSignal, timeoutMs) {
   };
   if (callerSignal?.addEventListener) callerSignal.addEventListener("abort", onCallerAbort, { once: true });
   if (callerCancelled) onCallerAbort();
-  const timer = setTimeout(() => {
+  const timer = hasDeadline ? setTimeout(() => {
     timedOut = true;
     controller.abort(new DOMException("timeout", "TimeoutError"));
-  }, timeoutMs);
-  timer.unref?.();
+  }, timeoutMs) : null;
+  timer?.unref?.();
   return {
     signal: controller.signal,
     state: () => ({ timedOut, callerCancelled }),
     cleanup() {
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       callerSignal?.removeEventListener?.("abort", onCallerAbort);
     },
   };
@@ -552,6 +561,9 @@ function classifyHttp(response) {
   const requestId = safeRequestId(response);
   if (response.status === 401 || response.status === 403) {
     return gatewayError("NON_RETRYABLE_AUTH", { status: response.status, requestId });
+  }
+  if (response.status === 429) {
+    return gatewayError("AI_GATEWAY_RATE_LIMITED", { retryable: true, status: response.status, requestId });
   }
   if (RETRYABLE_HTTP.has(response.status)) {
     return gatewayError("RETRYABLE_GATEWAY", { retryable: true, status: response.status, requestId });
@@ -917,14 +929,25 @@ function extractOutputText(body) {
 }
 
 function parseStructuredResponse(body, validate) {
-  const text = extractOutputText(body);
+  let text;
   try {
-    const value = JSON.parse(text);
-    if (!validate(value)) throw new Error("schema mismatch");
-    return value;
+    text = extractOutputText(body);
   } catch {
-    throw gatewayError("INVALID_GATEWAY_RESPONSE");
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { failureField: "$" });
   }
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { failureField: "$" });
+  }
+  if (validate(value)) return value;
+  const first = Array.isArray(validate.errors) ? validate.errors[0] : null;
+  const base = typeof first?.instancePath === "string" && first.instancePath ? first.instancePath : "";
+  const missing = first?.keyword === "required" && typeof first?.params?.missingProperty === "string"
+    ? first.params.missingProperty : "";
+  const failureField = `${base}${missing ? `/${missing}` : ""}` || "$";
+  throw gatewayError("INVALID_GATEWAY_RESPONSE", { failureField });
 }
 
 function parseSse(raw) {
@@ -1598,8 +1621,9 @@ export function createSub2ApiAdapter({
       body,
       allowDisabled,
     });
+    let payload = null;
     try {
-      const payload = await readJson(execution.response, execution.abort, maxJsonBytes);
+      payload = await readJson(execution.response, execution.abort, maxJsonBytes);
       const textModelEvidence = verifiedReportedModel(normalizedProfile.textModel, [payload?.model]);
       return {
         value: parseStructuredResponse(payload, validate),
@@ -1617,6 +1641,11 @@ export function createSub2ApiAdapter({
           responseKind: "STRUCTURED_TEXT",
         },
       };
+    } catch (error) {
+      if (error instanceof AiGatewayError && !error.requestId) {
+        error.requestId = safeRequestId(execution.response) || clean(payload?.id);
+      }
+      throw error;
     } finally {
       execution.abort.cleanup();
     }
@@ -1889,7 +1918,8 @@ export function createSub2ApiAdapter({
     }
     if (image.modelEvidence?.requestedImageModel !== normalizedProfile.imageModel
       || (image.modelEvidence?.gatewayReportedImageModel
-        && image.modelEvidence.gatewayReportedImageModel !== normalizedProfile.imageModel)) {
+        && !isCompatibleAiModelIdentity(normalizedProfile.imageModel,
+          image.modelEvidence.gatewayReportedImageModel))) {
       throw gatewayError("INVALID_GATEWAY_RESPONSE");
     }
     return {

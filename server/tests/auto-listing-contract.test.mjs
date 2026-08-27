@@ -95,13 +95,13 @@ test("freezes the ordinary user defaults into a hashable JSON contract", () => {
       language: "ru",
       roles: {
         main: 1,
-        sellingPoint: 3,
+        sellingPoint: 2,
         detail: 1,
         scene: 1,
-        specification: 1,
+        specification: 0,
         infographic: 1,
       },
-      total: 8,
+      total: 6,
     },
   });
 });
@@ -130,6 +130,13 @@ test("allows the declared image option values and derives total from role counts
   assert.equal(normalized.image.total, 13);
 });
 
+test("freezes an explicit brand upload mode while preserving legacy frozen configs", () => {
+  assert.equal(normalizeAutoListingConfig(baseConfig({ brandMode: "FORCE_NO_BRAND" })).brandMode, "FORCE_NO_BRAND");
+  assert.equal(normalizeAutoListingConfig(baseConfig({ brandMode: "PREFER_SOURCE" })).brandMode, "PREFER_SOURCE");
+  assert.equal("brandMode" in normalizeAutoListingConfig(baseConfig()), false);
+  expectConfigError(baseConfig({ brandMode: "RAW_TEXT" }), "AUTO_LISTING_CONFIG_INVALID");
+});
+
 test("historical frozen config remains byte-shape compatible while new multiplier is normalized", () => {
   const historical = baseConfig();
   const frozen = normalizeAndHashAutoListingConfig(historical);
@@ -141,8 +148,15 @@ test("historical frozen config remains byte-shape compatible while new multiplie
   }
 });
 
-test("preserves trusted counts and reduces missing reliable product dimensions", () => {
-  const frozen = normalizeAndHashAutoListingConfig(baseConfig());
+test("preserves configured counts while recording missing reliable product dimensions", () => {
+  const frozen = normalizeAndHashAutoListingConfig(baseConfig({ image: { roles: {
+    main: 1,
+    sellingPoint: 3,
+    detail: 1,
+    scene: 1,
+    specification: 1,
+    infographic: 1,
+  } } }));
   const effective = (productMeasurements, logistics = {}) => deriveEffectiveAutoListingImageConfig({
     configSnapshot: frozen.config,
     configHash: frozen.configHash,
@@ -172,14 +186,14 @@ test("preserves trusted counts and reduces missing reliable product dimensions",
     { reliable: true, length: 28, unit: "", source: "manufacturer" },
     { reliable: true, length: 28, unit: "cm", source: "" },
   ]) {
-    const reduced = effective(measurements);
-    assert.equal(reduced.roles.specification, 0);
-    assert.equal(reduced.total, 7);
-    assert.deepEqual(reduced.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
+    const preserved = effective(measurements);
+    assert.equal(preserved.roles.specification, 1);
+    assert.equal(preserved.total, 8);
+    assert.deepEqual(preserved.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
   }
   const logisticsOnly = effective({}, { length: 999, unit: "cm", source: "warehouse" });
-  assert.equal(logisticsOnly.roles.specification, 0);
-  assert.equal(logisticsOnly.total, 7);
+  assert.equal(logisticsOnly.roles.specification, 1);
+  assert.equal(logisticsOnly.total, 8);
   assert.deepEqual(logisticsOnly.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
   assert.equal(effective({ reliable: true, lengthMm: 280, unit: "mm", source: "manufacturer" }).roles.specification, 1);
   assert.equal(effective({ reliable: true, productDiameter: 28, unit: "cm", source: "manufacturer" }).roles.specification, 1);
@@ -191,8 +205,8 @@ test("preserves trusted counts and reduces missing reliable product dimensions",
     unit: "cm",
     source: "manufacturer",
   });
-  assert.equal(unknownMeasurementShape.roles.specification, 0);
-  assert.equal(unknownMeasurementShape.total, 7);
+  assert.equal(unknownMeasurementShape.roles.specification, 1);
+  assert.equal(unknownMeasurementShape.total, 8);
   assert.deepEqual(unknownMeasurementShape.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
   expectConfigError(baseConfig({ image: { total: 7 } }), "AUTO_LISTING_CONFIG_INVALID");
   assert.throws(
@@ -227,7 +241,7 @@ test("requires an exact SHA-256 hash for every frozen config verification", () =
 test("keeps the requested specification count frozen independently of source evidence", () => {
   const normalized = normalizeAutoListingConfig(baseConfig({ image: { roles: { specification: 0 } } }));
   assert.equal(normalized.image.roles.specification, 0);
-  assert.equal(normalized.image.total, 7);
+  assert.equal(normalized.image.total, 6);
 });
 
 test("rejects unsupported image options, role ranges, and derived totals outside 6 through 13", () => {

@@ -67,7 +67,7 @@ function normalizedDictionaryMatchCandidates(value) {
     const id = positiveIntegerIdOf(descriptorValue(record, "id"));
     const rawValue = descriptorValue(record, "value");
     const text = typeof rawValue === "string" ? rawValue.replace(/\s+/gu, " ").trim() : "";
-    if ((!id && !text) || text.length > 500) throw dictionaryMetadataError();
+    if ((!id && !text) || text.length > 5_000) throw dictionaryMetadataError();
     const key = `${id || 0}:${text.toLocaleLowerCase("ru-RU")}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -574,6 +574,8 @@ export function createOzonCategoryService({
     const candidateIds = new Set(candidates?.flatMap((candidate) => candidate.id ? [candidate.id] : []) || []);
     const candidateTexts = new Set(candidates?.flatMap((candidate) => !candidate.id && candidate.value
       ? [candidate.value.toLocaleLowerCase("ru-RU")] : []) || []);
+    const exactIdSearch = candidateIds.size > 0 && candidateTexts.size === 0;
+    const exactIdCeiling = exactIdSearch ? Math.max(...candidateIds) : 0;
     const scope = scopeOf({ accountId, store });
     const epoch = scopeEpoch(scope);
     const key = cacheKey(
@@ -592,7 +594,7 @@ export function createOzonCategoryService({
     const values = [];
     const seenValues = new Set();
     const seenCursors = new Set();
-    let lastValueId = 0;
+    let lastValueId = exactIdSearch ? Math.max(0, Math.min(...candidateIds) - 1) : 0;
     let scannedValues = 0;
     const scanLimit = candidates ? 250_000 : safeLimit;
     while (candidates ? scannedValues < scanLimit : values.length < safeLimit) {
@@ -657,6 +659,7 @@ export function createOzonCategoryService({
         if (!nextCursor || seenCursors.has(nextCursor)) {
           throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
         }
+        if (exactIdSearch && (values.length === candidateIds.size || nextCursor >= exactIdCeiling)) break;
         seenCursors.add(nextCursor);
         lastValueId = nextCursor;
       }

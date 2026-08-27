@@ -136,6 +136,25 @@ test("builds one deterministic immutable derived plan and changes only materiali
   assert.notEqual(first.inputHash, parent.inputHash);
 });
 
+test("materialized plan accepts V2 slots without rewriting role metadata", async () => {
+  const { buildMaterializedPlan } = await moduleUnderTest();
+  const parent = parentPlan();
+  parent.planningContract = "FIXED_SKELETON_V1";
+  parent.skeletonHash = H("f");
+  parent.plan.version = 2;
+  parent.plan.slots = parent.plan.slots.map((slot) => ({
+    ...slot,
+    requestedRole: slot.role,
+    substitutionReasonCode: null,
+  }));
+  parent.planHash = hash(parent.plan);
+
+  const derived = buildMaterializedPlan({ scope, parentPlan: parent, acceptedMaterializations: records(parent) });
+  assert.equal(derived.plan.version, 2);
+  assert.equal(derived.plan.slots.every((slot) => slot.requestedRole === slot.role
+    && slot.substitutionReasonCode === null), true);
+});
+
 test("preserves the fixed skeleton identity while materializing its source image", async () => {
   const { buildMaterializedPlan } = await moduleUnderTest();
   const parent = fixedParentPlan();
@@ -148,6 +167,33 @@ test("preserves the fixed skeleton identity while materializing its source image
   assert.equal(derived.skeletonHash, H("e"));
   assert.equal(derived.planHash, parent.planHash);
   assert.equal(derived.plan.slots.length, 1);
+});
+
+test("accepts the trusted parent-plan shape returned by the content-plan repository and projects persistence metadata", async () => {
+  const { buildMaterializedPlan } = await moduleUnderTest();
+  const parent = parentPlan();
+  const persistedParent = {
+    ...structuredClone(parent),
+    accountId: scope.accountId,
+    factRegistryHash: hash(parent.factRegistry),
+    parentPlanId: null,
+    derivationKind: null,
+    materializationSetHash: null,
+    createdAt: new Date("2026-08-04T00:00:00.000Z"),
+  };
+  delete persistedParent.sourceAccountId;
+
+  const derived = buildMaterializedPlan({
+    scope,
+    parentPlan: persistedParent,
+    acceptedMaterializations: records(parent),
+  });
+
+  assert.equal(derived.parentPlanId, parent.id);
+  assert.equal(derived.sourceAccountId, scope.accountId);
+  assert.equal(Object.hasOwn(derived, "accountId"), false);
+  assert.equal(Object.hasOwn(derived, "factRegistryHash"), false);
+  assert.equal(Object.hasOwn(derived, "createdAt"), false);
 });
 
 test("requires exactly one complete ACCEPTED SOURCE_V1 record per unique SOURCE_REF_HASH and rejects missing, extra and duplicate evidence", async () => {

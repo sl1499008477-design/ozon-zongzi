@@ -102,8 +102,8 @@ function stringField(object, key, { required = false, max = 1_000 } = {}) {
   return value;
 }
 
-function exactPositiveInteger(value) {
-  return Number.isSafeInteger(value) && value > 0 ? value : null;
+function exactNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function normalizedProductId(item) {
@@ -128,14 +128,15 @@ function normalizedErrors(item) {
   for (const error of item.errors) {
     if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
     const code = stringField(error, "code", { required: true });
-    const field = stringField(error, "field", { required: true });
+    const field = stringField(error, "field");
+    const level = stringField(error, "level", { max: 80 });
     if (code === undefined || field === undefined) return undefined;
     let attributeId = null;
     if (Object.hasOwn(error, "attribute_id")) {
-      attributeId = exactPositiveInteger(error.attribute_id);
+      attributeId = exactNonNegativeInteger(error.attribute_id);
       if (attributeId === null) return undefined;
     }
-    output.push({ code, field, attributeId });
+    output.push({ code, field, attributeId, level: level ? level.toLowerCase() : null });
   }
   return output;
 }
@@ -153,7 +154,17 @@ function classifyEmptyPolicyV1(rawInput) {
   const productId = normalizedProductId(item);
   const errors = normalizedErrors(item);
   if (offerId === undefined || offerId !== expectedOfferId || state === undefined || productId === undefined || errors === undefined) return UNKNOWN;
-  if (SUCCEEDED_STATES.has(state)) return productId === null || errors.length ? UNKNOWN : frozenResult("SUCCEEDED");
+  if (SUCCEEDED_STATES.has(state)) {
+    if (productId === null) return UNKNOWN;
+    if (errors.length === 0 || errors.every((error) => error.level === "warning")) {
+      return frozenResult("SUCCEEDED");
+    }
+    if (errors.every((error) => ["warning", "error"].includes(error.level))
+      && errors.some((error) => error.level === "error")) {
+      return frozenResult("OTHER_TERMINAL_FAILURE");
+    }
+    return UNKNOWN;
+  }
   if (CHECKING_STATES.has(state)) return productId !== null || errors.length ? UNKNOWN : frozenResult("CHECKING");
   if (state === "skipped") return productId === null ? frozenResult("OTHER_TERMINAL_FAILURE") : UNKNOWN;
   if (!TERMINAL_FAILURE_STATES.has(state)) return UNKNOWN;

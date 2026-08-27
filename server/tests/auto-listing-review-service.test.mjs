@@ -69,6 +69,16 @@ test("review service exposes completed review states only", async () => {
     const result = await service.getReview({ actor: { id: "account-a", role: "user" }, itemId: "item-a" });
     assert.equal(result.status, status);
   }
+  for (const failureCode of ["AUTO_LISTING_UPLOAD_POLICY_BLOCKED", "AUTO_LISTING_UPLOAD_EVIDENCE_INVALID"]) {
+    const safeRetryService = createAutoListingReviewService({ repository: {
+      async loadReviewEvidence() {
+        return evidence({ item: { ...evidence().item, status: "BLOCKED", failureCode } });
+      },
+    } });
+    assert.equal((await safeRetryService.getReview({
+      actor: { id: "account-a", role: "user" }, itemId: "item-a",
+    })).status, "BLOCKED");
+  }
 });
 
 test("review asset read derives account authority, validates ids, and hides missing assets", async () => {

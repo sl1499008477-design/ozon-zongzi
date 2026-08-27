@@ -81,11 +81,24 @@ test("size-only variants with identical complete appearance facts share one stab
   assert.match(first.visualGroupsHash, /^[a-f0-9]{64}$/);
   assert.deepEqual(first.groups[0].sourceSkus, ["sku-l", "sku-m"]);
   assert.deepEqual(first.groups[0].variantIds, ["variant-l", "variant-m"]);
-  assert.deepEqual(first.groups[0].referenceImages, [image("image-m", "a"), image("image-l", "b")]
-    .map((entry) => ({ ...entry, sourceRefHash: null, sourceRef: null, evidenceKind: "CONTENT_HASH" }))
-    .sort((a, b) => a.assetId.localeCompare(b.assetId)));
+  assert.deepEqual(first.groups[0].referenceImages, [image("image-l", "b"), image("image-m", "a")]
+    .map((entry) => ({ ...entry, sourceRefHash: null, sourceRef: null, evidenceKind: "CONTENT_HASH" })));
   assert.ok(first.groups[0].reasonCodes.includes("SIZE_ONLY_VARIANTS_SHARED"));
   assert.ok(first.groups[0].factEvidence.some((entry) => entry.factId === "fact.color.red"));
+});
+
+test("preserves captured media order so the first product image remains the primary anchor", () => {
+  const capture = sourceCapture([
+    {
+      sku: "sku-1",
+      images: [image("z-primary", "a"), image("a-detail", "b")],
+      evidence: evidence("variant-1", [fact("fact.color.black", "COLOR", "black")]),
+    },
+  ]);
+
+  const result = buildVisualGroups({ sourceCapture: capture });
+
+  assert.deepEqual(result.groups[0].referenceImages.map(({ assetId }) => assetId), ["z-primary", "a-detail"]);
 });
 
 test("visible color, pattern, shape, or accessory-count differences always split groups", () => {

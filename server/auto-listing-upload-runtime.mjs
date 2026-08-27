@@ -48,6 +48,7 @@ export function createAutoListingUploadRuntime({
   if (typeof pool?.connect !== "function" || typeof pool?.query !== "function"
     || typeof publicationRuntime?.publishListingAsset !== "function"
     || typeof publicationRuntime?.assertDirectReady !== "function"
+    || typeof publicationRuntime?.checkPublicationHealth !== "function"
     || !publicationRuntime.publicationPolicy
     || !publicationRuntime.richContentPublicationPolicy
     || typeof standardSubmissionPort?.createSubmission !== "function"
@@ -103,6 +104,7 @@ export function createAutoListingUploadRuntime({
   const uploadService = createUploadService({
     repository: uploadRepository,
     publishListingAsset: publicationRuntime.publishListingAsset,
+    checkPublicationHealth: publicationRuntime.checkPublicationHealth,
     assertDirectSystemReady,
     assertDirectReady: publicationRuntime.assertDirectReady,
     publicationPolicy: publicationRuntime.publicationPolicy,

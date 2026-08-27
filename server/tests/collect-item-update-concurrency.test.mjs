@@ -61,6 +61,7 @@ function repository(job, order) {
     async readJob({ accountId, jobId }) {
       return accountId === job.accountId && jobId === job.id ? structuredClone(job) : null;
     },
+    async expireUnlinkedJob() { return null; },
   };
 }
 

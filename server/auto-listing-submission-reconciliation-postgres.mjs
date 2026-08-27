@@ -60,6 +60,19 @@ function code(value) {
   return typeof value === "string" && SAFE_CODE.test(value) ? value : null;
 }
 
+function hasRejectedOzonRichContent(response) {
+  try {
+    if (!plain(response)) return false;
+    const rawResponse = response.rawResponse;
+    if (!plain(rawResponse) || !Array.isArray(rawResponse.errors)) return false;
+    return rawResponse.errors.some((entry) => plain(entry)
+      && entry.code === "erased_attribute_value"
+      && Number(entry.attribute_id) === 11254);
+  } catch {
+    return false;
+  }
+}
+
 function digestId(prefix, value) {
   return `${prefix}-${crypto.createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
@@ -313,7 +326,8 @@ export function createPostgresAutoListingSubmissionReconciliationRepository(opti
       `SELECT item.offer_id,
               CASE WHEN child.id IS NULL THEN item.status ELSE child.status END AS status,
               CASE WHEN child.id IS NULL THEN item.product_id ELSE child.product_id END AS product_id,
-              CASE WHEN child.id IS NULL THEN item.error_code ELSE NULL END AS error_code
+              CASE WHEN child.id IS NULL THEN item.error_code ELSE NULL END AS error_code,
+              CASE WHEN child.id IS NULL THEN item.response ELSE '{}'::jsonb END AS response
          FROM submission_items AS item
          JOIN submission_jobs AS submission ON submission.id=item.job_id
          LEFT JOIN submission_category_recovery_item_results AS child
@@ -349,7 +363,8 @@ export function createPostgresAutoListingSubmissionReconciliationRepository(opti
         }) : null,
         items: (items.rows || []).map((entry) => ({
           offerId: entry.offer_id || null, status: entry.status, productId: entry.product_id || null,
-          errorCode: entry.error_code || null,
+          errorCode: hasRejectedOzonRichContent(entry.response)
+            ? "OZON_RICH_CONTENT_REJECTED" : entry.error_code || null,
         })),
       }),
     });

@@ -13,13 +13,17 @@ import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 const HASH = /^[a-f0-9]{64}$/u;
 const BRAND_ATTRIBUTE_ID = 85;
 const OZON_NO_BRAND_VALUE = "Нет бренда";
+const OZON_NO_BRAND_VALUE_ID_HINT = 126745801;
 const RICH_CONTENT_ATTRIBUTE_ID = 11254;
+const CONTENT_ATTRIBUTE_EXCLUDED_IDS = new Set([
+  BRAND_ATTRIBUTE_ID, 4180, 4191, 4194, 4195, 4497, 9454, 9455, 9456, RICH_CONTENT_ATTRIBUTE_ID,
+]);
 
-function failure(code, status = 422) {
+function failure(code, status = 422, retryable = false) {
   const error = new Error(code);
   error.code = code;
   error.status = status;
-  error.retryable = false;
+  error.retryable = retryable;
   error.cause = null;
   return error;
 }
@@ -84,12 +88,16 @@ function defaultRawItems(source, { currencyCode } = {}) {
   const collectItem = plainObject(source?.collectItem) ? source.collectItem : {};
   const draft = plainObject(collectItem.listingDraft) ? collectItem.listingDraft : {};
   const records = Array.isArray(draft.variants) && draft.variants.length ? draft.variants : [draft];
+  const variantsCarrySourceAttributes = records.some((record) =>
+    Array.isArray(record?.sourceCategory?.attributes));
   return records.map((record, index) => {
     if (!plainObject(record)) throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
     const sku = text(record.sku || record.sourceSku || record.source_sku || (index === 0 ? draft.sku : ""));
     const rawSourceCategoryAttributes = Array.isArray(record?.sourceCategory?.attributes)
       ? record.sourceCategory.attributes
-      : Array.isArray(draft?.sourceCategory?.attributes) ? draft.sourceCategory.attributes : [];
+      : !variantsCarrySourceAttributes && Array.isArray(draft?.sourceCategory?.attributes)
+        ? draft.sourceCategory.attributes
+        : [];
     const sourceCategoryAttributes = structuredClone(rawSourceCategoryAttributes).filter((attribute) => {
         if (!plainObject(attribute)) return true;
         if (attribute.value !== undefined && attribute.value !== null
@@ -120,6 +128,64 @@ function positiveId(value) {
   if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) return 0;
   const id = Number(value);
   return Number.isSafeInteger(id) ? id : 0;
+}
+
+function categoryAttributeName(value) {
+  for (const candidate of [value?.name, value?.attribute_name, value?.attributeName, value?.title]) {
+    if (typeof candidate !== "string") continue;
+    const normalized = candidate.trim();
+    if (normalized && normalized.length <= 500 && !/[\u0000-\u001f\u007f]/u.test(normalized)) return normalized;
+  }
+  return "";
+}
+
+function projectContentAttributes(sourceAttributes, categoryAttributes) {
+  const metadata = new Map((Array.isArray(categoryAttributes) ? categoryAttributes : []).flatMap((attribute) => {
+    const id = positiveId(attribute?.id ?? attribute?.attribute_id ?? attribute?.attributeId);
+    const complexId = positiveId(attribute?.complex_id ?? attribute?.complexId ?? attribute?.attribute_complex_id) || 0;
+    const name = categoryAttributeName(attribute);
+    return id && name ? [[`${complexId}:${id}`, attribute]] : [];
+  }));
+  return (Array.isArray(sourceAttributes) ? sourceAttributes : []).flatMap((attribute) => {
+    const id = positiveId(attribute?.id ?? attribute?.attribute_id ?? attribute?.attributeId ?? attribute?.key);
+    const complexId = positiveId(attribute?.complex_id ?? attribute?.complexId ?? attribute?.attribute_complex_id) || 0;
+    const schema = metadata.get(`${complexId}:${id}`);
+    const name = categoryAttributeName(schema);
+    if (!id || CONTENT_ATTRIBUTE_EXCLUDED_IDS.has(id) || !name
+      || !Array.isArray(attribute?.values) || !attribute.values.length) return [];
+    const values = attribute.values.flatMap((entry) => {
+      const value = text(entry?.value ?? entry?.name ?? entry?.title ?? entry);
+      if (!value || value.length > 2_048) return [];
+      const dictionaryValueId = positiveId(entry?.dictionary_value_id ?? entry?.dictionaryValueId);
+      return [dictionaryValueId ? { value, dictionary_value_id: dictionaryValueId } : value];
+    });
+    if (!values.length) return [];
+    const dictionaryId = positiveId(schema?.dictionary_id ?? schema?.dictionaryId ?? schema?.dictionary?.id) || 0;
+    return [{
+      id,
+      name,
+      value: typeof values[0] === "string" ? values[0] : values[0].value,
+      values,
+      required: schema?.is_required === true || schema?.required === true || schema?.isRequired === true,
+      dictionaryId,
+      multiple: schema?.is_collection === true || schema?.multiple === true || schema?.isCollection === true,
+    }];
+  });
+}
+
+function projectSharedContentAttributes(sourceAttributeSets, categoryAttributes) {
+  const projected = sourceAttributeSets.map((attributes) => projectContentAttributes(attributes, categoryAttributes));
+  if (!projected.length) return [];
+  const comparisonKey = (attribute) => {
+    const { value: _firstValue, values, ...metadata } = attribute;
+    const normalizedValues = values.map((entry) => JSON.stringify(canonical(entry))).sort();
+    return JSON.stringify(canonical({ ...metadata, values: normalizedValues }));
+  };
+  const later = projected.slice(1).map((attributes) => new Set(attributes.map(comparisonKey)));
+  return projected[0].filter((attribute) => {
+    const key = comparisonKey(attribute);
+    return later.every((attributes) => attributes.has(key));
+  });
 }
 
 function attributeValuePresent(value) {
@@ -171,6 +237,13 @@ function missingNoBrandVariantIndexes({ rawItems, sourceEvidenceAttributes, meta
     itemCarriesBrand(item, sourceEvidenceAttributes[index]) ? [] : [index]);
 }
 
+function forcedNoBrandVariantIndexes({ rawItems, metadata }) {
+  const brand = metadata.attributes.find((attribute) => attribute.id === BRAND_ATTRIBUTE_ID
+    && attribute.complexId === 0 && positiveId(attribute.dictionaryId));
+  if (!brand) throw failure("AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED");
+  return rawItems.map((_item, index) => index);
+}
+
 function normalizedNoBrand(value) {
   return text(value).replace(/\s+/gu, " ").toLocaleLowerCase("ru-RU");
 }
@@ -202,15 +275,26 @@ function canonicalNoBrandOption(values) {
 }
 
 function withNoBrandCandidate(candidates) {
-  if (candidates.some((candidate) =>
-    normalizedNoBrand(candidate?.value) === normalizedNoBrand(OZON_NO_BRAND_VALUE))) return candidates;
-  return [...candidates, { value: OZON_NO_BRAND_VALUE }];
+  let found = false;
+  const resolved = candidates.map((candidate) => {
+    if (normalizedNoBrand(candidate?.value) !== normalizedNoBrand(OZON_NO_BRAND_VALUE)) return candidate;
+    found = true;
+    return positiveId(candidate?.id) ? candidate : { ...candidate, id: OZON_NO_BRAND_VALUE_ID_HINT };
+  });
+  return found ? resolved : [...resolved, {
+    id: OZON_NO_BRAND_VALUE_ID_HINT,
+    value: OZON_NO_BRAND_VALUE,
+  }];
 }
 
-function injectNoBrandSourceEvidence(sourceEvidenceAttributes, indexes, option) {
-  const missing = new Set(indexes);
-  return sourceEvidenceAttributes.map((attributes, index) => missing.has(index)
-    ? [...attributes, {
+function retryableCategoryDependency(error) {
+  return error?.retryable === true || error?.diagnostic?.retryable === true || Number(error?.status) >= 500;
+}
+
+function injectNoBrandSourceEvidence(sourceEvidenceAttributes, indexes, option, { replace = false } = {}) {
+  const selected = new Set(indexes);
+  return sourceEvidenceAttributes.map((attributes, index) => selected.has(index)
+    ? [...(replace ? attributes.filter((attribute) => !attributeCarriesBrand(attribute)) : attributes), {
         complex_id: 0,
         id: BRAND_ATTRIBUTE_ID,
         values: [{ value: option.value, dictionary_value_id: option.id }],
@@ -356,9 +440,14 @@ export function createAutoListingListingBasePreparer({
   }
 
   return async function prepareAutoListingListingBase({
-    accountId, source, targetStore, targetCategory, pricingEvidence, signal,
+    accountId, brandMode = "PREFER_SOURCE", source, targetStore, targetCategory, pricingEvidence,
+    variantPricingEvidence = null, signal,
   } = {}) {
     const safeSource = projectOzonCategorySourceData(source);
+    if (!["PREFER_SOURCE", "FORCE_NO_BRAND"].includes(brandMode)) {
+      throw failure("AUTO_LISTING_CONFIG_INVALID", 400);
+    }
+    const forceNoBrand = brandMode === "FORCE_NO_BRAND";
     const scope = text(accountId);
     const targetStoreId = text(targetStore?.id);
     const ownerAccountId = text(targetStore?.ownerAccountId || targetStore?.accountId);
@@ -369,6 +458,25 @@ export function createAutoListingListingBasePreparer({
     signal?.throwIfAborted();
     const { productDraft, versions: frozenVersions } = productDraftEvidence(safeSource, fallbackVersions);
     const frozenPriceEvidence = priceEvidence(pricingEvidence);
+    let frozenVariantPrices = null;
+    if (variantPricingEvidence !== null) {
+      if (!Array.isArray(variantPricingEvidence) || !variantPricingEvidence.length) {
+        throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
+      }
+      frozenVariantPrices = new Map();
+      for (const entry of variantPricingEvidence) {
+        const sourceSku = text(entry?.sourceSku);
+        if (!sourceSku || frozenVariantPrices.has(sourceSku)) {
+          throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
+        }
+        frozenVariantPrices.set(sourceSku, priceEvidence({
+          currency: entry.currency,
+          ...(entry.currencySource === undefined ? {} : { currencySource: entry.currencySource }),
+          blackKopecks: entry.blackKopecks,
+          greenKopecks: entry.greenKopecks,
+        }));
+      }
+    }
     const category = exactTargetCategory(targetCategory);
     const builtItems = buildRawItems(safeSource, { currencyCode: frozenPriceEvidence.currency });
     const projectedSource = projectOzonCategorySourceItems(builtItems);
@@ -416,8 +524,9 @@ export function createAutoListingListingBasePreparer({
         throw failure("AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE");
       }
       rawCategoryAttributes = attributeResult.items;
-    } catch {
-      throw failure("AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE");
+    } catch (source) {
+      const retryable = retryableCategoryDependency(source);
+      throw failure("AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", retryable ? 503 : 422, retryable);
     }
     const metadataInput = () => ({
       descriptionCategoryId: sourceCategory.descriptionCategoryId,
@@ -429,13 +538,14 @@ export function createAutoListingListingBasePreparer({
       })),
     });
     const preliminaryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
-    const noBrandVariantIndexes = missingNoBrandVariantIndexes({
-      rawItems, sourceEvidenceAttributes, metadata: preliminaryMetadata,
-    });
+    const noBrandVariantIndexes = forceNoBrand
+      ? forcedNoBrandVariantIndexes({ rawItems, metadata: preliminaryMetadata })
+      : missingNoBrandVariantIndexes({ rawItems, sourceEvidenceAttributes, metadata: preliminaryMetadata });
     const usedAttributeKeys = inputAttributeKeys(rawItems);
     const dictionaryAttributeIds = [...new Set(preliminaryMetadata.attributes
       .filter((attribute) => attribute.dictionaryId
-        && (attribute.required || usedAttributeKeys.has(`${attribute.complexId}:${attribute.id}`)))
+        && (attribute.required || usedAttributeKeys.has(`${attribute.complexId}:${attribute.id}`)
+          || (attribute.id === BRAND_ATTRIBUTE_ID && noBrandVariantIndexes.length > 0)))
       .map((attribute) => attribute.id))].sort((left, right) => left - right);
     for (const attributeIdValue of dictionaryAttributeIds) {
       let dictionaryItems;
@@ -460,10 +570,11 @@ export function createAutoListingListingBasePreparer({
           throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
         }
         dictionaryItems = dictionaryResult.items;
-      } catch {
+      } catch (source) {
+        const retryable = retryableCategoryDependency(source);
         throw failure(resolvesMissingBrand
           ? "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED"
-          : "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+          : "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED", retryable ? 503 : 422, retryable);
       }
       categoryDictionaryValues.set(
         dictionaryKey(sourceCategory.descriptionCategoryId, sourceCategory.typeId, attributeIdValue),
@@ -480,6 +591,7 @@ export function createAutoListingListingBasePreparer({
         sourceEvidenceAttributes,
         noBrandVariantIndexes,
         canonicalNoBrandOption(noBrandValues),
+        { replace: forceNoBrand },
       );
     }
     const currentCategoryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
@@ -533,9 +645,8 @@ export function createAutoListingListingBasePreparer({
       || Number(item.type_id) !== Number(category.typeId))) {
       throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
     }
-    if (!currentCategoryMetadata.attributes.some((attribute) => attribute.id === RICH_CONTENT_ATTRIBUTE_ID)) {
-      throw failure("AUTO_LISTING_RICH_CONTENT_UNSUPPORTED", 409);
-    }
+    const richContentAttributeSupported = currentCategoryMetadata.attributes
+      .some((attribute) => attribute.id === RICH_CONTENT_ATTRIBUTE_ID);
     const rebuiltItems = rebuildOzonItemsForCategory({
       originalItems: normalized.items,
       sourceEvidenceAttributes,
@@ -543,11 +654,21 @@ export function createAutoListingListingBasePreparer({
       currentCategoryMetadata,
     });
 
+    const frozenVariants = rebuiltItems.map((item, index) => sourceVariant(rawItems[index], item, index));
+    if (frozenVariantPrices
+      && (frozenVariantPrices.size !== frozenVariants.length
+        || frozenVariants.some((variant) => !frozenVariantPrices.has(variant.sourceSku)))) {
+      throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
+    }
     return deepFreeze({
       productDraft,
       pricingEvidence: frozenPriceEvidence,
-      richContentAttributeSupported: true,
-      variants: rebuiltItems.map((item, index) => sourceVariant(rawItems[index], item, index)),
+      richContentAttributeSupported,
+      contentAttributes: projectSharedContentAttributes(sourceEvidenceAttributes, rawCategoryAttributes),
+      variants: frozenVariants.map((variant) => ({
+        ...variant,
+        ...(frozenVariantPrices ? { pricingEvidence: frozenVariantPrices.get(variant.sourceSku) } : {}),
+      })),
       versions: frozenVersions,
     });
   };

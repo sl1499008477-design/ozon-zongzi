@@ -5,6 +5,7 @@ const HASH = /^[a-f0-9]{64}$/;
 const MIME_BY_FORMAT = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp" };
 const MAX_NORMALIZED_BYTES = 16 * 1024 * 1024;
 const MAX_STORAGE_INPUT_BYTES = 32 * 1024 * 1024;
+const MAX_NORMALIZED_PIXELS = 4096 * 4096;
 export const GENERATED_ASSET_OBJECT_KEY_VERSIONS = Object.freeze({
   ATTEMPT_V2: "ATTEMPT_V2",
   LEGACY_V1: "LEGACY_V1",
@@ -27,8 +28,8 @@ async function decodedMetadata(bytes, { maxInputBytes, maxInputPixels }) {
   try {
     const metadata = await sharp(input, { failOn: "error", limitInputPixels: maxInputPixels, animated: false }).metadata();
     if (!MIME_BY_FORMAT[metadata.format] || !metadata.width || !metadata.height || metadata.pages > 1) throw new Error("unsupported image");
-    await sharp(input, { failOn: "error", limitInputPixels: maxInputPixels, animated: false }).stats();
-    return { input, metadata };
+    const statistics = await sharp(input, { failOn: "error", limitInputPixels: maxInputPixels, animated: false }).stats();
+    return { input, metadata, statistics };
   } catch { throw error("AUTO_LISTING_ASSET_DECODE_FAILED"); }
 }
 
@@ -49,12 +50,38 @@ function resolutionBounds(resolution) {
   return bounds;
 }
 
-export async function normalizeListingImage({ bytes, ratio, resolution, maxInputBytes = 32 * 1024 * 1024, maxInputPixels = 100_000_000 } = {}) {
-  const { input } = await decodedMetadata(bytes, { maxInputBytes, maxInputPixels });
-  const output = await sharp(input, { failOn: "error", limitInputPixels: maxInputPixels, animated: false })
-    .rotate().png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer();
-  const normalized = await sharp(output, { failOn: "error", limitInputPixels: maxInputPixels }).metadata();
+export async function normalizeListingImage({ bytes, ratio, resolution, targetSize = null, maxInputBytes = 32 * 1024 * 1024, maxInputPixels = 100_000_000 } = {}) {
+  const { input, metadata, statistics } = await decodedMetadata(bytes, { maxInputBytes, maxInputPixels });
   const [minimum, maximum] = resolutionBounds(resolution);
+  let target = null;
+  if (targetSize !== null) {
+    const match = typeof targetSize === "string" && targetSize.match(/^([1-9][0-9]*)x([1-9][0-9]*)$/u);
+    if (!match) throw error("AUTO_LISTING_ASSET_INVALID");
+    target = { width: Number(match[1]), height: Number(match[2]) };
+    if (!Number.isSafeInteger(target.width) || !Number.isSafeInteger(target.height)
+      || target.width < minimum || target.height < minimum || target.width > maximum || target.height > maximum
+      || target.width * target.height > MAX_NORMALIZED_PIXELS
+      || Math.abs(target.width / target.height - ratioValue(ratio)) > 0.02) throw error("AUTO_LISTING_ASSET_INVALID");
+  }
+  let pipeline = sharp(input, { failOn: "error", limitInputPixels: maxInputPixels, animated: false }).rotate();
+  const alpha = metadata.hasAlpha ? statistics.channels.at(-1) : null;
+  const orientedWidth = metadata.autoOrient?.width || metadata.width;
+  const orientedHeight = metadata.autoOrient?.height || metadata.height;
+  const alreadyExactOpaqueTarget = target && orientedWidth === target.width && orientedHeight === target.height
+    && (!alpha || alpha.min === 255);
+  if (target && !alreadyExactOpaqueTarget) {
+    const background = {
+      r: statistics.dominant.r,
+      g: statistics.dominant.g,
+      b: statistics.dominant.b,
+      alpha: 1,
+    };
+    pipeline = pipeline
+      .resize(target.width, target.height, { fit: "contain", position: "centre", background })
+      .flatten({ background });
+  }
+  const output = await pipeline.png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer();
+  const normalized = await sharp(output, { failOn: "error", limitInputPixels: maxInputPixels }).metadata();
   const actualRatio = normalized.width / normalized.height;
   if (normalized.width < minimum || normalized.height < minimum || normalized.width > maximum || normalized.height > maximum
     || Math.abs(actualRatio - ratioValue(ratio)) > 0.02) throw error("AUTO_LISTING_ASSET_DIMENSIONS_INVALID");

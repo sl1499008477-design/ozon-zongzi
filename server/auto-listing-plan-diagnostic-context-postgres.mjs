@@ -147,7 +147,7 @@ async function defaultBuildFrozenDiagnostic({ client, boundary: frozenBoundary, 
       textModel: phaseInput.gatewayProfile.textModel,
     },
     promptTemplateVersion: phaseInput.planningContract === "FIXED_SKELETON_V1"
-      ? "AUTO_LISTING_CONTENT_PLAN_FILL_V1" : phaseInput.promptTemplateVersion,
+      ? "AUTO_LISTING_CONTENT_PLAN_FILL_V6" : phaseInput.promptTemplateVersion,
     prohibitedClaims: phaseInput.prohibitedClaims,
     regeneration: phaseInput.regeneration,
   });

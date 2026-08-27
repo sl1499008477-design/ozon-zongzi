@@ -18,7 +18,7 @@ const roles = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INF
 async function migrate(client) {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "088_auto_listing_batch_order_multiplier.sql");
+  assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
   for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
 }
 

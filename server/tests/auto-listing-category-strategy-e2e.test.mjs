@@ -54,8 +54,8 @@ test("Task 11 delivery pins the executable composition suite and rollout invaria
   ]) assert.match(runbook, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   const migrations = (await readdir(migrationsDir)).filter((name) => /^\d{3}_.+\.sql$/u.test(name)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "088_auto_listing_batch_order_multiplier.sql");
-  assert.equal(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version, "0.13.46.17-local");
+  assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
+  assert.equal(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version, "0.13.46.27-local");
 });
 
 function memoryObjectStorage() {
@@ -133,6 +133,10 @@ async function seedSource(client, { accountId, suffix, targetStoreId = `store-${
     (id,collect_item_id,source_payload_id,version,data_hash,data,normalizer_version,category_rule_version,dictionary_version)
     VALUES ($1,$2,$3,7,$4,$5::JSONB,'e2e','e2e','e2e')`,
   [productDraftId, collectItemId, rawId, sha(productDraftId), JSON.stringify(listingDraft)]);
+  await client.query(`INSERT INTO product_draft_revisions
+    (id,draft_id,version,data_hash,data,changed_by,change_reason)
+    VALUES ($1,$2,7,$3,$4::JSONB,$5,'e2e seed')`,
+  [`revision-${suffix}`, productDraftId, sha(productDraftId), JSON.stringify(listingDraft), accountId]);
   await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3",
     [productDraftId, accountId, collectItemId]);
   await client.query(`INSERT INTO collect_ozon_category_source_evidence
@@ -295,7 +299,7 @@ if (!enabled) {
       await admin.query(`SET search_path TO ${quote(schema)}, public`);
       const migrations = (await readdir(migrationsDir)).filter((name) => /^\d{3}_.+\.sql$/u.test(name)).sort();
       assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-      assert.equal(migrations.at(-1), "088_auto_listing_batch_order_multiplier.sql");
+      assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
       for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       const accountId = `account-a-${suffix}`;
       const foreignAccountId = `account-b-${suffix}`;
@@ -446,7 +450,7 @@ if (!enabled) {
       const draftResponse = await callAdmin(runtime, actor, "POST", "/admin/auto-listing/category-strategies/drafts",
         { scope, sourceCollectItemId: source.collectItemId, expectedSourceVersion: source.expectedSourceVersion,
           idempotencyKey: `draft-${suffix}`, correlationId: `draft-corr-${suffix}` });
-      assert.equal(draftResponse.status, 201);
+      assert.equal(draftResponse.status, 201, JSON.stringify(draftResponse.payload));
       const draft = draftResponse.payload.data;
       const foreignRead = await callAdmin(runtime, { id: foreignAccountId, role: "admin" }, "GET",
         `/admin/auto-listing/category-strategies/${draft.draftId}`);
@@ -605,7 +609,7 @@ if (!enabled) {
           configHash: graphItem.config_hash },
         visualGroupsCapture: buildVisualGroups({ sourceCapture }),
         profileRef: { id: "fake-planner", configVersion: 1, textModel: "fake-planner-model" },
-        promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1",
+        promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V3",
         prohibitedClaims: ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"],
         regeneration: null });
       const skeleton = buildFixedSkeleton({ plannerContext });

@@ -144,6 +144,153 @@ test("freezes a complete target-store-normalized template before AI work", async
   assert.equal(Object.isFrozen(sourceInput.collectItem.listingDraft.variants), false);
 });
 
+test("binds independent frozen price evidence to each normalized variant", async () => {
+  const prepare = createAutoListingListingBasePreparer(dependencies());
+  const variantPricingEvidence = [
+    { sourceSku: "sku-blue", currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+    { sourceSku: "sku-red", currency: "RUB", blackKopecks: "25000", greenKopecks: null },
+  ];
+
+  const result = await prepare({
+    accountId: "account-a",
+    source: source(),
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+    variantPricingEvidence,
+  });
+
+  assert.deepEqual(result.variants.map((variant) => ({
+    sourceSku: variant.sourceSku,
+    pricingEvidence: variant.pricingEvidence,
+  })), variantPricingEvidence.map((evidence) => ({
+    sourceSku: evidence.sourceSku,
+    pricingEvidence: {
+      currency: evidence.currency,
+      blackKopecks: evidence.blackKopecks,
+      greenKopecks: evidence.greenKopecks,
+      evidenceHash: digest({
+        currency: evidence.currency,
+        blackKopecks: evidence.blackKopecks,
+        greenKopecks: evidence.greenKopecks,
+      }),
+    },
+  })));
+});
+
+test("projects source values with current Ozon labels for content planning", async () => {
+  const sourceInput = source();
+  sourceInput.collectItem.listingDraft.sourceCategory = {
+    attributes: [{ key: "8145", value: "80" }, { key: "22315", value: "20" }],
+  };
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, name: "Бренд", dictionary_id: 7, is_required: true },
+          { id: 8145, name: "Мощность, Вт", is_required: false },
+          { id: 22315, name: "Количество светодиодов", is_required: false },
+          { id: 11254, name: "Rich content", is_required: false },
+        ] };
+      },
+      async getCategoryAttributeValues() { return { items: [{ id: 126745801, value: "Нет бренда" }] }; },
+    },
+  });
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: sourceInput,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.deepEqual(result.contentAttributes, [
+    { id: 8145, name: "Мощность, Вт", value: "80", values: ["80"], required: false, dictionaryId: 0, multiple: false },
+    { id: 22315, name: "Количество светодиодов", value: "20", values: ["20"], required: false, dictionaryId: 0, multiple: false },
+  ]);
+});
+
+test("projects only product facts shared by every source variant", async () => {
+  const sourceInput = source();
+  sourceInput.collectItem.listingDraft.variants = [
+    { sku: "sku-blue", offer_id: "offer-blue", name: "Blue", sourceCategory: {
+      attributes: [{ key: "8145", value: "80" }, { key: "10096", value: "синий" }],
+    } },
+    { sku: "sku-red", offer_id: "offer-red", name: "Red", sourceCategory: {
+      attributes: [{ key: "8145", value: "80" }, { key: "10096", value: "красный" }],
+    } },
+  ];
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, name: "Бренд", dictionary_id: 7, is_required: true },
+          { id: 8145, name: "Мощность, Вт", is_required: false },
+          { id: 10096, name: "Цвет товара", is_required: false },
+          { id: 11254, name: "Rich content", is_required: false },
+        ] };
+      },
+      async getCategoryAttributeValues() { return { items: [{ id: 126745801, value: "Нет бренда" }] }; },
+    },
+  });
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: sourceInput,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.deepEqual(result.contentAttributes, [
+    { id: 8145, name: "Мощность, Вт", value: "80", values: ["80"], required: false, dictionaryId: 0, multiple: false },
+  ]);
+});
+
+test("treats the same multi-value attribute as shared regardless of source value order", async () => {
+  const sourceInput = source();
+  sourceInput.collectItem.listingDraft.variants = [
+    { sku: "sku-blue", offer_id: "offer-blue", name: "Blue", sourceCategory: { attributes: [
+      { id: 23171, complex_id: 0, values: [{ value: "wifi" }, { value: "usb" }] },
+    ] } },
+    { sku: "sku-red", offer_id: "offer-red", name: "Red", sourceCategory: { attributes: [
+      { id: 23171, complex_id: 0, values: [{ value: "usb" }, { value: "wifi" }] },
+    ] } },
+  ];
+  const deps = dependencies({ categoryService: {
+    async getCategoryAttributes() { return { items: [
+      { id: 85, name: "Бренд", dictionary_id: 7, is_required: true },
+      { id: 23171, name: "Особенности", is_collection: true, is_required: false },
+      { id: 11254, name: "Rich content", is_required: false },
+    ] }; },
+    async getCategoryAttributeValues() { return { items: [{ id: 126745801, value: "Нет бренда" }] }; },
+  } });
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: sourceInput,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" }, targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.deepEqual(result.contentAttributes[0].values, ["wifi", "usb"]);
+});
+
+test("does not copy top-level source attributes into a sibling variant without its own evidence", async () => {
+  const sourceInput = source();
+  sourceInput.collectItem.listingDraft.sourceCategory = { attributes: [{ key: "8145", value: "80" }] };
+  sourceInput.collectItem.listingDraft.variants = [
+    { sku: "sku-blue", offer_id: "offer-blue", name: "Blue", sourceCategory: { attributes: [{ key: "8145", value: "80" }] } },
+    { sku: "sku-red", offer_id: "offer-red", name: "Red" },
+  ];
+  const deps = dependencies({ categoryService: {
+    async getCategoryAttributes() { return { items: [
+      { id: 85, name: "Бренд", dictionary_id: 7, is_required: true },
+      { id: 8145, name: "Мощность, Вт", is_required: false },
+      { id: 11254, name: "Rich content", is_required: false },
+    ] }; },
+    async getCategoryAttributeValues() { return { items: [{ id: 126745801, value: "Нет бренда" }] }; },
+  } });
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: sourceInput,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" }, targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.deepEqual(result.contentAttributes, []);
+});
+
 test("forwards the category preparation abort signal to every Ozon category read", async () => {
   const controller = new AbortController();
   const seen = [];
@@ -309,7 +456,10 @@ test("dynamically freezes the current Ozon no-brand option for variants with no 
     pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
   });
 
-  assert.deepEqual(reads, [{ attributeId: 85, matchCandidates: [{ value: "Нет бренда" }] }]);
+  assert.deepEqual(reads, [{
+    attributeId: 85,
+    matchCandidates: [{ id: 126745801, value: "Нет бренда" }],
+  }]);
   assert.deepEqual(result.variants.map(({ item }) =>
     item.attributes.find(({ id }) => id === 85)?.values), [
     [{ value: "Нет бренда", dictionary_value_id: 987654321 }],
@@ -349,6 +499,7 @@ test("preserves an existing brand and injects no-brand only into a missing sibli
 
   const result = await createAutoListingListingBasePreparer(deps)({
     accountId: "account-a",
+    brandMode: "PREFER_SOURCE",
     source: itemSource,
     targetStore: { id: "store-a", ownerAccountId: "account-a" },
     targetCategory: frozenTargetCategory(),
@@ -357,13 +508,91 @@ test("preserves an existing brand and injects no-brand only into a missing sibli
 
   assert.deepEqual(reads, [[
     { id: 111111111, value: "Brand X" },
-    { value: "Нет бренда" },
+    { id: 126745801, value: "Нет бренда" },
   ]]);
   assert.deepEqual(result.variants.map(({ item }) =>
     item.attributes.find(({ id }) => id === 85)?.values), [
     [{ value: "Brand X", dictionary_value_id: 111111111 }],
     [{ value: "Нет бренда", dictionary_value_id: 987654321 }],
   ]);
+});
+
+test("force-no-brand replaces every collected brand with the one exact current Ozon dictionary option", async () => {
+  const itemSource = source();
+  itemSource.collectItem.listingDraft.variants = itemSource.collectItem.listingDraft.variants.map((variant) => ({
+    ...variant,
+    brand: "Brand X",
+    sourceCategory: {
+      attributes: [{ key: "85", value: "Brand X", dictionary_value_id: 111111111 }],
+    },
+  }));
+  const reads = [];
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, dictionary_id: 28732849, is_required: false },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues(input) {
+        reads.push(input.matchCandidates);
+        return { items: [
+          { id: 111111111, value: "Brand X" },
+          { id: 987654321, value: "Нет бренда" },
+        ] };
+      },
+    },
+  });
+  delete deps.normalizeItems;
+
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    brandMode: "FORCE_NO_BRAND",
+    source: itemSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].some(({ value }) => value === "Нет бренда"), true);
+  assert.deepEqual(result.variants.map(({ item }) =>
+    item.attributes.find(({ id }) => id === 85)?.values), [
+    [{ value: "Нет бренда", dictionary_value_id: 987654321 }],
+    [{ value: "Нет бренда", dictionary_value_id: 987654321 }],
+  ]);
+});
+
+test("force-no-brand fails closed when the current category dictionary has no unique no-brand option", async () => {
+  const itemSource = source();
+  itemSource.collectItem.listingDraft.variants = itemSource.collectItem.listingDraft.variants.map((variant) => ({
+    ...variant,
+    brand: "Brand X",
+    sourceCategory: {
+      attributes: [{ key: "85", value: "Brand X", dictionary_value_id: 111111111 }],
+    },
+  }));
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [{ id: 85, dictionary_id: 28732849, is_required: true }, { id: 11254 }] };
+      },
+      async getCategoryAttributeValues() {
+        return { items: [{ id: 111111111, value: "Brand X" }] };
+      },
+    },
+  });
+  delete deps.normalizeItems;
+
+  await assert.rejects(createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    brandMode: "FORCE_NO_BRAND",
+    source: itemSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), { code: "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED" });
 });
 
 for (const [name, items] of [
@@ -424,6 +653,37 @@ test("missing-brand dictionary dependency failures expose only the fixed safe er
   }), (error) => error?.code === "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED"
     && error.status === 422 && error.retryable === false && error.cause === null
     && !error.message.includes("secret") && !JSON.stringify(error).includes("secret"));
+});
+
+test("missing-brand transient dictionary failures remain safe and retryable", async () => {
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, dictionary_id: 28732849, is_required: true },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues() {
+        const error = new Error("upstream endpoint and credential must stay hidden");
+        error.status = 502;
+        Object.defineProperty(error, "diagnostic", {
+          value: Object.freeze({ retryable: true }), enumerable: false,
+        });
+        throw error;
+      },
+    },
+  });
+  delete deps.normalizeItems;
+  await assert.rejects(createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    source: source(),
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), (error) => error?.code === "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED"
+    && error.status === 503 && error.retryable === true && error.cause === null
+    && !error.message.includes("credential") && !JSON.stringify(error).includes("credential"));
 });
 
 test("does not replace a non-empty top-level brand with no-brand", async () => {
@@ -1194,21 +1454,20 @@ test("rejects normalization that drops any source variant", async () => {
   );
 });
 
-test("rejects a category that cannot carry Ozon rich content", async () => {
+test("keeps a category uploadable when Ozon does not expose the optional rich-content attribute", async () => {
   const deps = dependencies();
   deps.categoryService.getCategoryAttributes = async () => ({ items: [{ id: 85 }] });
   deps.normalizeItems = async (items, context) => {
     await context.getCategoryAttributes(789, 999);
     return { items: [normalizedItem("blue"), normalizedItem("red")], warnings: [] };
   };
-  await assert.rejects(
-    createAutoListingListingBasePreparer(deps)({
-      accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
-      targetCategory: frozenTargetCategory(),
-      pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
-    }),
-    { code: "AUTO_LISTING_RICH_CONTENT_UNSUPPORTED" },
-  );
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.equal(result.richContentAttributeSupported, false);
+  assert.equal(result.variants.length, 2);
 });
 
 test("requires immutable product draft identity and hash", async () => {

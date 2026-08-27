@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 import net from "node:net";
 
-export const AUTO_LISTING_OZON_RICH_CONTENT_VERSION = "AUTO_LISTING_OZON_RICH_CONTENT_V1_UNVERIFIED";
+export const AUTO_LISTING_OZON_RICH_CONTENT_VERSION = "AUTO_LISTING_OZON_RICH_CONTENT_V2";
 const VERIFIED_AUTO_LISTING_OZON_RICH_CONTENT_VERSIONS = new Set([
-  "AUTO_LISTING_OZON_RICH_CONTENT_V1",
+  AUTO_LISTING_OZON_RICH_CONTENT_VERSION,
 ]);
 
 export function isVerifiedAutoListingOzonRichContentVersion(value) {
@@ -117,7 +117,7 @@ function validateBindings(block) {
 }
 
 function imageBlock(asset) {
-  return { img: { src: asset.url, width: asset.width, height: asset.height } };
+  return { img: { src: asset.url, srcMobile: asset.url } };
 }
 
 function convertBlock(block, index, assetsById) {
@@ -126,21 +126,25 @@ function convertBlock(block, index, assetsById) {
     if (!exactObject(block, HERO_BLOCK_KEYS) || index !== 0 || !cleanText(block.assetId)) throw invalid();
     const asset = assetsById.get(block.assetId);
     if (!asset || asset.role !== "MAIN") throw invalid();
-    return imageBlock(asset);
+    return { widgetName: "raShowcase", type: "billboard", blocks: [imageBlock(asset)] };
   }
   if (block.type === "HEADING" || block.type === "TEXT") {
     if (!exactObject(block, TEXT_BLOCK_KEYS)) throw invalid();
     validateBindings(block);
     return block.type === "HEADING"
-      ? { title: { content: block.text } }
-      : { text: { content: block.text } };
+      ? { widgetName: "raTextBlock", title: { content: [block.text] } }
+      : { widgetName: "raTextBlock", text: { content: [block.text] } };
   }
   if (block.type === "IMAGE_TEXT") {
     if (!exactObject(block, IMAGE_TEXT_BLOCK_KEYS) || !cleanText(block.assetId)) throw invalid();
     validateBindings(block);
     const asset = assetsById.get(block.assetId);
     if (!asset) throw invalid();
-    return { ...imageBlock(asset), title: { content: block.text } };
+    return {
+      widgetName: "raShowcase",
+      type: "billboard",
+      blocks: [{ ...imageBlock(asset), title: { content: [block.text] } }],
+    };
   }
   throw invalid();
 }
@@ -152,8 +156,8 @@ function deepFreeze(value) {
 }
 
 /**
- * Deterministic adapter for the current import normalizer's single raShowcase contract.
- * The version deliberately remains UNVERIFIED until controlled non-production Ozon validation.
+ * Deterministic adapter for the Ozon 0.3 rich-content contract.
+ * V2 was accepted by a controlled real Ozon import before this release gate was opened.
  */
 export function convertAutoListingRichContentToOzon(input = {}) {
   if (!exactObject(input, INPUT_KEYS)) throw invalid();
@@ -164,12 +168,11 @@ export function convertAutoListingRichContentToOzon(input = {}) {
     || !Array.isArray(document.blocks) || document.blocks.length < 3 || document.blocks.length > 20) throw invalid();
   const assetsById = normalizeAssets(input.publishedAssets, input.scope, requiredOrigin);
   if (document.blocks.filter((block) => block?.type === "HERO_IMAGE").length !== 1) throw invalid();
-  const widget = {
-    widgetName: "raShowcase",
-    type: "roll",
-    blocks: document.blocks.map((block, index) => convertBlock(block, index, assetsById)),
+  const ozonDocument = {
+    content: document.blocks.map((block, index) => convertBlock(block, index, assetsById)),
+    version: 0.3,
   };
-  const value = JSON.stringify(widget);
+  const value = JSON.stringify(ozonDocument);
   if (Buffer.byteLength(value, "utf8") > MAX_OUTPUT_BYTES) throw invalid();
   return deepFreeze({
     version: AUTO_LISTING_OZON_RICH_CONTENT_VERSION,

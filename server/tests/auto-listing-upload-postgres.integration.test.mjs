@@ -22,6 +22,10 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === "object"
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+const publishedPolicyDigest = (value) => crypto.createHash("sha256").update(JSON.stringify({
+  origin: value.origin, baseUrl: value.baseUrl, prefix: value.prefix,
+  publicationVersion: value.publicationVersion,
+})).digest("hex");
 
 const publicationPolicy = Object.freeze({
   origin: "https://cdn.example.com", baseUrl: "https://cdn.example.com/",
@@ -103,7 +107,7 @@ test("PostgreSQL claims one local warehouse item, safely retries the same link, 
        publication_origin,publication_base_url,publication_prefix,publication_version,publication_policy_hash)
       VALUES ($1,$2,'DIRECT',TRUE,1,'integration',$2,$2,NOW(),$3,$4,$5,$6,$7)`,
       [ids.policy, ids.account, publicationPolicy.origin, publicationPolicy.baseUrl, publicationPolicy.prefix,
-        publicationPolicy.publicationVersion, digest(publicationPolicy)]);
+        publicationPolicy.publicationVersion, publishedPolicyDigest(publicationPolicy)]);
     const healthEvidence = JSON.stringify({ probeKind: "PUBLIC_READBACK", httpStatus: 200,
       contentTypeMatched: true, bytesMatched: true });
     await admin.query(`INSERT INTO auto_listing_asset_publication_health_evidence
@@ -234,7 +238,7 @@ test("PostgreSQL claims one local warehouse item, safely retries the same link, 
       activePlanId: ids.plan, targetStoreId: ids.store, targetWarehouseId: ids.warehouseLocal,
       targetWarehousePlatformId: warehousePlatformId, sourceHash: H("b"), configHash: frozenConfig.configHash,
       requestHash: H("e"), resultHash: H("f"), uploadPolicyVersionId: ids.policy,
-      publicationPolicy, publicationPolicyHash: digest(publicationPolicy), mediaEvidenceHash,
+      publicationPolicy, publicationPolicyHash: publishedPolicyDigest(publicationPolicy), mediaEvidenceHash,
       productDraft: { id: ids.draft, version: 4, dataHash: H("a") },
       directHealthEvidenceId: ids.healthInitial,
       warehouseFulfillmentType: "FBS", creationWarehouseValidationEvidenceId: null,
@@ -474,7 +478,7 @@ test("PostgreSQL atomically rechecks RFBS scope and binds one fresh immutable up
        publication_origin,publication_base_url,publication_prefix,publication_version,publication_policy_hash)
       VALUES ($1,$2,'REVIEW',TRUE,1,'integration',$2,$2,NOW(),$3,$4,$5,$6,$7)`,
       [ids.policy, ids.account, publicationPolicy.origin, publicationPolicy.baseUrl, publicationPolicy.prefix,
-        publicationPolicy.publicationVersion, digest(publicationPolicy)]);
+        publicationPolicy.publicationVersion, publishedPolicyDigest(publicationPolicy)]);
     await admin.query(`INSERT INTO auto_listing_rfbs_warehouse_evidence
       (id,account_id,store_id,warehouse_record_id,platform_warehouse_id,schema_version,fulfillment_type,
        status,outcome,observed_at,expires_at,evidence_hash,correlation_id,actor_account_id)
@@ -541,7 +545,7 @@ test("PostgreSQL atomically rechecks RFBS scope and binds one fresh immutable up
       activePlanId: ids.plan, targetStoreId: ids.store, targetWarehouseId: ids.warehouse,
       targetWarehousePlatformId: platformWarehouseId, sourceHash: H("b"), configHash: frozenConfig.configHash,
       requestHash: H("e"), resultHash: H("f"), uploadPolicyVersionId: ids.policy,
-      publicationPolicy, publicationPolicyHash: digest(publicationPolicy),
+      publicationPolicy, publicationPolicyHash: publishedPolicyDigest(publicationPolicy),
       mediaEvidenceHash: digest({ visualGroups: context.visualGroups, assets: [], rich: [], publicationPolicy }),
       productDraft: { id: ids.draft, version: 4, dataHash: H("a") }, directHealthEvidenceId: null,
       idempotencyKey: `auto-listing:${ids.item}:${H("f")}`, warehouseFulfillmentType: "RFBS",

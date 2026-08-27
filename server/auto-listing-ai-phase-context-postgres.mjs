@@ -24,7 +24,7 @@ const FACTORY_KEYS = new Set([
   "pool", "gateway", "contentPlanRepository", "contentPlanEvidenceRepository", "sourceMaterializationRepository",
   "generationRepository", "richContentRepository", "downloader", "storage",
   "sourceAssetLoader", "logger", "planPromptTemplateVersion", "prohibitedClaims",
-  "maxAttempts", "richContentLeaseOwner", "referenceProjector",
+  "maxAttempts", "richContentMaxAttempts", "richContentLeaseOwner", "referenceProjector",
 ]);
 const REFERENCE_PROJECTOR_KEYS = new Set([
   "accountId", "jobId", "itemId", "planId", "plan", "slot",
@@ -40,10 +40,11 @@ const GENERATION_PLAN_KEYS = new Set([
   "derivationKind", "materializationSetHash",
 ]);
 const PLAN_BODY_KEYS = new Set(["version", "language", "slots"]);
-const SLOT_KEYS = new Set([
+const SLOT_KEYS_V1 = new Set([
   "slotKey", "visualGroupKey", "role", "order", "textDensity", "claims", "sourceFactIds",
   "referenceAssetIds", "preserve", "prohibitedClaims",
 ]);
+const SLOT_KEYS_V2 = new Set([...SLOT_KEYS_V1, "requestedRole", "substitutionReasonCode"]);
 const CLAIM_KEYS = new Set(["text", "claimType", "sourceFactIds"]);
 const VISUAL_GROUPS_KEYS = new Set(["sourceHash", "visualGroupsHash", "reasonCodes", "groups"]);
 const VISUAL_GROUP_KEYS = new Set([
@@ -155,12 +156,16 @@ function projectGenerationClaim(value) {
   return claim;
 }
 
-function projectGenerationSlot(value) {
-  if (!exactObject(value, SLOT_KEYS) || !isSafeAutoListingAiIdentifier(value.slotKey)
+function projectGenerationSlot(value, planVersion = 1) {
+  const keys = planVersion === 2 ? SLOT_KEYS_V2 : SLOT_KEYS_V1;
+  if (!exactObject(value, keys) || !isSafeAutoListingAiIdentifier(value.slotKey)
     || !isSafeAutoListingAiIdentifier(value.visualGroupKey) || !ROLES.has(value.role)
     || !Number.isInteger(value.order) || value.order < 1 || value.order > 13
     || !TEXT_DENSITIES.has(value.textDensity) || !Array.isArray(value.claims)
     || value.claims.length > 50) throw evidenceInvalid();
+  if (planVersion === 2 && (!ROLES.has(value.requestedRole)
+    || !(value.substitutionReasonCode === null
+      || value.substitutionReasonCode === "PRODUCT_DIMENSIONS_UNAVAILABLE"))) throw evidenceInvalid();
   const slot = {
     slotKey: value.slotKey,
     visualGroupKey: value.visualGroupKey,
@@ -172,6 +177,10 @@ function projectGenerationSlot(value) {
     referenceAssetIds: closedStringArray(value.referenceAssetIds, { minimum: 1, maximum: 7, maxBytes: 240 }),
     preserve: closedStringArray(value.preserve, { minimum: 1, maximum: 100 }),
     prohibitedClaims: closedStringArray(value.prohibitedClaims, { maximum: 20, maxBytes: 240 }),
+    ...(planVersion === 2 ? {
+      requestedRole: value.requestedRole,
+      substitutionReasonCode: value.substitutionReasonCode,
+    } : {}),
   };
   if (slot.referenceAssetIds.length !== new Set(slot.referenceAssetIds).size) throw evidenceInvalid();
   rejectCategoryPromptCarrier(slot);
@@ -246,14 +255,14 @@ function projectGenerationPlan(value) {
     || (value.planningContract === "FIXED_SKELETON_V1" && !validHash(value.skeletonHash))
     || !(value.gatewayRequestId === null || validText(value.gatewayRequestId))
     || !(value.regeneration === null || exactObject(value.regeneration, REGENERATION_KEYS))
-    || !exactObject(value.plan, PLAN_BODY_KEYS) || value.plan.version !== 1 || value.plan.language !== "ru"
+    || !exactObject(value.plan, PLAN_BODY_KEYS) || ![1, 2].includes(value.plan.version) || value.plan.language !== "ru"
     || !Array.isArray(value.plan.slots) || value.plan.slots.length < 6 || value.plan.slots.length > 1_000
     || !Array.isArray(value.factRegistry) || !value.factRegistry.length) throw evidenceInvalid();
   if (value.regeneration !== null && (!validText(value.regeneration.requestId)
     || !["USER_REQUESTED", "QUALITY_RETRY", "ADMIN_RETRY"].includes(value.regeneration.reason))) {
     throw evidenceInvalid();
   }
-  const slots = value.plan.slots.map(projectGenerationSlot);
+  const slots = value.plan.slots.map((slot) => projectGenerationSlot(slot, value.plan.version));
   if (slots.length !== new Set(slots.map(({ slotKey }) => slotKey)).size) throw evidenceInvalid();
   const factRegistry = value.factRegistry.map(projectGenerationFact);
   const visualGroups = projectGenerationVisualGroups(value.visualGroups);
@@ -266,7 +275,7 @@ function projectGenerationPlan(value) {
   }
   return {
     ...value,
-    plan: { version: 1, language: "ru", slots },
+    plan: { version: value.plan.version, language: "ru", slots },
     visualGroups,
     factRegistry,
     regeneration: value.regeneration === null ? null : { ...value.regeneration },
@@ -292,7 +301,7 @@ export function projectAutoListingGenerationReferences(rawInput = {}) {
   const plan = projectGenerationPlan(input.plan);
   if (plan.id !== input.planId || plan.sourceAccountId !== input.accountId
     || plan.jobId !== input.jobId || plan.itemId !== input.itemId) throw evidenceInvalid();
-  const projectedInputSlot = projectGenerationSlot(input.slot);
+  const projectedInputSlot = projectGenerationSlot(input.slot, plan.plan.version);
   const slots = plan.plan.slots.filter(({ slotKey }) => slotKey === projectedInputSlot.slotKey);
   if (slots.length !== 1
     || JSON.stringify(canonical(slots[0])) !== JSON.stringify(canonical(projectedInputSlot))) throw evidenceInvalid();
@@ -596,6 +605,7 @@ function mapAcceptedAsset(row) {
     checkerEvidence: jsonValue(row.checker_result),
     sourceAssetEvidence: jsonValue(row.source_asset_evidence),
     regeneration: jsonValue(row.regeneration),
+    expectedStatusVersion: row.expected_status_version,
   };
 }
 
@@ -609,6 +619,7 @@ function validateOptions(options) {
     || options.prohibitedClaims.length !== REQUIRED_PROHIBITED_CLAIMS.length
     || REQUIRED_PROHIBITED_CLAIMS.some((claim) => !options.prohibitedClaims.includes(claim))
     || !validVersion(options.maxAttempts) || options.maxAttempts > 3
+    || !validVersion(options.richContentMaxAttempts) || options.richContentMaxAttempts > 5
     || !isSafeAutoListingAiIdentifier(options.richContentLeaseOwner)) throw invalid();
   for (const key of ["gateway", "contentPlanRepository", "contentPlanEvidenceRepository", "sourceMaterializationRepository",
     "generationRepository", "richContentRepository", "downloader", "storage", "sourceAssetLoader"]) {
@@ -712,6 +723,7 @@ async function loadActiveBundle(options, boundary) {
     `SELECT ${PLAN_COLUMNS},
             s.snapshot,s.snapshot_hash,s.raw_response_ref,
             j.config_snapshot,j.config_hash AS config_hash_from_job,
+            v.strategy_key,
             gp.id AS profile_id,gp.account_id AS profile_account_id,gp.config_version AS profile_config_version,
             gp.base_url AS profile_base_url,gp.api_key_env_name AS profile_api_key_env_name,
             gp.text_protocol AS profile_text_protocol,gp.image_protocol AS profile_image_protocol,
@@ -724,12 +736,129 @@ async function loadActiveBundle(options, boundary) {
                               AND p.planning_contract=i.planning_contract
        JOIN auto_listing_source_snapshots s ON s.account_id=i.account_id AND s.id=i.snapshot_id
                                            AND s.id=p.source_snapshot_id
+       JOIN ai_content_strategy_versions v ON v.account_id=p.account_id AND v.id=p.strategy_version_id
        JOIN ai_gateway_profiles gp ON gp.account_id=p.account_id AND gp.id=p.profile_id
                                   AND gp.config_version=p.profile_version
       WHERE i.account_id=$1 AND i.job_id=$2 AND i.id=$3
         AND i.active_content_plan_id=$4 AND i.snapshot_id=$5`,
     [boundary.accountId, boundary.jobId, boundary.itemId, boundary.activeContentPlanId,
       boundarySnapshot(boundary)]));
+}
+
+const CATEGORY_STYLE_REFERENCE_LIMIT = 1;
+const CATEGORY_STYLE_REFERENCE_MIN_EDGE = 256;
+
+function categoryStyleEvidenceIds(rawResponse, role) {
+  const summary = jsonValue(rawResponse)?.evidenceSummary;
+  if (!plainObject(summary) || !plainObject(summary.roleEvidence)) return [];
+  const ids = [];
+  const add = (values) => {
+    if (!Array.isArray(values)) return;
+    for (const value of values) if (validText(value) && !ids.includes(value)) ids.push(value);
+  };
+  add(summary.roleEvidence[role]?.evidenceIds);
+  if (Array.isArray(summary.commonPatterns)) {
+    for (const pattern of summary.commonPatterns) add(pattern?.evidenceIds);
+  }
+  for (const evidence of Object.values(summary.roleEvidence)) add(evidence?.evidenceIds);
+  return ids.slice(0, 120);
+}
+
+function selectCategoryStyleRows(rows, evidenceIds) {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const clear = evidenceIds.map((id) => byId.get(id)).filter((row) => row
+    && validText(row.id) && validText(row.sample_id) && validText(row.sku)
+    && validText(row.analysis_object_key, 1_024) && validHash(row.analysis_content_hash)
+    && ["image/jpeg", "image/png", "image/webp"].includes(row.content_type)
+    && Number.isInteger(Number(row.width)) && Number(row.width) >= CATEGORY_STYLE_REFERENCE_MIN_EDGE
+    && Number.isInteger(Number(row.height)) && Number(row.height) >= CATEGORY_STYLE_REFERENCE_MIN_EDGE);
+  const distinct = [];
+  const skus = new Set();
+  for (const row of clear) {
+    if (skus.has(row.sku)) continue;
+    skus.add(row.sku);
+    distinct.push(row);
+  }
+  return distinct.slice(0, CATEGORY_STYLE_REFERENCE_LIMIT);
+}
+
+async function loadCategoryStyleReferences(options, plan, slot, snapshot) {
+  const result = await safeQuery(options.pool,
+    `SELECT id,account_id,sample_set_id,sample_set_hash,raw_response
+       FROM auto_listing_category_strategy_analysis_results
+      WHERE account_id=$1 AND id=$2 AND sample_set_hash=$3`,
+    [plan.sourceAccountId, snapshot.analysisResultId, snapshot.sampleSetHash]);
+  if (!result || !Array.isArray(result.rows) || result.rows.length > 1) throw evidenceInvalid();
+  if (!result.rows.length) return [];
+  const analysis = result.rows[0];
+  if (!validText(analysis.sample_set_id) || analysis.sample_set_hash !== snapshot.sampleSetHash) throw evidenceInvalid();
+  const evidenceIds = categoryStyleEvidenceIds(analysis.raw_response, slot.role);
+  if (!evidenceIds.length) return [];
+  const imageResult = await safeQuery(options.pool,
+    `SELECT image.id,image.sample_id,sample.sku,image.role,image.ordinal,
+            image.analysis_object_key,image.analysis_content_hash,image.content_type,image.width,image.height
+       FROM auto_listing_category_strategy_sample_images image
+       JOIN auto_listing_category_strategy_samples sample
+         ON sample.account_id=image.account_id AND sample.id=image.sample_id
+      WHERE image.account_id=$1 AND image.sample_set_id=$2 AND image.id=ANY($3::TEXT[])`,
+    [plan.sourceAccountId, analysis.sample_set_id, evidenceIds]);
+  if (!imageResult || !Array.isArray(imageResult.rows)) throw evidenceInvalid();
+  const selected = selectCategoryStyleRows(imageResult.rows, evidenceIds);
+  return Object.freeze(selected.map((row) => {
+    if (!row.analysis_object_key.startsWith(`category-strategy/${plan.sourceAccountId}/`)) throw evidenceInvalid();
+    return Object.freeze({
+      evidenceId: row.id,
+      sku: row.sku,
+      objectKey: row.analysis_object_key,
+      contentHash: row.analysis_content_hash,
+      contentType: row.content_type,
+      width: Number(row.width),
+      height: Number(row.height),
+    });
+  }));
+}
+
+async function loadCategoryStyle(options, row, plan, slot) {
+  const rulesResult = await safeQuery(options.pool,
+    `SELECT id,rule_order,rule_kind,category_id,ancestor_category_id,product_style,rule
+       FROM ai_content_strategy_rules
+      WHERE account_id=$1 AND strategy_version_id=$2
+      ORDER BY rule_order ASC,id ASC`,
+    [plan.sourceAccountId, plan.strategyVersionId]);
+  if (!rulesResult || !Array.isArray(rulesResult.rows)) throw evidenceInvalid();
+  const capture = strategyCapture(row, rulesResult.rows, sourceCapture(row));
+  const snapshot = capture.strategySnapshot;
+  if (snapshot.matchedBy !== "EXACT_CATEGORY_TYPE_V2") {
+    return { categoryStyle: null, categoryStyleReferences: Object.freeze([]) };
+  }
+  const guidance = snapshot.roleGuidance?.[slot.role];
+  const productLedMainDensityOverride = plan.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
+    && slot.role === "MAIN" && slot.textDensity === "HEAVY";
+  const copyFreeDensityOverride = plan.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
+    && slot.textDensity === "NONE" && slot.claims.length === 0;
+  const slotDensityOverride = productLedMainDensityOverride || copyFreeDensityOverride;
+  if (!plainObject(guidance)
+    || !validText(snapshot.overallStyle, 4_000)
+    || !Array.isArray(snapshot.prohibitedPatterns) || snapshot.prohibitedPatterns.length > 20
+    || snapshot.prohibitedPatterns.some((entry) => !validText(entry, 4_000))
+    || !validText(guidance.composition, 4_000)
+    || !validText(guidance.background, 4_000)
+    || (!slotDensityOverride && guidance.textDensity !== slot.textDensity)
+    || !validText(guidance.layout, 4_000)) throw evidenceInvalid();
+  const style = {
+    overallStyle: snapshot.overallStyle,
+    prohibitedPatterns: [...snapshot.prohibitedPatterns],
+    role: slot.role,
+    composition: guidance.composition,
+    background: guidance.background,
+    textDensity: slotDensityOverride ? slot.textDensity : guidance.textDensity,
+    layout: guidance.layout,
+  };
+  rejectCategoryPromptCarrier(style);
+  return {
+    categoryStyle: freeze(style),
+    categoryStyleReferences: await loadCategoryStyleReferences(options, plan, slot, snapshot),
+  };
 }
 
 function assertSourceAssetInPlan(plan, sourceAssetId) {
@@ -764,7 +893,15 @@ async function loadMaterializeInput(options, message, boundary) {
 async function loadFinalizeInput(options, boundary) {
   const parentPlan = mapPlan(await loadActiveBundle(options, boundary));
   assertPlanScope(parentPlan, boundary);
-  return { parentPlan, repository: options.contentPlanRepository };
+  return {
+    parentPlan,
+    repository: Object.freeze({
+      listAcceptedSourceMaterializations: (input) => options.sourceMaterializationRepository
+        .listAcceptedSourceMaterializations(input),
+      createDerivedMaterializedPlan: (input) => options.contentPlanRepository
+        .createDerivedMaterializedPlan(input),
+    }),
+  };
 }
 
 function assertDerivedPlan(plan) {
@@ -796,11 +933,14 @@ async function loadImageInput(options, message, boundary) {
   if (!plainObject(projected) || !plainObject(projected.plan) || !plainObject(projected.slot)
     || !Array.isArray(projected.references)) throw evidenceInvalid();
   const { plan, slot } = projected;
+  const { categoryStyle, categoryStyleReferences } = await loadCategoryStyle(options, row, plan, slot);
   const ratio = config.image?.ratio;
   const resolution = config.image?.resolution;
   return {
     plan,
     slot,
+    categoryStyle,
+    categoryStyleReferences,
     sourceAssetLoader: options.sourceAssetLoader,
     repository: options.generationRepository,
     gateway: options.gateway,
@@ -814,21 +954,32 @@ async function loadImageInput(options, message, boundary) {
     regeneration: plan.regeneration,
     storage: options.storage,
     logger: options.logger,
-    maxAttempts: options.maxAttempts,
+    maxAttempts: slot.role === "MAIN" ? options.maxAttempts : Math.min(options.maxAttempts, 2),
   };
 }
 
 async function loadAcceptedAssets(options, boundary) {
   const result = await safeQuery(options.pool,
-    `SELECT id,account_id,job_id,item_id,plan_id,visual_group_key,slot_key,role,
-            attempt_identity_hash,attempt_no,input_hash,generation_size,status,content_hash,
-            object_key_version,object_key,content_type,width,height,size_bytes,gateway_request_id,
-            checker_request_id,model_evidence,profile_id,profile_version,model_name,plan_hash,
-            source_hash,strategy_hash,config_hash,visual_groups_hash,prompt_template_version,
-            prompt_hash,checker_result,source_asset_evidence,regeneration
-       FROM ai_generation_assets
-      WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND status='ACCEPTED'
-      ORDER BY slot_key ASC,id ASC`,
+    `SELECT asset.id,asset.account_id,asset.job_id,asset.item_id,asset.plan_id,
+            asset.visual_group_key,asset.slot_key,asset.role,asset.attempt_identity_hash,
+            asset.attempt_no,asset.input_hash,asset.generation_size,asset.status,asset.content_hash,
+            asset.object_key_version,asset.object_key,asset.content_type,asset.width,asset.height,
+            asset.size_bytes,asset.gateway_request_id,asset.checker_request_id,asset.model_evidence,
+            asset.profile_id,asset.profile_version,asset.model_name,asset.plan_hash,asset.source_hash,
+            asset.strategy_hash,asset.config_hash,asset.visual_groups_hash,asset.prompt_template_version,
+            asset.prompt_hash,asset.checker_result,asset.source_asset_evidence,asset.regeneration,
+            asset.expected_status_version
+       FROM ai_generation_assets AS asset
+       JOIN ai_content_plans AS plan
+         ON plan.account_id=asset.account_id AND plan.job_id=asset.job_id
+           AND plan.item_id=asset.item_id AND plan.id=asset.plan_id
+       CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'slots') AS planned_slot
+      WHERE asset.account_id=$1 AND asset.job_id=$2 AND asset.item_id=$3 AND asset.plan_id=$4
+        AND asset.status='ACCEPTED' AND planned_slot->>'slotKey'=asset.slot_key
+        AND (plan.prompt_template_version NOT IN ('AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4','AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6')
+          OR jsonb_array_length(planned_slot->'claims')>0
+          OR asset.checker_result->>'textForbidden'='true')
+      ORDER BY asset.slot_key ASC,asset.id ASC`,
     [boundary.accountId, boundary.jobId, boundary.itemId, boundary.activeContentPlanId]);
   if (!result || !Array.isArray(result.rows)) throw evidenceInvalid();
   const assets = result.rows.map(mapAcceptedAsset);
@@ -876,7 +1027,7 @@ async function loadRichInput(options, boundary) {
     planHash: plan.planHash,
     sourceHash: plan.sourceHash,
     promptTemplateVersion: plan.promptTemplateVersion,
-    maxAttempts: options.maxAttempts,
+    maxAttempts: options.richContentMaxAttempts,
     leaseOwner: options.richContentLeaseOwner,
   };
 }

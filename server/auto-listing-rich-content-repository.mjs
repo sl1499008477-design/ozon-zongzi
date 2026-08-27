@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
+
+const DEFAULT_RICH_CONTENT_LEASE_MS = 300_000;
 import { sha256, verifyPersistedAcceptedGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
-import { evaluateGeneratedCheckerEvidence } from "./auto-listing-result-checker.mjs";
 import { buildRichContentEvidenceIdentity, validateRichContentDocument } from "./auto-listing-rich-content.mjs";
+import { isCompatibleAiModelIdentity } from "./auto-listing-ai-model-identity.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
 const SCOPE_KEYS = ["accountId", "jobId", "itemId", "planId"];
@@ -47,10 +49,16 @@ function validTimestamp(value) {
     || (typeof value === "string" && Number.isFinite(Date.parse(value)));
 }
 
-function validModelEvidence(value, modelName) {
-  return exactObject(value, new Set(["requestedTextModel", "gatewayReportedTextModel", "gatewayReportedTextModelPresent"]))
-    && value.requestedTextModel === modelName && value.gatewayReportedTextModel === modelName
-    && value.gatewayReportedTextModelPresent === true;
+function validModelEvidence(value, modelName, gatewayRequestId, inputHash) {
+  if (!exactObject(value, new Set(["requestedTextModel", "gatewayReportedTextModel", "gatewayReportedTextModelPresent"]))
+    || value.requestedTextModel !== modelName) return false;
+  const fallbackRequestId = `auto-listing-rich-fallback-${inputHash}`;
+  if (value.gatewayReportedTextModelPresent === false) {
+    return value.gatewayReportedTextModel === "" && gatewayRequestId === fallbackRequestId;
+  }
+  return value.gatewayReportedTextModelPresent === true
+    && gatewayRequestId !== fallbackRequestId
+    && isCompatibleAiModelIdentity(modelName, value.gatewayReportedTextModel);
 }
 
 function validFactEvidence(value) {
@@ -77,12 +85,44 @@ function validSourceAssetEvidence(value) {
       && Number.isInteger(entry.size) && entry.size > 0);
 }
 
+function normalizedFactUnit(value) {
+  if (value === null) return null;
+  const unit = value.normalize("NFKC").toLocaleLowerCase("ru-RU").trim();
+  return ({ "мл": "ml", "л": "l", "см": "cm", "мм": "mm", "м": "m", "кг": "kg", "г": "g", "вт": "w" }[unit] || unit);
+}
+
+function derivedNumericProjection(value) {
+  const normalized = value.normalize("NFKC").trim();
+  const exact = normalized.match(/^(-?\d+(?:[.,]\d+)?)\s*([\p{L}%°]{1,16})$/u);
+  const labelled = normalized.match(/(?:,\s*([\p{L}%°]{1,16})|\(\s*([\p{L}%°]{1,16})\s*\))\s*:\s*(-?\d+(?:[.,]\d+)?)\s*$/u);
+  const number = exact?.[1] ?? labelled?.[3];
+  const rawUnit = exact?.[2] ?? labelled?.[1] ?? labelled?.[2];
+  if (!number || !rawUnit) return null;
+  return {
+    numericValue: Number(number.replace(",", ".")),
+    unit: normalizedFactUnit(rawUnit),
+  };
+}
+
+function sameNumericProjection(left, right) {
+  if (left.numericValue === null && right.numericValue === null) return true;
+  if (typeof left.numericValue === "number" && typeof right.numericValue === "number") {
+    return left.numericValue === right.numericValue && normalizedFactUnit(left.unit) === normalizedFactUnit(right.unit);
+  }
+  const projected = derivedNumericProjection(left.value);
+  const explicit = left.numericValue === null ? right : left;
+  return projected !== null && explicit.numericValue === projected.numericValue
+    && normalizedFactUnit(explicit.unit) === projected.unit;
+}
+
 function validImageModelEvidence(value, modelName) {
   const keys = new Set(["requestedImageModel", "gatewayReportedImageModel", "gatewayReportedImageModelPresent", "orchestratorModel"]);
   return exactObject(value, keys) && value.requestedImageModel === modelName
     && typeof value.gatewayReportedImageModel === "string" && typeof value.gatewayReportedImageModelPresent === "boolean"
     && typeof value.orchestratorModel === "string"
-    && (value.gatewayReportedImageModelPresent ? value.gatewayReportedImageModel === modelName : value.gatewayReportedImageModel === "");
+    && (value.gatewayReportedImageModelPresent
+      ? isCompatibleAiModelIdentity(modelName, value.gatewayReportedImageModel)
+      : value.gatewayReportedImageModel === "");
 }
 
 function validRegeneration(value) {
@@ -90,38 +130,55 @@ function validRegeneration(value) {
     && clean(value.requestId) && clean(value.reason));
 }
 
-const normalizedUnit = (value) => value === null ? null : ({ "мл": "ml", "л": "l", "см": "cm", "мм": "mm", "м": "m", "кг": "kg", "г": "g" }[String(value).normalize("NFKC").toLocaleLowerCase("ru-RU")] || String(value).normalize("NFKC").toLocaleLowerCase("ru-RU"));
-
 function sameFactRegistry(left, right) {
   if (!validFactEvidence(left) || !validFactEvidence(right)) return false;
   const byId = new Map(left.map((fact) => [fact.factId, fact]));
   return right.every((fact) => {
     const expected = byId.get(fact.factId);
-    return expected && ["field", "kind", "value", "numericValue", "sourcePath"].every((key) => expected[key] === fact[key])
-      && normalizedUnit(expected.unit) === normalizedUnit(fact.unit);
+    return expected && ["field", "kind", "value", "sourcePath"].every((key) => expected[key] === fact[key])
+      && sameNumericProjection(expected, fact);
   });
 }
 
 function validTask4CheckerEvidence(asset, facts, reservation) {
-  try {
-    const checkerFacts = asset.checkerEvidence?.sourceFacts;
-    if (!sameFactRegistry(facts, checkerFacts)) return false;
-    const evaluated = evaluateGeneratedCheckerEvidence({
-      checkerResult: asset.checkerEvidence?.checkerResult,
-      references: asset.sourceAssetEvidence,
-      facts: checkerFacts,
-      checkerModel: reservation.modelName,
-      profile: { id: reservation.profileId, accountId: reservation.accountId, configVersion: reservation.profileVersion },
-      templateVersion: asset.promptTemplateVersion,
-      requestId: asset.checkerRequestId,
-      generatedHash: asset.contentHash,
-      checkerModelEvidence: asset.checkerEvidence?.checkerModelEvidence,
-      textRequired: asset.checkerEvidence?.textRequired,
-    });
-    return evaluated.accepted && same(evaluated.evidence, asset.checkerEvidence);
-  } catch {
-    return false;
-  }
+  const evidence = asset.checkerEvidence;
+  const checkerFacts = evidence?.sourceFacts;
+  if (!plainObject(evidence) || !plainObject(evidence.checkerResult)
+    || typeof evidence.textRequired !== "boolean"
+    || (evidence.textForbidden !== undefined && typeof evidence.textForbidden !== "boolean")
+    || !sameFactRegistry(facts, checkerFacts)
+    || !Array.isArray(evidence.sourceFactIds)
+    || evidence.sourceFactIds.length !== new Set(evidence.sourceFactIds).size
+    || evidence.sourceFactIds.some((factId) => !clean(factId)
+      || !checkerFacts.some((fact) => fact.factId === factId))
+    || !validSourceAssetEvidence(evidence.sourceAssets)
+    || evidence.generatedHash !== asset.contentHash
+    || evidence.checkerModel !== reservation.modelName
+    || evidence.profileId !== reservation.profileId
+    || evidence.profileAccountId !== reservation.accountId
+    || evidence.profileVersion !== reservation.profileVersion
+    || evidence.templateVersion !== asset.promptTemplateVersion
+    || evidence.requestId !== asset.checkerRequestId) return false;
+
+  const checkerReferences = evidence.sourceAssets.length === asset.sourceAssetEvidence.length
+    ? asset.sourceAssetEvidence : asset.sourceAssetEvidence.slice(0, 1);
+  if (!same(evidence.sourceAssets, checkerReferences)) return false;
+
+  const modelEvidence = evidence.checkerModelEvidence;
+  if (!exactObject(modelEvidence, new Set([
+    "requestedTextModel", "gatewayReportedTextModel", "gatewayReportedTextModelPresent",
+  ])) || modelEvidence.requestedTextModel !== reservation.modelName
+    || typeof modelEvidence.gatewayReportedTextModel !== "string"
+    || typeof modelEvidence.gatewayReportedTextModelPresent !== "boolean"
+    || (modelEvidence.gatewayReportedTextModelPresent
+      ? !isCompatibleAiModelIdentity(reservation.modelName, modelEvidence.gatewayReportedTextModel)
+      : modelEvidence.gatewayReportedTextModel !== "")) return false;
+
+  const hasCategoryStyle = evidence.categoryStyleGuidance !== undefined
+    || evidence.categoryStyleAssets !== undefined;
+  return !hasCategoryStyle || (plainObject(evidence.categoryStyleGuidance)
+    && Array.isArray(evidence.categoryStyleAssets)
+    && evidence.categoryStyleAssets.length >= 1 && evidence.categoryStyleAssets.length <= 3);
 }
 
 function validAssetEvidence(value, reservation) {
@@ -168,7 +225,7 @@ function validateReservation(input) {
     || !validAssetEvidence(input.assetEvidence, input)
     || !exactObject(input.requestEvidence, new Set(["requestKey", "schemaVersion"]))
     || input.requestEvidence.requestKey !== `auto-listing-rich-${input.inputHash}` || input.requestEvidence.schemaVersion !== VERSION
-    || !Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 3) {
+    || !Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 5) {
     throw attemptError();
   }
   let identity = null;
@@ -194,7 +251,7 @@ function validateReservation(input) {
 
 function validPersistenceContract(input) {
   try { validateReservation(input); } catch { return false; }
-  if (!plainObject(input) || !validModelEvidence(input.modelEvidence, input.modelName)
+  if (!plainObject(input) || !validModelEvidence(input.modelEvidence, input.modelName, input.gatewayRequestId, input.inputHash)
     || !clean(input.gatewayRequestId) || !HASH.test(input.outputHash || "")
     || input.outputHash !== sha256(input.richContent)) return false;
   const checked = validateRichContentDocument({
@@ -239,7 +296,7 @@ function verifyTerminalEcho(record, input, status) {
 /** In-memory reference implementation of the durable fenced attempt port. */
 export function createMemoryRichContentRepository({
   now = () => Date.now(),
-  leaseMs = 60_000,
+  leaseMs = DEFAULT_RICH_CONTENT_LEASE_MS,
   token = () => crypto.randomUUID(),
 } = {}) {
   if (typeof now !== "function" || typeof token !== "function" || !Number.isInteger(leaseMs) || leaseMs < 1) {
@@ -347,7 +404,7 @@ export function createMemoryRichContentRepository({
 /** PostgreSQL implementation; all transitions use the complete tenant/input/attempt/lease fence. */
 export function createPostgresRichContentRepository({
   pool,
-  leaseMs = 60_000,
+  leaseMs = DEFAULT_RICH_CONTENT_LEASE_MS,
   token = () => crypto.randomUUID(),
   id = () => crypto.randomUUID(),
   leaseOwner = "rich-content-generator",

@@ -1,15 +1,17 @@
 import crypto from "node:crypto";
 
 import { verifyAutoListingFrozenConfig } from "./auto-listing-contract.mjs";
-import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
+import { calculateAutoListingActualPrice, calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
 import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 import {
   AUTO_LISTING_OZON_RICH_CONTENT_VERSION,
   convertAutoListingRichContentToOzon,
+  isVerifiedAutoListingOzonRichContentVersion,
 } from "./auto-listing-ozon-rich-content.mjs";
 
 const BASE_VERSION_V1 = "AUTO_LISTING_LISTING_BASE_V1";
 const BASE_VERSION_V2 = "AUTO_LISTING_LISTING_BASE_V2";
+const BASE_VERSION_V3 = "AUTO_LISTING_LISTING_BASE_V3";
 const DRAFT_VERSION = "AUTO_LISTING_SUBMISSION_DRAFT_V1";
 const HASH = /^[a-f0-9]{64}$/u;
 const MAX_BASE_BYTES = 10 * 1024 * 1024;
@@ -23,6 +25,7 @@ const PRICING_EVIDENCE_V1_KEYS = new Set(["currency", "blackKopecks", "greenKope
 const PRICING_EVIDENCE_V2_KEYS = new Set([...PRICING_EVIDENCE_V1_KEYS, "currencySource"]);
 const VERSIONS_KEYS = new Set(["normalizerVersion", "categoryRuleVersion", "dictionaryVersion"]);
 const VARIANT_KEYS = new Set(["sourceVariantId", "sourceSku", "item"]);
+const PRICED_VARIANT_KEYS = new Set([...VARIANT_KEYS, "pricingEvidence"]);
 const OVERLAY_INPUT_KEYS = new Set([
   "listingBase", "visualGroups", "acceptedAssets", "acceptedRichContent", "frozenConfig",
   "targetWarehousePlatformId", "publicationPolicy",
@@ -143,7 +146,7 @@ function validateNormalizedItem(item, expectedCurrency) {
   assertJsonSafe(item, baseInvalid);
 }
 
-function normalizePricingEvidence(value) {
+function normalizePricingEvidence(value, { allowSourcePriceOnly = false } = {}) {
   const isV1 = exactObject(value, PRICING_EVIDENCE_V1_KEYS);
   const isV2 = exactObject(value, PRICING_EVIDENCE_V2_KEYS);
   const currency = normalizeAutoListingCurrency(value?.currency);
@@ -154,8 +157,8 @@ function normalizePricingEvidence(value) {
     || !HASH.test(value.evidenceHash || "")) throw baseInvalid();
   const black = BigInt(value.blackKopecks);
   const green = value.greenKopecks === null ? null : BigInt(value.greenKopecks);
-  if (black < 1n || (black >= 8_000n && (green === null || green < 1n || green > black))
-    || (black < 8_000n && green !== null)) throw baseInvalid();
+  if (black < 1n || (green !== null && (green < 1n || green > black))
+    || (black >= 8_000n && !allowSourcePriceOnly && green === null)) throw baseInvalid();
   const evidence = {
     currency,
     ...(isV2 ? { currencySource: value.currencySource } : {}),
@@ -188,12 +191,14 @@ function normalizeBaseInput(input) {
   };
   const normalizedPricing = normalizePricingEvidence(input.pricingEvidence);
   const pricingEvidence = normalizedPricing.evidence;
+  const legacyVariants = input.variants.every((variant) => exactObject(variant, VARIANT_KEYS));
+  const pricedVariants = input.variants.every((variant) => exactObject(variant, PRICED_VARIANT_KEYS));
+  if (!legacyVariants && !pricedVariants) throw baseInvalid();
   if (typeof input.richContentAttributeSupported !== "boolean") throw baseInvalid();
   const variantIds = new Set();
   const sourceSkus = new Set();
   const offerIds = new Set();
   const variants = input.variants.map((variant) => {
-    if (!exactObject(variant, VARIANT_KEYS)) throw baseInvalid();
     const sourceVariantId = text(variant.sourceVariantId);
     const sourceSku = text(variant.sourceSku, 1_000);
     validateNormalizedItem(variant.item, pricingEvidence.currency);
@@ -201,10 +206,18 @@ function normalizeBaseInput(input) {
     variantIds.add(sourceVariantId);
     sourceSkus.add(sourceSku);
     offerIds.add(variant.item.offer_id);
-    return { sourceVariantId, sourceSku, item: clone(variant.item, baseInvalid) };
+    return {
+      sourceVariantId,
+      sourceSku,
+      item: clone(variant.item, baseInvalid),
+      ...(pricedVariants
+        ? { pricingEvidence: normalizePricingEvidence(variant.pricingEvidence, { allowSourcePriceOnly: true }).evidence }
+        : {}),
+    };
   });
   const payload = {
-    version: normalizedPricing.version, ...scope, productDraft, pricingEvidence,
+    version: pricedVariants ? BASE_VERSION_V3 : normalizedPricing.version,
+    ...scope, productDraft, pricingEvidence,
     richContentAttributeSupported: input.richContentAttributeSupported, variants, versions,
   };
   assertJsonSafe(payload, baseInvalid);
@@ -219,7 +232,7 @@ export function freezeAutoListingListingBase(input = {}) {
 }
 
 function verifyListingBase(value) {
-  if (!exactObject(value, BASE_KEYS) || ![BASE_VERSION_V1, BASE_VERSION_V2].includes(value.version)
+  if (!exactObject(value, BASE_KEYS) || ![BASE_VERSION_V1, BASE_VERSION_V2, BASE_VERSION_V3].includes(value.version)
     || !HASH.test(value.canonicalHash || "")) throw baseInvalid();
   const rebuilt = normalizeBaseInput({
     accountId: value.accountId,
@@ -247,13 +260,20 @@ function verifyFrozenConfig(value) {
 function derivePrice(pricingEvidence, adjustmentKopecks, priceMultiplierMicros) {
   let calculated;
   try {
-    calculated = calculateAutoListingPrice({
-      currency: pricingEvidence.currency,
-      blackKopecks: pricingEvidence.blackKopecks,
-      ...(pricingEvidence.greenKopecks === null ? {} : { greenKopecks: pricingEvidence.greenKopecks }),
-      adjustmentKopecks,
-      priceMultiplierMicros,
-    });
+    calculated = pricingEvidence.greenKopecks === null
+      ? calculateAutoListingActualPrice({
+        currency: pricingEvidence.currency,
+        sourcePriceKopecks: pricingEvidence.blackKopecks,
+        adjustmentKopecks,
+        priceMultiplierMicros,
+      })
+      : calculateAutoListingPrice({
+        currency: pricingEvidence.currency,
+        blackKopecks: pricingEvidence.blackKopecks,
+        greenKopecks: pricingEvidence.greenKopecks,
+        adjustmentKopecks,
+        priceMultiplierMicros,
+      });
   } catch { throw overlayInvalid(); }
   if (!/^\d{1,30}$/u.test(calculated.finalPriceKopecks)) throw overlayInvalid();
   const kopecks = BigInt(calculated.finalPriceKopecks);
@@ -278,7 +298,14 @@ function verifyGroups(value, variants, base, config) {
   if (!exactObject(value, VISUAL_GROUPS_KEYS) || value.accountId !== base.accountId
     || value.jobId !== base.jobId || value.itemId !== base.itemId || !overlayText(value.planId)
     || !Array.isArray(value.groups) || value.groups.length < 1 || value.groups.length > 1_000) throw overlayInvalid();
-  const validVariantIds = new Set(variants.map((variant) => variant.sourceVariantId));
+  const variantAliases = new Map();
+  for (const variant of variants) {
+    for (const alias of [variant.sourceVariantId, `source-sku:${variant.sourceSku}`]) {
+      const known = variantAliases.get(alias);
+      if (known && known !== variant.sourceVariantId) throw overlayInvalid();
+      variantAliases.set(alias, variant.sourceVariantId);
+    }
+  }
   const mapped = new Set();
   const groupKeys = new Set();
   const variantToGroup = new Map();
@@ -306,12 +333,13 @@ function verifyGroups(value, variants, base, config) {
     groupContracts.set(key, { visualGroupKey: key, slots });
     for (const variantId of group.variantIds) {
       const id = overlayText(variantId);
-      if (!validVariantIds.has(id) || mapped.has(id)) throw overlayInvalid();
-      mapped.add(id);
-      variantToGroup.set(id, key);
+      const sourceVariantId = variantAliases.get(id);
+      if (!sourceVariantId || mapped.has(sourceVariantId)) throw overlayInvalid();
+      mapped.add(sourceVariantId);
+      variantToGroup.set(sourceVariantId, key);
     }
   }
-  if (mapped.size !== validVariantIds.size) throw overlayInvalid();
+  if (mapped.size !== variants.length) throw overlayInvalid();
   return {
     scope: { accountId: value.accountId, jobId: value.jobId, itemId: value.itemId, planId: value.planId },
     groupKeys, groupContracts, variantToGroup,
@@ -338,9 +366,12 @@ function verifyAssets(values, groupContracts, scope) {
   const orderedByGroup = new Map();
   for (const [key, bySlot] of byGroup) {
     const contract = groupContracts.get(key);
-    if (bySlot.size !== contract.slots.length) throw overlayInvalid();
-    const ordered = contract.slots.map((slot) => bySlot.get(slot.slotKey));
-    if (ordered.some((asset) => !asset)) throw overlayInvalid();
+    if (bySlot.size < 6 || bySlot.size > 13
+      || [...bySlot.values()].filter((asset) => asset.role === "MAIN").length !== 1) throw overlayInvalid();
+    const ordered = contract.slots.flatMap((slot) => {
+      const asset = bySlot.get(slot.slotKey);
+      return asset ? [asset] : [];
+    });
     orderedByGroup.set(key, ordered);
   }
   return orderedByGroup;
@@ -367,30 +398,41 @@ function replaceRichContent(attributes, richValue) {
   return copy;
 }
 
+function withoutRichContent(attributes) {
+  return clone(attributes, overlayInvalid)
+    .filter((attribute) => Number(attribute?.id) !== 11254);
+}
+
 /** Copies the frozen base and applies only the closed, typed upload overlay. */
 export function buildAutoListingSubmissionDraft(input = {}) {
   if (!exactObject(input, OVERLAY_INPUT_KEYS)) throw overlayInvalid();
   const base = verifyListingBase(input.listingBase);
   const config = verifyFrozenConfig(input.frozenConfig);
   const targetWarehousePlatformId = text(input.targetWarehousePlatformId);
-  if (config.targetStoreId !== base.targetStoreId || base.richContentAttributeSupported !== true
-    || !targetWarehousePlatformId) throw overlayInvalid();
+  if (config.targetStoreId !== base.targetStoreId || !targetWarehousePlatformId) throw overlayInvalid();
   const price = derivePrice(base.pricingEvidence, config.priceAdjustmentKopecks, config.priceMultiplierMicros);
   const { scope, groupKeys, groupContracts, variantToGroup } = verifyGroups(input.visualGroups, base.variants, base, config);
   const assetsByGroup = verifyAssets(input.acceptedAssets, groupContracts, scope);
   const richByGroup = verifyRichResults(input.acceptedRichContent, groupKeys, scope);
   const convertedByGroup = new Map();
-  for (const visualGroupKey of groupKeys) {
-    convertedByGroup.set(visualGroupKey, convertAutoListingRichContentToOzon({
-      richContent: richByGroup.get(visualGroupKey),
-      publishedAssets: assetsByGroup.get(visualGroupKey),
-      scope: { ...scope, visualGroupKey },
-      publicationPolicy: input.publicationPolicy,
-    }));
+  if (base.richContentAttributeSupported) {
+    for (const visualGroupKey of groupKeys) {
+      convertedByGroup.set(visualGroupKey, convertAutoListingRichContentToOzon({
+        richContent: richByGroup.get(visualGroupKey),
+        publishedAssets: assetsByGroup.get(visualGroupKey),
+        scope: { ...scope, visualGroupKey },
+        publicationPolicy: input.publicationPolicy,
+      }));
+    }
   }
 
   const items = base.variants.map((variant) => {
     const item = clone(variant.item, overlayInvalid);
+    const variantPrice = derivePrice(
+      variant.pricingEvidence || base.pricingEvidence,
+      config.priceAdjustmentKopecks,
+      config.priceMultiplierMicros,
+    );
     const visualGroupKey = variantToGroup.get(variant.sourceVariantId);
     const groupAssets = assetsByGroup.get(visualGroupKey);
     const images = groupAssets.map((asset) => asset.publishedUrl);
@@ -398,12 +440,19 @@ export function buildAutoListingSubmissionDraft(input = {}) {
     const mainIndex = groupAssets.findIndex((asset) => asset.role === "MAIN");
     if (mainIndex < 0) throw overlayInvalid();
     item.primary_image = images[mainIndex];
-    item.price = price.amount;
+    item.price = variantPrice.amount;
     item.currency_code = base.pricingEvidence.currency;
     const convertedRich = convertedByGroup.get(visualGroupKey);
-    item.attributes = replaceRichContent(item.attributes, convertedRich.value);
-    if (Object.hasOwn(item, "richContent")) item.richContent = convertedRich.value;
-    if (Object.hasOwn(item, "rich_content")) item.rich_content = convertedRich.value;
+    if (base.richContentAttributeSupported
+      && isVerifiedAutoListingOzonRichContentVersion(convertedRich?.version)) {
+      item.attributes = replaceRichContent(item.attributes, convertedRich.value);
+      if (Object.hasOwn(item, "richContent")) item.richContent = convertedRich.value;
+      if (Object.hasOwn(item, "rich_content")) item.rich_content = convertedRich.value;
+    } else {
+      item.attributes = withoutRichContent(item.attributes);
+      delete item.richContent;
+      delete item.rich_content;
+    }
     return item;
   });
   const stocks = items.map((item) => ({

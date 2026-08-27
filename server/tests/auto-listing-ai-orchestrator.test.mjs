@@ -89,7 +89,8 @@ function phaseInput(phase) {
   };
   if (phase === "FINALIZE_MATERIALIZED_PLAN") return { parentPlan: parent, repository: inert };
   if (phase === "GENERATE_IMAGE_SLOT") return {
-    plan, slot: plan.plan.slots[0], sourceAssetLoader: inert, repository: inert, gateway: inert,
+    plan, slot: plan.plan.slots[0], categoryStyle: null, categoryStyleReferences: [],
+    sourceAssetLoader: inert, repository: inert, gateway: inert,
     profile: inert, imageModel: "image-model", ratio: "3:4", resolution: "1K", size: "768x1024",
     quality: "medium", templateVersion: "image-v1", regeneration: null, storage: inert, logger: null, maxAttempts: 3,
   };
@@ -230,6 +231,35 @@ test("routes every phase exactly once with only server-loaded scope and returns 
   }
 });
 
+test("accepts and forwards server-loaded category style references to image generation", async () => {
+  const categoryStyleReferences = Object.freeze([Object.freeze({
+    evidenceId: "category-image-a",
+    sku: "sample-sku-a",
+    objectKey: "category-strategy/account-a/draft-a/sample-set-a/sample-a/clear-a.webp",
+    contentHash: H("9"),
+    contentType: "image/webp",
+    width: 900,
+    height: 1200,
+  })]);
+  let forwarded;
+  const outcome = await orchestrateAutoListingAiPhase({
+    message: message("GENERATE_IMAGE_SLOT"),
+    context: context("GENERATE_IMAGE_SLOT", {
+      phaseInput: { ...phaseInput("GENERATE_IMAGE_SLOT"), categoryStyleReferences },
+    }),
+  }, services({ generateImageSlot: async (input) => {
+    forwarded = input;
+    return {
+      status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+      planId: "plan-derived", slotKey: "main-1", role: "MAIN",
+    };
+  } }));
+
+  assert.equal(outcome.outcome, "IMAGE_SLOT_ACCEPTED");
+  assert.equal(outcome.failureCode, null);
+  assert.equal(forwarded.categoryStyleReferences, categoryStyleReferences);
+});
+
 test("fails closed on extra context, phase-input or dependency keys and on cross-scope identities", async () => {
   let calls = 0;
   const configured = services({ planContent: async () => { calls += 1; } });
@@ -358,11 +388,11 @@ test("generates one independently scoped rich-content document per visual group"
 
 test("maps final MAIN and minimum-six outcomes without touching accepted siblings or adding a checker phase", async () => {
   const cases = [
-    ["BLOCKED", "FAIL", "BLOCKED", "AUTO_LISTING_MAIN_IMAGE_REQUIRED"],
-    ["CONTINUE_WITHOUT_SLOT", "ACK", "IMAGE_SLOT_SKIPPED", "AUTO_LISTING_IMAGE_POLICY_REJECTED"],
-    ["ITEM_INCOMPLETE", "FAIL", "ITEM_INCOMPLETE", "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET"],
+    ["BLOCKED", "FAIL", "FAILED", "AUTO_LISTING_MAIN_IMAGE_REQUIRED", true],
+    ["CONTINUE_WITHOUT_SLOT", "ACK", "IMAGE_SLOT_SKIPPED", "AUTO_LISTING_IMAGE_POLICY_REJECTED", false],
+    ["ITEM_INCOMPLETE", "FAIL", "FAILED", "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET", true],
   ];
-  for (const [itemOutcome, disposition, expectedOutcome, expectedCode] of cases) {
+  for (const [itemOutcome, disposition, expectedOutcome, expectedCode, retryable] of cases) {
     const error = new Error("raw https://gateway.invalid response with secret");
     error.code = "AUTO_LISTING_IMAGE_POLICY_REJECTED";
     error.retryable = false;
@@ -379,6 +409,7 @@ test("maps final MAIN and minimum-six outcomes without touching accepted sibling
     assert.equal(outcome.disposition, disposition);
     assert.equal(outcome.outcome, expectedOutcome);
     assert.equal(outcome.failureCode, expectedCode);
+    assert.equal(outcome.retryable, retryable);
     assert.doesNotMatch(JSON.stringify(outcome), /gateway|secret|https?:/u);
   }
 });
@@ -403,6 +434,82 @@ test("maps known retryable failures and unknown raw failures to fixed safe outco
     assert.equal(outcome.failureCode, failureCode);
     assert.doesNotMatch(JSON.stringify(outcome), /password|private|database details|https?:/u);
   }
+});
+
+test("preserves the safe gateway rate-limit code for content planning", async () => {
+  const error = new Error("raw quota response must not leak");
+  error.code = "AI_GATEWAY_RATE_LIMITED";
+  error.retryable = true;
+  const value = await orchestrateAutoListingAiPhase({
+    message: message("PLAN_CONTENT"), context: context("PLAN_CONTENT"),
+  }, services({ planContent: async () => { throw error; } }));
+
+  assert.equal(value.disposition, "RETRY");
+  assert.equal(value.retryable, true);
+  assert.equal(value.failureCode, "AI_GATEWAY_RATE_LIMITED");
+  assert.doesNotMatch(JSON.stringify(value), /quota response|raw/u);
+});
+
+test("preserves the safe checker-unavailable code after an image was generated", async () => {
+  const error = new Error("raw checker response must not leak");
+  error.code = "CHECKER_UNAVAILABLE";
+  error.retryable = true;
+  const value = await orchestrateAutoListingAiPhase({
+    message: message("GENERATE_IMAGE_SLOT"), context: context("GENERATE_IMAGE_SLOT"),
+  }, services({ generateImageSlot: async () => { throw error; } }));
+
+  assert.equal(value.disposition, "RETRY");
+  assert.equal(value.retryable, true);
+  assert.equal(value.failureCode, "CHECKER_UNAVAILABLE");
+  assert.doesNotMatch(JSON.stringify(value), /checker response|raw/u);
+});
+
+test("preserves accurate safe checker contract failure codes", async () => {
+  for (const failureCode of ["CHECKER_RESPONSE_INVALID", "CHECKER_EVIDENCE_INVALID"]) {
+    const error = new Error(`private checker response for ${failureCode}`);
+    error.code = failureCode;
+    error.retryable = true;
+    const value = await orchestrateAutoListingAiPhase({
+      message: message("GENERATE_IMAGE_SLOT"), context: context("GENERATE_IMAGE_SLOT"),
+    }, services({ generateImageSlot: async () => { throw error; } }));
+
+    assert.equal(value.disposition, "RETRY");
+    assert.equal(value.retryable, true);
+    assert.equal(value.failureCode, failureCode);
+    assert.doesNotMatch(JSON.stringify(value), /private checker response/u);
+  }
+});
+
+test("preserves actionable image-check failure codes without exposing checker details", async () => {
+  for (const failureCode of [
+    "PRODUCT_IDENTITY_MISMATCH", "UNVERIFIED_CLAIM", "LANGUAGE_MISMATCH",
+    "PROHIBITED_CONTENT", "IMAGE_QUALITY_FAILED", "CATEGORY_STYLE_MISMATCH",
+  ]) {
+    const error = new Error(`raw checker details for ${failureCode}`);
+    error.code = failureCode;
+    error.retryable = true;
+    const value = await orchestrateAutoListingAiPhase({
+      message: message("GENERATE_IMAGE_SLOT"), context: context("GENERATE_IMAGE_SLOT"),
+    }, services({ generateImageSlot: async () => { throw error; } }));
+
+    assert.equal(value.disposition, "RETRY");
+    assert.equal(value.failureCode, failureCode);
+    assert.doesNotMatch(JSON.stringify(value), /raw checker details/u);
+  }
+});
+
+test("preserves the safe retryable gateway code when image generation never returns an image", async () => {
+  const error = new Error("raw upstream response must not leak");
+  error.code = "RETRYABLE_GATEWAY";
+  error.retryable = true;
+  const value = await orchestrateAutoListingAiPhase({
+    message: message("GENERATE_IMAGE_SLOT"), context: context("GENERATE_IMAGE_SLOT"),
+  }, services({ generateImageSlot: async () => { throw error; } }));
+
+  assert.equal(value.disposition, "RETRY");
+  assert.equal(value.retryable, true);
+  assert.equal(value.failureCode, "RETRYABLE_GATEWAY");
+  assert.doesNotMatch(JSON.stringify(value), /upstream response|raw/u);
 });
 
 test("maps materializer stale, cancelled and in-progress replays without leaking service data", async () => {

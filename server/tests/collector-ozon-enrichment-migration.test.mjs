@@ -66,3 +66,50 @@ test("migration 023 adds an account-session Seller context watermark without des
   assert.match(sql, /ADD COLUMN IF NOT EXISTS seller_context_updated_at TIMESTAMPTZ/);
   assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE|DROP TABLE/);
 });
+
+test("migration 089 expires orphaned Ozon enrichment work without deleting audit history", async () => {
+  const sql = await readFile(
+    new URL("../db/migrations/089_expire_orphan_ozon_enrichment_jobs.sql", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(sql, /UPDATE collector_ozon_enrichment_jobs/);
+  assert.match(sql, /collect_item_id IS NULL/);
+  assert.match(sql, /status IN \('PENDING', 'PROCESSING'\)/);
+  assert.match(sql, /deadline_at <= NOW\(\)/);
+  assert.match(sql, /OZON_ENRICHMENT_ORPHAN_EXPIRED/);
+  assert.match(sql, /status = 'FAILED'/);
+  assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE|DROP TABLE/);
+});
+
+test("migration 090 terminates exhausted linked retries and preserves their collect items", async () => {
+  const sql = await readFile(
+    new URL("../db/migrations/090_exhaust_ozon_enrichment_retries.sql", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(sql, /UPDATE collector_ozon_enrichment_jobs/);
+  assert.match(sql, /collect_item_id IS NOT NULL/);
+  assert.match(sql, /attempt_count >= 5/);
+  assert.match(sql, /OZON_ENRICH_RETRY_EXHAUSTED/);
+  assert.match(sql, /status = 'FAILED'/);
+  assert.match(sql, /UPDATE collect_items/);
+  assert.match(sql, /NEEDS_ATTENTION/);
+  assert.match(sql, /deleted_at IS NULL/);
+  assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE|DROP TABLE/);
+});
+
+test("migration 091 terminates active enrichment work for soft-deleted collect items", async () => {
+  const sql = await readFile(
+    new URL("../db/migrations/091_close_deleted_collect_enrichment_jobs.sql", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(sql, /UPDATE collector_ozon_enrichment_jobs/);
+  assert.match(sql, /JOIN collect_items/);
+  assert.match(sql, /deleted_at IS NOT NULL/);
+  assert.match(sql, /status = 'DELETED'/);
+  assert.match(sql, /OZON_ENRICHMENT_COLLECT_ITEM_DELETED/);
+  assert.match(sql, /status = 'FAILED'/);
+  assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE|DROP TABLE/);
+});

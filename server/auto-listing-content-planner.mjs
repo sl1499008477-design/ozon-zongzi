@@ -12,6 +12,7 @@ import {
 import {
   buildContentPlanFillSchema,
   buildFixedSkeleton,
+  factAllowedForRole,
   mergeContentPlanFill,
 } from "./auto-listing-fixed-skeleton.mjs";
 
@@ -51,7 +52,9 @@ const ATTRIBUTE_C_VALUE_KEYS = new Set(["value", "dictionary_value_id"]);
 const ATTRIBUTE_EDIT_KEYS = new Set(["id", "name", "value", "values", "required", "dictionaryId", "multiple"]);
 const ATTRIBUTE_VALUE_CAMEL_KEYS = new Set(["value", "dictionaryValueId"]);
 const ATTRIBUTE_VALUE_ONLY_KEYS = new Set(["value"]);
-const EXCLUDED_ATTRIBUTE_IDS = new Set(["4191", "11254"]);
+const EXCLUDED_ATTRIBUTE_IDS = new Set([
+  "85", "4180", "4191", "4194", "4195", "4497", "9454", "9455", "9456", "11254",
+]);
 const MATCHED_BY = new Set(["EXACT_CATEGORY_TYPE_V2", "EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"]);
 const STRATEGY_DIAGNOSTICS = new Set([
   "CATEGORY_STRATEGY_COUNT_INSTRUCTION_IGNORED",
@@ -273,27 +276,37 @@ function dimensionKind(key) {
   throw plannerError();
 }
 
-function effectiveRoleCounts(config, hasDimensions) {
+function effectiveRoleCounts(config) {
   const counts = Object.fromEntries(ROLE_ORDER.map((role) => [role, config.image.roles[ROLE_LOWER[role]]]));
   const requestedTotal = Object.values(counts).reduce((sum, value) => sum + value, 0);
-  const reasonCodes = [];
-  if (!hasDimensions && counts.SPECIFICATION > 0) {
-    counts.SPECIFICATION = 0;
-    reasonCodes.push("PRODUCT_DIMENSIONS_UNAVAILABLE");
-  }
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
   if (total < 6 || total > 13 || total > requestedTotal) throw plannerError();
   for (const role of ROLE_ORDER) {
     const [minimum, maximum] = ROLE_LIMITS[role];
     if (!Number.isInteger(counts[role]) || counts[role] < minimum || counts[role] > maximum) throw plannerError();
   }
-  return { counts, total, requestedTotal, reasonCodes };
+  return { counts, total, requestedTotal, reasonCodes: [], substitutions: [] };
 }
 
 function addFact(registry, fact) {
   const known = registry.get(fact.factId);
   if (known && !sameJson(known, fact)) throw plannerError();
   if (!known) registry.set(fact.factId, fact);
+}
+
+function identityNameByGroup(snapshot, groups) {
+  const variantsBySku = new Map();
+  for (const variant of snapshot.variants) {
+    const name = typeof variant.name === "string" ? variant.name.trim() : "";
+    const names = variantsBySku.get(variant.sku) || new Set();
+    if (name) names.add(name);
+    variantsBySku.set(variant.sku, names);
+  }
+  return new Map(groups.map((group) => {
+    const names = new Set(group.sourceSkus.flatMap((sku) => [...(variantsBySku.get(sku) || [])]));
+    const exactVariantName = names.size === 1 ? [...names][0] : "";
+    return [group.visualGroupKey, exactVariantName || snapshot.identity.primaryName];
+  }));
 }
 
 function attributeIdentifier(value) {
@@ -311,11 +324,18 @@ function safeAttributeValues(value, { allowNumber = false } = {}) {
   const values = Array.isArray(value) ? value : [value];
   if (!values.length || values.some((entry) => (typeof entry !== "string" && !(allowNumber && typeof entry === "number" && Number.isFinite(entry)))
     || !String(entry).trim() || String(entry).length > 2048)) return null;
-  return values.map((entry) => String(entry).trim());
+  return values.map((entry) => String(entry).trim().replace(/\s+/gu, " "));
 }
 
 function attributeFactKind(attributeId) {
   return `ATTRIBUTE:${sha256(attributeId).slice(0, 24)}`;
+}
+
+function namedAttributeValue(name, value) {
+  const label = typeof name === "string" ? name.trim() : "";
+  if (!label || label.length > 500) return value;
+  const combined = `${label}: ${value}`;
+  return combined.length <= 2048 ? combined : value;
 }
 
 function attributeProjection(attribute, attributeIndex) {
@@ -350,7 +370,7 @@ function attributeProjection(attribute, attributeIndex) {
       const values = safeAttributeValues(entry.value);
       if (!dictionaryValueId || !values || values.length !== 1) return null;
       projected.push({
-        attributeId, dictionaryValueId, value: values[0],
+        attributeId, dictionaryValueId, value: namedAttributeValue(attribute.name, values[0]),
         sourcePath: `attributes[${attributeIndex}].values[${valueIndex}].value#dictionary_value_id=${dictionaryValueId}`,
       });
     }
@@ -378,7 +398,7 @@ function attributeProjection(attribute, attributeIndex) {
       } else return null;
       if (!value) return null;
       projected.push({
-        attributeId, dictionaryValueId, value,
+        attributeId, dictionaryValueId, value: namedAttributeValue(attribute.name, value),
         sourcePath: `attributes[${attributeIndex}].values[${valueIndex}]${dictionaryValueId ? `#dictionaryValueId=${dictionaryValueId}` : ""}`,
       });
     }
@@ -387,12 +407,66 @@ function attributeProjection(attribute, attributeIndex) {
   return null;
 }
 
+function dimensionComponent(fact, axis) {
+  const axisKind = {
+    length: "DIMENSION_LENGTH",
+    width: "DIMENSION_WIDTH",
+    height: "DIMENSION_HEIGHT",
+  }[axis];
+  const axisLabel = { length: "Длина", width: "Ширина", height: "Высота" }[axis];
+  const raw = String(fact?.value || "").trim();
+  let match = fact?.kind === axisKind
+    ? raw.match(/^(\d+(?:[.,]\d+)?)\s*([\p{L}]+)$/u)
+    : null;
+  if (!match) {
+    match = raw.match(new RegExp(`^${axisLabel}\\s*,\\s*([^:]{1,12})\\s*:\\s*(\\d+(?:[.,]\\d+)?)$`, "iu"));
+    if (match) match = [match[0], match[2], match[1]];
+  }
+  if (!match) {
+    match = raw.match(new RegExp(`^${axisLabel}\\s*:\\s*(\\d+(?:[.,]\\d+)?)\\s*([\\p{L}]+)$`, "iu"));
+  }
+  return match ? { value: match[1], unit: match[2].toLocaleLowerCase("ru-RU") } : null;
+}
+
+function combinedDimensionFact(facts) {
+  if (facts.some((fact) => /(?:размер|дхшхв).*\d+\s*[×xх]\s*\d+\s*[×xх]\s*\d+/iu.test(String(fact?.value || "")))) {
+    return null;
+  }
+  const dimensions = Object.fromEntries(["length", "width", "height"].map((axis) => [
+    axis,
+    facts.map((fact) => dimensionComponent(fact, axis)).find(Boolean) || null,
+  ]));
+  if (Object.values(dimensions).some((entry) => !entry)
+    || new Set(Object.values(dimensions).map(({ unit }) => unit)).size !== 1) return null;
+  return {
+    factId: "fact.product.dimensions",
+    kind: "SIZE",
+    value: `Размер (Д×Ш×В): ${dimensions.length.value}×${dimensions.width.value}×${dimensions.height.value} ${dimensions.length.unit}`,
+    sourcePath: "derived.dimensions(length,width,height)",
+    visualGroupKeys: [],
+  };
+}
+
 function factRegistry(snapshot, groups, productDimensions) {
   const registry = new Map();
   const reasonCodes = [];
-  if (snapshot.identity.primaryName) addFact(registry, {
-    factId: "fact.identity.name", kind: "IDENTITY_NAME", value: snapshot.identity.primaryName,
-    sourcePath: "identity.primaryName", visualGroupKeys: [],
+  const identityNames = identityNameByGroup(snapshot, groups);
+  const groupsByIdentityName = new Map();
+  for (const [visualGroupKey, name] of identityNames) {
+    if (!name) continue;
+    const groupKeys = groupsByIdentityName.get(name) || [];
+    groupKeys.push(visualGroupKey);
+    groupsByIdentityName.set(name, groupKeys);
+  }
+  const sharedIdentityName = groupsByIdentityName.size === 1 ? [...groupsByIdentityName.keys()][0] : null;
+  for (const [name, visualGroupKeys] of groupsByIdentityName) addFact(registry, {
+    factId: sharedIdentityName || name === snapshot.identity.primaryName
+      ? "fact.identity.name"
+      : `fact.identity.name.${sha256({ name, visualGroupKeys }).slice(0, 16)}`,
+    kind: "IDENTITY_NAME",
+    value: name,
+    sourcePath: name === snapshot.identity.primaryName ? "identity.primaryName" : "variants.name",
+    visualGroupKeys: sharedIdentityName ? [] : [...visualGroupKeys].sort(compareText),
   });
   if (snapshot.identity.brand) addFact(registry, {
     factId: "fact.identity.brand", kind: "IDENTITY_BRAND", value: snapshot.identity.brand,
@@ -422,6 +496,8 @@ function factRegistry(snapshot, groups, productDimensions) {
       visualGroupKeys: [],
     }));
   });
+  const combinedDimensions = combinedDimensionFact([...registry.values()]);
+  if (combinedDimensions) addFact(registry, combinedDimensions);
   for (const group of groups) {
     for (const fact of group.factEvidence) {
       const normalized = {
@@ -462,8 +538,8 @@ export function buildPlannerInput(input = {}) {
   const regeneration = verifyRegeneration(input.regeneration);
   if (!visual.groups.length) throw plannerError();
   const productDimensions = normalizeReliableAutoListingProductDimensions(source.snapshot.productMeasurements);
-  const roles = effectiveRoleCounts(config.config, productDimensions !== null);
   const registry = factRegistry(source.snapshot, visual.groups, productDimensions);
+  const identityNames = identityNameByGroup(source.snapshot, visual.groups);
   if (visual.groups.some((group) => group.referenceImages.length === 0)) {
     throw plannerError("AUTO_LISTING_REFERENCE_IMAGE_REQUIRED", "商品缺少可追溯的来源图片");
   }
@@ -480,16 +556,29 @@ export function buildPlannerInput(input = {}) {
         evidenceKind,
       })),
       factEvidence: structuredClone(group.factEvidence),
-      requiredPreserve: appearancePreserve.length ? appearancePreserve : [source.snapshot.identity.primaryName],
+      requiredPreserve: appearancePreserve.length ? appearancePreserve : [identityNames.get(group.visualGroupKey)].filter(Boolean),
       reasonCodes: [...group.reasonCodes],
     };
   });
+  const roles = effectiveRoleCounts(config.config);
+  const productLedV6 = promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  const effectiveDensities = productLedV6
+    ? { ...strategy.densities, MAIN: "HEAVY" }
+    : strategy.densities;
+  const effectivePromptStrategy = structuredClone(strategy.promptStrategy);
+  if (productLedV6) {
+    effectivePromptStrategy.textDensityByRole.MAIN = "HEAVY";
+    if (effectivePromptStrategy.roleGuidance?.MAIN) {
+      effectivePromptStrategy.roleGuidance.MAIN.textDensity = "HEAVY";
+    }
+  }
   const plannerInput = {
     contractVersion: 1,
     factRegistry: registry.facts,
-    strategy: strategy.promptStrategy,
-    textDensityByRole: strategy.densities,
+    strategy: effectivePromptStrategy,
+    textDensityByRole: effectiveDensities,
     requestedRoleCounts: roles.counts,
+    roleSubstitutions: roles.substitutions,
     imagesPerVisualGroup: roles.total,
     visualGroups: plannerGroups,
     language: "ru",
@@ -658,7 +747,7 @@ export async function createContentPlan(input = {}) {
     visualGroupsCapture: input.visualGroupsCapture,
     profileRef: { id: gatewayProfile.id, configVersion: gatewayProfile.configVersion, textModel: gatewayProfile.textModel },
     promptTemplateVersion: planningContract === "FIXED_SKELETON_V1"
-      ? "AUTO_LISTING_CONTENT_PLAN_FILL_V1" : input.promptTemplateVersion,
+      ? "AUTO_LISTING_CONTENT_PLAN_FILL_V6" : input.promptTemplateVersion,
     prohibitedClaims: input.prohibitedClaims,
     regeneration: input.regeneration,
   });
@@ -749,7 +838,6 @@ export async function createContentPlan(input = {}) {
           model: plannerContext.plannerInput.plannerModel,
           correlationId: typeof input.correlationId === "string" && input.correlationId.trim() ? input.correlationId.trim() : `auto-listing:${scope.jobId}:${scope.itemId}`,
           requestKey,
-          timeoutMs: 120_000,
           jsonSchema: fixedSkeleton ? buildContentPlanFillSchema(fixedSkeleton) : CONTENT_PLAN_JSON_SCHEMA,
           prompt: [
             fixedSkeleton
@@ -760,7 +848,7 @@ export async function createContentPlan(input = {}) {
             canonicalText(promptPayload),
             "</UNTRUSTED_SOURCE_FACTS_JSON>",
             fixedSkeleton
-              ? "只返回符合指定 JSON Schema 的 fills；每条文案必须由该位置允许的 sourceFactIds 逐项证明。"
+              ? "只返回符合指定 JSON Schema 的 fills；每条文案必须原样选用该位置 allowedClaimsBySlot 中的 value，并引用同一候选的 factId 和 kind，不得改写、缩写、合并或补充。规格槽存在尺寸候选时必须至少选择一条尺寸文案。"
               : "只返回符合指定 JSON Schema 且能由 sourceFactIds 逐项证明的 ContentPlan。",
           ].join("\n"),
         });

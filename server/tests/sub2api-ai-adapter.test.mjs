@@ -859,7 +859,7 @@ test("text model evidence rejects mismatches and records matching or absent upst
     (error) => error?.code === "AI_GATEWAY_MODEL_MISMATCH" && error?.retryable === false,
   );
 
-  for (const reportedModel of ["gpt-text", undefined]) {
+  for (const reportedModel of ["gpt-text", "gpt-text-2026-03-05", undefined]) {
     const gateway = adapter(async () => jsonResponse({
       ...(reportedModel ? { model: reportedModel } : {}),
       output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
@@ -1098,7 +1098,7 @@ test("Responses terminal failures map only safe type code and status without lea
   const cases = [
     {
       event: { type: "response.failed", response: { status: "failed", error: { type: "rate_limit_error", code: "rate_limit_exceeded", status: 429, message: sensitive } } },
-      code: "RETRYABLE_GATEWAY", retryable: true, status: 429,
+      code: "AI_GATEWAY_RATE_LIMITED", retryable: true, status: 429,
     },
     {
       event: { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "timeout" }, error: { message: sensitive } } },
@@ -1325,7 +1325,7 @@ test("image model evidence rejects direct Images API mismatches and accepts matc
     })), (error) => error?.code === "AI_GATEWAY_MODEL_MISMATCH");
   }
 
-  for (const reportedModel of ["gpt-image", undefined]) {
+  for (const reportedModel of ["gpt-image", "gpt-image-2026-03-05", undefined]) {
     const gateway = adapter(async () => jsonResponse({
       ...(reportedModel ? { model: reportedModel } : {}),
       data: [{ b64_json: PNG_1X1 }],
@@ -1715,7 +1715,7 @@ test("HTTP authentication and transient statuses map to stable safe errors", asy
     [401, "NON_RETRYABLE_AUTH", false],
     [403, "NON_RETRYABLE_AUTH", false],
     [408, "RETRYABLE_GATEWAY", true],
-    [429, "RETRYABLE_GATEWAY", true],
+    [429, "AI_GATEWAY_RATE_LIMITED", true],
     [500, "RETRYABLE_GATEWAY", true],
     [502, "RETRYABLE_GATEWAY", true],
     [503, "RETRYABLE_GATEWAY", true],
@@ -1744,6 +1744,19 @@ test("malformed successful text and image responses are INVALID_GATEWAY_RESPONSE
   );
 });
 
+test("successful malformed structured text preserves the upstream request id and safe failing field", async () => {
+  const gateway = adapter(async () => jsonResponse({
+    output: [{ type: "message", content: [{ type: "output_text", text: '{"ok":"not-a-boolean"}' }] }],
+  }, { headers: { "x-request-id": "checker-http-1" } }));
+
+  await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+    assert.equal(error?.code, "INVALID_GATEWAY_RESPONSE");
+    assert.equal(error?.requestId, "checker-http-1");
+    assert.equal(error?.failureField, "/ok");
+    return true;
+  });
+});
+
 test("decoded base64 image limits are enforced before an oversized payload can be accepted", async () => {
   const gateway = createSub2ApiAdapter({
     fetchImpl: async () => jsonResponse({ data: [{ b64_json: PNG_1X1 }] }),
@@ -1768,6 +1781,28 @@ test("request timeout and caller cancellation abort fetch with distinct stable c
   );
   const controller = new AbortController();
   const pending = gateway.createTextResponse(textInput({ timeoutMs: 5_000, signal: controller.signal }));
+  controller.abort();
+  await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED" && error?.retryable === false);
+});
+
+test("cost-bearing requests may wait without an application deadline while caller cancellation remains active", async () => {
+  let requestSignal;
+  const completed = adapter(async (_url, init) => {
+    requestSignal = init.signal;
+    return jsonResponse({
+      model: "gpt-text",
+      output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+    });
+  });
+  assert.equal((await completed.createTextResponse(textInput({ timeoutMs: undefined }))).value.ok, true);
+  assert.equal(requestSignal instanceof AbortSignal, true);
+  assert.equal(requestSignal.aborted, false);
+
+  const waiting = adapter(async (_url, init) => new Promise((resolve, reject) => {
+    init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+  }));
+  const controller = new AbortController();
+  const pending = waiting.createTextResponse(textInput({ timeoutMs: undefined, signal: controller.signal }));
   controller.abort();
   await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED" && error?.retryable === false);
 });

@@ -27,6 +27,18 @@ test("retry service forwards one closed account-scoped command and exposes only 
   assert.deepEqual(calls, [command]);
 });
 
+test("retry service accepts the repository result for a 77-slot multi-variant retry", async () => {
+  const service = createAutoListingAiRetryService({
+    repository: Object.freeze({
+      async retryAutoListingAiItem() {
+        return { status: "GENERATING", statusVersion: 5, recoveryPoint: "GENERATION", enqueued: 77, duplicate: false };
+      },
+    }),
+  });
+
+  assert.equal((await service.retry(command)).enqueued, 77);
+});
+
 test("retry service rejects open inputs, unsafe scopes and raw repository failures", async () => {
   const service = createAutoListingAiRetryService({
     repository: Object.freeze({

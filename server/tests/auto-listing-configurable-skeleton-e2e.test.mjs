@@ -9,7 +9,7 @@ import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs"
 import { applyAutoListingAiPhaseOutcome } from "../auto-listing-ai-workflow-postgres.mjs";
 import { orchestrateAutoListingAiPhase } from "../auto-listing-ai-orchestrator.mjs";
 import { createContentPlan, buildPlannerInput } from "../auto-listing-content-planner.mjs";
-import { buildFixedSkeleton } from "../auto-listing-fixed-skeleton.mjs";
+import { buildContentPlanFillSchema, buildFixedSkeleton } from "../auto-listing-fixed-skeleton.mjs";
 import { selectAutoListingPlanningContract } from "../auto-listing-planning-contract.mjs";
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 import { buildVisualGroups } from "../auto-listing-visual-groups.mjs";
@@ -27,7 +27,7 @@ const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canoni
 test("configurable fixed-skeleton migration suite tracks the latest migration without weakening its 074 upgrade coverage", async () => {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "088_auto_listing_batch_order_multiplier.sql");
+  assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
 });
 
 const roles = Object.freeze({
@@ -110,17 +110,22 @@ function plannerArgs(roleCounts, source = sourceCapture()) {
 }
 
 function validFill(skeleton) {
+  const schema = buildContentPlanFillSchema(skeleton);
   return {
     version: 1,
     language: "ru",
     fills: Object.fromEntries(skeleton.plan.slots.map((slot) => {
-      if (slot.role === "MAIN") return [slot.slotKey, { claims: [] }];
-      const fact = skeleton.allowedClaimsBySlot[slot.slotKey][0];
-      return [slot.slotKey, { claims: [{
-        text: fact.kind === "DIMENSION_HEIGHT" ? "Высота 22 см" : `Характеристика: ${fact.value}`,
+      const minimum = schema.properties.fills.properties[slot.slotKey].properties.claims.minItems;
+      const allowed = skeleton.allowedClaimsBySlot[slot.slotKey];
+      const ordered = slot.role === "SPECIFICATION"
+        ? [...allowed].sort((left, right) => Number(!/DIMENSION_|размер/iu.test(`${left.kind} ${left.value}`))
+          - Number(!/DIMENSION_|размер/iu.test(`${right.kind} ${right.value}`)))
+        : allowed;
+      return [slot.slotKey, { claims: ordered.slice(0, minimum).map((fact) => ({
+        text: fact.value,
         claimType: fact.kind,
         sourceFactIds: [fact.factId],
-      }] }];
+      })) }];
     })),
   };
 }
@@ -130,7 +135,7 @@ async function planFixed(roleCounts, counters, mutateFill = (value) => value) {
   const context = buildPlannerInput({
     ...args,
     profileRef: { id: "profile-a", configVersion: 3, textModel: "text-model-a" },
-    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1",
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
   });
   const skeleton = buildFixedSkeleton({ plannerContext: context });
   const fill = mutateFill(structuredClone(validFill(skeleton)));
@@ -284,7 +289,7 @@ if (!enabled) {
       await client.query(`SET search_path TO ${quote(schema)}, public`);
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
       assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-      assert.equal(migrations.at(-1), "088_auto_listing_batch_order_multiplier.sql");
+      assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
       for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       const schemaRows = await client.query(
         `SELECT table_name,column_name FROM information_schema.columns
@@ -439,7 +444,7 @@ if (!enabled) {
 
     const context = buildPlannerInput({
       ...plannerArgs(roles.six), profileRef: { id: "profile-a", configVersion: 3, textModel: "text-model-a" },
-      promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1",
+      promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
     });
     const hostile = structuredClone(context);
     hostile.plannerInput.visualGroups.push({ ...structuredClone(hostile.plannerInput.visualGroups[0]), visualGroupKey: "group-b" });

@@ -4,6 +4,10 @@ import {
   verifyAutoListingFrozenConfig,
 } from "./auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
+import {
+  isSafeAutoListingBlockedCancellationFailure,
+  isSafeAutoListingPreOzonRetryFailure,
+} from "./auto-listing-state-machine.mjs";
 import { AUTO_LISTING_PLANNING_CONTRACTS } from "./auto-listing-planning-contract.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
 import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
@@ -11,6 +15,7 @@ import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
 import {
   buildAutoListingBlockedSourceEvidence,
   buildAutoListingSourceSnapshot,
+  finalizeAutoListingSourceAttributes,
 } from "./auto-listing-source-snapshot.mjs";
 import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 import {
@@ -394,11 +399,22 @@ function safeItemActions(source) {
   const status = safeString(source.status) || "";
   const hasReview = Boolean(safeString(source.activeContentPlanId) || safeString(source.active_content_plan_id));
   const recoveryPoint = safeString(source.recoveryPoint) || safeString(source.recovery_point) || "";
-  const cancellable = ["CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "READY_FOR_REVIEW", "UPLOAD_QUEUED", "RETRYABLE_ERROR"].includes(status);
+  const failureCode = safeString(source.failureCode) || safeString(source.failure_code) || "";
+  const recoverableBlockedFailure = status === "BLOCKED" && [
+    "AUTO_LISTING_MAIN_IMAGE_REQUIRED",
+    "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET",
+    "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID",
+    "AUTO_LISTING_RICH_CONTENT_ATTEMPTS_EXHAUSTED",
+    "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID",
+  ].includes(failureCode);
+  const uploadPolicyPreflightBlocked = status === "BLOCKED"
+    && isSafeAutoListingPreOzonRetryFailure(failureCode);
+  const cancellable = ["CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "READY_FOR_REVIEW", "UPLOAD_QUEUED", "RETRYABLE_ERROR"].includes(status)
+    || (status === "BLOCKED" && isSafeAutoListingBlockedCancellationFailure(failureCode));
   return Object.freeze({
     review: hasReview && ["READY_FOR_REVIEW", "SUCCEEDED"].includes(status),
-    approve: hasReview && status === "READY_FOR_REVIEW",
-    retry: status === "RETRYABLE_ERROR" && ["PLANNING", "GENERATION"].includes(recoveryPoint),
+    approve: hasReview && (status === "READY_FOR_REVIEW" || uploadPolicyPreflightBlocked),
+    retry: (status === "RETRYABLE_ERROR" && ["PLANNING", "GENERATION"].includes(recoveryPoint)) || recoverableBlockedFailure,
     regenerate: hasReview && status === "READY_FOR_REVIEW",
     cancel: cancellable,
   });
@@ -748,8 +764,9 @@ export function createAutoListingService({
         if (item.status !== "SOURCE_READY") return item;
         assertCategoryLeaseActive(signal);
         const source = sources[item.sourceOrder - 1];
-        const listingBaseTemplate = await prepareListingBase({
+        const preparedListingBase = await prepareListingBase({
           accountId,
+          brandMode: config.brandMode || "PREFER_SOURCE",
           source,
           targetStore,
           targetCategory: item.snapshot.targetCategory,
@@ -759,9 +776,44 @@ export function createAutoListingService({
             blackKopecks: item.snapshot.priceEvidence.blackKopecks,
             greenKopecks: item.snapshot.priceEvidence.greenKopecks || null,
           },
+          variantPricingEvidence: item.snapshot.variants.map((variant) => ({
+            sourceSku: variant.sku,
+            currency: variant.priceEvidence.currency,
+            ...(variant.priceEvidence.currencySource === undefined
+              ? {} : { currencySource: variant.priceEvidence.currencySource }),
+            blackKopecks: String(variant.priceEvidence.blackKopecks ?? ""),
+            greenKopecks: variant.priceEvidence.greenKopecks === undefined
+              || variant.priceEvidence.greenKopecks === null
+              || variant.priceEvidence.greenKopecks === ""
+              ? null : String(variant.priceEvidence.greenKopecks),
+          })),
           signal,
         });
-        return { ...item, listingBaseTemplate };
+        const { contentAttributes, ...listingBaseTemplate } = preparedListingBase;
+        const hasManualAttributes = item.snapshot.attributes.some((attribute) =>
+          attribute && typeof attribute === "object" && !Array.isArray(attribute)
+          && typeof attribute.name === "string" && attribute.name.trim()
+          && Array.isArray(attribute.values) && attribute.values.some((entry) => {
+            const value = entry && typeof entry === "object" && !Array.isArray(entry) ? entry.value : entry;
+            return Boolean((typeof value === "string" && value.trim())
+              || (typeof value === "number" && Number.isFinite(value)));
+          }));
+        const sourceCapture = finalizeAutoListingSourceAttributes(
+          item,
+          hasManualAttributes || !Array.isArray(contentAttributes)
+            ? item.snapshot.attributes : contentAttributes,
+        );
+        return {
+          ...item,
+          ...sourceCapture,
+          sourceVersion: sourceCapture.snapshot.source.sourceVersion,
+          effectiveImageConfig: deriveEffectiveAutoListingImageConfig({
+            configSnapshot: config,
+            configHash,
+            sourceCapture,
+          }),
+          listingBaseTemplate,
+        };
       }));
       const preparationFailure = preparedResults.find((result) => result.status === "rejected");
       assertCategoryLeaseActive(signal);

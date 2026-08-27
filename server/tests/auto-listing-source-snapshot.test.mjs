@@ -5,6 +5,7 @@ import {
   buildAutoListingBlockedSourceEvidence,
   buildAutoListingSourceSnapshot,
   canonicalAutoListingSourceSnapshot,
+  finalizeAutoListingSourceAttributes,
   verifyAutoListingBlockedSourceEvidence,
   verifyAutoListingSourceSnapshot,
 } from "../auto-listing-source-snapshot.mjs";
@@ -128,6 +129,50 @@ test("builds an isolated snapshot preserving listing facts and multi-variant evi
   assert.deepEqual(input, before);
 });
 
+test("uses persisted Ozon source attributes when the editable draft has no attribute facts", () => {
+  const sourceAttributes = [
+    { key: "8145", value: "80", dictionary_value_id: "0" },
+    { key: "8111", value: "IP55", dictionary_value_id: "0" },
+  ];
+  const listingDraft = structuredClone(collectItem().listingDraft);
+  delete listingDraft.attributes;
+  listingDraft.sourceCategory = { attributes: sourceAttributes };
+
+  const result = buildAutoListingSourceSnapshot(source({ collectItem: collectItem({ listingDraft }) }));
+
+  assert.deepEqual(result.snapshot.attributes, sourceAttributes);
+  assert.notEqual(result.snapshot.attributes, sourceAttributes);
+});
+
+test("prefers named editable category attributes over raw Ozon source attributes", () => {
+  const listingDraft = {
+    ...collectItem().listingDraft,
+    attributes: [],
+    categoryAttributes: [
+      { id: 8145, name: "Мощность, Вт", value: "80", values: ["80"], required: false, dictionaryId: 0, multiple: false },
+    ],
+    sourceCategory: { attributes: [{ key: "8145", value: "80", dictionary_value_id: "0" }] },
+  };
+  const result = buildAutoListingSourceSnapshot(source({ collectItem: collectItem({ listingDraft }) }));
+  assert.deepEqual(result.snapshot.attributes, listingDraft.categoryAttributes);
+});
+
+test("finalizes source attributes with a deterministic derived source version", () => {
+  const captured = buildAutoListingSourceSnapshot(source());
+  const attributes = [
+    { id: 8145, name: "Мощность, Вт", value: "80", values: ["80"], required: false, dictionaryId: 0, multiple: false },
+  ];
+  const replaced = finalizeAutoListingSourceAttributes(captured, attributes);
+  const repeated = finalizeAutoListingSourceAttributes(captured, attributes);
+  const relabeled = finalizeAutoListingSourceAttributes(captured, [{ ...attributes[0], name: "Мощность" }]);
+  assert.deepEqual(replaced.snapshot.attributes, attributes);
+  assert.match(replaced.snapshot.source.sourceVersion, /^[a-f0-9]{64}$/u);
+  assert.notEqual(replaced.snapshot.source.sourceVersion, captured.snapshot.source.sourceVersion);
+  assert.equal(replaced.snapshot.identity.sourceVersion, replaced.snapshot.source.sourceVersion);
+  assert.equal(repeated.snapshot.source.sourceVersion, replaced.snapshot.source.sourceVersion);
+  assert.notEqual(relabeled.snapshot.source.sourceVersion, replaced.snapshot.source.sourceVersion);
+});
+
 test("an Excel snapshot traces the import row while separately verifying its collected item", () => {
   const result = buildAutoListingSourceSnapshot(source({
     sourceType: "EXCEL_SKU",
@@ -167,6 +212,32 @@ test("preserves variant price, media and grouping facts and hashes every frozen 
     const next = buildAutoListingSourceSnapshot(source({ collectItem: collectItem({ listingDraft: mutate(baseline.collectItem.listingDraft) }) }));
     assert.notEqual(next.snapshotHash, first.snapshotHash);
   }
+});
+
+test("does not borrow the primary variant discount price for sibling variants", () => {
+  const draft = structuredClone(collectItem().listingDraft);
+  draft.variants = [
+    { ...draft.variants[0] },
+    {
+      sku: "sku-sibling",
+      offerId: "offer-sibling",
+      name: "Sibling product",
+      price: "250.00",
+      currency: "RUB",
+      images: ["https://media.example/sibling.jpg"],
+    },
+  ];
+
+  const captured = buildAutoListingSourceSnapshot(source({
+    collectItem: collectItem({ listingDraft: draft }),
+  }));
+
+  assert.deepEqual(captured.snapshot.variants[1].priceEvidence, {
+    blackKopecks: "25000",
+    greenKopecks: null,
+    currency: "RUB",
+    currencySource: "SOURCE",
+  });
 });
 
 test("requires complete trusted scope and makes raw evidence and arrays JSON-exact", () => {

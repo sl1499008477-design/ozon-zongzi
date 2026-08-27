@@ -36,6 +36,28 @@ const parseIntegerKopecks = (value, { required, positive }) => {
 const roundHalfUp = (numerator, denominator) =>
   (numerator + denominator / 2n) / denominator;
 
+function finalizePrice({ currency, branch, realPriceKopecks, adjustmentKopecks, priceMultiplierMicros, facts }) {
+  const adjustment = parseIntegerKopecks(adjustmentKopecks, { required: false, positive: false });
+  const multiplier = parseIntegerKopecks(
+    priceMultiplierMicros ?? String(MULTIPLIER_SCALE), { required: true, positive: true },
+  );
+  const preMultiplierPriceKopecks = realPriceKopecks + adjustment;
+  if (preMultiplierPriceKopecks <= 0n) throw priceError(PRICE_FINAL_NOT_POSITIVE);
+  const finalPriceKopecks = roundHalfUp(preMultiplierPriceKopecks * multiplier, MULTIPLIER_SCALE);
+  if (finalPriceKopecks <= 0n) throw priceError(PRICE_FINAL_NOT_POSITIVE);
+  if (finalPriceKopecks > POSTGRES_BIGINT_MAX) throw priceError(PRICE_INPUT_INVALID);
+  return {
+    currency,
+    branch,
+    ...facts,
+    realPriceKopecks: String(realPriceKopecks),
+    adjustmentKopecks: String(adjustment),
+    preMultiplierPriceKopecks: String(preMultiplierPriceKopecks),
+    priceMultiplierMicros: String(multiplier),
+    finalPriceKopecks: String(finalPriceKopecks),
+  };
+}
+
 export function calculateAutoListingPrice(input = {}) {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     throw priceError(PRICE_INPUT_INVALID);
@@ -45,11 +67,6 @@ export function calculateAutoListingPrice(input = {}) {
   if (!currency || currency !== input.currency) throw priceError(PRICE_CURRENCY_UNSUPPORTED);
 
   const blackKopecks = parseIntegerKopecks(input.blackKopecks, { required: true, positive: true });
-  const adjustmentKopecks = parseIntegerKopecks(input.adjustmentKopecks, { required: false, positive: false });
-  const priceMultiplierMicros = parseIntegerKopecks(
-    input.priceMultiplierMicros ?? String(MULTIPLIER_SCALE), { required: true, positive: true },
-  );
-
   let branch;
   let greenKopecks;
   let realPriceKopecks;
@@ -63,21 +80,33 @@ export function calculateAutoListingPrice(input = {}) {
     realPriceKopecks = roundHalfUp(blackKopecks * 10_000n, 10_715n);
   }
 
-  const preMultiplierPriceKopecks = realPriceKopecks + adjustmentKopecks;
-  if (preMultiplierPriceKopecks <= 0n) throw priceError(PRICE_FINAL_NOT_POSITIVE);
-  const finalPriceKopecks = roundHalfUp(preMultiplierPriceKopecks * priceMultiplierMicros, MULTIPLIER_SCALE);
-  if (finalPriceKopecks <= 0n) throw priceError(PRICE_FINAL_NOT_POSITIVE);
-  if (finalPriceKopecks > POSTGRES_BIGINT_MAX) throw priceError(PRICE_INPUT_INVALID);
-
-  return {
+  return finalizePrice({
     currency,
     branch,
-    blackKopecks: String(blackKopecks),
-    ...(greenKopecks === undefined ? {} : { greenKopecks: String(greenKopecks) }),
-    realPriceKopecks: String(realPriceKopecks),
-    adjustmentKopecks: String(adjustmentKopecks),
-    preMultiplierPriceKopecks: String(preMultiplierPriceKopecks),
-    priceMultiplierMicros: String(priceMultiplierMicros),
-    finalPriceKopecks: String(finalPriceKopecks),
-  };
+    realPriceKopecks,
+    adjustmentKopecks: input.adjustmentKopecks,
+    priceMultiplierMicros: input.priceMultiplierMicros,
+    facts: {
+      blackKopecks: String(blackKopecks),
+      ...(greenKopecks === undefined ? {} : { greenKopecks: String(greenKopecks) }),
+    },
+  });
+}
+
+export function calculateAutoListingActualPrice(input = {}) {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw priceError(PRICE_INPUT_INVALID);
+  }
+  if (isMissing(input.currency)) throw priceError(PRICE_INPUT_MISSING);
+  const currency = normalizeAutoListingCurrency(input.currency);
+  if (!currency || currency !== input.currency) throw priceError(PRICE_CURRENCY_UNSUPPORTED);
+  const sourcePriceKopecks = parseIntegerKopecks(input.sourcePriceKopecks, { required: true, positive: true });
+  return finalizePrice({
+    currency,
+    branch: "SOURCE_PRICE_ONLY",
+    realPriceKopecks: sourcePriceKopecks,
+    adjustmentKopecks: input.adjustmentKopecks,
+    priceMultiplierMicros: input.priceMultiplierMicros,
+    facts: { sourcePriceKopecks: String(sourcePriceKopecks) },
+  });
 }

@@ -339,6 +339,38 @@ test("JSON collection result and immutable source evidence commit through one sa
   assert.equal(state.accountOzonSharedCategories.length, 1);
 });
 
+test("category evidence summary normalizes multiline product attributes without changing category IDs", async () => {
+  const { runtime, state } = createRuntimeHarness();
+  const item = collectedItem();
+  item.listingDraft.sourceCategory.attributes.push({
+    key: "4384",
+    value: "第一行\n\n第二行",
+  });
+
+  const result = await runtime.recordCollectionResult({
+    state,
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    item,
+    productDraftId: "draft-a",
+    productDraftVersion: 1,
+    sourceVersion: "draft:1",
+    rawResponseRef: "raw-a",
+    rawResponseHash: crypto.createHash("sha256").update("raw-a").digest("hex"),
+    capturedAt: NOW,
+  });
+
+  assert.equal(result.categoryResolution.status, "ACTIVE");
+  assert.equal(result.categoryResolution.currentDescriptionCategoryId, 17028702);
+  assert.equal(result.categoryResolution.currentTypeId, 94405);
+  assert.deepEqual(
+    state.collectOzonCategorySourceEvidence[0].attributeSummary.find(
+      (attribute) => attribute.key === "4384",
+    ),
+    { key: "4384", value: "第一行 第二行" },
+  );
+});
+
 test("standalone JSON evidence persistence failure does not partially mutate category state", async () => {
   const { state } = createRuntimeHarness();
   const before = structuredClone(state);

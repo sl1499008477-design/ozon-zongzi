@@ -127,6 +127,7 @@ test("text-only replay persists one rejected diagnosis without creating a conten
     "reserve", "outcome", "gateway", "response", "validation", "complete", "run",
   ]);
   assert.equal(calls.filter(([name]) => name === "gateway").length, 1);
+  assert.equal(Object.hasOwn(calls.find(([name]) => name === "gateway")[1], "timeoutMs"), false);
   assert.equal(calls.some(([name]) => /image|plan|asset|ozon/iu.test(name)), false);
 });
 

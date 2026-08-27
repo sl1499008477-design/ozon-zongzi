@@ -1281,9 +1281,27 @@ test("job graph persists and returns each server-selected planning contract", as
   assert.equal(created.items[0].sourceSku, "SKU-1");
 });
 
-test("SOURCE_CAPTURED audit round-trips the reduced effective image configuration", async () => {
+test("SOURCE_CAPTURED audit round-trips the requested image configuration with its evidence gap", async () => {
   const { repository } = successfulCreationFixture();
   const graph = warehouseGraph();
+  const requested = normalizeAndHashAutoListingConfig({
+    targetStoreId: "store-a",
+    targetWarehouseId: "warehouse-a",
+    stock: 1,
+    priceAdjustmentKopecks: "0",
+    image: {
+      roles: {
+        main: 1,
+        sellingPoint: 3,
+        detail: 1,
+        scene: 1,
+        specification: 1,
+        infographic: 1,
+      },
+    },
+  });
+  graph.configSnapshot = requested.config;
+  graph.configHash = requested.configHash;
   graph.items[0].snapshot.productMeasurements = {};
   graph.items[0].snapshotHash = crypto.createHash("sha256")
     .update(canonicalAutoListingSourceSnapshot(graph.items[0].snapshot)).digest("hex");
@@ -1305,10 +1323,10 @@ test("SOURCE_CAPTURED audit round-trips the reduced effective image configuratio
       sellingPoint: 3,
       detail: 1,
       scene: 1,
-      specification: 0,
+      specification: 1,
       infographic: 1,
     },
-    total: 7,
+    total: 8,
     reasonCodes: ["PRODUCT_DIMENSIONS_UNAVAILABLE"],
   });
 });
@@ -1412,6 +1430,19 @@ test("a ready item without a complete listing-base template fails before connect
     ...forgedPrice, evidenceHash: digest(forgedPrice),
   };
   await assert.rejects(repository.createJobGraph(forged), {
+    code: "AUTO_LISTING_REPOSITORY_INVALID",
+  });
+  assert.equal(connections, 0);
+
+  const forgedVariant = warehouseGraph();
+  const forgedVariantPrice = {
+    currency: "RUB", currencySource: "SOURCE", blackKopecks: "25000", greenKopecks: null,
+  };
+  forgedVariant.items[0].listingBaseTemplate.variants[0].pricingEvidence = {
+    ...forgedVariantPrice,
+    evidenceHash: digest(forgedVariantPrice),
+  };
+  await assert.rejects(repository.createJobGraph(forgedVariant), {
     code: "AUTO_LISTING_REPOSITORY_INVALID",
   });
   assert.equal(connections, 0);

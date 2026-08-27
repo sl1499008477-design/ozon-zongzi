@@ -56,7 +56,6 @@ function validAccepted(record, request, parentPlanId) {
     && record.accountId === request.accountId && record.jobId === request.jobId
     && record.itemId === request.itemId && record.parentPlanId === parentPlanId
     && record.sourceAssetId === request.assetId
-    && record.expectedStatusVersion === request.expectedStatusVersion
     && record.objectKeyVersion === "SOURCE_V1"
     && verifySourceMaterializationObjectKey(record)
     && HASH.test(record.contentHash || "") && CONTENT_TYPES.has(record.contentType)
@@ -73,7 +72,7 @@ function sha256(value) {
 export function createActiveMaterializedSourceAssetLoader(options = {}) {
   if (!exactObject(options, FACTORY_KEYS)
     || typeof options.pool?.query !== "function"
-    || typeof options.repository?.listAcceptedSourceMaterializations !== "function"
+    || typeof options.repository?.listAcceptedSourceMaterializationsForPlan !== "function"
     || typeof options.storage?.getObjectBuffer !== "function") {
     throw loaderError("AUTO_LISTING_SOURCE_ASSET_LOADER_INVALID");
   }
@@ -99,12 +98,11 @@ export function createActiveMaterializedSourceAssetLoader(options = {}) {
         throw loaderError("AUTO_LISTING_SOURCE_ASSET_LOADER_UNAVAILABLE", true);
       }
       const parentPlanId = result.rows[0].parent_plan_id;
-      const records = await repository.listAcceptedSourceMaterializations({
+      const records = await repository.listAcceptedSourceMaterializationsForPlan({
         accountId: input.accountId,
         jobId: input.jobId,
         itemId: input.itemId,
         parentPlanId,
-        expectedStatusVersion: input.expectedStatusVersion,
       });
       if (!Array.isArray(records)) throw loaderError("AUTO_LISTING_SOURCE_ASSET_LOADER_UNAVAILABLE", true);
       const matches = records.filter((record) => record?.sourceAssetId === input.assetId);

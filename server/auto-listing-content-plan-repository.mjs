@@ -379,7 +379,7 @@ function assertStoredRow(row, input) {
 
 export function createPostgresContentPlanRepository({
   pool,
-  leaseMs = 120_000,
+  leaseMs = 300_000,
   maxAttempts = 3,
   token = () => crypto.randomUUID(),
   id = () => `plan-attempt-${crypto.randomUUID()}`,
@@ -468,7 +468,7 @@ export function createPostgresContentPlanRepository({
 
       await client.query(
         `UPDATE auto_listing_content_plan_attempts
-            SET status='FAILED',error_code='LEASE_EXPIRED',error_retryable=TRUE,
+            SET status='FAILED',planner_stage='FAILED',error_code='LEASE_EXPIRED',error_retryable=TRUE,
                 lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3
             AND status='PLANNING' AND lease_expires_at <= NOW()`,

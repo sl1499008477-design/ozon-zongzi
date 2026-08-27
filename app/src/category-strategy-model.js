@@ -485,13 +485,18 @@ export function categoryStrategyPageModel({ detail, session = null, analysis = n
   const countdown = safeSession ? categoryStrategyCountdown({ expiresAt: safeSession.expiresAt, now }) : null;
   const analysisIsCurrent = safeAnalysis !== null && safeDetail.status === "DRAFT_READY"
     && safeAnalysis.status === "DRAFT_READY" && safeAnalysis.draftVersion === safeDetail.draftVersion;
+  const analysisIssue = safeAnalysis?.status === "NEEDS_REVIEW"
+    ? (safeAnalysis.safeCode === "AUTO_LISTING_CATEGORY_STRATEGY_AI_CALL_FAILED"
+      ? "当前 AI 模型通道调用失败，未生成类目策略草稿。请检查模型通道可用性后重试。"
+      : "本次 AI 分析未生成可用的类目策略草稿，请检查样本和模型通道后重试。")
+    : null;
   return deepFreeze({
     detail: safeDetail, session: safeSession, analysis: safeAnalysis, published: safePublished, countdown,
     canCreateDraft: safeDetail.status === "PUBLISHED",
     canStartSampling: new Set(["COLLECTING", "SAMPLES_READY", "DRAFT_READY", "NEEDS_REVIEW"]).has(safeDetail.status),
     canAnalyze: safeDetail.sampleCount >= 5 && safeDetail.sampleCount <= 20
       && new Set(["SAMPLES_READY", "NEEDS_REVIEW"]).has(safeDetail.status),
-    analysisIsCurrent,
+    analysisIsCurrent, analysisIssue,
     canPublish: analysisIsCurrent,
     impactText: "发布后供当前账号内命中此精确类目的商品共用，不影响其他账号。",
   });

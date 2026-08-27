@@ -5,6 +5,7 @@ const INPUT_KEYS = new Set([
   "actor", "jobId", "itemId", "expectedStatusVersion", "idempotencyKey", "correlationId",
 ]);
 const REVIEW_KEYS = new Set(["actor", "itemId"]);
+const REVIEW_ASSET_KEYS = new Set(["actor", "itemId", "assetId"]);
 
 function itemError(code = "AUTO_LISTING_USER_ACTION_INVALID") {
   const error = new Error("自动上架商品操作失败");
@@ -62,12 +63,23 @@ function reviewInput(raw) {
   return Object.freeze({ actor: raw.actor, itemId: raw.itemId });
 }
 
+function reviewAssetInput(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)
+    || Object.getPrototypeOf(raw) !== Object.prototype
+    || Reflect.ownKeys(raw).length !== REVIEW_ASSET_KEYS.size
+    || Reflect.ownKeys(raw).some((key) => typeof key !== "string" || !REVIEW_ASSET_KEYS.has(key))
+    || !isSafeAutoListingAiIdentifier(raw.itemId)
+    || !isSafeAutoListingAiIdentifier(raw.assetId)) throw itemError();
+  return Object.freeze({ actor: raw.actor, itemId: raw.itemId, assetId: raw.assetId });
+}
+
 export function createAutoListingItemService({ actionRepository, retryService, reviewService } = {}) {
   if (typeof actionRepository?.cancelItem !== "function"
     || typeof actionRepository?.regenerateItem !== "function"
     || typeof actionRepository?.approveItem !== "function"
     || typeof retryService?.retry !== "function"
-    || typeof reviewService?.getReview !== "function") {
+    || typeof reviewService?.getReview !== "function"
+    || typeof reviewService?.getAcceptedAsset !== "function") {
     throw new TypeError("Auto-listing item service dependencies are required");
   }
   return Object.freeze({
@@ -89,6 +101,9 @@ export function createAutoListingItemService({ actionRepository, retryService, r
     },
     async getReview(raw = {}) {
       return reviewService.getReview(reviewInput(raw));
+    },
+    async getAcceptedAsset(raw = {}) {
+      return reviewService.getAcceptedAsset(reviewAssetInput(raw));
     },
   });
 }

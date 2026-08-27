@@ -121,7 +121,7 @@ function normalizeImages(values) {
     if (known && canonicalText(known) !== canonicalText(image)) throw visualError();
     byId.set(image.assetId, image);
   }
-  return [...byId.values()].sort((left, right) => compareText(left.assetId, right.assetId));
+  return [...byId.values()];
 }
 
 function normalizeEvidence(value, sku) {
@@ -223,7 +223,7 @@ function buildGroups(variants) {
       visualGroupKey: `visual-group-${hash(groupIdentity).slice(0, 20)}`,
       sourceSkus: [...new Set(members.map((member) => member.sku))].sort(compareText),
       variantIds: members.map((member) => member.variantId),
-      referenceImages: [...imageById.values()].sort((left, right) => compareText(left.assetId, right.assetId)),
+      referenceImages: [...imageById.values()],
       factEvidence: [...factById.values()].sort(compareCanonical),
       reasonCodes,
     });

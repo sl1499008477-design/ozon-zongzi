@@ -1,5 +1,7 @@
 import { assertPermission, PERMISSIONS } from "./permissions.mjs";
 import { createAutoListingReviewView } from "./auto-listing-view.mjs";
+import { hasCompleteReviewImageGroups } from "./auto-listing-review-evidence.mjs";
+import { isSafeAutoListingPreOzonRetryFailure } from "./auto-listing-state-machine.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 
@@ -34,8 +36,11 @@ function account(actor) {
 
 function reviewIsReady(evidence) {
   const images = Array.isArray(evidence?.images) ? evidence.images : [];
-  return ["READY_FOR_REVIEW", "SUCCEEDED"].includes(evidence?.item?.status)
-    && images.length >= 6 && images.some((image) => image?.accepted === true && image.role === "MAIN")
+  const reviewableStatus = ["READY_FOR_REVIEW", "SUCCEEDED"].includes(evidence?.item?.status)
+    || (evidence?.item?.status === "BLOCKED"
+      && isSafeAutoListingPreOzonRetryFailure(evidence.item.failureCode));
+  return reviewableStatus
+    && hasCompleteReviewImageGroups({ visualGroups: evidence?.visualGroups, images })
     && evidence?.richContent?.accepted === true;
 }
 

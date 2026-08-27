@@ -3,9 +3,35 @@ import test from "node:test";
 import {
   assertAutoListingTransition,
   assertAutoListingRetryEvent,
+  isSafeAutoListingBlockedCancellationFailure,
+  isSafeAutoListingPreOzonRetryFailure,
   recoveryPointForRetryableFailure,
   nextAutoListingStatus,
 } from "../auto-listing-state-machine.mjs";
+
+test("only deterministic pre-Ozon upload failures may reuse an accepted review", () => {
+  assert.equal(isSafeAutoListingPreOzonRetryFailure("AUTO_LISTING_UPLOAD_POLICY_BLOCKED"), true);
+  assert.equal(isSafeAutoListingPreOzonRetryFailure("AUTO_LISTING_UPLOAD_EVIDENCE_INVALID"), true);
+  assert.equal(isSafeAutoListingPreOzonRetryFailure("AUTO_LISTING_DIRECT_UPLOAD_DISABLED"), true);
+  for (const code of ["AUTO_LISTING_UPLOAD_RESULT_UNCERTAIN", "AUTO_LISTING_UPLOAD_BLOCKED", null]) {
+    assert.equal(isSafeAutoListingPreOzonRetryFailure(code), false);
+  }
+});
+
+test("only content-planning blocks may be cancelled after reaching BLOCKED", () => {
+  for (const code of [
+    "AUTO_LISTING_CONTENT_PLAN_FAILED",
+    "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID",
+    "AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED",
+    "AUTO_LISTING_CONTENT_PLAN_INVALID",
+    "AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED",
+    "AUTO_LISTING_CONTENT_PLAN_RESERVATION_FAILED",
+    "AUTO_LISTING_CONTENT_PLAN_VERSION_CONFLICT",
+  ]) assert.equal(isSafeAutoListingBlockedCancellationFailure(code), true);
+  for (const code of ["AUTO_LISTING_UPLOAD_RESULT_UNCERTAIN", "AUTO_LISTING_IMAGE_FAILED", null]) {
+    assert.equal(isSafeAutoListingBlockedCancellationFailure(code), false);
+  }
+});
 
 const permittedTransitions = [
   ["CREATED", "SOURCE_CAPTURED", "SOURCE_READY"],
@@ -14,6 +40,7 @@ const permittedTransitions = [
   ["GENERATING", "CONTENT_READY_FOR_REVIEW", "READY_FOR_REVIEW"],
   ["GENERATING", "CONTENT_READY_FOR_DIRECT_UPLOAD", "UPLOAD_QUEUED"],
   ["READY_FOR_REVIEW", "APPROVE_UPLOAD", "UPLOAD_QUEUED"],
+  ["BLOCKED", "APPROVE_UPLOAD", "UPLOAD_QUEUED"],
   ["UPLOAD_QUEUED", "START_UPLOAD", "UPLOADING"],
   ["UPLOADING", "UPLOAD_SUCCEEDED", "SUCCEEDED"],
   ["PLANNING", "RETRYABLE_FAILURE", "RETRYABLE_ERROR"],
@@ -38,6 +65,7 @@ const permittedTransitions = [
   ["READY_FOR_REVIEW", "CANCEL", "CANCELLED"],
   ["UPLOAD_QUEUED", "CANCEL", "CANCELLED"],
   ["RETRYABLE_ERROR", "CANCEL", "CANCELLED"],
+  ["BLOCKED", "CANCEL", "CANCELLED"],
 ];
 
 const expectForbidden = (currentStatus, eventType, recoveryPoint) => {
@@ -143,7 +171,7 @@ test("rejects failure sources and persisted recovery points outside the closed m
   }
 });
 
-test("rejects every event from terminal states", () => {
+test("rejects every unapproved event from closed states", () => {
   const events = [
     "SOURCE_CAPTURED",
     "START_PLANNING",
@@ -162,7 +190,9 @@ test("rejects every event from terminal states", () => {
     "CANCEL",
   ];
   for (const status of ["SUCCEEDED", "BLOCKED", "CANCELLED"]) {
-    for (const eventType of events) expectForbidden(status, eventType);
+    for (const eventType of events) {
+      if (status !== "BLOCKED" || !["APPROVE_UPLOAD", "CANCEL"].includes(eventType)) expectForbidden(status, eventType);
+    }
   }
 });
 

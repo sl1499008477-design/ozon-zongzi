@@ -6,7 +6,11 @@ import {
   isSafeAutoListingAiIdentifier,
   normalizeAutoListingAiMessage,
 } from "./auto-listing-ai-message.mjs";
-import { nextAutoListingStatus } from "./auto-listing-state-machine.mjs";
+import {
+  isSafeAutoListingBlockedCancellationFailure,
+  isSafeAutoListingPreOzonRetryFailure,
+  nextAutoListingStatus,
+} from "./auto-listing-state-machine.mjs";
 import { enqueueAutoListingUploadTask } from "./auto-listing-upload-task-postgres.mjs";
 
 const INPUT_KEYS = new Set([
@@ -137,7 +141,7 @@ async function execute(pool, raw, action) {
       return duplicate;
     }
     const boundary = await query(client,
-      `SELECT i.status,i.status_version
+      `SELECT i.status,i.status_version,i.failure_code
          FROM auto_listing_job_items AS i
          JOIN auto_listing_jobs AS j ON j.account_id=i.account_id AND j.id=i.job_id
         WHERE i.account_id=$1 AND i.job_id=$2 AND i.id=$3
@@ -146,6 +150,9 @@ async function execute(pool, raw, action) {
     const row = boundary?.rowCount === 1 ? boundary.rows?.[0] : null;
     if (!row) throw actionError("AUTO_LISTING_USER_ACTION_NOT_FOUND");
     if (row.status_version !== value.expectedStatusVersion) throw conflict();
+    if (row.status === "BLOCKED"
+      && !((action === "APPROVE_UPLOAD" && isSafeAutoListingPreOzonRetryFailure(row.failure_code))
+        || (action === "CANCEL" && isSafeAutoListingBlockedCancellationFailure(row.failure_code)))) throw notAllowed();
     let nextStatus;
     try { nextStatus = nextAutoListingStatus(row.status, action); } catch { throw notAllowed(); }
     if ((action === "REGENERATE" && nextStatus !== "PLANNING")
@@ -200,7 +207,8 @@ async function execute(pool, raw, action) {
     if (action === "APPROVE_UPLOAD") {
       await enqueueAutoListingUploadTask({ client, accountId: value.accountId, jobId: value.jobId,
         itemId: value.itemId, actorAccountId: value.actorAccountId, expectedStatusVersion: nextVersion,
-        correlationId: value.correlationId, enqueueReason: "REVIEW_APPROVED" });
+        correlationId: value.correlationId,
+        enqueueReason: row.status === "BLOCKED" ? "SAFE_RETRY" : "REVIEW_APPROVED" });
     }
     await query(client, "COMMIT");
     committed = true;

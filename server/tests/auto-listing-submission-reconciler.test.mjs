@@ -105,6 +105,32 @@ test("SUCCEEDED is terminal, auditable and carries bounded variant and stock evi
   assert.equal(JSON.stringify(applied).includes("apiKey"), false);
 });
 
+test("a successful Ozon import with erased rich content is blocked for review", async () => {
+  const { reconciler, calls } = harness({
+    status: "SUCCEEDED",
+    successCount: 1,
+    failedCount: 0,
+    skippedCount: 0,
+    resultSummary: { success: 1, failed: 0, skipped: 0, stockCount: 1 },
+    items: [{
+      offerId: "offer-a",
+      status: "SUCCESS",
+      productId: "101",
+      errorCode: "OZON_RICH_CONTENT_REJECTED",
+    }],
+  });
+
+  const result = await reconciler.reconcile(request);
+
+  assert.equal(result.status, "BLOCKED");
+  const applied = calls.find(([kind]) => kind === "apply")[1];
+  assert.equal(applied.linkStatus, "BLOCKED");
+  assert.equal(applied.failureCode, "OZON_RICH_CONTENT_REJECTED_REQUIRES_REVIEW");
+  assert.equal(applied.allowResubmission, false);
+  assert.equal(applied.enqueueNextCheck, false);
+  assert.equal(applied.summary.variants[0].errorCode, "OZON_RICH_CONTENT_REJECTED");
+});
+
 test("reconciliation carries only safe category recovery identity on the original link", async () => {
   const { reconciler, calls } = harness({
     status: "SUCCEEDED", ozonTaskId: "task-retry",

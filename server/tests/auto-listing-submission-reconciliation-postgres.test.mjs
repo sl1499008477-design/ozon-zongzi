@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { createPostgresAutoListingSubmissionReconciliationRepository } from "../auto-listing-submission-reconciliation-postgres.mjs";
 
-function harness({ enqueueDuplicate = false, parentStatus = "UPLOADING", recoveryRow = {}, aggregateRow = {
+function harness({ enqueueDuplicate = false, parentStatus = "UPLOADING", recoveryRow = {}, submissionItemRow = {}, aggregateRow = {
   total_count: 1, terminal_count: 1, succeeded_count: 1, blocked_count: 0, cancelled_count: 0,
 } } = {}) {
   const calls = [];
@@ -25,7 +25,7 @@ function harness({ enqueueDuplicate = false, parentStatus = "UPLOADING", recover
         ...recoveryRow,
       }], rowCount: 1 };
       if (/FROM submission_items AS item/u.test(sql)) return { rows: [
-        { offer_id: "offer-a", status: "SUCCESS", product_id: "product-a", error_code: "" },
+        { offer_id: "offer-a", status: "SUCCESS", product_id: "product-a", error_code: "", response: {}, ...submissionItemRow },
       ], rowCount: 1 };
       if (/FOR UPDATE OF item,link/u.test(sql)) return { rows: [{
         item_status: "UPLOADING", item_status_version: 8, link_status: "SUBMITTED",
@@ -75,6 +75,27 @@ test("evidence loading joins every identifier through the account boundary and b
   assert.match(calls.find(({ sql }) => /FROM submission_items AS item/u.test(sql)).sql, /LIMIT 101/iu);
   assert.equal(calls[0].sql, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
   assert.deepEqual(calls.slice(-2).map(({ sql }) => sql), ["COMMIT", "RELEASE"]);
+});
+
+test("evidence loading projects Ozon attribute 11254 erasure to a safe failure code", async () => {
+  const { repository, calls } = harness({ submissionItemRow: {
+    response: {
+      schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1",
+      errorEvidence: null,
+      rawResponse: {
+        status: "imported",
+        errors: [{ code: "erased_attribute_value", attribute_id: 11254, message: "raw Ozon detail" }],
+      },
+    },
+  } });
+
+  const result = await repository.loadReconciliationEvidence({
+    accountId: "account-a", itemId: "item-a", submissionLinkId: "link-a", correlationId: "correlation-a",
+  });
+
+  assert.equal(result.submission.items[0].errorCode, "OZON_RICH_CONTENT_REJECTED");
+  assert.equal(JSON.stringify(result).includes("raw Ozon detail"), false);
+  assert.match(calls.find(({ sql }) => /FROM submission_items AS item/u.test(sql)).sql, /item\.response/iu);
 });
 
 test("evidence loading preserves nullable recovery fields for pre-match and pre-accept states", async () => {

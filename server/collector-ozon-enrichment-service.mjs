@@ -21,6 +21,7 @@ const CLAIM_TTL_MS = 15 * 1000;
 const POLL_MS = 250;
 const BATCH_CONCURRENCY = 4;
 const MERGE_MAX_ATTEMPTS = 4;
+const MAX_AUTOMATIC_ATTEMPTS = 5;
 const REQUIRED_MISSING_FIELDS = new Set([
   "descriptionCategoryId",
   "weightG",
@@ -53,6 +54,12 @@ const EXECUTOR_FAILURES = Object.freeze({
     message: "Ozon 商品资料暂时无法读取",
     retryable: true,
     disposition: "RETRYING",
+  }),
+  OZON_ENRICH_RETRY_EXHAUSTED: Object.freeze({
+    status: 422,
+    message: "Ozon 商品资料连续 5 次读取失败",
+    retryable: false,
+    disposition: "NEEDS_ATTENTION",
   }),
   SELLER_CONTEXT_REQUIRED: Object.freeze({
     status: 409,
@@ -320,6 +327,7 @@ export function createCollectorOzonEnrichmentService({
     "completeJobAndCache",
     "failJobAndCache",
     "readJob",
+    "expireUnlinkedJob",
   ];
   if (!repository || repositoryMethods.some((method) => typeof repository[method] !== "function")) {
     throw new TypeError("Ozon enrichment service repository contract required");
@@ -376,6 +384,11 @@ export function createCollectorOzonEnrichmentService({
       if (current?.status === "FAILED") throw errorFromJob(current);
       await sleep(POLL_MS);
     }
+    await repository.expireUnlinkedJob({
+      accountId,
+      jobId,
+      now: instant(now()),
+    });
     throw enrichmentError(
       504,
       "OZON_ENRICH_UPSTREAM_FAILED",
@@ -761,7 +774,14 @@ export function createCollectorOzonEnrichmentService({
     captureContext = undefined,
     claimFence = undefined,
   }) {
-    const stable = stableExecutorError(String(error?.code || ""), error?.missingFields);
+    let stable = stableExecutorError(String(error?.code || ""), error?.missingFields);
+    if (
+      stable.retryable
+      && job.collectItemId
+      && Number(job.attemptCount || 0) + 1 >= MAX_AUTOMATIC_ATTEMPTS
+    ) {
+      stable = stableExecutorError("OZON_ENRICH_RETRY_EXHAUSTED", stable.missingFields);
+    }
     if (stable.retryable && job.collectItemId) {
       const deferred = await collectItemPort.defer({
         accountId: job.accountId,
