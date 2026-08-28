@@ -49,6 +49,25 @@ test("worker claims within one explicit tenant and invokes only the closed uploa
   assert.equal(JSON.stringify(calls).includes("apiKey"), false);
 });
 
+test("worker leaves batch-order eligibility at the repository claim boundary", async () => {
+  const calls = [];
+  const worker = createAutoListingUploadTaskWorker({ enabled: true,
+    repository: {
+      async listRunnableAccounts(input) { calls.push(["accounts", input]); return ["account-a"]; },
+      async leaseNext(input) { calls.push(["lease", input]); return null; },
+      async completeLease() { calls.push(["complete"]); },
+      async rescheduleLease() { calls.push(["reschedule"]); },
+      async deadLetterLease() { calls.push(["dead"]); },
+    },
+    uploadService: { async submitAutoListingItem() { calls.push(["submit"]); } },
+    workerId: "worker-a", accountScanLimit: 100, pollIntervalMs: 1_000, leaseMs: 30_000,
+    baseDelayMs: 2_000, maxDelayMs: 10_000, maxAttempts: 5,
+    logger: { log() {} }, timers: { setTimeout() { return 1; }, clearTimeout() {} },
+  });
+  assert.equal(await worker.runOnce(), false);
+  assert.deepEqual(calls.map(([name]) => name), ["accounts", "lease"]);
+});
+
 test("worker paginates tenant ids and discovers an account added after startup", async () => {
   const calls = [];
   let scan = 0;

@@ -125,8 +125,8 @@ test("PostgreSQL claims one local warehouse item, safely retries the same link, 
       [ids.job, ids.account, `job-${suffix}`, JSON.stringify(frozenConfig.config), frozenConfig.configHash,
         ids.strategy, ids.policy, `corr-${suffix}`]);
     await admin.query(`INSERT INTO auto_listing_job_items
-      (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version)
-      VALUES ($1,$2,$3,$4,$5,$6,'UPLOAD_QUEUED',7)`,
+      (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order)
+      VALUES ($1,$2,$3,$4,$5,$6,'UPLOAD_QUEUED',7,1)`,
       [ids.item, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouseLocal]);
     await admin.query(`INSERT INTO ai_gateway_profiles
       (id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,text_model,image_model,config_version)
@@ -492,8 +492,8 @@ test("PostgreSQL atomically rechecks RFBS scope and binds one fresh immutable up
       [ids.job, ids.account, `job-${suffix}`, JSON.stringify(frozenConfig.config), frozenConfig.configHash,
         ids.strategy, ids.policy, `job-corr-${suffix}`, ids.creationEvidence]);
     await admin.query(`INSERT INTO auto_listing_job_items
-      (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version)
-      VALUES ($1,$2,$3,$4,$5,$6,'UPLOAD_QUEUED',7)`,
+      (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order)
+      VALUES ($1,$2,$3,$4,$5,$6,'UPLOAD_QUEUED',7,1)`,
       [ids.item, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouse]);
     await admin.query(`INSERT INTO ai_gateway_profiles
       (id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,text_model,image_model,config_version)
