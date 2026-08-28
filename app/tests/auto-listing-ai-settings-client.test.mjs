@@ -376,6 +376,26 @@ test("channel commands use only the exact Task 2 routes and closed bodies", asyn
   ]);
 });
 
+test("channel commands forward an optional abort signal without placing it in the closed body", async (t) => {
+  const signals = [];
+  installTransport(t, (_url, options) => new Promise((_resolve, reject) => {
+    signals.push(options.signal);
+    options.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { code: "REQUEST_ABORTED" })), { once: true });
+  }));
+  const controller = new AbortController();
+  const add = addAutoListingAiChannel({ profileId: "profile-a", profileVersion: 1,
+    connectionId: "connection-b", connectionVersion: 2, displayName: "备用 Gateway", signal: controller.signal });
+  const status = setAutoListingAiChannelEnabled({ profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-a", enabled: false, signal: controller.signal });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(signals.length, 2);
+  assert.ok(signals.every((signal) => signal instanceof AbortSignal));
+  controller.abort();
+  await assert.rejects(add, { code: "REQUEST_ABORTED" });
+  await assert.rejects(status, { code: "REQUEST_ABORTED" });
+  assert.ok(signals.every((signal) => signal.aborted));
+});
+
 test("channel DTOs reject unknown fields, unsafe values, and sensitive aliases", async (t) => {
   const base = overview({ channels: [channel()], channelCandidates: [channelCandidate()] });
   installTransport(t, async () => response(base));
@@ -385,6 +405,19 @@ test("channel DTOs reject unknown fields, unsafe values, and sensitive aliases",
     { channels: [channel({ cooldownUntil: "2026-08-08T00:00:00Z" })] },
     { channels: [channel({ status: "UNKNOWN" })] },
     { channelCandidates: [{ ...channelCandidate(), endpoint: "https://must-not-leak.example" }] },
+  ]) {
+    globalThis.fetch = async () => response({ ...base, ...mutation });
+    await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+  }
+});
+
+test("channel DTOs reject blank channel and candidate display labels", async (t) => {
+  const base = overview({ channels: [channel()], channelCandidates: [channelCandidate()] });
+  installTransport(t, async () => response(base));
+  for (const mutation of [
+    { channels: [channel({ displayName: "" })] },
+    { channels: [channel({ connectionDisplayName: "" })] },
+    { channelCandidates: [channelCandidate({ connectionDisplayName: "" })] },
   ]) {
     globalThis.fetch = async () => response({ ...base, ...mutation });
     await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });

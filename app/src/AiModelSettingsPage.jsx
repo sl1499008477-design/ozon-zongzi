@@ -287,7 +287,7 @@ function AutoListingChannelSection({
     {channelsWarning ? <Alert type="warning" showIcon title={channelsWarning} /> : null}
     {!activeProfile ? <Alert type="info" showIcon title="请先发布正式 AI 配置" /> : <>
       <Space wrap className="ai-model-settings-channel-add">
-        <Select aria-label="选择已验证兼容连接" showSearch optionFilterProp="label"
+        <Select aria-label="选择已验证兼容连接" showSearch optionFilterProp="label" virtual={false}
           value={selectedCandidateId || undefined} disabled={busy || !channelCandidates.length}
           placeholder="选择已验证兼容连接" onChange={setSelectedCandidateId}
           options={channelCandidates.map((row) => ({ value: row.connectionId, label: row.connectionDisplayName }))} />
@@ -777,20 +777,20 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
 
   const addChannel = (candidate) => {
     const activeProfile = overview?.activeProfile || null;
-    return runAction("添加独立通道", async () => {
+    return runAction("添加独立通道", async (signal) => {
       if (!activeProfile || !candidate) throw new Error("请先发布正式 AI 配置并选择已验证兼容连接");
       await addAutoListingAiChannel({ profileId: activeProfile.id, profileVersion: activeProfile.configVersion,
         connectionId: candidate.connectionId, connectionVersion: candidate.connectionVersion,
-        displayName: candidate.connectionDisplayName });
+        displayName: candidate.connectionDisplayName, signal });
     }, "独立通道已添加", activeProfileScope(activeProfile));
   };
 
   const setChannelEnabled = (channel, enabled) => {
     const activeProfile = overview?.activeProfile || null;
-    return runAction(`${enabled ? "启用独立通道" : "停用独立通道"}:${channel?.channelId || ""}`, async () => {
+    return runAction(`${enabled ? "启用独立通道" : "停用独立通道"}:${channel?.channelId || ""}`, async (signal) => {
       if (!activeProfile || !channel) throw new Error("当前正式 AI 配置不可用");
       await setAutoListingAiChannelEnabled({ profileId: activeProfile.id, profileVersion: activeProfile.configVersion,
-        channelId: channel.channelId, enabled });
+        channelId: channel.channelId, enabled, signal });
     }, enabled ? "独立通道已启用" : "独立通道已停用", activeProfileScope(activeProfile));
   };
 

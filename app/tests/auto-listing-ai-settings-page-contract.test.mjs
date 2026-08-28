@@ -40,11 +40,18 @@ function browserChannel(overrides = {}) {
     cooldownUntil: null, requiresRevalidation: false, lastErrorCode: null, ...overrides };
 }
 
-function browserOverview(profileId, channels = [browserChannel()]) {
+function browserCandidates() {
+  return Array.from({ length: 100 }, (_value, index) => ({
+    connectionId: index === 99 ? "connection-z100" : `connection-${String(index + 1).padStart(3, "0")}`,
+    connectionVersion: index + 1,
+    connectionDisplayName: index === 99 ? "第100 Gateway" : `候选 Gateway ${String(index + 1).padStart(3, "0")}`,
+  }));
+}
+
+function browserOverview(profileId, channels = [browserChannel()], channelCandidates = browserCandidates()) {
   const activeProfile = browserProfile(profileId);
   return { accountId: "account-a", activeConnection: null, activeProfile, connections: [], catalogs: [], syncTasks: [],
-    profiles: [activeProfile], channels, channelCandidates: [{ connectionId: "connection-b", connectionVersion: 2,
-      connectionDisplayName: "备用 Gateway" }], pagination: { connections: { pageSize: 10, hasMore: false, nextCursor: null },
+    profiles: [activeProfile], channels, channelCandidates, pagination: { connections: { pageSize: 10, hasMore: false, nextCursor: null },
       profiles: { pageSize: 10, hasMore: false, nextCursor: null } }, actions: { canCreateConnection: true,
       syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
 }
@@ -205,6 +212,7 @@ test("rendered channel controls use only safe candidates and retain profile-scop
   let browser;
   let overviewReads = 0;
   let profileId = "profile-a";
+  const channelCandidates = browserCandidates();
   let channels = [browserChannel(), browserChannel({ channelId: "channel-c", displayName: "空闲通道", channelOrder: 2,
     status: "AVAILABLE", connectionId: "connection-c", connectionVersion: 3, connectionDisplayName: "第三 Gateway", assignedItemId: null })];
   const addBodies = [];
@@ -213,6 +221,9 @@ test("rendered channel controls use only safe candidates and retain profile-scop
   const statusPaths = [];
   let addFailure = false;
   let staleCompletion = false;
+  let holdAdd = false;
+  let resolveAdd = null;
+  let resolveStaleAdd = null;
   let holdStatus = false;
   let resolveStatus = null;
   let taskMutationRequests = 0;
@@ -232,23 +243,35 @@ test("rendered channel controls use only safe candidates and retain profile-scop
       if (pathname === "/api/local/state") return route.fulfill({ status: 200, json: browserLocalState() });
       if (pathname === "/api/admin/auto-listing/ai-settings" && request.method() === "GET") {
         overviewReads += 1;
-        return route.fulfill({ status: 200, json: { ok: true, data: browserOverview(profileId, channels) } });
+        return route.fulfill({ status: 200, json: { ok: true, data: browserOverview(profileId, channels, channelCandidates) } });
       }
       if (pathname.endsWith("/channels") && request.method() === "POST") {
         const body = request.postDataJSON(); addBodies.push(body); addPaths.push(pathname);
         if (staleCompletion) {
-          profileId = "profile-b";
-          return route.fulfill({ status: 200, json: { ok: true, data: browserChannel({ channelId: "channel-stale",
-            displayName: "过期响应", status: "AVAILABLE", assignedItemId: null }) } });
+          return new Promise((resolve) => {
+            resolveStaleAdd = () => resolve(route.fulfill({ status: 200, json: { ok: true, data: browserChannel({ channelId: "channel-stale",
+              displayName: "过期响应", status: "AVAILABLE", assignedItemId: null }) } }));
+          });
         }
         if (addFailure) return route.fulfill({ status: 409, json: { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INELIGIBLE", message: "secret" } });
+        if (holdAdd) return new Promise((resolve) => {
+          resolveAdd = () => resolve(route.fulfill({ status: 200, json: { ok: true, data: browserChannel({ channelId: "channel-b",
+            displayName: "第100 Gateway", status: "AVAILABLE", assignedItemId: null }) } }));
+        });
         return route.fulfill({ status: 200, json: { ok: true, data: browserChannel({ channelId: "channel-b", displayName: "备用 Gateway", status: "AVAILABLE", assignedItemId: null }) } });
       }
       if (pathname.endsWith("/status") && request.method() === "POST") {
         statusBodies.push(request.postDataJSON()); statusPaths.push(pathname);
+        const channelId = pathname.split("/").at(-2);
+        const enabled = statusBodies.at(-1).enabled;
+        const updated = channels.find((row) => row.channelId === channelId);
+        channels = channels.map((row) => row.channelId === channelId ? {
+          ...row, enabled, status: enabled ? "AVAILABLE" : "DISABLED", assignedItemId: enabled ? null : row.assignedItemId,
+          cooldownUntil: null, requiresRevalidation: false,
+        } : row);
         if (holdStatus) return new Promise((resolve) => { resolveStatus = () => resolve(route.fulfill({ status: 200,
-          json: { ok: true, data: browserChannel({ enabled: false, status: "DISABLED" }) } })); });
-        return route.fulfill({ status: 200, json: { ok: true, data: browserChannel({ enabled: false, status: "DISABLED" }) } });
+          json: { ok: true, data: updated ? { ...updated, enabled, status: enabled ? "AVAILABLE" : "DISABLED", assignedItemId: enabled ? null : updated.assignedItemId } : browserChannel() } })); });
+        return route.fulfill({ status: 200, json: { ok: true, data: updated ? { ...updated, enabled, status: enabled ? "AVAILABLE" : "DISABLED", assignedItemId: enabled ? null : updated.assignedItemId } : browserChannel() } });
       }
       if (request.method() !== "GET") taskMutationRequests += 1;
       return route.fulfill({ status: 404, json: { code: "NOT_FOUND" } });
@@ -259,7 +282,7 @@ test("rendered channel controls use only safe candidates and retain profile-scop
     await waitForChannelSelector(page);
     const candidateSelect = page.getByLabel("选择已验证兼容连接");
     await candidateSelect.click();
-    assert.equal(await page.getByRole("option").count(), 1);
+    assert.equal(await page.getByRole("option").count(), 100);
     await page.keyboard.press("Escape");
     const addButton = page.locator(".ai-model-settings-channel-add button");
     assert.equal(await addButton.isDisabled(), true);
@@ -269,13 +292,18 @@ test("rendered channel controls use only safe candidates and retain profile-scop
     assert.equal(addBodies.length, 0);
     await page.keyboard.press("Escape");
 
-    await candidateSelect.click();
-    await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("Enter");
+    await candidateSelect.fill("第100 Gateway");
+    await page.getByRole("option", { name: "第100 Gateway", exact: true }).click();
     assert.equal(await addButton.isDisabled(), false);
+    holdAdd = true;
     await addButton.click();
+    await page.waitForFunction(() => document.querySelector(".ai-model-settings-channel-add button")?.className.includes("ant-btn-loading"));
+    assert.equal(addBodies.length, 1);
+    await addButton.click({ force: true });
+    assert.equal(addBodies.length, 1);
+    const releaseAdd = resolveAdd; holdAdd = false; resolveAdd = null; releaseAdd();
     await page.getByText("独立通道已添加", { exact: true }).waitFor();
-    assert.deepEqual(addBodies[0], { connectionId: "connection-b", connectionVersion: 2, displayName: "备用 Gateway" });
+    assert.deepEqual(addBodies[0], { connectionId: "connection-z100", connectionVersion: 100, displayName: "第100 Gateway" });
     assert.equal(addPaths[0], "/api/admin/auto-listing/ai-settings/profiles/profile-a/versions/1/channels");
     assert.ok(overviewReads >= 2, "successful channel action refreshes the overview");
     assert.equal(await page.getByText("当前商品完成后停用生效", { exact: true }).count(), 1);
@@ -294,8 +322,16 @@ test("rendered channel controls use only safe candidates and retain profile-scop
     assert.doesNotMatch(await idleDisable.getAttribute("class"), /ant-btn-loading/u);
     assert.deepEqual(statusBodies[0], { enabled: false });
     assert.equal(statusPaths[0], "/api/admin/auto-listing/ai-settings/profiles/profile-a/versions/1/channels/channel-a/status");
+    await busyDisable.click({ force: true });
+    assert.equal(statusBodies.length, 1);
     const releaseStatus = resolveStatus; holdStatus = false; resolveStatus = null; releaseStatus();
     await page.getByText("独立通道已停用", { exact: true }).waitFor();
+
+    const disabledRow = page.getByText("忙碌通道", { exact: true }).locator("xpath=ancestor::tr[1]");
+    await disabledRow.locator("button").click();
+    await page.getByText("独立通道已启用", { exact: true }).waitFor();
+    assert.deepEqual(statusBodies[1], { enabled: true });
+    assert.equal(statusPaths[1], "/api/admin/auto-listing/ai-settings/profiles/profile-a/versions/1/channels/channel-a/status");
 
     channels = [browserChannel({ enabled: false, status: "DISABLED" })];
     const refreshButton = page.locator(".ai-model-settings-page__header button").last();
@@ -310,9 +346,8 @@ test("rendered channel controls use only safe candidates and retain profile-scop
     await refreshButton.click({ trial: true });
     await refreshButton.click();
     await waitForChannelSelector(page);
-    await candidateSelect.click();
-    await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("Enter");
+    await candidateSelect.fill("第100 Gateway");
+    await page.getByRole("option", { name: "第100 Gateway", exact: true }).click();
     addFailure = true;
     await addButton.click();
     await page.getByText("AI 模型设置请求未完成", { exact: true }).waitFor();
@@ -322,8 +357,17 @@ test("rendered channel controls use only safe candidates and retain profile-scop
     addFailure = false;
     staleCompletion = true;
     await addButton.click();
+    await page.waitForFunction(() => document.querySelector(".ai-model-settings-channel-add button")?.className.includes("ant-btn-loading"));
+    assert.deepEqual(addBodies.at(-1), { connectionId: "connection-z100", connectionVersion: 100, displayName: "第100 Gateway" });
+    assert.equal(addPaths.at(-1), "/api/admin/auto-listing/ai-settings/profiles/profile-a/versions/1/channels");
+    profileId = "profile-b";
+    await page.reload();
     await page.getByText("正式模型-profile-b · v1 · 当前正式版本", { exact: true }).waitFor();
+    const releaseStaleAdd = resolveStaleAdd; staleCompletion = false; releaseStaleAdd();
+    await settleReact(page);
+    assert.equal(addPaths.filter((path) => path.includes("/profiles/profile-b/")).length, 0);
     assert.equal(await page.getByText("独立通道已添加", { exact: true }).count(), 0);
+    assert.equal(await page.getByText("AI 模型设置请求未完成", { exact: true }).count(), 0);
   } finally {
     await Promise.allSettled([browser?.close(), vite?.close()]);
   }

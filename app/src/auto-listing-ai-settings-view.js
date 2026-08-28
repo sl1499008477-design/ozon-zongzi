@@ -62,7 +62,7 @@ function safeModelId(value) {
 }
 
 function safeChannelText(value) {
-  return typeof value === "string" && value === value.trim() && value.length <= 200;
+  return typeof value === "string" && value === value.trim() && value.length > 0 && value.length <= 200;
 }
 
 function safeChannelErrorCode(value) {

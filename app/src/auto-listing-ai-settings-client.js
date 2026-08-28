@@ -498,7 +498,7 @@ function validateActions(raw) {
 }
 
 function safeChannelText(value) {
-  return typeof value === "string" && value === value.trim() && value.length <= 200;
+  return typeof value === "string" && value === value.trim() && value.length > 0 && value.length <= 200;
 }
 
 function safeChannelErrorCode(value) {
@@ -790,18 +790,24 @@ export async function rollbackModelProfile(raw, rawIntent) {
 }
 
 export async function addAutoListingAiChannel(raw) {
-  const input = closed(raw, ["profileId", "profileVersion", "connectionId", "connectionVersion", "displayName"]);
+  const input = closed(raw, ["profileId", "profileVersion", "connectionId", "connectionVersion", "displayName"], { optional: ["signal"] });
+  if (input.signal !== undefined && (!globalThis.AbortSignal || !(input.signal instanceof globalThis.AbortSignal))) {
+    throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  }
   return request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/versions/${version(input.profileVersion)}/channels`, {
     connectionId: id(input.connectionId), connectionVersion: version(input.connectionVersion), displayName: text(input.displayName, 200),
-  }, undefined, DEFAULT_TIMEOUT_MS, validateChannel);
+  }, input.signal, DEFAULT_TIMEOUT_MS, validateChannel);
 }
 
 export async function setAutoListingAiChannelEnabled(raw) {
-  const input = closed(raw, ["profileId", "profileVersion", "channelId", "enabled"]);
+  const input = closed(raw, ["profileId", "profileVersion", "channelId", "enabled"], { optional: ["signal"] });
+  if (input.signal !== undefined && (!globalThis.AbortSignal || !(input.signal instanceof globalThis.AbortSignal))) {
+    throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  }
   if (typeof input.enabled !== "boolean") throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   return request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/versions/${version(input.profileVersion)}/channels/${encodeURIComponent(id(input.channelId))}/status`, {
     enabled: input.enabled,
-  }, undefined, DEFAULT_TIMEOUT_MS, validateChannel);
+  }, input.signal, DEFAULT_TIMEOUT_MS, validateChannel);
 }
 
 export async function pollAiSettingsUntil(predicate, { signal, timeoutMs } = {}) {

@@ -64,6 +64,18 @@ test("channel presentation maps only known channel statuses and keeps the DTO cl
   ]) assert.deepEqual(aiSettingsPresentation(overview({ channels: [{ ...channel(), ...mutation }] })).channels, []);
 });
 
+test("channel presentation rejects blank channel and candidate display labels", () => {
+  for (const mutation of [
+    { channels: [channel({ displayName: "" })] },
+    { channels: [channel({ connectionDisplayName: "" })] },
+    { channelCandidates: [channelCandidate({ connectionDisplayName: "" })] },
+  ]) {
+    const view = aiSettingsPresentation(overview({ channels: [channel()], channelCandidates: [channelCandidate()], ...mutation }));
+    assert.deepEqual(view.channels, []);
+    assert.deepEqual(view.channelCandidates, []);
+  }
+});
+
 test("channel presentation warns only when configured channels cannot process work", () => {
   assert.equal(aiSettingsPresentation(overview({ channels: [channel({ status: "DISABLED", enabled: false })] })).channelsWarning,
     "当前没有可用的独立通道，请检查通道配置");
