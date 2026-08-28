@@ -392,7 +392,8 @@ test("production relay discovers runnable accounts from the shared outbox in fai
     async renewAutoListingAiMessageLease() { throw new Error("no rows"); },
     async completeAutoListingAiMessage() {},
     async failAutoListingAiMessage() {},
-    async reconcileDeadAutoListingAiMessages() { return { recovered: 0 }; },
+    async reconcileDeadLegacyAutoListingAiMessages() { events.push(["legacy-dead"]); return { recovered: 0 }; },
+    async reconcileDeadAutoListingAiMessages() { events.push(["generic-dead"]); throw new Error("must stay fenced"); },
     async reconcileInterruptedAutoListingAiItems() { return { recovered: 0 }; },
   };
   const boss = {
@@ -442,6 +443,8 @@ test("production relay discovers runnable accounts from the shared outbox in fai
     "account-a", "account-b", "account-c", "account-a", "account-b",
   ]);
   assert.deepEqual(events.filter(([name]) => name === "queue").map(([, name]) => name), ["auto-listing-ai-v2"]);
+  assert.equal(events.filter(([name]) => name === "legacy-dead").length, 5);
+  assert.equal(events.some(([name]) => name === "generic-dead"), false);
   assert.equal(events.filter(([name]) => name === "boss-create").length, 1);
   assert.equal(events.filter(([name]) => name === "boss-stop").length, 1);
   assert.equal(events.filter(([name]) => name === "timer-stop").length, 1);
@@ -476,7 +479,8 @@ test("default production relay runs one bounded legacy-only v2 cycle with fake l
     async renewAutoListingAiMessageLease() { throw new Error("no rows"); },
     async completeAutoListingAiMessage() { throw new Error("no rows"); },
     async failAutoListingAiMessage() { throw new Error("no rows"); },
-    async reconcileDeadAutoListingAiMessages(input) { events.push(["reconcile-dead", input]); return { recovered: 0 }; },
+    async reconcileDeadLegacyAutoListingAiMessages(input) { events.push(["reconcile-legacy-dead", input]); return { recovered: 0 }; },
+    async reconcileDeadAutoListingAiMessages() { events.push(["reconcile-generic-dead"]); throw new Error("must not reconcile generic rows"); },
     async reconcileInterruptedAutoListingAiItems(input) { events.push(["reconcile-interrupted", input]); return { recovered: 0 }; },
   });
   const boss = Object.freeze({
@@ -506,6 +510,10 @@ test("default production relay runs one bounded legacy-only v2 cycle with fake l
     { accountId: "account-a", workerId: "auto-listing-ai-outbox-relay-v1", limit: 1, leaseMs: 30_000 },
   ]]);
   assert.equal(events.some(([name]) => name === "generic-claim" || name === "v3-claim" || name === "send"), false);
+  assert.deepEqual(events.filter(([name]) => name === "reconcile-legacy-dead"), [
+    ["reconcile-legacy-dead", { accountId: "account-a", limit: 1 }],
+  ]);
+  assert.equal(events.some(([name]) => name === "reconcile-generic-dead"), false);
   const queue = events.find(([name]) => name === "queue");
   assert.equal(queue[1], "auto-listing-ai-v2");
   assert.equal(Object.hasOwn(queue[2], "expireInSeconds"), false);

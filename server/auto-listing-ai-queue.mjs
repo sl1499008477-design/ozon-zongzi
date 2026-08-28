@@ -516,9 +516,9 @@ function createOutboxPublisher(rawOptions, { work }) {
         published += 1;
         if (publication.duplicate === true) duplicates += 1;
       }
-      if (typeof outboxRepository.reconcileDeadAutoListingAiMessages === "function") {
+      if (!work && typeof outboxRepository.reconcileDeadLegacyAutoListingAiMessages === "function") {
         try {
-          await withTimeout(outboxRepository.reconcileDeadAutoListingAiMessages({
+          await withTimeout(outboxRepository.reconcileDeadLegacyAutoListingAiMessages({
             accountId: input.accountId,
             limit: batchSize,
           }), publishTimeoutMs, timers);

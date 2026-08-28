@@ -533,7 +533,7 @@ export async function createAutoListingAiProductionOutboxRelay(input = {}) {
     const repository = assertPortShape(ports.createOutboxRepository({ pool }), [
       "listRunnableAutoListingAiAccountIds", "claimLegacyAutoListingAiMessages",
       "renewAutoListingAiMessageLease", "completeAutoListingAiMessage",
-      "failAutoListingAiMessage", "reconcileDeadAutoListingAiMessages",
+      "failAutoListingAiMessage", "reconcileDeadLegacyAutoListingAiMessages",
       "reconcileInterruptedAutoListingAiItems",
     ]);
     let afterAccountId = null;

@@ -146,6 +146,7 @@ test("legacy PostgreSQL claim excludes every job whose frozen profile has a conn
   assert.match(sql, /profile\.id=job\.ai_profile_id/iu);
   assert.match(sql, /profile\.config_version=job\.ai_profile_version/iu);
   assert.match(sql, /profile\.connection_id IS NULL/iu);
+  assert.match(sql, /UPDATE auto_listing_ai_outbox AS exhausted_outbox[\s\S]*?exhausted_profile\.account_id=exhausted_job\.account_id[\s\S]*?exhausted_profile\.id=exhausted_job\.ai_profile_id[\s\S]*?exhausted_profile\.config_version=exhausted_job\.ai_profile_version[\s\S]*?exhausted_profile\.connection_id IS NULL/iu);
   assert.doesNotMatch(sql, /INSERT INTO auto_listing_ai_channels|dispatch_contract_version='CHANNEL_WORK_V1'/iu);
 });
 
@@ -244,6 +245,25 @@ test("DEAD reconciliation is account scoped, status-version fenced, audited and 
   await assert.rejects(repository.reconcileDeadAutoListingAiMessages({
     accountId: "account-b", limit: 10, unexpected: true,
   }), { code: "AUTO_LISTING_AI_OUTBOX_INVALID" });
+});
+
+test("legacy DEAD reconciliation uses the exact frozen null-connection profile fence", async () => {
+  const pool = scriptedPool([{ rows: [{ item_id: "item-a" }] }]);
+  const repository = createPostgresAiOutboxRepository({ pool });
+
+  assert.deepEqual(await repository.reconcileDeadLegacyAutoListingAiMessages({
+    accountId: "account-a", limit: 10,
+  }), { recovered: 1 });
+
+  const sql = pool.calls[0].sql;
+  assert.match(sql, /JOIN auto_listing_jobs AS job/iu);
+  assert.match(sql, /job\.account_id=o\.account_id AND job\.id=o\.job_id/iu);
+  assert.match(sql, /JOIN ai_gateway_profiles AS profile/iu);
+  assert.match(sql, /profile\.account_id=job\.account_id/iu);
+  assert.match(sql, /profile\.id=job\.ai_profile_id/iu);
+  assert.match(sql, /profile\.config_version=job\.ai_profile_version/iu);
+  assert.match(sql, /profile\.connection_id IS NULL/iu);
+  assert.match(sql, /UPDATE auto_listing_job_items/iu);
 });
 
 test("interrupted worker reconciliation waits beyond the queue budget, excludes live work and advances the status fence", async () => {
@@ -503,6 +523,63 @@ test("real PostgreSQL legacy claim follows the exact frozen null-connection prof
       entry.message = businessMessage;
     }
 
+    const expiredCases = [
+      { key: "expired-legacy-a", accountId: accountA, marker: "a", profileId: legacyProfileA, profileVersion: 1 },
+      { key: "expired-connected-a", accountId: accountA, marker: "a", profileId: currentProfileA, profileVersion: 2 },
+      { key: "expired-legacy-b", accountId: accountB, marker: "b", profileId: profileB, profileVersion: 1 },
+    ];
+    for (const [index, entry] of expiredCases.entries()) {
+      const ids = resources.get(entry.accountId);
+      const jobId = `job-${entry.key}-${suffix}`;
+      const itemId = `item-${entry.key}-${suffix}`;
+      const outboxId = `outbox-${entry.key}-${suffix}`;
+      const correlationId = `correlation-${entry.key}-${suffix}`;
+      const businessMessage = {
+        contractVersion: "V1",
+        accountId: entry.accountId,
+        itemId,
+        phase: "PLAN_CONTENT",
+        expectedStatusVersion: 3,
+        correlationId,
+      };
+      await client.query(
+        `INSERT INTO auto_listing_jobs (
+           id,account_id,source_type,idempotency_key,config_hash,strategy_version_id,ai_profile_id,ai_profile_version
+         ) VALUES ($1,$2,'COLLECT_BOX',$3,$4,$5,$6,$7)`,
+        [jobId, entry.accountId, `job-key-${entry.key}-${suffix}`, hash(String(index + 4)), ids.strategyId,
+          entry.profileId, entry.profileVersion],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_job_items (
+           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order
+         ) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',3,1)`,
+        [itemId, jobId, entry.accountId, ids.snapshotId, ids.storeId, ids.warehouseId],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_ai_outbox (
+           id,account_id,job_id,item_id,event_type,dedupe_key,state,attempts,contract_version,phase,
+           expected_status_version,correlation_id,payload,lease_owner,lease_token,lease_expires_at,next_retry_at
+         ) VALUES ($1,$2,$3,$4,'PLAN_CONTENT',$5,'PROCESSING',5,'V1','PLAN_CONTENT',3,$6,$7::JSONB,
+           $8,$9,NOW()-INTERVAL '1 minute',NOW())`,
+        [outboxId, entry.accountId, jobId, itemId, autoListingAiMessageDedupeKey(businessMessage),
+          correlationId, JSON.stringify(businessMessage), `owner-${entry.key}`, `token-${entry.key}`],
+      );
+      entry.jobId = jobId;
+      entry.itemId = itemId;
+      entry.outboxId = outboxId;
+    }
+
+    const protectedExpiredIds = [expiredCases[1].outboxId, expiredCases[2].outboxId];
+    const protectedBefore = (await client.query(
+      `SELECT o.id,o.state,o.attempts,o.lease_owner,o.lease_token,o.lease_expires_at,
+              i.status AS item_status,i.status_version AS item_status_version
+         FROM auto_listing_ai_outbox AS o
+         JOIN auto_listing_job_items AS i
+           ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id
+        WHERE o.id=ANY($1::TEXT[]) ORDER BY o.id`,
+      [protectedExpiredIds],
+    )).rows;
+
     const repositoryPool = {
       query: (...args) => client.query(...args),
       async connect() {
@@ -521,6 +598,36 @@ test("real PostgreSQL legacy claim follows the exact frozen null-connection prof
     assert.equal(Object.hasOwn(claimed[0], "workMessage"), false);
     assert.equal(Object.hasOwn(claimed[0].message, "execution"), false);
     assert.equal(Object.hasOwn(claimed[0].message, "channelId"), false);
+
+    const legacyExpiredAfterClaim = (await client.query(
+      "SELECT state,attempts,lease_owner,lease_token,lease_expires_at FROM auto_listing_ai_outbox WHERE id=$1",
+      [expiredCases[0].outboxId],
+    )).rows[0];
+    assert.deepEqual(legacyExpiredAfterClaim, {
+      state: "DEAD", attempts: 5, lease_owner: null, lease_token: null, lease_expires_at: null,
+    });
+    assert.deepEqual(await repository.reconcileDeadLegacyAutoListingAiMessages({
+      accountId: accountA, limit: 10,
+    }), { recovered: 1 });
+
+    const legacyItemAfterReconciliation = (await client.query(
+      "SELECT status,status_version,failure_code FROM auto_listing_job_items WHERE id=$1",
+      [expiredCases[0].itemId],
+    )).rows[0];
+    assert.deepEqual(legacyItemAfterReconciliation, {
+      status: "RETRYABLE_ERROR", status_version: 4, failure_code: "AUTO_LISTING_AI_OUTBOX_DEAD",
+    });
+
+    const protectedAfter = (await client.query(
+      `SELECT o.id,o.state,o.attempts,o.lease_owner,o.lease_token,o.lease_expires_at,
+              i.status AS item_status,i.status_version AS item_status_version
+         FROM auto_listing_ai_outbox AS o
+         JOIN auto_listing_job_items AS i
+           ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id
+        WHERE o.id=ANY($1::TEXT[]) ORDER BY o.id`,
+      [protectedExpiredIds],
+    )).rows;
+    assert.deepEqual(protectedAfter, protectedBefore);
 
     const untouched = await client.query(
       "SELECT id,state,attempts FROM auto_listing_ai_outbox WHERE id=ANY($1::TEXT[]) ORDER BY id",

@@ -198,6 +198,63 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
     if (!row) throw problem("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
     return row;
   };
+  const reconcileDeadMessages = async (input, { legacy }) => {
+    const request = reconcileInput(input);
+    const frozenLegacyJoin = legacy ? `
+             JOIN auto_listing_jobs AS job
+               ON job.account_id=o.account_id AND job.id=o.job_id
+             JOIN ai_gateway_profiles AS profile
+               ON profile.account_id=job.account_id AND profile.id=job.ai_profile_id
+              AND profile.config_version=job.ai_profile_version
+              AND profile.connection_id IS NULL` : "";
+    const result = await query(
+      `WITH candidates AS MATERIALIZED (
+           SELECT o.id AS outbox_id,o.account_id,o.job_id,o.item_id,o.phase,
+                  o.correlation_id,o.last_error_code,i.status,i.status_version
+             FROM auto_listing_ai_outbox AS o
+             JOIN auto_listing_job_items AS i
+               ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id${frozenLegacyJoin}
+            WHERE o.account_id=$1 AND o.contract_version='V1' AND o.state='DEAD'
+              AND i.status_version=o.expected_status_version
+              AND ((o.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
+                    AND i.status='PLANNING')
+                OR (o.phase IN ('GENERATE_IMAGE_SLOT','GENERATE_RICH_CONTENT')
+                    AND i.status='GENERATING'))
+            ORDER BY o.dead_at,o.id
+            LIMIT $2 FOR UPDATE OF i SKIP LOCKED
+         ), updated AS (
+           UPDATE auto_listing_job_items AS i
+              SET status='RETRYABLE_ERROR',status_version=i.status_version+1,
+                  recovery_point=CASE WHEN i.status='PLANNING' THEN 'PLANNING' ELSE 'GENERATION' END,
+                  failure_code='AUTO_LISTING_AI_OUTBOX_DEAD',
+                  failure_detail_safe='AUTO_LISTING_AI_OUTBOX_DEAD',updated_at=NOW()
+             FROM candidates AS c
+            WHERE i.account_id=c.account_id AND i.job_id=c.job_id AND i.id=c.item_id
+              AND i.status=c.status AND i.status_version=c.status_version
+           RETURNING c.*,i.status_version AS transition_version,i.recovery_point
+         ), inserted AS (
+           INSERT INTO auto_listing_events (
+             id,account_id,job_id,item_id,actor_account_id,from_status,to_status,event_type,
+             correlation_id,details,transition_version
+           )
+           SELECT 'ai-dead-recovery-' || md5(account_id || chr(31) || outbox_id),
+                  account_id,job_id,item_id,account_id,status,'RETRYABLE_ERROR','RETRYABLE_FAILURE',
+                  correlation_id,
+                  jsonb_build_object('failureCode','AUTO_LISTING_AI_OUTBOX_DEAD',
+                    'recoveryPoint',recovery_point,'outboxId',outbox_id),
+                  transition_version
+             FROM updated
+           RETURNING item_id
+         ) SELECT item_id FROM inserted`,
+      [request.accountId, request.limit],
+    );
+    const rows = result.rows || [];
+    if (!Array.isArray(rows) || rows.length > request.limit
+      || rows.some((row) => !isSafeAutoListingAiIdentifier(row?.item_id))) {
+      throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+    }
+    return Object.freeze({ recovered: rows.length });
+  };
 
   return Object.freeze({
     async listRunnableAutoListingAiAccountIds(input) {
@@ -258,54 +315,11 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
     },
 
     async reconcileDeadAutoListingAiMessages(input) {
-      const request = reconcileInput(input);
-      const result = await query(
-        `WITH candidates AS MATERIALIZED (
-           SELECT o.id AS outbox_id,o.account_id,o.job_id,o.item_id,o.phase,
-                  o.correlation_id,o.last_error_code,i.status,i.status_version
-             FROM auto_listing_ai_outbox AS o
-             JOIN auto_listing_job_items AS i
-               ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id
-            WHERE o.account_id=$1 AND o.contract_version='V1' AND o.state='DEAD'
-              AND i.status_version=o.expected_status_version
-              AND ((o.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
-                    AND i.status='PLANNING')
-                OR (o.phase IN ('GENERATE_IMAGE_SLOT','GENERATE_RICH_CONTENT')
-                    AND i.status='GENERATING'))
-            ORDER BY o.dead_at,o.id
-            LIMIT $2 FOR UPDATE OF i SKIP LOCKED
-         ), updated AS (
-           UPDATE auto_listing_job_items AS i
-              SET status='RETRYABLE_ERROR',status_version=i.status_version+1,
-                  recovery_point=CASE WHEN i.status='PLANNING' THEN 'PLANNING' ELSE 'GENERATION' END,
-                  failure_code='AUTO_LISTING_AI_OUTBOX_DEAD',
-                  failure_detail_safe='AUTO_LISTING_AI_OUTBOX_DEAD',updated_at=NOW()
-             FROM candidates AS c
-            WHERE i.account_id=c.account_id AND i.job_id=c.job_id AND i.id=c.item_id
-              AND i.status=c.status AND i.status_version=c.status_version
-           RETURNING c.*,i.status_version AS transition_version,i.recovery_point
-         ), inserted AS (
-           INSERT INTO auto_listing_events (
-             id,account_id,job_id,item_id,actor_account_id,from_status,to_status,event_type,
-             correlation_id,details,transition_version
-           )
-           SELECT 'ai-dead-recovery-' || md5(account_id || chr(31) || outbox_id),
-                  account_id,job_id,item_id,account_id,status,'RETRYABLE_ERROR','RETRYABLE_FAILURE',
-                  correlation_id,
-                  jsonb_build_object('failureCode','AUTO_LISTING_AI_OUTBOX_DEAD',
-                    'recoveryPoint',recovery_point,'outboxId',outbox_id),
-                  transition_version
-             FROM updated
-           RETURNING item_id
-         ) SELECT item_id FROM inserted`,
-        [request.accountId, request.limit],
-      );
-      const rows = result.rows || [];
-      if (!Array.isArray(rows) || rows.length > request.limit
-        || rows.some((row) => !isSafeAutoListingAiIdentifier(row?.item_id))) {
-        throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
-      }
-      return Object.freeze({ recovered: rows.length });
+      return reconcileDeadMessages(input, { legacy: false });
+    },
+
+    async reconcileDeadLegacyAutoListingAiMessages(input) {
+      return reconcileDeadMessages(input, { legacy: true });
     },
 
     async reconcileInterruptedAutoListingAiItems(input) {
@@ -456,12 +470,24 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
         const locked = await clientQuery.call(
           client,
           `WITH exhausted AS (
-             UPDATE auto_listing_ai_outbox
+             UPDATE auto_listing_ai_outbox AS exhausted_outbox
                 SET state='DEAD',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
                     last_error_code='AUTO_LISTING_AI_LEASE_EXHAUSTED',dead_at=NOW(),next_retry_at=NULL,updated_at=NOW()
-              WHERE account_id=$1 AND contract_version='V1' AND state='PROCESSING'
-                AND lease_expires_at <= NOW() AND attempts >= $3
-              RETURNING id
+              WHERE exhausted_outbox.account_id=$1 AND exhausted_outbox.contract_version='V1'
+                AND exhausted_outbox.state='PROCESSING'
+                AND exhausted_outbox.lease_expires_at <= NOW() AND exhausted_outbox.attempts >= $3
+                AND EXISTS (
+                  SELECT 1
+                    FROM auto_listing_jobs AS exhausted_job
+                    JOIN ai_gateway_profiles AS exhausted_profile
+                      ON exhausted_profile.account_id=exhausted_job.account_id
+                     AND exhausted_profile.id=exhausted_job.ai_profile_id
+                     AND exhausted_profile.config_version=exhausted_job.ai_profile_version
+                     AND exhausted_profile.connection_id IS NULL
+                   WHERE exhausted_job.account_id=exhausted_outbox.account_id
+                     AND exhausted_job.id=exhausted_outbox.job_id
+                )
+              RETURNING exhausted_outbox.id
            )
            SELECT job.id AS job_id
              FROM auto_listing_jobs AS job
@@ -549,6 +575,17 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                     lease_expires_at=NOW()+($4 * INTERVAL '1 millisecond'),updated_at=NOW()
                FROM candidates
               WHERE outbox.id=candidates.id AND outbox.account_id=$1
+                AND EXISTS (
+                  SELECT 1
+                    FROM auto_listing_jobs AS claimed_job
+                    JOIN ai_gateway_profiles AS claimed_profile
+                      ON claimed_profile.account_id=claimed_job.account_id
+                     AND claimed_profile.id=claimed_job.ai_profile_id
+                     AND claimed_profile.config_version=claimed_job.ai_profile_version
+                     AND claimed_profile.connection_id IS NULL
+                   WHERE claimed_job.account_id=outbox.account_id
+                     AND claimed_job.id=outbox.job_id
+                )
               RETURNING outbox.*`,
             [request.accountId, request.workerId, nonce, request.leaseMs, maxAttempts, jobIds],
           );

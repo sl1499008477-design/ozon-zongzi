@@ -665,6 +665,39 @@ test("scheduled publisher isolates one account failure and reports only safe per
   await publisher.stop();
 });
 
+test("legacy publisher reconciles only legacy-fenced DEAD rows and never calls generic reconciliation", async () => {
+  const calls = [];
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
+    enabled: true,
+    outboxRepository: {
+      async claimLegacyAutoListingAiMessages() { calls.push("claim"); return []; },
+      async renewAutoListingAiMessageLease() { throw new Error("no rows"); },
+      async completeAutoListingAiMessage() { throw new Error("no rows"); },
+      async failAutoListingAiMessage() { throw new Error("no rows"); },
+      async reconcileDeadLegacyAutoListingAiMessages(input) { calls.push(["legacy-dead", input]); return { recovered: 0 }; },
+      async reconcileDeadAutoListingAiMessages() { calls.push("generic-dead"); throw new Error("must not reconcile generic rows"); },
+      async reconcileInterruptedAutoListingAiItems(input) { calls.push(["interrupted", input]); return { recovered: 0 }; },
+    },
+    queueAdapter: { async publish() { throw new Error("no rows"); }, async stop() {} },
+    accountIds: async () => ["account-a"],
+    timers: { setTimeout, clearTimeout, setInterval, clearInterval },
+    workerId: "publisher-legacy-reconcile",
+    batchSize: 2,
+    leaseMs: 5_000,
+    publishTimeoutMs: 1_000,
+    intervalMs: 10_000,
+  });
+
+  assert.deepEqual(await publisher.publishOnce({ accountId: "account-a" }), {
+    claimed: 0, published: 0, duplicates: 0, failed: 0,
+  });
+  assert.deepEqual(calls, [
+    "claim",
+    ["legacy-dead", { accountId: "account-a", limit: 2 }],
+    ["interrupted", { accountId: "account-a", limit: 2 }],
+  ]);
+});
+
 test("more than 101 accounts stay fair when the first four account claims are slow", async () => {
   const all = Array.from({ length: 102 }, (_, index) => `account-${String(index).padStart(3, "0")}`);
   let page = 0;
