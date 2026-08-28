@@ -146,7 +146,14 @@ test("ordered collection creation switches to the task center with exact multipl
     context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     const pageErrors = [];
+    const uncontrolledRequests = [];
     page.on("pageerror", (error) => pageErrors.push(error.stack || error.message));
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.hostname !== "127.0.0.1" && url.hostname !== "images.example.test") {
+        uncontrolledRequests.push(`${request.method()} ${url.origin}${url.pathname}`);
+      }
+    });
     await page.addInitScript(() => {
       const nativeSetInterval = window.setInterval.bind(window);
       const nativeClearInterval = window.clearInterval.bind(window);
@@ -239,6 +246,7 @@ test("ordered collection creation switches to the task center with exact multipl
     assert.equal(await page.getByText("生成失败商品", { exact: true }).count(), 0);
     assert.ok(await page.getByText("图片不可用", { exact: true }).count() >= 1);
     assert.deepEqual(pageErrors, []);
+    assert.deepEqual(uncontrolledRequests, [], "rendered acceptance must not contact a real AI or Ozon endpoint");
   } finally {
     await context?.close();
     await browser?.close();
@@ -265,7 +273,12 @@ test("review-ready tasks keep polling and clean up after the refreshed row becom
     context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     const pageErrors = [];
+    const uncontrolledRequests = [];
     page.on("pageerror", (error) => pageErrors.push(error.stack || error.message));
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.hostname !== "127.0.0.1") uncontrolledRequests.push(`${request.method()} ${url.origin}${url.pathname}`);
+    });
     await page.addInitScript(() => {
       let nextIntervalId = 1;
       const intervals = new Map();
@@ -331,6 +344,7 @@ test("review-ready tasks keep polling and clean up after the refreshed row becom
     assert.equal(jobsReadCount, initialJobsReadCount + 1);
     await page.waitForFunction(() => window.__intervalCountForTest(3_000) === 0);
     assert.deepEqual(pageErrors, []);
+    assert.deepEqual(uncontrolledRequests, [], "polling acceptance must remain entirely local and mocked");
   } finally {
     await context?.close();
     await browser?.close();

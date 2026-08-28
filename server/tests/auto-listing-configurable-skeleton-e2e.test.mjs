@@ -19,6 +19,12 @@ const enabled = process.env.AUTO_LISTING_CONFIGURABLE_SKELETON_PG_TESTS === "1" 
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
 const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const H = (digit) => digit.repeat(64);
+const gatewayExecution = Object.freeze({
+  channelId: "channel-a",
+  connectionId: "connection-a",
+  connectionVersion: 3,
+  idleTimeoutMs: 300_000,
+});
 const canonical = (value) => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === "object"
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
@@ -27,7 +33,7 @@ const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canoni
 test("configurable fixed-skeleton migration suite tracks the latest migration without weakening its 074 upgrade coverage", async () => {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
+  assert.equal(migrations.at(-1), "098_auto_listing_ai_channel_pool.sql");
 });
 
 const roles = Object.freeze({
@@ -75,7 +81,8 @@ function sourceCapture({ reliableDimensions = true } = {}) {
             { factId: "fact.color.red", kind: "COLOR", value: "красный" },
             { factId: "fact.material.steel", kind: "MATERIAL", value: "сталь" },
           ],
-          sizeFacts: [{ factId: "fact.size.a", kind: "SIZE", value: "средний" }],
+          sizeFacts: reliableDimensions
+            ? [{ factId: "fact.size.a", kind: "SIZE", value: "средний" }] : [],
         },
       }],
     } },
@@ -130,8 +137,8 @@ function validFill(skeleton) {
   };
 }
 
-async function planFixed(roleCounts, counters, mutateFill = (value) => value) {
-  const args = plannerArgs(roleCounts);
+async function planFixed(roleCounts, counters, mutateFill = (value) => value, source = sourceCapture()) {
+  const args = plannerArgs(roleCounts, source);
   const context = buildPlannerInput({
     ...args,
     profileRef: { id: "profile-a", configVersion: 3, textModel: "text-model-a" },
@@ -219,9 +226,11 @@ async function generateConfiguredImages(planRecord, counters) {
       accountId: "account-a", jobId: derived.jobId, itemId: derived.itemId,
       status: "GENERATING", statusVersion: 8, activeContentPlanId: derived.id,
       phaseInput: {
-        plan: derived, slot, sourceAssetLoader: {}, repository: {}, gateway: {}, profile: {},
+        plan: derived, slot, categoryStyle: null, categoryStyleReferences: [],
+        sourceAssetLoader: {}, repository: {}, gateway: {}, profile: {},
         imageModel: "image-model-a", ratio: "3:4", resolution: "1K", size: "768x1024",
         quality: "medium", templateVersion: "image-v1", regeneration: null, storage: {}, logger: null, maxAttempts: 3,
+        gatewayExecution,
       },
     };
     const result = await orchestrateAutoListingAiPhase({ message, context }, configured);
@@ -238,7 +247,7 @@ async function generateConfiguredImages(planRecord, counters) {
       status: "GENERATING", statusVersion: 8, activeContentPlanId: derived.id,
       phaseInput: { plan: derived, profile: {}, gateway: {}, repository: {}, factRegistry: planRecord.factRegistry,
         acceptedAssets: accepted, planHash: derived.planHash, sourceHash: derived.sourceHash,
-        promptTemplateVersion: "rich-v1", maxAttempts: 3, leaseOwner: "worker-a" },
+        promptTemplateVersion: "rich-v1", maxAttempts: 3, leaseOwner: "worker-a", gatewayExecution },
     },
   }, configured);
   assert.equal(rich.outcome, "CONTENT_READY_FOR_REVIEW");
@@ -261,7 +270,7 @@ async function finishAtReview(planRecord) {
     { rowCount: 1, rows: [{ id: `${planRecord.id}-derived`, parent_plan_id: planRecord.id,
       derivation_kind: "SOURCE_MATERIALIZATION", plan: planRecord.plan }] },
     { rowCount: 1, rows: [{ planned_group_count: "1", accepted_group_count: "1", invalid_result_count: "0", duplicate_group_count: "0" }] },
-    { rowCount: 1, rows: [{ mode: "DIRECT", enabled: true }] },
+    { rowCount: 1, rows: [{ mode: "REVIEW", enabled: true }] },
     { rowCount: 1, rows: [{ status: "READY_FOR_REVIEW", status_version: 9 }] },
     { rowCount: 1, rows: [{ id: "review-event" }] },
   ]);
@@ -269,7 +278,8 @@ async function finishAtReview(planRecord) {
     client, accountId: "account-a", jobId: planRecord.jobId, itemId: planRecord.itemId,
     expectedStatusVersion: 8, correlationId: "corr-a", phase: "GENERATE_RICH_CONTENT", phaseTargetId: null,
     outcome: { contractVersion: "V1", disposition: "ACK", phase: "GENERATE_RICH_CONTENT",
-      outcome: "CONTENT_READY_FOR_REVIEW", retryable: false, failureCode: null, correlationId: "corr-a" },
+      outcome: "CONTENT_READY_FOR_REVIEW", retryable: false, failureCode: null, correlationId: "corr-a",
+      failureScope: null, deliveryState: null, retryAfterMs: null },
   }, { directUploadAllowed: true });
   assert.deepEqual(result, { disposition: "APPLIED", status: "READY_FOR_REVIEW", statusVersion: 9, enqueued: 0 });
   assert.equal(client.calls.some(({ sql }) => /INSERT INTO auto_listing_upload_tasks/iu.test(sql)), false);
@@ -290,7 +300,7 @@ if (!enabled) {
       await client.query(`SET search_path TO ${quote(schema)}, public`);
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
       assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-      assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
+      assert.equal(migrations.at(-1), "098_auto_listing_ai_channel_pool.sql");
       for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       const schemaRows = await client.query(
         `SELECT table_name,column_name FROM information_schema.columns
@@ -422,7 +432,7 @@ if (!enabled) {
     }
   });
 
-  test("invalid fill, missing dimensions and multiple visual groups stop before images", async () => {
+  test("invalid fill stops before images while missing dimensions and multiple visual groups remain supported", async () => {
     const invalid = { reservations: 0, savedPlans: 0, releases: 0, textCalls: 0, imageCalls: 0, richCalls: 0, ozonWrites: 0 };
     await assert.rejects(planFixed(roles.eight, invalid, (fill) => {
       fill.fills["forged:slot"] = { claims: [] };
@@ -430,18 +440,25 @@ if (!enabled) {
     }), { code: "AUTO_LISTING_CONTENT_PLAN_INVALID" });
     assert.deepEqual({ saved: invalid.savedPlans, images: invalid.imageCalls, ozon: invalid.ozonWrites }, { saved: 0, images: 0, ozon: 0 });
 
-    let repositoryCalls = 0;
-    let gatewayCalls = 0;
-    await assert.rejects(createContentPlan({
-      accountId: "account-a", jobId: "job-dim", itemId: "item-dim", sourceSnapshotId: "snapshot-dim",
-      expectedStatusVersion: 7, planningContract: "FIXED_SKELETON_V1",
-      ...plannerArgs(roles.eight, sourceCapture({ reliableDimensions: false })),
-      gatewayProfile: { id: "profile-a", accountId: "account-a", configVersion: 3, textModel: "text-model-a", enabled: true },
-      gateway: { async createTextResponse() { gatewayCalls += 1; } },
-      repository: { async reserveContentPlan() { repositoryCalls += 1; } },
-      evidenceRepository: {},
-    }), { code: "AUTO_LISTING_FIXED_SKELETON_DIMENSION_REQUIRED" });
-    assert.deepEqual({ repositoryCalls, gatewayCalls }, { repositoryCalls: 0, gatewayCalls: 0 });
+    const missingDimensions = {
+      reservations: 0, savedPlans: 0, releases: 0, textCalls: 0, imageCalls: 0, richCalls: 0, ozonWrites: 0,
+    };
+    const documentary = await planFixed(
+      roles.eight,
+      missingDimensions,
+      undefined,
+      sourceCapture({ reliableDimensions: false }),
+    );
+    const specification = documentary.plan.slots.find((slot) => slot.role === "SPECIFICATION");
+    assert.equal(specification?.requestedRole, "SPECIFICATION");
+    assert.equal(specification?.substitutionReasonCode, null);
+    assert.equal(specification?.textDensity, "NONE");
+    assert.deepEqual({
+      saved: missingDimensions.savedPlans,
+      text: missingDimensions.textCalls,
+      images: missingDimensions.imageCalls,
+      ozon: missingDimensions.ozonWrites,
+    }, { saved: 1, text: 1, images: 0, ozon: 0 });
 
     const context = buildPlannerInput({
       ...plannerArgs(roles.six), profileRef: { id: "profile-a", configVersion: 3, textModel: "text-model-a" },
@@ -449,9 +466,15 @@ if (!enabled) {
     });
     const hostile = structuredClone(context);
     hostile.plannerInput.visualGroups.push({ ...structuredClone(hostile.plannerInput.visualGroups[0]), visualGroupKey: "group-b" });
-    assert.throws(() => buildFixedSkeleton({ plannerContext: hostile }), {
-      code: "AUTO_LISTING_FIXED_SKELETON_VISUAL_GROUP_UNSUPPORTED",
-    });
+    const multipleGroups = buildFixedSkeleton({ plannerContext: hostile });
+    assert.equal(multipleGroups.plan.slots.length, 12);
+    assert.deepEqual(
+      [...new Set(multipleGroups.plan.slots.map((slot) => slot.visualGroupKey))].sort(),
+      [context.plannerInput.visualGroups[0].visualGroupKey, "group-b"].sort(),
+    );
+    for (const visualGroupKey of [context.plannerInput.visualGroups[0].visualGroupKey, "group-b"]) {
+      assert.equal(multipleGroups.plan.slots.filter((slot) => slot.visualGroupKey === visualGroupKey).length, 6);
+    }
   });
 
   test("the selector defaults collect-box items to fixed while Excel stays legacy", () => {

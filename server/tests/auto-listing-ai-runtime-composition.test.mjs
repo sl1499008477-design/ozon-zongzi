@@ -9,6 +9,10 @@ import {
   createDefaultAutoListingAiProductionOutboxRelay,
 } from "../auto-listing-ai-runtime-composition.mjs";
 import {
+  AUTO_LISTING_AI_QUEUE,
+  AUTO_LISTING_AI_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_WORK_QUEUE,
+  AUTO_LISTING_AI_WORK_QUEUE_OPTIONS,
   createAutoListingAiWorkPublisher,
   createAutoListingAiWorkQueueAdapter,
   createLegacyAutoListingAiOutboxPublisher,
@@ -556,7 +560,11 @@ test("default production relay runs bounded v2 legacy and v3 connection cycles w
   ]);
   assert.equal(events.some(([name]) => name === "reconcile-generic-dead"), false);
   const queues = events.filter(([name]) => name === "queue");
-  assert.deepEqual(queues.map(([, name]) => name).sort(), ["auto-listing-ai-v2", "auto-listing-ai-v3"]);
+  assert.deepEqual(queues.map(([, name]) => name).sort(), [AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_WORK_QUEUE]);
+  assert.deepEqual(new Map(queues.map(([, name, options]) => [name, options])), new Map([
+    [AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_QUEUE_OPTIONS],
+    [AUTO_LISTING_AI_WORK_QUEUE, AUTO_LISTING_AI_WORK_QUEUE_OPTIONS],
+  ]));
   assert.equal(queues.every((queue) => !Object.hasOwn(queue[2], "expireInSeconds")), true);
   assert.equal(events.filter(([name]) => name === "boss-create").length, 2);
   assert.equal(events.filter(([name]) => name === "boss-stop").length, 2);

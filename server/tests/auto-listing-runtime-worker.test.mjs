@@ -143,6 +143,11 @@ test("enabled runtime lazily composes one dedicated worker and stops it graceful
       dependencyFactories += 1;
       return {
         bossFactory: () => harness.boss,
+        executionRepository: {
+          async adopt() { throw new Error("no job in this test"); },
+          async renew() { throw new Error("no job in this test"); },
+          async requeueChannelFailure() { throw new Error("no job in this test"); },
+        },
         loadContext: async () => { throw new Error("no job in this test"); },
         orchestrate: async () => { throw new Error("no job in this test"); },
         workflow: { async applyOutcome() { throw new Error("no job in this test"); } },
@@ -157,9 +162,9 @@ test("enabled runtime lazily composes one dedicated worker and stops it graceful
   assert.equal(await runtime.startAiWorker(), true);
   assert.equal(dependencyFactories, 1);
   assert.equal(pools, 0);
-  assert.deepEqual(harness.calls, ["start", "createQueue", "work"]);
+  assert.deepEqual(harness.calls, ["start", "createQueue", "createQueue", "work", "work"]);
   await runtime.stopAiWorker();
-  assert.deepEqual(harness.calls, ["start", "createQueue", "work", "stop"]);
+  assert.deepEqual(harness.calls, ["start", "createQueue", "createQueue", "work", "work", "stop"]);
 });
 
 test("enabled runtime has a default production composition and missing configuration fails safely before database connection", async () => {

@@ -224,6 +224,12 @@ test("durable workflow wires the complete staged five-phase journey to READY_FOR
     "GENERATE_RICH_CONTENT", "MATERIALIZE_SOURCE_ASSET", "PLAN_CONTENT",
   ].sort());
   assert.equal(messages.some((message) => /UPLOAD/u.test(message.phase)), false);
+  for (const message of messages) {
+    assert.equal(message.contractVersion, "V1");
+    assert.equal(Object.hasOwn(message, "execution"), false,
+      "durable business messages must not embed a leased channel or credential material");
+    assert.doesNotMatch(JSON.stringify(message), /api[_-]?key|authorization|bearer|ciphertext/iu);
+  }
   const imageEvents = [...state.events.values()].filter((event) => event.eventType === "AI_IMAGE_SLOT_ACCEPTED");
   assert.deepEqual(imageEvents.map((event) => event.details.slotKey).sort(), [...slots].sort());
   assert.equal(new Set(imageEvents.map((event) => event.id)).size, slots.length);

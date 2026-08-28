@@ -499,6 +499,7 @@ test("default category runtime session route returns NOT_READY before a database
     createPublicationRepository() { return {}; },
     createAdminService() { return {
       async publishCategoryStrategyDraft() { throw new Error("not used"); },
+      async archiveCategoryStrategyDraft() { throw new Error("not used"); },
       async rollbackCategoryStrategyVersion() { throw new Error("not used"); },
     }; },
   });
