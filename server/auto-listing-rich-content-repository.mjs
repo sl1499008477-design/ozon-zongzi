@@ -227,7 +227,9 @@ function validateReservation(input) {
   for (const key of ["planHash", "sourceHash", "factRegistryHash", "assetHash", "promptHash"]) {
     if (!HASH.test(input[key] || "")) throw attemptError();
   }
-  if (!clean(input.profileId) || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
+  if (!Number.isInteger(input.expectedStatusVersion) || input.expectedStatusVersion < 1
+    || input.expectedStatusVersion > 2_147_483_647
+    || !clean(input.profileId) || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
     || !clean(input.modelName) || !clean(input.promptTemplateVersion)
     || !validFactEvidence(input.sourceFactEvidence)
     || !validAssetEvidence(input.assetEvidence, input)
@@ -273,7 +275,8 @@ function validPersistenceContract(input) {
 }
 
 function matchingScope(left, right) {
-  return scopeKey(left) === scopeKey(right) && left.inputHash === right.inputHash;
+  return scopeKey(left) === scopeKey(right) && left.inputHash === right.inputHash
+    && left.expectedStatusVersion === right.expectedStatusVersion;
 }
 
 function mapRow(row) {
@@ -466,8 +469,10 @@ export function createPostgresRichContentRepository({
       await client.query("BEGIN");
       const boundary = await client.query(
         `SELECT id FROM auto_listing_job_items
-         WHERE account_id=$1 AND job_id=$2 AND id=$3 FOR UPDATE`,
-        values.slice(0, 3),
+         WHERE account_id=$1 AND job_id=$2 AND id=$3
+           AND status='GENERATING' AND status_version=$4 AND active_content_plan_id=$5
+         FOR UPDATE`,
+        [...values.slice(0, 3), input.expectedStatusVersion, input.planId],
       );
       if (boundary.rowCount !== 1) throw attemptError();
       await client.query(
@@ -591,18 +596,30 @@ export function createPostgresRichContentRepository({
     let result;
     try {
       result = await pool.query(
-      `UPDATE ai_rich_content_results SET
+      `WITH current_item AS (
+         SELECT item.account_id,item.job_id,item.id,item.active_content_plan_id
+         FROM auto_listing_job_items AS item
+         WHERE item.account_id=$1 AND item.job_id=$2 AND item.id=$3
+           AND item.status='GENERATING' AND item.status_version=$31 AND item.active_content_plan_id=$4
+         FOR UPDATE
+       )
+       UPDATE ai_rich_content_results AS attempt SET
          status=$7,rich_content=$8::JSONB,output_hash=$9,checker_result=$10::JSONB,
          gateway_request_id=$11,model_evidence=$12::JSONB,error_code=$13,error_retryable=$14,
          lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW(),accepted_at=$15
-       WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
-         AND attempt_no=$6 AND status='GENERATING' AND lease_token=$16 AND lease_expires_at > NOW()
-         AND plan_hash=$17 AND source_hash=$18 AND fact_registry_hash=$19 AND asset_hash=$20 AND prompt_hash=$21
-         AND profile_id=$22 AND profile_version=$23 AND model_name=$24 AND prompt_template_version=$25
-         AND source_fact_evidence=$26::JSONB AND asset_evidence=$27::JSONB AND request_evidence=$28::JSONB
-         AND gateway_connection_id IS NOT DISTINCT FROM $29
-         AND gateway_connection_version IS NOT DISTINCT FROM $30
-       RETURNING *`,
+       FROM current_item AS item
+       WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+         AND attempt.plan_id=$4 AND attempt.input_hash=$5 AND attempt.attempt_no=$6
+         AND attempt.status='GENERATING' AND attempt.lease_token=$16 AND attempt.lease_expires_at > NOW()
+         AND attempt.plan_hash=$17 AND attempt.source_hash=$18 AND attempt.fact_registry_hash=$19
+         AND attempt.asset_hash=$20 AND attempt.prompt_hash=$21 AND attempt.profile_id=$22
+         AND attempt.profile_version=$23 AND attempt.model_name=$24 AND attempt.prompt_template_version=$25
+         AND attempt.source_fact_evidence=$26::JSONB AND attempt.asset_evidence=$27::JSONB
+         AND attempt.request_evidence=$28::JSONB
+         AND attempt.gateway_connection_id IS NOT DISTINCT FROM $29
+         AND attempt.gateway_connection_version IS NOT DISTINCT FROM $30
+         AND item.account_id=$1 AND item.job_id=$2 AND item.id=$3 AND item.active_content_plan_id=$4
+       RETURNING attempt.*`,
       [...SCOPE_KEYS.map((key) => input[key]), input.inputHash, input.attemptNo, status,
         JSON.stringify(accepted ? input.richContent : {}), accepted ? input.outputHash : "",
         JSON.stringify(accepted ? input.checkerResult : {}), accepted ? input.gatewayRequestId : null,
@@ -611,7 +628,7 @@ export function createPostgresRichContentRepository({
         input.planHash, input.sourceHash, input.factRegistryHash, input.assetHash, input.promptHash,
         input.profileId, input.profileVersion, input.modelName, input.promptTemplateVersion,
         JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence),
-        input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null],
+        input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null, input.expectedStatusVersion],
       );
     } catch {
       throw repositoryError();
@@ -629,22 +646,34 @@ export function createPostgresRichContentRepository({
     let result;
     try {
       result = await pool.query(
-        `UPDATE ai_rich_content_results SET
+        `WITH current_item AS (
+           SELECT item.account_id,item.job_id,item.id,item.active_content_plan_id
+           FROM auto_listing_job_items AS item
+           WHERE item.account_id=$1 AND item.job_id=$2 AND item.id=$3
+             AND item.status='GENERATING' AND item.status_version=$22 AND item.active_content_plan_id=$4
+           FOR UPDATE
+         )
+         UPDATE ai_rich_content_results AS attempt SET
            lease_owner='AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED',
            lease_expires_at=NOW(),updated_at=NOW()
-         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
-           AND attempt_no=$6 AND status='GENERATING' AND lease_token=$7 AND lease_expires_at > NOW()
-           AND plan_hash=$8 AND source_hash=$9 AND fact_registry_hash=$10 AND asset_hash=$11 AND prompt_hash=$12
-           AND profile_id=$13 AND profile_version=$14 AND model_name=$15 AND prompt_template_version=$16
-           AND source_fact_evidence=$17::JSONB AND asset_evidence=$18::JSONB AND request_evidence=$19::JSONB
-           AND gateway_connection_id IS NOT DISTINCT FROM $20
-           AND gateway_connection_version IS NOT DISTINCT FROM $21
-         RETURNING *`,
+         FROM current_item AS item
+         WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+           AND attempt.plan_id=$4 AND attempt.input_hash=$5 AND attempt.attempt_no=$6
+           AND attempt.status='GENERATING' AND attempt.lease_token=$7 AND attempt.lease_expires_at > NOW()
+           AND attempt.plan_hash=$8 AND attempt.source_hash=$9 AND attempt.fact_registry_hash=$10
+           AND attempt.asset_hash=$11 AND attempt.prompt_hash=$12 AND attempt.profile_id=$13
+           AND attempt.profile_version=$14 AND attempt.model_name=$15 AND attempt.prompt_template_version=$16
+           AND attempt.source_fact_evidence=$17::JSONB AND attempt.asset_evidence=$18::JSONB
+           AND attempt.request_evidence=$19::JSONB
+           AND attempt.gateway_connection_id IS NOT DISTINCT FROM $20
+           AND attempt.gateway_connection_version IS NOT DISTINCT FROM $21
+           AND item.account_id=$1 AND item.job_id=$2 AND item.id=$3 AND item.active_content_plan_id=$4
+         RETURNING attempt.*`,
         [...SCOPE_KEYS.map((key) => input[key]), input.inputHash, input.attemptNo, input.leaseToken,
           input.planHash, input.sourceHash, input.factRegistryHash, input.assetHash, input.promptHash,
           input.profileId, input.profileVersion, input.modelName, input.promptTemplateVersion,
           JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence),
-          input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null],
+          input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null, input.expectedStatusVersion],
       );
     } catch {
       throw repositoryError();

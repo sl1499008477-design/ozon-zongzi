@@ -689,7 +689,9 @@ function deterministicRichContent(facts, acceptedAssets) {
 
 function assertGenerationInput(input) {
   const scope = Object.fromEntries(SCOPE_KEYS.map((key) => [key, input[key]]));
-  if (!SCOPE_KEYS.every((key) => clean(scope[key], 240)) || !plainObject(input.profile)
+  if (!SCOPE_KEYS.every((key) => clean(scope[key], 240))
+    || !Number.isInteger(input.expectedStatusVersion) || input.expectedStatusVersion < 1
+    || input.expectedStatusVersion > 2_147_483_647 || !plainObject(input.profile)
     || !clean(input.profile.id, 240) || input.profile.accountId !== input.accountId
     || !Number.isInteger(input.profile.configVersion) || input.profile.configVersion < 1
     || !clean(input.profile.textModel, 240) || !clean(input.promptTemplateVersion, 240)
@@ -750,6 +752,7 @@ export async function generateRichContent(input = {}) {
   const assets = assetEvidence(input.acceptedAssets);
   const reservationInput = {
     ...scope, ...hashes,
+    expectedStatusVersion: input.expectedStatusVersion,
     profileId: input.profile.id,
     profileVersion: input.profile.configVersion,
     modelName: input.profile.textModel,

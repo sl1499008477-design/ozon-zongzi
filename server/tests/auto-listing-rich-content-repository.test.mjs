@@ -138,6 +138,7 @@ const reservationInput = (overrides = {}) => {
       requestKey: `auto-listing-rich-${identity.inputHash}`,
       schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1",
     },
+    expectedStatusVersion: 7,
     maxAttempts: 3,
     ...overrides,
   };
@@ -934,6 +935,69 @@ test("PostgreSQL default rich-content lease outlives the bounded two-minute mode
   assert.equal(insertValues?.includes(300_000), true);
   assert.equal(insertValues?.includes("connection-b"), true);
   assert.equal(insertValues?.includes(9), true);
+});
+
+test("PostgreSQL rich reservation locks only the current generating item version and active plan before attempt writes", async () => {
+  const { createPostgresRichContentRepository } = await repositoryModule();
+  const statements = [];
+  const client = {
+    async query(sql, values = []) {
+      statements.push({ sql, values });
+      if (/SELECT id FROM auto_listing_job_items/u.test(sql)) return { rowCount: 0, rows: [] };
+      return { rowCount: 1, rows: [] };
+    },
+    release() {},
+  };
+  const repository = createPostgresRichContentRepository({
+    pool: { async connect() { return client; }, async query() { throw new Error("pool query must not run"); } },
+    token: () => "lease-stale-version", id: () => "rich-stale-version",
+  });
+
+  await assert.rejects(
+    repository.reserveRichContentAttempt(reservationInput()),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
+  );
+  const boundary = statements.find(({ sql }) => /SELECT id FROM auto_listing_job_items/u.test(sql));
+  assert.match(boundary.sql, /account_id=\$1.*job_id=\$2.*id=\$3/isu);
+  assert.match(boundary.sql, /status='GENERATING'.*status_version=\$4.*active_content_plan_id=\$5/isu);
+  assert.deepEqual(boundary.values, [scope.accountId, scope.jobId, scope.itemId, 7, scope.planId]);
+  assert.equal(statements.some(({ sql }) => /(?:UPDATE|INSERT INTO) ai_rich_content_results/u.test(sql)), false);
+  assert.equal(statements.at(-1).sql, "ROLLBACK");
+});
+
+test("PostgreSQL rich terminal and release writes share the exact live item version and active-plan fence", async () => {
+  const { createPostgresRichContentRepository } = await repositoryModule();
+  const input = reservationInput({ gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4 });
+  for (const [name, invoke] of [
+    ["complete", (repository) => repository.completeRichContentAttempt(completeInput(
+      { attemptNo: 1, leaseToken: "lease-a" },
+      { expectedStatusVersion: 7, gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4 },
+    ))],
+    ["reject", (repository) => repository.rejectRichContentAttempt({
+      ...input, attemptNo: 1, leaseToken: "lease-a", errorCode: "POLICY", errorRetryable: false,
+    })],
+    ["fail", (repository) => repository.failRichContentAttempt({
+      ...input, attemptNo: 1, leaseToken: "lease-a", errorCode: "GATEWAY", errorRetryable: true,
+    })],
+    ["release", (repository) => repository.releaseRichContentAttempt({
+      ...input, attemptNo: 1, leaseToken: "lease-a",
+      errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+    })],
+  ]) {
+    let statement = null;
+    const repository = createPostgresRichContentRepository({ pool: { async query(sql, values) {
+      statement = { sql, values };
+      return { rowCount: 0, rows: [] };
+    } } });
+    await assert.rejects(invoke(repository),
+      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID", name);
+    assert.match(statement.sql, /WITH current_item AS[\s\S]*FOR UPDATE[\s\S]*UPDATE ai_rich_content_results/iu, name);
+    assert.match(statement.sql, /FROM auto_listing_job_items AS item/iu, name);
+    assert.match(statement.sql, /item\.account_id=\$1.*item\.job_id=\$2.*item\.id=\$3/isu, name);
+    assert.match(statement.sql, /item\.status='GENERATING'/iu, name);
+    assert.match(statement.sql, /item\.status_version=\$\d+/iu, name);
+    assert.match(statement.sql, /item\.active_content_plan_id=\$4/iu, name);
+  }
 });
 
 test("PostgreSQL rich channel release uses the full scope evidence attempt and token fence", async () => {

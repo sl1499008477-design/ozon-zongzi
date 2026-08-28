@@ -250,6 +250,88 @@ test("CAS terminal transitions reject wrong scope or lease and do not mutate ano
   assert.equal(repository.snapshot()[0].status, "GENERATING");
 });
 
+test("an exact gateway connection pair owns every memory attempt transition", async () => {
+  const repository = createMemoryGenerationAttemptRepository({ token: () => "lease-connection-a" });
+  const connectionA = { gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4 };
+  const connectionB = { gatewayConnectionId: "connection-b", gatewayConnectionVersion: 5 };
+  const lease = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3, ...connectionA,
+  });
+  await repository.bindGenerationAttemptInput({
+    ...scope, attemptIdentityHash, inputHash, generationSize, ...lease, ...connectionA,
+  });
+  const before = repository.snapshot();
+
+  await assert.rejects(
+    repository.completeGenerationAttempt({ ...complete(lease), ...connectionB }),
+    (error) => error?.code === "AUTO_LISTING_IMAGE_ATTEMPT_INVALID",
+  );
+  assert.deepEqual(repository.snapshot(), before);
+
+  const accepted = await repository.completeGenerationAttempt({ ...complete(lease), ...connectionA });
+  assert.equal(accepted.status, "ACCEPTED");
+  assert.equal(accepted.gatewayConnectionId, connectionA.gatewayConnectionId);
+  assert.equal(accepted.gatewayConnectionVersion, connectionA.gatewayConnectionVersion);
+});
+
+test("memory channel reclaim transfers ownership to only the newly reserved exact connection pair", async () => {
+  let timestamp = 100;
+  let sequence = 0;
+  const repository = createMemoryGenerationAttemptRepository({
+    now: () => timestamp, leaseMs: 20, token: () => `lease-pair-${++sequence}`,
+  });
+  const connectionA = { gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4 };
+  const connectionB = { gatewayConnectionId: "connection-b", gatewayConnectionVersion: 5 };
+  const first = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3, ...connectionA,
+  });
+  await repository.bindGenerationAttemptInput({
+    ...scope, attemptIdentityHash, inputHash, generationSize, ...first, ...connectionA,
+  });
+  await repository.releaseGenerationLease({
+    ...scope, attemptIdentityHash, inputHash, generationSize, ...first, ...connectionA,
+    errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED",
+    role: "MAIN", profileId: "profile-a", profileVersion: 1, modelName: "image-a",
+    gatewayRequestId: null, checkerRequestId: null, modelEvidence: null,
+  });
+  timestamp += 1;
+  const reclaimed = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3, ...connectionB,
+  });
+  const ownerB = {
+    ...scope, attemptIdentityHash, inputHash, generationSize, ...reclaimed, ...connectionB,
+  };
+  await repository.bindGenerationAttemptInput(ownerB);
+  const before = repository.snapshot();
+
+  await assert.rejects(
+    repository.failGenerationAttempt({ ...ownerB, ...connectionA, code: "STALE_OWNER", retryable: true }),
+    (error) => error?.code === "AUTO_LISTING_IMAGE_ATTEMPT_INVALID",
+  );
+  assert.deepEqual(repository.snapshot(), before);
+  assert.equal((await repository.failGenerationAttempt({
+    ...ownerB, code: "CURRENT_OWNER", retryable: true,
+  })).status, "FAILED");
+});
+
+test("legacy memory attempts retain exact null gateway provenance compatibility", async () => {
+  const repository = createMemoryGenerationAttemptRepository({ token: () => "lease-legacy-null" });
+  const lease = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3,
+    gatewayConnectionId: null, gatewayConnectionVersion: null,
+  });
+  await repository.bindGenerationAttemptInput({
+    ...scope, attemptIdentityHash, inputHash, generationSize, ...lease,
+    gatewayConnectionId: null, gatewayConnectionVersion: null,
+  });
+  const accepted = await repository.completeGenerationAttempt({
+    ...complete(lease), gatewayConnectionId: null, gatewayConnectionVersion: null,
+  });
+  assert.equal(accepted.status, "ACCEPTED");
+  assert.equal(accepted.gatewayConnectionId, null);
+  assert.equal(accepted.gatewayConnectionVersion, null);
+});
+
 test("final input binding returns accepted reuse or a stable conflict before duplicate side effects", async () => {
   let sequence = 0;
   const repository = createMemoryGenerationAttemptRepository({ token: () => `lease-${++sequence}` });

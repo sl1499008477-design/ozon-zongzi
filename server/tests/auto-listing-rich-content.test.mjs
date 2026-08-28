@@ -656,6 +656,7 @@ test("keeps accepted legacy checker facts immutable while deriving numeric rich 
   input.plan.factRegistry.push({ ...structuredClone(powerFact), visualGroupKeys: ["group-a"] });
   input.profile = structuredClone(profile);
   input.promptTemplateVersion = "rich-v1";
+  input.expectedStatusVersion = 7;
   const repo = repository({ reserve: { status: "IN_PROGRESS" } });
   input.repository = repo;
   input.gateway = { async createTextResponse() { throw new Error("gateway must not run"); } };
@@ -1010,7 +1011,7 @@ function generationInput(repositoryPort, gateway = null, overrides = {}) {
   return {
     ...context(), profile, promptTemplateVersion: "rich-v1", repository: repositoryPort,
     gateway: gateway || { async createTextResponse() { return { value: validContent(), requestId: "gateway-1", modelEvidence: { requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model", gatewayReportedTextModelPresent: true }, usage: { totalTokens: 42 } }; } },
-    correlationId: "corr-1", ...overrides,
+    correlationId: "corr-1", expectedStatusVersion: 7, ...overrides,
   };
 }
 
@@ -1036,7 +1037,9 @@ test("reserves before its one text gateway call, persists deterministic checker 
   assert.equal(repo.calls[0][1].maxAttempts, 5);
   assert.equal(repo.calls[0][1].gatewayConnectionId, "connection-b");
   assert.equal(repo.calls[0][1].gatewayConnectionVersion, 9);
+  assert.equal(repo.calls[0][1].expectedStatusVersion, 7);
   assert.equal(repo.calls[1][1].gatewayConnectionId, "connection-b");
+  assert.equal(repo.calls[1][1].expectedStatusVersion, 7);
   assert.equal(repo.calls[1][1].checkerResult.accepted, true);
   assert.deepEqual(repo.calls[1][1].assetEvidence.map((entry) => entry.assetId), assets.map((entry) => entry.id).sort());
   assert.equal(repo.calls[1][1].gatewayRequestId, "gateway-1");

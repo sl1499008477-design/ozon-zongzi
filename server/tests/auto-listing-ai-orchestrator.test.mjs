@@ -236,6 +236,7 @@ test("routes every phase exactly once with only server-loaded scope and returns 
       assert.equal(forwarded.jobId, "job-a");
       assert.equal(forwarded.itemId, "item-a");
       assert.equal(forwarded.planId, "plan-derived");
+      assert.equal(forwarded.expectedStatusVersion, 7);
       assert.equal(forwarded.correlationId, "correlation-a");
     }
   }

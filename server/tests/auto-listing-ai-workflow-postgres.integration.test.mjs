@@ -508,7 +508,8 @@ if (!enabled) {
         profileId: ids.profile, profileVersion: 1, modelName: "text-model", promptTemplateVersion: "rich-v1",
       });
       const richReservation = {
-        ...richScope, planHash, sourceHash, profileId: ids.profile, profileVersion: 1,
+        ...richScope, expectedStatusVersion: 3,
+        planHash, sourceHash, profileId: ids.profile, profileVersion: 1,
         modelName: "text-model", promptTemplateVersion: "rich-v1", sourceFactEvidence: [fact],
         assetEvidence: acceptedAssets, factRegistryHash: richIdentity.factRegistryHash,
         assetHash: richIdentity.assetHash, promptHash: richIdentity.promptHash, inputHash: richIdentity.inputHash,

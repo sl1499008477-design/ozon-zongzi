@@ -13,13 +13,20 @@ const CHANNEL_RELEASED = "AUTO_LISTING_IMAGE_CHANNEL_RELEASED";
 const copy = (value) => structuredClone(value);
 const keyOf = (input) => [...scopeKeys.map((key) => input[key]), input.expectedStatusVersion ?? "legacy"].join("\u0001");
 function invalid() { const error = new Error("图片生成尝试无效"); error.code = "AUTO_LISTING_IMAGE_ATTEMPT_INVALID"; return error; }
+function validGatewayProvenance(input) {
+  if (!Object.hasOwn(input, "gatewayConnectionId") && !Object.hasOwn(input, "gatewayConnectionVersion")) return true;
+  return (input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+    || (clean(input.gatewayConnectionId) && Number.isInteger(input.gatewayConnectionVersion)
+      && input.gatewayConnectionVersion >= 1 && input.gatewayConnectionVersion <= 2_147_483_647);
+}
 function fence(input, hashKey = "attemptIdentityHash") {
   if (!input || !scopeKeys.every((key) => clean(input[key])) || !HASH.test(input[hashKey] || "")
     || (Object.hasOwn(input, "legacyAttemptIdentityHash")
       && (!HASH.test(input.legacyAttemptIdentityHash || "") || input.legacyAttemptIdentityHash === input.attemptIdentityHash))
     || !validGenerationSize(input.generationSize)
     || (Object.hasOwn(input, "expectedStatusVersion") && (!Number.isInteger(input.expectedStatusVersion)
-      || input.expectedStatusVersion < 1 || input.expectedStatusVersion > 2_147_483_647))) throw invalid();
+      || input.expectedStatusVersion < 1 || input.expectedStatusVersion > 2_147_483_647))
+    || !validGatewayProvenance(input)) throw invalid();
   return keyOf(input);
 }
 
@@ -59,6 +66,8 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       && candidate.attemptIdentityHash === input.attemptIdentityHash);
     if (!row || row.leaseToken !== input.leaseToken || row.status !== "GENERATING"
       || row.leaseExpiresAt <= now() || row.generationSize !== input.generationSize
+      || (row.gatewayConnectionId ?? null) !== (input.gatewayConnectionId ?? null)
+      || (row.gatewayConnectionVersion ?? null) !== (input.gatewayConnectionVersion ?? null)
       || !HASH.test(input.inputHash || "")
       || ((!allowFinalInputBinding || row.finalInputBoundAt !== null) && input.inputHash !== row.inputHash)) throw invalid();
     return row;
@@ -86,6 +95,8 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
         Object.assign(reclaimable[0], {
           leaseToken, leaseExpiresAt: timestamp + leaseMs, checkerRequestId: null,
           errorCode: null, errorRetryable: null,
+          gatewayConnectionId: input.gatewayConnectionId ?? null,
+          gatewayConnectionVersion: input.gatewayConnectionVersion ?? null,
         });
         return {
           status: "RESERVED", attemptNo: reclaimable[0].attemptNo,
@@ -99,7 +110,9 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
         ...(Object.hasOwn(input, "expectedStatusVersion") ? { expectedStatusVersion: input.expectedStatusVersion } : {}),
         attemptIdentityHash: input.attemptIdentityHash, inputHash: input.attemptIdentityHash,
         generationSize: input.generationSize, finalInputBoundAt: null, attemptNo, status: "GENERATING",
-        leaseToken, leaseExpiresAt: timestamp + leaseMs });
+        leaseToken, leaseExpiresAt: timestamp + leaseMs,
+        gatewayConnectionId: input.gatewayConnectionId ?? null,
+        gatewayConnectionVersion: input.gatewayConnectionVersion ?? null });
       return { status: "RESERVED", attemptNo, leaseToken, generationSize: input.generationSize };
     },
     async bindGenerationAttemptInput(input) {

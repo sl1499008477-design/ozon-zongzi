@@ -105,6 +105,14 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     const migration078 = await readFile(path.join(migrationsDir, "078_auto_listing_rich_embedded_numeric_evidence.sql"), "utf8");
     await client.query(migration078);
     await client.query(migration078);
+    await client.query("ALTER TABLE auto_listing_job_items ADD COLUMN IF NOT EXISTS active_content_plan_id TEXT");
+    await client.query(
+      "ALTER TABLE ai_rich_content_results ADD COLUMN IF NOT EXISTS gateway_connection_id TEXT, ADD COLUMN IF NOT EXISTS gateway_connection_version INTEGER",
+    );
+    await client.query(
+      "UPDATE auto_listing_job_items SET status='GENERATING',status_version=1,active_content_plan_id=$4 WHERE account_id=$1 AND job_id=$2 AND id=$3",
+      [accountId, jobId, itemId, planId],
+    );
     const after = await client.query("SELECT * FROM ai_rich_content_results WHERE id=$1", [legacyId]);
     const legacyTerminalPreserved = before.rows[0].status === after.rows[0].status
       && JSON.stringify(before.rows[0].rich_content) === JSON.stringify(after.rows[0].rich_content)
@@ -264,6 +272,7 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     const inputHash = reservationIdentity.inputHash;
     const reservation = {
       accountId, jobId, itemId, planId, inputHash,
+      expectedStatusVersion: 1,
       planHash: hash("1"), sourceHash: hash("2"), factRegistryHash: reservationIdentity.factRegistryHash,
       assetHash: reservationIdentity.assetHash, promptHash: reservationIdentity.promptHash, profileId, profileVersion: 1,
       modelName: "text-model", promptTemplateVersion: "rich-v1",

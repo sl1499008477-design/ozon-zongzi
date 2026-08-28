@@ -472,6 +472,7 @@ async function invokePhase(message, context, phaseInput, services, assertActive)
       jobId: context.jobId,
       itemId: context.itemId,
       planId: context.activeContentPlanId,
+      expectedStatusVersion: message.expectedStatusVersion,
       correlationId: message.correlationId,
       assertLeaseActive: assertActive,
     });
