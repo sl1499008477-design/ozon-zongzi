@@ -808,6 +808,27 @@ if (!enabled) {
 
       const first = await createConnected("first");
       await passCapability(first, "PROFILE_CAPABILITY", "first");
+      await pool.query(`CREATE FUNCTION reject_primary_channel_${suffix}() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'forced primary channel insert failure'; END;
+        $$`);
+      await pool.query(`CREATE TRIGGER reject_primary_channel_${suffix}
+        BEFORE INSERT ON auto_listing_ai_profile_channels
+        FOR EACH ROW WHEN (NEW.channel_id = 'primary')
+        EXECUTE FUNCTION reject_primary_channel_${suffix}()`);
+      await assert.rejects(profiles.publishProfile({
+        accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
+        idempotencyKey: `publish-primary-rollback-${suffix}`, correlationId: `publish-primary-rollback-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED", status: 503 });
+      assert.deepEqual((await pool.query(
+        "SELECT enabled FROM ai_gateway_profiles WHERE account_id=$1 AND id=$2 AND config_version=1",
+        [accountId, first.profile.id],
+      )).rows, [{ enabled: false }]);
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND profile_id=$2 AND profile_version=1",
+        [accountId, first.profile.id],
+      )).rows[0].count), 0);
+      await pool.query(`DROP TRIGGER reject_primary_channel_${suffix} ON auto_listing_ai_profile_channels`);
+      await pool.query(`DROP FUNCTION reject_primary_channel_${suffix}()`);
       await profiles.publishProfile({
         accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
         idempotencyKey: `publish-first-${suffix}`, correlationId: `publish-first-corr-${suffix}`,

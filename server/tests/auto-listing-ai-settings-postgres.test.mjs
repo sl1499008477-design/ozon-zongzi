@@ -121,6 +121,12 @@ test("profile channel reads join the exact frozen connection version without the
   assert.match(calls[1].sql, /connection\.version=channel\.connection_version/iu);
   assert.match(calls[1].sql, /channel\.account_id=\$1 AND channel\.profile_id=\$2 AND channel\.profile_version=\$3/iu);
   assert.doesNotMatch(calls[1].sql, /loadSettingsOverview|LIMIT 10/iu);
+  assert.match(calls[2].sql, /ai_gateway_capability_attempts/iu,
+    "candidates require authoritative paid text/image capability evidence, not only catalog names");
+  assert.match(calls[2].sql, /target_connection_id=connection\.id/iu);
+  assert.match(calls[2].sql, /STRUCTURED_TEXT/iu);
+  assert.match(calls[2].sql, /IMAGE_GENERATION/iu);
+  assert.match(calls[2].sql, /profile\.api_key_env_name='SUB2API_ENCRYPTED_KEY'/iu);
   assert.equal(remaining.length, 0);
 });
 
@@ -144,6 +150,19 @@ test("disabling a busy channel leaves its frozen assignment and execution lease 
   assert.doesNotMatch(update.sql, /assigned_|execution_lease_/iu);
   assert.equal(update.params.includes("lease-secret"), false);
   assert.equal(remaining.length, 0);
+});
+
+test("enabling always enforces the channel-order connection eligibility fence", async () => {
+  const { pool } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] },
+    { rows: [{ channel_id: "channel-b", channel_order: 2, requires_revalidation: false,
+      connection_status: "RETIRED", connection_id: "connection-b", connection_version: 2 }] },
+    { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: true,
+  }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INELIGIBLE", status: 409 });
 });
 
 test("service-derived connection identity accepts randomized ciphertext replay by stable fingerprint", async () => {

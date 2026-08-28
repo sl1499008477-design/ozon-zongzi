@@ -334,6 +334,10 @@ function createControlledPersistence() {
       return { ...safeProfile(created), duplicate: false };
     },
 
+    async listProfileChannels() { return { channels: [], channelCandidates: [] }; },
+    async addProfileChannel() { throw new Error("channel commands are outside this existing journey"); },
+    async setProfileChannelEnabled() { throw new Error("channel commands are outside this existing journey"); },
+
     async loadConnectionForSecretResolution({ accountId, connectionId, connectionVersion }) {
       const row = connection(accountId, connectionId, connectionVersion);
       return row ? { ...row, encryptedSecret: structuredClone(row.encryptedSecret) } : null;

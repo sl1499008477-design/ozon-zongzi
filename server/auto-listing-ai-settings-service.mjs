@@ -353,7 +353,8 @@ async function actionOverview({ safe, repository, accountId }) {
 
 function requireDependencies(repository, profileRepository, cipher, capabilityService) {
   const repositoryMethods = ["connectionIdForIntent", "loadSettingsOverviewPage", "loadSettingsCatalog",
-    "loadSettingsConnection", "createPendingConnection", "enqueueModelSync", "createProfileFromSelection"];
+    "loadSettingsConnection", "createPendingConnection", "enqueueModelSync", "createProfileFromSelection",
+    "listProfileChannels", "addProfileChannel", "setProfileChannelEnabled"];
   const profileMethods = ["publishProfile", "prepareProfileRollback", "rollbackProfile"];
   if (!repository || repositoryMethods.some((method) => typeof repository[method] !== "function")
     || !profileRepository || profileMethods.some((method) => typeof profileRepository[method] !== "function")
@@ -388,7 +389,7 @@ export function createAutoListingAiSettingsService({
         throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
       }
       const actionSource = await actionOverview({ safe, repository, accountId });
-      const membership = typeof repository.listProfileChannels === "function" && safe.activeProfile && typeof safe.activeProfile.id === "string"
+      const membership = safe.activeProfile && typeof safe.activeProfile.id === "string"
         && Number.isSafeInteger(safe.activeProfile.configVersion) && safe.activeProfile.configVersion > 0
         ? await repository.listProfileChannels({ accountId, profileId: safe.activeProfile.id,
           profileVersion: safe.activeProfile.configVersion }) : { channels: [], channelCandidates: [] };

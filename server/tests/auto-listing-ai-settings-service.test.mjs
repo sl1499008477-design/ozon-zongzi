@@ -379,6 +379,14 @@ test("channel commands retain account and exact profile-version fences", async (
   });
 });
 
+test("settings service requires every channel repository operation", () => {
+  const h = harness();
+  delete h.repository.listProfileChannels;
+  assert.throws(() => createAutoListingAiSettingsService({ repository: h.repository,
+    profileRepository: h.profileRepository, cipher: h.cipher, capabilityService: h.capabilityService,
+    allowLocalGateway: true }), /settings service dependencies/u);
+});
+
 test("overview preserves only the repository activation evidence for the exact account profile version", async () => {
   const activation = { kind: "PUBLISH", occurredAt: "2026-08-09T02:03:04.000Z", actorId: "account-a" };
   const currentOverview = overview({

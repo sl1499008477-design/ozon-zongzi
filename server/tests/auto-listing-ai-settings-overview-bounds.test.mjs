@@ -73,6 +73,8 @@ function serviceHarness(page) {
     },
     async loadSettingsConnection() { return null; },
     async createPendingConnection() {}, async enqueueModelSync() {}, async createProfileFromSelection() {},
+    async listProfileChannels() { return { channels: [], channelCandidates: [] }; },
+    async addProfileChannel() {}, async setProfileChannelEnabled() {},
   };
   const service = createAutoListingAiSettingsService({
     repository,

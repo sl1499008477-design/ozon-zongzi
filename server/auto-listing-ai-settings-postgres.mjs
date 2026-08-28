@@ -770,6 +770,32 @@ function channelEnabledRequest(raw) {
     profileVersion: positiveInteger(input.profileVersion), channelId: identifier(input.channelId), enabled: input.enabled };
 }
 
+function passedProfileCapabilityEvidence({ profile = "profile", connection = "connection", after = null } = {}) {
+  return `EXISTS (
+    SELECT 1 FROM ai_gateway_capability_attempts evidence
+    JOIN audit_events capability_audit
+      ON capability_audit.account_id=evidence.account_id
+     AND capability_audit.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST'
+     AND capability_audit.status='SUCCESS'
+     AND capability_audit.entity_type='ai_gateway_profile'
+     AND capability_audit.entity_id=evidence.profile_id
+     AND capability_audit.metadata->>'attemptId'=evidence.id
+     AND capability_audit.metadata->>'purpose'='PROFILE_CAPABILITY'
+    WHERE evidence.account_id=${profile}.account_id AND evidence.profile_id=${profile}.id
+      AND evidence.config_version=${profile}.config_version
+      AND evidence.authorization_schema_version='AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1'
+      AND evidence.purpose='PROFILE_CAPABILITY' AND evidence.cost_confirmed=TRUE
+      AND evidence.target_connection_id=${connection}.id
+      AND evidence.target_connection_version=${connection}.version
+      AND evidence.status='PASSED' AND evidence.response->>'outcome'='PASSED'
+      AND evidence.response->'features' @> '["STRUCTURED_TEXT","IMAGE_GENERATION"]'::JSONB
+      AND evidence.response->'models'->>'text'=${profile}.text_model
+      AND evidence.response->'models'->>'image'=${profile}.image_model
+      AND (evidence.response - 'profileId' - 'configVersion' - 'enabled')=${profile}.capability_result
+      ${after ? `AND evidence.completed_at >= ${after}` : ""}
+  )`;
+}
+
 export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
   const { pool } = closedFactory(rawOptions);
   if (!pool || typeof pool.connect !== "function" || typeof pool.query !== "function") throw invalid();
@@ -1323,19 +1349,12 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
              FROM ai_gateway_profiles profile
              JOIN ai_gateway_connection_versions connection
                ON connection.account_id=profile.account_id AND connection.status='VALIDATED'
-             JOIN LATERAL (
-               SELECT catalog.catalog FROM ai_gateway_model_catalogs catalog
-               JOIN ai_gateway_model_sync_tasks task ON task.account_id=catalog.account_id AND task.id=catalog.sync_task_id
-                 AND task.connection_id=catalog.connection_id AND task.connection_version=catalog.connection_version
-                WHERE catalog.account_id=connection.account_id AND catalog.connection_id=connection.id
-                  AND catalog.connection_version=connection.version AND task.sync_purpose='CATALOG_SYNC'
-                  AND task.status='SUCCEEDED' ORDER BY catalog.created_at DESC,catalog.id DESC LIMIT 1
-             ) evidence ON TRUE
             WHERE profile.account_id=$1 AND profile.id=$2 AND profile.config_version=$3 AND profile.enabled=TRUE
+              AND profile.api_key_env_name='SUB2API_ENCRYPTED_KEY'
+              AND profile.connection_id IS NOT NULL AND profile.connection_version IS NOT NULL
               AND profile.text_protocol='SUB2API_RESPONSES'
               AND profile.image_protocol IN ('SUB2API_RESPONSES_IMAGE_TOOL','SUB2API_OPENAI_IMAGES')
-              AND EXISTS (SELECT 1 FROM jsonb_array_elements(evidence.catalog->'models') model WHERE model->>'id'=profile.text_model)
-              AND EXISTS (SELECT 1 FROM jsonb_array_elements(evidence.catalog->'models') model WHERE model->>'id'=profile.image_model)
+              AND ${passedProfileCapabilityEvidence({})}
               AND NOT EXISTS (SELECT 1 FROM auto_listing_ai_profile_channels channel
                 WHERE channel.account_id=profile.account_id AND channel.profile_id=profile.id
                   AND channel.profile_version=profile.config_version AND channel.connection_id=connection.id
@@ -1358,19 +1377,18 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           [input.accountId, input.profileId, input.profileVersion])).rows[0];
         if (!profile) throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT", 409);
         const compatible = (await query(client,
-          `SELECT connection.id FROM ai_gateway_connection_versions connection JOIN LATERAL (
-             SELECT catalog.catalog FROM ai_gateway_model_catalogs catalog
-             JOIN ai_gateway_model_sync_tasks task ON task.account_id=catalog.account_id AND task.id=catalog.sync_task_id
-               AND task.connection_id=catalog.connection_id AND task.connection_version=catalog.connection_version
-              WHERE catalog.account_id=connection.account_id AND catalog.connection_id=connection.id
-                AND catalog.connection_version=connection.version AND task.sync_purpose='CATALOG_SYNC'
-                AND task.status='SUCCEEDED' ORDER BY catalog.created_at DESC,catalog.id DESC LIMIT 1
-           ) evidence ON TRUE
-           WHERE connection.account_id=$1 AND connection.id=$2 AND connection.version=$3 AND connection.status='VALIDATED'
-             AND EXISTS (SELECT 1 FROM jsonb_array_elements(evidence.catalog->'models') model WHERE model->>'id'=$4)
-             AND EXISTS (SELECT 1 FROM jsonb_array_elements(evidence.catalog->'models') model WHERE model->>'id'=$5)
-           FOR UPDATE OF connection`,
-          [input.accountId, input.connectionId, input.connectionVersion, profile.text_model, profile.image_model])).rows[0];
+          `SELECT connection.id FROM ai_gateway_profiles profile
+             JOIN ai_gateway_connection_versions connection
+               ON connection.account_id=profile.account_id AND connection.status='VALIDATED'
+            WHERE profile.account_id=$1 AND profile.id=$2 AND profile.config_version=$3 AND profile.enabled=TRUE
+              AND profile.api_key_env_name='SUB2API_ENCRYPTED_KEY'
+              AND profile.connection_id IS NOT NULL AND profile.connection_version IS NOT NULL
+              AND profile.text_protocol='SUB2API_RESPONSES'
+              AND profile.image_protocol IN ('SUB2API_RESPONSES_IMAGE_TOOL','SUB2API_OPENAI_IMAGES')
+              AND connection.id=$4 AND connection.version=$5
+              AND ${passedProfileCapabilityEvidence({})}
+            FOR UPDATE OF profile,connection`,
+          [input.accountId, input.profileId, input.profileVersion, input.connectionId, input.connectionVersion])).rows[0];
         if (!compatible) throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INCOMPATIBLE", 409);
         const next = (await query(client,
           `SELECT COALESCE(MAX(channel_order),0)+1 AS channel_order FROM auto_listing_ai_profile_channels
@@ -1411,12 +1429,30 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           `SELECT channel.*,connection.status AS connection_status FROM auto_listing_ai_profile_channels channel
              JOIN ai_gateway_connection_versions connection ON connection.account_id=channel.account_id
               AND connection.id=channel.connection_id AND connection.version=channel.connection_version
+             JOIN ai_gateway_profiles profile ON profile.account_id=channel.account_id
+              AND profile.id=channel.profile_id AND profile.config_version=channel.profile_version
             WHERE channel.account_id=$1 AND channel.profile_id=$2 AND channel.profile_version=$3 AND channel.channel_id=$4
-            FOR UPDATE OF channel,connection`, [input.accountId, input.profileId, input.profileVersion, input.channelId])).rows[0];
+            FOR UPDATE OF channel,connection,profile`, [input.accountId, input.profileId, input.profileVersion, input.channelId])).rows[0];
         if (!current) throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_FOUND", 404);
-        if (input.enabled && current.requires_revalidation === true
-          && !["VALIDATED", "ACTIVE"].includes(current.connection_status)) {
-          throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_REVALIDATION_REQUIRED", 409);
+        if (input.enabled) {
+          const requiredStatus = Number(current.channel_order) === 1 ? "ACTIVE" : "VALIDATED";
+          if (current.connection_status !== requiredStatus) {
+            throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INELIGIBLE", 409);
+          }
+          if (current.requires_revalidation === true) {
+            const revalidated = await query(client,
+              `SELECT 1 FROM ai_gateway_profiles profile
+                 JOIN ai_gateway_connection_versions connection ON connection.account_id=profile.account_id
+                  AND connection.id=$4 AND connection.version=$5
+                WHERE profile.account_id=$1 AND profile.id=$2 AND profile.config_version=$3
+                  AND profile.api_key_env_name='SUB2API_ENCRYPTED_KEY'
+                  AND ${passedProfileCapabilityEvidence({ after: "$6::TIMESTAMPTZ" })}`,
+              [input.accountId, input.profileId, input.profileVersion, current.connection_id,
+                current.connection_version, current.updated_at]);
+            if (!revalidated.rows[0]) {
+              throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_REVALIDATION_REQUIRED", 409);
+            }
+          }
         }
         const updated = (await query(client,
           `UPDATE auto_listing_ai_profile_channels SET enabled=$5,
@@ -1436,7 +1472,8 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         await auditMutation(client, { action, accountId: input.accountId, actorId: input.actorAccountId,
           correlationId: `channel:${input.channelId}`, entityType: "auto_listing_ai_profile_channel", entityId: input.channelId,
           idempotencyKey: `${input.channelId}:${input.enabled}`, requestHash, metadata: { profileId: input.profileId,
-            profileVersion: input.profileVersion, channelId: input.channelId, action: input.enabled ? "ENABLE" : "DISABLE",
+            profileVersion: input.profileVersion, channelId: input.channelId, connectionId: current.connection_id,
+            connectionVersion: Number(current.connection_version), action: input.enabled ? "ENABLE" : "DISABLE",
             result: "SUCCESS" } });
         return channelDto(row);
       });
