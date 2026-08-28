@@ -24,7 +24,7 @@
 
 ---
 
-## 任务 1：增加通道、亲和、派发与调用来源数据库 contract
+## Task 1：增加通道、亲和、派发与调用来源数据库 contract
 
 **文件：**
 
@@ -169,7 +169,7 @@ git commit -m "feat: add auto-listing AI channel pool schema"
 
 ---
 
-## 任务 2：在现有 AI 设置边界管理通道成员
+## Task 2：在现有 AI 设置边界管理通道成员
 
 **文件：**
 
@@ -279,7 +279,7 @@ git commit -m "feat: manage auto-listing AI channels"
 
 ---
 
-## 任务 3：在 AI 设置页展示和启停独立通道
+## Task 3：在 AI 设置页展示和启停独立通道
 
 **文件：**
 
@@ -377,7 +377,7 @@ git commit -m "feat: show auto-listing AI channel controls"
 
 ---
 
-## 任务 4：定义 v3 执行信封并把 Outbox 发布改为可接管派发
+## Task 4：定义 v3 执行信封并把 Outbox 发布改为可接管派发
 
 **文件：**
 
@@ -498,7 +498,7 @@ git commit -m "feat: publish fenced auto-listing AI work"
 
 ---
 
-## 任务 5：在 Outbox 领取事务原子分配固定通道和执行租约
+## Task 5：在 Outbox 领取事务原子分配固定通道和执行租约
 
 **文件：**
 
@@ -591,7 +591,7 @@ git commit -m "feat: allocate auto-listing AI channels atomically"
 
 ---
 
-## 任务 6：让 Worker 接管租约、串行执行、切换通道并受控处理不确定结果
+## Task 6：让 Worker 接管租约、串行执行、切换通道并受控处理不确定结果
 
 **文件：**
 
@@ -719,7 +719,7 @@ git commit -m "feat: recover auto-listing AI work across channels"
 
 ---
 
-## 任务 7：把确切租用连接路由到各 AI 阶段并记录费用来源
+## Task 7：把确切租用连接路由到各 AI 阶段并记录费用来源
 
 **文件：**
 
@@ -811,7 +811,7 @@ git commit -m "feat: route auto-listing phases through leased channels"
 
 ---
 
-## 任务 8：把固定总超时改成自动上架调用的无响应看门狗
+## Task 8：把固定总超时改成自动上架调用的无响应看门狗
 
 **文件：**
 
@@ -895,7 +895,7 @@ git commit -m "fix: fence idle auto-listing AI calls"
 
 ---
 
-## 任务 9：恢复 Ozon 上传批次顺序门禁
+## Task 9：恢复 Ozon 上传批次顺序门禁
 
 **文件：**
 
@@ -965,7 +965,7 @@ git commit -m "fix: preserve batch order at Ozon upload"
 
 ---
 
-## 任务 10：投影等待、调用和故障切换状态到任务中心
+## Task 10：投影等待、调用和故障切换状态到任务中心
 
 **文件：**
 
@@ -1051,7 +1051,7 @@ git commit -m "feat: show auto-listing AI channel queue state"
 
 ---
 
-## 任务 11：端到端容量、恢复和回归验收
+## Task 11：端到端容量、恢复和回归验收
 
 **文件：**
 
