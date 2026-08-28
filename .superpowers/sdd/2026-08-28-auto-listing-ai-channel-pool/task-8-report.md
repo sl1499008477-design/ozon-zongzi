@@ -59,3 +59,17 @@
 - 所有 `data: [DONE]` 无论 event name 都只作为非 JSON 控制标记忽略，绝不调用 `progress()`，也不会合成成功或失败业务事件。
 - Retry-After 只接受非负十进制安全整数秒或严格、规范化的 IMF-fixdate；不再让宽松 `Date.parse` 解释其他文本。缺失、负数、小数、带符号、垃圾、非规范日期及溢出值均安全回退到 `60_000`，合法值仍限制在 24 小时，合法过去日期为 `0`。
 - 聚焦修复探针：`9/9` 通过；adapter/gateway boundary：`130/130` 通过；brief 四文件组合：`185/185` 通过；四 caller：`256/256` 通过；Task 6 orchestrator/worker：`55/55` 通过。Task 8 的 11 个 `.mjs` 再次逐一通过 `node --check`，`git diff --check` 退出码为 `0`。
+
+## 第二轮终审修复
+
+### 终审 RED
+
+- 在 `767c29d097a8fdfadafe78dc735f33460b3f7b3c` 上新增公开 adapter 探针，使用 HTTP 200、never-closing SSE 的完整 terminal JSON frame 覆盖 429 的 `Retry-After: 120`、缺失、非法、超过 24 小时，以及非 429 terminal 携带恶意 header。
+- 聚焦运行共 `6` 项：非 429 安全隔离用例通过，其余四个 429 子用例及父用例失败（`1` 通过、`5` 失败）；429 都已立即取消 reader 且为 `NOT_SENT`，但 immutable `retryAfterMs` 错误地提前固定为 `null`。
+
+### 终审 GREEN
+
+- 进入增量 SSE reader 前只调用一次既有严格 `safeRetryAfter(response)`；该安全值显式传入即时 terminal classifier 和 EOF 兼容 classifier。
+- 只有 429 terminal 把解析值附加到 immutable metadata：整数 `120` 为 `120_000`，缺失/非法为 `60_000`，超长合法秒数 cap 为 `86_400_000`。非 429 terminal 即使携带恶意 header，`retryAfterMs` 仍为 `null`，错误 message/JSON 不包含 header 内容。
+- 200 SSE terminal 仍在完整 JSON frame 后立即 settle、cancel never-closing reader、清 timer，并保持明确拒绝的 `NOT_SENT`；没有新增重试或外部副作用。
+- 聚焦终审探针：`6/6` 通过；adapter/gateway boundary：`136/136` 通过；brief 四文件组合：`191/191` 通过；四 caller：`256/256` 通过；Task 6 orchestrator/worker：`55/55` 通过。Task 8 的 11 个 `.mjs` 逐一通过 `node --check`，`git diff --check` 退出码为 `0`。

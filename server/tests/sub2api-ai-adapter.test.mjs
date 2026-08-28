@@ -140,13 +140,13 @@ async function waitFor(assertion, attempts = 40) {
   throw lastError;
 }
 
-function controlledResponse(contentType) {
+function controlledResponse(contentType, headers = {}) {
   let controller;
   let cancelled = false;
   const response = new Response(new ReadableStream({
     start(value) { controller = value; },
     cancel() { cancelled = true; },
-  }), { headers: { "content-type": contentType } });
+  }), { headers: { "content-type": contentType, ...headers } });
   return {
     response,
     enqueue(text) { controller.enqueue(new TextEncoder().encode(text)); },
@@ -2087,6 +2087,49 @@ test("complete SSE terminal frames settle and cancel a connection that never rea
         assert.equal(settled.error?.code, expectedCode);
         assert.equal(settled.error?.status, expectedStatus);
         assert.equal(settled.error?.deliveryState, "NOT_SENT");
+        assert.equal(stream.wasCancelled(), true);
+        assert.equal(timers.activeCount(), 0);
+      } finally {
+        controller.abort();
+        await pending.catch(() => {});
+      }
+    });
+  }
+});
+
+test("200 SSE rate-limit terminals use one safe Retry-After value before immutable metadata is attached", async (t) => {
+  const sensitive = "private-retry-after-must-not-leak";
+  for (const [name, status, header, expectedCode, expectedRetryAfter] of [
+    ["integer seconds", 429, "120", "AI_GATEWAY_RATE_LIMITED", 120_000],
+    ["missing header", 429, undefined, "AI_GATEWAY_RATE_LIMITED", 60_000],
+    ["invalid header", 429, sensitive, "AI_GATEWAY_RATE_LIMITED", 60_000],
+    ["value above 24 hours", 429, "999999999", "AI_GATEWAY_RATE_LIMITED", 86_400_000],
+    ["non-rate-limit terminal", 401, sensitive, "NON_RETRYABLE_AUTH", null],
+  ]) {
+    await t.test(name, async () => {
+      const timers = manualTimers();
+      const controller = new AbortController();
+      const headers = header === undefined ? {} : { "retry-after": header };
+      const stream = controlledResponse("text/event-stream", headers);
+      const gateway = adapter(async () => stream.response, { timers });
+      const pending = gateway.generateImage(imageInput({
+        timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+      }));
+      let settled;
+      pending.then((value) => { settled = { value }; }, (error) => { settled = { error }; });
+      try {
+        stream.enqueue(`event: response.failed\ndata: ${JSON.stringify({
+          type: "response.failed",
+          response: { status: "failed", error: { status } },
+        })}\n\n`);
+        await waitFor(() => assert.ok(settled, "terminal must not wait for TCP EOF"));
+        assert.equal(settled.value, undefined);
+        assert.equal(settled.error?.code, expectedCode);
+        assert.equal(settled.error?.status, status);
+        assert.equal(settled.error?.deliveryState, "NOT_SENT");
+        assert.equal(settled.error?.retryAfterMs, expectedRetryAfter);
+        assert.doesNotMatch(settled.error?.message || "", new RegExp(sensitive));
+        assert.doesNotMatch(JSON.stringify(settled.error), new RegExp(sensitive));
         assert.equal(stream.wasCancelled(), true);
         assert.equal(timers.activeCount(), 0);
       } finally {

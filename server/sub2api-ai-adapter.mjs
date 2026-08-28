@@ -484,7 +484,7 @@ function safeTerminalStatus(value) {
   return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
 }
 
-function terminalFailure(event) {
+function terminalFailure(event, retryAfterMs = null) {
   const response = event?.response && typeof event.response === "object" ? event.response : null;
   const nestedError = response?.error && typeof response.error === "object"
     ? response.error
@@ -518,7 +518,7 @@ function terminalFailure(event) {
   if (status === 429) {
     return withDeliveryState(gatewayError("AI_GATEWAY_RATE_LIMITED", {
       retryable: true, status,
-    }), "NOT_SENT");
+    }), "NOT_SENT", retryAfterMs);
   }
   if (status === 404 || tokens.some((token) => MODEL_NOT_FOUND_TERMINAL_TOKENS.has(token))) {
     return withDeliveryState(gatewayError("NON_RETRYABLE_GATEWAY", { status: 404 }), "NOT_SENT");
@@ -1082,7 +1082,7 @@ function sseFrameJsonIsIncomplete(block) {
   try { JSON.parse(data); return false; } catch { return true; }
 }
 
-function finalImageFromEvents(events, maxImageBytes) {
+function finalImageFromEvents(events, maxImageBytes, retryAfterMs = null) {
   let finalEncoded = "";
   let partialEncoded = "";
   let lastPartialIndex = -1;
@@ -1091,7 +1091,7 @@ function finalImageFromEvents(events, maxImageBytes) {
   let orchestratorModel = "";
   let completed = false;
   for (const event of events) {
-    if (FAILURE_EVENTS.has(event?.type)) throw terminalFailure(event);
+    if (FAILURE_EVENTS.has(event?.type)) throw terminalFailure(event, retryAfterMs);
     if (event?.type === "response.image_generation_call.partial_image") {
       const index = event.partial_image_index;
       const value = typeof event.partial_image_b64 === "string" ? event.partial_image_b64.trim() : "";
@@ -1198,7 +1198,7 @@ async function readBodyLimited(response, { maxBytes, abort }) {
   }
 }
 
-async function readSseEvents(response, { maxBytes, abort }) {
+async function readSseEvents(response, { maxBytes, abort, retryAfterMs }) {
   let body;
   let declared;
   try {
@@ -1265,7 +1265,7 @@ async function readSseEvents(response, { maxBytes, abort }) {
         if (event) {
           events.push(event);
           abort.progress();
-          if (FAILURE_EVENTS.has(event.type)) throw terminalFailure(event);
+          if (FAILURE_EVENTS.has(event.type)) throw terminalFailure(event, retryAfterMs);
           if (event.type === "response.completed") return events;
         }
       }
@@ -1904,16 +1904,18 @@ export function createSub2ApiAdapter({
     try {
       const contentType = clean(execution.response.headers.get("content-type")).toLowerCase();
       if (contentType.includes("text/event-stream")) {
+        const retryAfterMs = safeRetryAfter(execution.response);
         let events;
         try {
           events = await readSseEvents(execution.response, {
             maxBytes: maxSseBytes,
             abort: execution.abort,
+            retryAfterMs,
           });
         } catch (error) {
           throw classifyFetchFailure(error, execution.abort.state(), { fetchStarted: true });
         }
-        const final = finalImageFromEvents(events, maxImageBytes);
+        const final = finalImageFromEvents(events, maxImageBytes, retryAfterMs);
         return normalizedImage(final.bytes, {
           protocol: normalizedProfile.imageProtocol,
           requestedImageModel: normalizedProfile.imageModel,
