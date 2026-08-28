@@ -201,6 +201,18 @@ test("098 enforces account-scoped AI channel assignment, dispatch, and exact-ver
       "UPDATE auto_listing_content_plan_attempts SET gateway_connection_id=$1 WHERE id=$2",
       [ids.connectionA, `planner-attempt-${suffix}`],
     ));
+    await client.query(
+      "UPDATE auto_listing_content_plan_attempts SET gateway_connection_id=$1,gateway_connection_version=1 WHERE id=$2",
+      [ids.connectionA, `planner-attempt-${suffix}`],
+    );
+    assert.deepEqual((await client.query(
+      "SELECT gateway_connection_id,gateway_connection_version FROM auto_listing_content_plan_attempts WHERE id=$1",
+      [`planner-attempt-${suffix}`],
+    )).rows, [{ gateway_connection_id: ids.connectionA, gateway_connection_version: 1 }]);
+    await rejectsCode(() => client.query(
+      "UPDATE auto_listing_content_plan_attempts SET gateway_connection_version=2 WHERE id=$1",
+      [`planner-attempt-${suffix}`],
+    ), "23503");
     await rejectsCode(() => client.query(
       "UPDATE auto_listing_content_plan_attempts SET gateway_connection_id=$1,gateway_connection_version=1 WHERE id=$2",
       [ids.connectionB, `planner-attempt-${suffix}`],
@@ -219,6 +231,25 @@ test("098 enforces account-scoped AI channel assignment, dispatch, and exact-ver
       "UPDATE ai_generation_assets SET checker_connection_id=$1 WHERE id=$2",
       [ids.connectionA, `asset-${suffix}`],
     ));
+    await client.query(
+      "UPDATE ai_generation_assets SET gateway_connection_id=$1,gateway_connection_version=1,checker_connection_id=$1,checker_connection_version=1 WHERE id=$2",
+      [ids.connectionA, `asset-${suffix}`],
+    );
+    assert.deepEqual((await client.query(
+      "SELECT gateway_connection_id,gateway_connection_version,checker_connection_id,checker_connection_version FROM ai_generation_assets WHERE id=$1",
+      [`asset-${suffix}`],
+    )).rows, [{
+      gateway_connection_id: ids.connectionA, gateway_connection_version: 1,
+      checker_connection_id: ids.connectionA, checker_connection_version: 1,
+    }]);
+    await rejectsCode(() => client.query(
+      "UPDATE ai_generation_assets SET gateway_connection_version=2 WHERE id=$1",
+      [`asset-${suffix}`],
+    ), "23503");
+    await rejectsCode(() => client.query(
+      "UPDATE ai_generation_assets SET checker_connection_version=2 WHERE id=$1",
+      [`asset-${suffix}`],
+    ), "23503");
     await rejectsCode(() => client.query(
       "UPDATE ai_generation_assets SET gateway_connection_id=$1,gateway_connection_version=1 WHERE id=$2",
       [ids.connectionB, `asset-${suffix}`],
@@ -234,10 +265,33 @@ test("098 enforces account-scoped AI channel assignment, dispatch, and exact-ver
       "UPDATE ai_rich_content_results SET gateway_connection_id=$1 WHERE id=$2",
       [ids.connectionA, `rich-${suffix}`],
     ));
+    await client.query(
+      "UPDATE ai_rich_content_results SET gateway_connection_id=$1,gateway_connection_version=1 WHERE id=$2",
+      [ids.connectionA, `rich-${suffix}`],
+    );
+    assert.deepEqual((await client.query(
+      "SELECT gateway_connection_id,gateway_connection_version FROM ai_rich_content_results WHERE id=$1",
+      [`rich-${suffix}`],
+    )).rows, [{ gateway_connection_id: ids.connectionA, gateway_connection_version: 1 }]);
+    await rejectsCode(() => client.query(
+      "UPDATE ai_rich_content_results SET gateway_connection_version=2 WHERE id=$1",
+      [`rich-${suffix}`],
+    ), "23503");
     await rejectsCode(() => client.query(
       "UPDATE ai_rich_content_results SET gateway_connection_id=$1,gateway_connection_version=1 WHERE id=$2",
       [ids.connectionB, `rich-${suffix}`],
     ), "23503");
+    await client.query(
+      `INSERT INTO auto_listing_ai_outbox (
+         id,account_id,job_id,item_id,event_type,dedupe_key,state,contract_version,phase,expected_status_version,correlation_id,payload,next_retry_at
+       ) VALUES ($1,$2,$3,$4,'PLAN_CONTENT',$5,'PENDING','V1','PLAN_CONTENT',3,$6,$7::jsonb,NOW())`,
+      [`pending-${suffix}`, accountA, ids.jobA, ids.itemA, hash("d"), `pending-corr-${suffix}`,
+        JSON.stringify({ contractVersion: "V1", accountId: accountA, itemId: ids.itemA, phase: "PLAN_CONTENT", expectedStatusVersion: 3, correlationId: `pending-corr-${suffix}` })],
+    );
+    await rejectsCode(() => client.query(
+      "UPDATE auto_listing_ai_outbox SET dead_at=NOW() WHERE id=$1",
+      [`pending-${suffix}`],
+    ));
     await client.query(
       `INSERT INTO auto_listing_ai_outbox (
          id,account_id,job_id,item_id,event_type,dedupe_key,state,contract_version,phase,expected_status_version,correlation_id,payload,next_retry_at,
@@ -248,6 +302,10 @@ test("098 enforces account-scoped AI channel assignment, dispatch, and exact-ver
         JSON.stringify({ contractVersion: "V1", accountId: accountA, itemId: ids.itemA, phase: "PLAN_CONTENT", expectedStatusVersion: 3, correlationId: `processing-corr-${suffix}` }), `${hash("f")}:0`],
     );
     await client.query("UPDATE auto_listing_ai_outbox SET published_at=NOW() WHERE id=$1", [`processing-${suffix}`]);
+    await rejectsCode(() => client.query(
+      "UPDATE auto_listing_ai_outbox SET next_retry_at=NULL WHERE id=$1",
+      [`processing-${suffix}`],
+    ));
     await rejectsCode(() => client.query("UPDATE auto_listing_ai_outbox SET dispatch_generation=-1 WHERE id=$1", [`processing-${suffix}`]));
     await rejectsCode(() => client.query("UPDATE auto_listing_ai_outbox SET uncertain_result_count=3 WHERE id=$1", [`processing-${suffix}`]));
     await assert.rejects(() => client.query(

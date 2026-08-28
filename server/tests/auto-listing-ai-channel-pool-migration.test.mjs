@@ -35,4 +35,6 @@ test("098 closes nullable provenance loopholes and keeps dispatch state on Outbo
   assert.match(sql, /BEFORE DELETE\s+ON auto_listing_ai_profile_channels/);
   assert.match(sql, /ON auto_listing_ai_profile_channels\(account_id, assigned_job_id, assigned_item_id\)/);
   assert.match(sql, /dispatch_contract_version = 'CHANNEL_WORK_V1'[\s\S]*?published_at IS NOT NULL/);
+  assert.match(sql, /state = 'PENDING'[\s\S]*?dead_at IS NULL[\s\S]*?next_retry_at IS NOT NULL/);
+  assert.match(sql, /state = 'PROCESSING'[\s\S]*?dead_at IS NULL[\s\S]*?next_retry_at IS NOT NULL/);
 });

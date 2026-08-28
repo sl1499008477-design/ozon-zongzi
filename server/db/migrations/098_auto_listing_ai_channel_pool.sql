@@ -212,14 +212,15 @@ ALTER TABLE auto_listing_ai_outbox
   ADD CONSTRAINT auto_listing_ai_outbox_publication_lifecycle_check CHECK (
     contract_version IS NULL OR (
       (state = 'PENDING'
-        AND publication_id IS NULL AND published_at IS NULL AND dispatch_queued_at IS NULL)
+        AND publication_id IS NULL AND published_at IS NULL AND dispatch_queued_at IS NULL
+        AND dead_at IS NULL AND next_retry_at IS NOT NULL)
       OR (state = 'PROCESSING' AND (
         (dispatch_contract_version IS NULL
           AND publication_id IS NULL AND published_at IS NULL AND dispatch_queued_at IS NULL)
         OR (dispatch_contract_version = 'CHANNEL_WORK_V1'
           AND publication_id = dedupe_key || ':' || dispatch_generation
           AND dispatch_queued_at IS NOT NULL)
-      ))
+      ) AND dead_at IS NULL AND next_retry_at IS NOT NULL)
       OR (state = 'COMPLETED' AND (
         (dispatch_contract_version IS NULL
           AND publication_id = dedupe_key AND published_at IS NOT NULL AND dispatch_queued_at IS NULL)
