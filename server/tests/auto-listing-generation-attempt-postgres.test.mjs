@@ -339,6 +339,7 @@ test("channel release keeps stored image evidence while clearing the exact owned
     object_key_version: "ATTEMPT_V2", object_key: objectKey, content_hash: contentHash,
     content_type: "image/png", width: 768, height: 1024, size_bytes: 123,
     gateway_request_id: "gateway-1", model_evidence: { requestedImageModel: "image-a" },
+    checker_request_id: "checker-b", checker_connection_id: "connection-b", checker_connection_version: 9,
   });
   const db = fakePool((sql) => {
     if (/AUTO_LISTING_IMAGE_CHANNEL_RELEASED/iu.test(sql)) return { rows: [releasedRow], rowCount: 1 };
@@ -350,17 +351,21 @@ test("channel release keeps stored image evidence while clearing the exact owned
     ...scope, attemptIdentityHash, inputHash, generationSize, attemptNo: 1, leaseToken: "lease-a:1",
     errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED", role: "MAIN",
     profileId: "profile-a", profileVersion: 1, modelName: "image-a", gatewayRequestId: "gateway-1",
-    checkerRequestId: null, modelEvidence: { requestedImageModel: "image-a" },
+    checkerRequestId: "checker-b", modelEvidence: { requestedImageModel: "image-a" },
+    checkerConnectionId: "connection-b", checkerConnectionVersion: 9,
   });
 
   assert.equal(released.status, "GENERATING");
   assert.equal(released.attemptNo, 1);
   assert.equal(released.leaseToken, "AUTO_LISTING_IMAGE_CHANNEL_RELEASED");
   assert.equal(released.objectKey, objectKey);
+  assert.equal(released.checkerConnectionId, "connection-b");
+  assert.equal(released.checkerConnectionVersion, 9);
   const transition = db.queries.find(({ text }) => /AUTO_LISTING_IMAGE_CHANNEL_RELEASED/iu.test(text));
   assert.match(transition.text, /account_id=\$1.*item_id=\$3.*attempt_no=\$11.*lease_token=\$12/isu);
   assert.match(transition.text, /gateway_request_id=COALESCE/iu);
   assert.match(transition.text, /model_evidence=COALESCE/iu);
+  assert.match(transition.text, /checker_connection_id=\$20,checker_connection_version=\$21/iu);
 });
 
 test("stored-evidence compensation clears only the exact generating owner before object cleanup", async () => {
@@ -497,6 +502,51 @@ test("PostgreSQL reclaim assigns producer B when A's stored image evidence is no
   assert.equal(result.gatewayConnectionVersion, 9);
   const reclaim = db.queries.find(({ text }) => /SET status='GENERATING'.*lease_token/isu.test(text));
   assert.equal(reclaim.parameters.at(-1), false);
+});
+
+test("PostgreSQL atomically clears unusable evidence and hands the exact lease from A to B", async () => {
+  const updated = reservedRow({
+    input_hash: inputHash, final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    lease_token: "lease-b:1", gateway_connection_id: "connection-b", gateway_connection_version: 9,
+  });
+  const db = fakePool((sql) => {
+    if (/SET object_key_version=NULL.*gateway_connection_id=/isu.test(sql)) return { rows: [updated], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  const result = await repository.replaceUnusableGenerationEvidence({
+    ...scope, attemptIdentityHash, inputHash, generationSize,
+    attemptNo: 1, leaseToken: "lease-b:1",
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+    replacementGatewayConnectionId: "connection-b", replacementGatewayConnectionVersion: 9,
+  });
+
+  assert.deepEqual(result, { gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9 });
+  const update = db.queries[0];
+  assert.match(update.text, /FROM auto_listing_job_items AS item/iu);
+  assert.match(update.text, /item\.status='GENERATING'.*item\.status_version=attempt\.expected_status_version/isu);
+  assert.match(update.text, /attempt\.gateway_connection_id IS NOT DISTINCT FROM \$\d+/iu);
+  assert.match(update.text, /attempt\.lease_expires_at > NOW\(\)/iu);
+  assert.match(update.text, /object_key=NULL.*gateway_request_id=NULL.*model_evidence=NULL/isu);
+});
+
+test("stale PostgreSQL evidence replacement cannot partially hand producer A to B", async () => {
+  const db = fakePool((sql) => {
+    if (/SET object_key_version=NULL.*gateway_connection_id=/isu.test(sql)) return { rows: [], rowCount: 0 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  await assert.rejects(repository.replaceUnusableGenerationEvidence({
+    ...scope, attemptIdentityHash, inputHash, generationSize,
+    attemptNo: 1, leaseToken: "stale-lease",
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+    replacementGatewayConnectionId: "connection-b", replacementGatewayConnectionVersion: 9,
+  }), { code: "AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED" });
+
+  assert.equal(db.queries.length, 1);
+  assert.match(db.queries[0].text, /attempt\.lease_token=\$12.*attempt\.lease_expires_at > NOW\(\)/isu);
 });
 
 test("a stale owner transition fails with a safe retryable claim error", async () => {

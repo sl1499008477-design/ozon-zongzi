@@ -1015,7 +1015,21 @@ export async function generateImageSlot(input = {}) {
         modelName: imageModel,
       })
       : null;
-    if (binding.recoveryRecord && !recoverable) throw failure("AUTO_LISTING_IMAGE_EXISTING_CORRUPT", true);
+    if (binding.recoveryRecord && !recoverable) {
+      if (typeof repository.replaceUnusableGenerationEvidence !== "function") throw repositoryFailure();
+      const replaced = await repositoryCall(repository, "replaceUnusableGenerationEvidence", {
+        ...attempt,
+        replacementGatewayConnectionId: gatewayProvenance.gatewayConnectionId,
+        replacementGatewayConnectionVersion: gatewayProvenance.gatewayConnectionVersion,
+      }, input);
+      if (replaced?.gatewayConnectionId !== gatewayProvenance.gatewayConnectionId
+        || replaced?.gatewayConnectionVersion !== gatewayProvenance.gatewayConnectionVersion) throw repositoryFailure();
+      attempt.gatewayConnectionId = gatewayProvenance.gatewayConnectionId;
+      attempt.gatewayConnectionVersion = gatewayProvenance.gatewayConnectionVersion;
+      gatewayRequestId = null;
+      checkerRequestId = null;
+      generatedModelEvidence = null;
+    }
     if (recoverable) {
       normalized = recoverable;
       gatewayRequestId = binding.recoveryRecord.gatewayRequestId;

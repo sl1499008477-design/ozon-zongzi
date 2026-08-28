@@ -97,6 +97,7 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
           && reclaimable[0].modelEvidence;
         Object.assign(reclaimable[0], {
           leaseToken, leaseExpiresAt: timestamp + leaseMs, checkerRequestId: null,
+          checkerConnectionId: null, checkerConnectionVersion: null,
           errorCode: null, errorRetryable: null,
           gatewayConnectionId: reusableProducer
             ? reclaimable[0].gatewayConnectionId ?? null : input.gatewayConnectionId ?? null,
@@ -193,7 +194,11 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
         || !(input.gatewayRequestId === null || clean(input.gatewayRequestId))
         || !(input.checkerRequestId === null || clean(input.checkerRequestId))
         || !(input.modelEvidence === null || (input.modelEvidence && typeof input.modelEvidence === "object"
-          && !Array.isArray(input.modelEvidence) && Object.keys(input.modelEvidence).length > 0))) throw invalid();
+          && !Array.isArray(input.modelEvidence) && Object.keys(input.modelEvidence).length > 0))
+        || !validGatewayProvenance({
+          gatewayConnectionId: input.checkerConnectionId ?? null,
+          gatewayConnectionVersion: input.checkerConnectionVersion ?? null,
+        })) throw invalid();
       const row = await own(input);
       if (row.finalInputBoundAt === null) throw invalid();
       Object.assign(row, copy({
@@ -201,11 +206,31 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
         modelName: input.modelName, gatewayRequestId: input.gatewayRequestId,
         ...(input.checkerRequestId === null ? {} : { checkerRequestId: input.checkerRequestId }),
         modelEvidence: input.modelEvidence,
+        checkerConnectionId: input.checkerConnectionId ?? null,
+        checkerConnectionVersion: input.checkerConnectionVersion ?? null,
       }), {
         status: "GENERATING", errorCode: null, errorRetryable: null,
         leaseToken: CHANNEL_RELEASED, leaseExpiresAt: now(),
       });
       return copy(row);
+    },
+    async replaceUnusableGenerationEvidence(input) {
+      if (!validGatewayProvenance({
+        gatewayConnectionId: input?.replacementGatewayConnectionId,
+        gatewayConnectionVersion: input?.replacementGatewayConnectionVersion,
+      })) throw invalid();
+      const row = await own(input);
+      if (row.finalInputBoundAt === null) throw invalid();
+      for (const key of ["objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height", "size",
+        "gatewayRequestId", "checkerRequestId", "modelEvidence", "checkerConnectionId", "checkerConnectionVersion"]) {
+        row[key] = null;
+      }
+      row.gatewayConnectionId = input.replacementGatewayConnectionId ?? null;
+      row.gatewayConnectionVersion = input.replacementGatewayConnectionVersion ?? null;
+      return Object.freeze({
+        gatewayConnectionId: row.gatewayConnectionId,
+        gatewayConnectionVersion: row.gatewayConnectionVersion,
+      });
     },
     async revertStoredGenerationAsset(input) {
       const row = await own(input);

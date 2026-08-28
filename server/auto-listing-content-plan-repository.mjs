@@ -28,6 +28,10 @@ const ADVANCE_STAGE_KEYS = new Set([
   "expectedStatusVersion", "reservationToken", "planningContract", "skeletonHash",
   "fromStage", "toStage", "gatewayConnectionId", "gatewayConnectionVersion",
 ]);
+const REPLACE_RESERVATION_KEYS = new Set([
+  ...RESERVE_KEYS, "attemptId", "reservationToken",
+  "replacementGatewayConnectionId", "replacementGatewayConnectionVersion",
+]);
 const PLANNER_STAGES = new Set([
   "BUILDING_SKELETON", "FILLING_COPY", "VALIDATING_COPY", "COMPLETED", "FAILED",
 ]);
@@ -252,6 +256,17 @@ function validateAdvanceStage(input) {
     || (input.planningContract === "FIXED_SKELETON_V1" && !HASH.test(input.skeletonHash || ""))
     || !((input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
       || (safeIdentifier(input.gatewayConnectionId) && validVersion(input.gatewayConnectionVersion)))) throw invalid();
+  return input;
+}
+
+function validateReplaceReservation(input) {
+  if (!exactObject(input, REPLACE_RESERVATION_KEYS)) throw invalid();
+  validateReserve(Object.fromEntries([...RESERVE_KEYS].map((key) => [key, input[key]])));
+  if (!safeIdentifier(input.attemptId) || !safeIdentifier(input.reservationToken)
+    || !((input.replacementGatewayConnectionId === null
+        && input.replacementGatewayConnectionVersion === null)
+      || (safeIdentifier(input.replacementGatewayConnectionId)
+        && validVersion(input.replacementGatewayConnectionVersion)))) throw invalid();
   return input;
 }
 
@@ -691,6 +706,79 @@ export function createPostgresContentPlanRepository({
     }
   }
 
+  async function replaceContentPlanReservation(rawInput) {
+    const input = validateReplaceReservation(rawInput);
+    const leaseToken = token();
+    const attemptId = id();
+    if (!safeIdentifier(leaseToken) || !safeIdentifier(attemptId)) throw invalid();
+    let client;
+    try {
+      client = await pool.connect();
+      await client.query("BEGIN");
+      const boundary = await client.query(
+        `SELECT id,snapshot_id,status,status_version,active_content_plan_id,planning_contract
+           FROM auto_listing_job_items
+          WHERE account_id=$1 AND job_id=$2 AND id=$3
+          FOR UPDATE`,
+        [input.accountId, input.jobId, input.itemId],
+      );
+      assertItemBoundary(boundary.rows[0], input);
+      const failed = await client.query(
+        `UPDATE auto_listing_content_plan_attempts AS attempt
+            SET status='FAILED',planner_stage='FAILED',error_code='EVIDENCE_NOT_REUSABLE',
+                error_retryable=TRUE,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+            AND attempt.source_snapshot_id=$4 AND attempt.profile_id=$5 AND attempt.profile_version=$6
+            AND attempt.input_hash=$7 AND attempt.expected_status_version=$8
+            AND attempt.request_key=$9 AND attempt.planning_contract=$10
+            AND attempt.skeleton_hash IS NOT DISTINCT FROM $11 AND attempt.id=$12
+            AND attempt.lease_token=$13 AND attempt.status='PLANNING'
+            AND attempt.lease_expires_at > NOW()
+            AND attempt.gateway_connection_id IS NOT DISTINCT FROM $14
+            AND attempt.gateway_connection_version IS NOT DISTINCT FROM $15
+          RETURNING attempt.id,attempt.attempt_no`,
+        [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
+          input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
+          input.planningContract, input.skeletonHash, input.attemptId, input.reservationToken,
+          input.gatewayConnectionId, input.gatewayConnectionVersion],
+      );
+      const previous = failed.rows?.[0];
+      if (failed.rowCount !== 1 || previous?.id !== input.attemptId
+        || !Number.isInteger(Number(previous.attempt_no))) throw leaseConflict();
+      const attemptNo = Number(previous.attempt_no) + 1;
+      if (attemptNo > maxAttempts) {
+        throw repositoryError("AUTO_LISTING_CONTENT_PLAN_ATTEMPTS_EXHAUSTED", "图片规划重试次数已用完", false);
+      }
+      await client.query(
+        `INSERT INTO auto_listing_content_plan_attempts (
+           id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,input_hash,
+           expected_status_version,request_key,attempt_no,status,lease_owner,lease_token,lease_expires_at,
+           planning_contract,skeleton_hash,planner_stage,gateway_connection_id,gateway_connection_version
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PLANNING',$12,$13,
+           NOW() + ($14 * INTERVAL '1 millisecond'),$15,$16,'FILLING_COPY',$17,$18)`,
+        [attemptId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
+          input.profileId, input.profileVersion, input.inputHash, input.expectedStatusVersion,
+          input.requestKey, attemptNo, leaseOwner, leaseToken, leaseMs, input.planningContract,
+          input.skeletonHash, input.replacementGatewayConnectionId,
+          input.replacementGatewayConnectionVersion],
+      );
+      await client.query("COMMIT");
+      return Object.freeze({
+        status: "RESERVED", attemptId, attemptNo, reservationToken: leaseToken,
+        inputHash: input.inputHash, planningContract: input.planningContract,
+        skeletonHash: input.skeletonHash, plannerStage: "FILLING_COPY",
+        gatewayConnectionId: input.replacementGatewayConnectionId,
+        gatewayConnectionVersion: input.replacementGatewayConnectionVersion,
+      });
+    } catch (error) {
+      await rollback(client);
+      if (isKnown(error)) throw error;
+      throw unavailable();
+    } finally {
+      release(client);
+    }
+  }
+
   async function releaseContentPlanReservation(rawInput) {
     const input = validateRelease(rawInput);
     try {
@@ -939,6 +1027,7 @@ export function createPostgresContentPlanRepository({
 
   return Object.freeze({
     reserveContentPlan,
+    replaceContentPlanReservation,
     advanceContentPlanStage,
     saveContentPlan,
     releaseContentPlanReservation,

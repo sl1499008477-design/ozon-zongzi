@@ -330,6 +330,70 @@ test("planner reclaim preserves producer A when connection B reuses A's paid res
   assert.match(reclaim.text, /CASE[\s\S]*gateway_connection_id/iu);
 });
 
+test("planner evidence repair atomically closes producer A and reserves producer B", async () => {
+  const db = scriptedPool((sql, values) => {
+    if (["BEGIN", "COMMIT"].includes(sql)) return { rows: [], rowCount: 0 };
+    if (/FROM auto_listing_job_items/iu.test(sql)) return { rows: [{
+      id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7,
+      active_content_plan_id: null, planning_contract: "LEGACY_FULL_PLAN_V3",
+    }], rowCount: 1 };
+    if (/SET status='FAILED'.*EVIDENCE_NOT_REUSABLE/isu.test(sql)) return { rows: [{
+      id: "attempt-a", attempt_no: 1,
+    }], rowCount: 1 };
+    if (/INSERT INTO auto_listing_content_plan_attempts/iu.test(sql)) return { rows: [], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql} ${JSON.stringify(values)}`);
+  });
+  const repository = createPostgresContentPlanRepository({
+    pool: db.pool, token: () => "lease-b", id: () => "attempt-b",
+  });
+
+  const result = await repository.replaceContentPlanReservation({
+    ...reservation({ gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 }),
+    attemptId: "attempt-a", reservationToken: "lease-a",
+    replacementGatewayConnectionId: "connection-b", replacementGatewayConnectionVersion: 9,
+  });
+
+  assert.deepEqual(result, {
+    status: "RESERVED", attemptId: "attempt-b", attemptNo: 2,
+    reservationToken: "lease-b", inputHash: HASH,
+    planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null,
+    plannerStage: "FILLING_COPY",
+    gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9,
+  });
+  const failed = db.queries.find(({ text }) => /SET status='FAILED'.*EVIDENCE_NOT_REUSABLE/isu.test(text));
+  assert.match(failed.text, /lease_token=\$\d+/iu);
+  assert.match(failed.text, /gateway_connection_id IS NOT DISTINCT FROM \$\d+/iu);
+  const inserted = db.queries.find(({ text }) => /INSERT INTO auto_listing_content_plan_attempts/iu.test(text));
+  assert.equal(inserted.values.includes("connection-b"), true);
+  assert.equal(inserted.values.includes(9), true);
+  assert.equal(db.queries.filter(({ text }) => text === "COMMIT").length, 1);
+});
+
+test("stale planner evidence repair rolls back without reserving producer B", async () => {
+  const db = scriptedPool((sql) => {
+    if (["BEGIN", "ROLLBACK"].includes(sql)) return { rows: [], rowCount: 0 };
+    if (/FROM auto_listing_job_items/iu.test(sql)) return { rows: [{
+      id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7,
+      active_content_plan_id: null, planning_contract: "LEGACY_FULL_PLAN_V3",
+    }], rowCount: 1 };
+    if (/SET status='FAILED'.*EVIDENCE_NOT_REUSABLE/isu.test(sql)) return { rows: [], rowCount: 0 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresContentPlanRepository({
+    pool: db.pool, token: () => "lease-b", id: () => "attempt-b",
+  });
+
+  await assert.rejects(repository.replaceContentPlanReservation({
+    ...reservation({ gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 }),
+    attemptId: "attempt-a", reservationToken: "stale-lease-a",
+    replacementGatewayConnectionId: "connection-b", replacementGatewayConnectionVersion: 9,
+  }), { code: "AUTO_LISTING_CONTENT_PLAN_LEASE_CONFLICT" });
+
+  assert.equal(db.queries.some(({ text }) => /INSERT INTO auto_listing_content_plan_attempts/iu.test(text)), false);
+  assert.equal(db.queries.filter(({ text }) => text === "ROLLBACK").length, 1);
+  assert.equal(db.queries.some(({ text }) => text === "COMMIT"), false);
+});
+
 test("channel release expires only the exact content-plan attempt without terminalizing its business budget", async () => {
   const db = scriptedPool((sql) => {
     if (/UPDATE auto_listing_content_plan_attempts AS attempt/iu.test(sql)) {

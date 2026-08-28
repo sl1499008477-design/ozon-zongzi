@@ -1669,6 +1669,84 @@ test("a later task attempt reuses an image stored before checker outage without 
   assert.equal(completed.checkerConnectionVersion, 9);
 });
 
+test("connection B replaces unreadable recovery evidence from A before one new paid generation", async () => {
+  const first = await setup();
+  first.input.gateway.inspectImage = async () => { throw new Error("temporary checker failure"); };
+  await assert.rejects(generateImageSlot(first.input));
+  const failed = first.calls.find(([name]) => name === "failed")[1];
+
+  const retry = await setup();
+  retry.input.gatewayExecution = {
+    channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
+  };
+  retry.input.repository.bindGenerationAttemptInput = async (value) => ({
+    status: "BOUND", inputHash: value.inputHash,
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+    recoveryRecord: {
+      ...failed, ...failed.storedAsset, status: "FAILED", errorCode: "CHECKER_UNAVAILABLE",
+      errorRetryable: true, finalInputBoundAt: "2026-08-24T10:00:00.000Z",
+      profileId: retry.input.profile.id, profileVersion: retry.input.profile.configVersion,
+      modelName: retry.input.imageModel,
+      gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+    },
+  });
+  const replacements = [];
+  retry.input.repository.replaceUnusableGenerationEvidence = async (value) => {
+    replacements.push(value);
+    return { gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9 };
+  };
+  const readStored = retry.input.storage.getObjectBuffer;
+  let reads = 0;
+  retry.input.storage.getObjectBuffer = async (...args) => {
+    reads += 1;
+    return reads === 1 ? Buffer.from("corrupt") : readStored(...args);
+  };
+
+  const result = await generateImageSlot(retry.input);
+
+  assert.equal(result.accepted, true);
+  assert.equal(retry.gatewayCalls(), 1);
+  assert.equal(replacements.length, 1);
+  assert.equal(replacements[0].gatewayConnectionId, "connection-a");
+  assert.equal(replacements[0].replacementGatewayConnectionId, "connection-b");
+  const completed = retry.calls.find(([name]) => name === "complete")[1];
+  assert.equal(completed.gatewayConnectionId, "connection-b");
+  assert.equal(completed.gatewayConnectionVersion, 9);
+  assert.equal(completed.checkerConnectionId, "connection-b");
+  assert.equal(completed.checkerConnectionVersion, 9);
+});
+
+test("stale image producer handoff makes no paid B call and stores no B bytes", async () => {
+  const first = await setup();
+  first.input.gateway.inspectImage = async () => { throw new Error("temporary checker failure"); };
+  await assert.rejects(generateImageSlot(first.input));
+  const failed = first.calls.find(([name]) => name === "failed")[1];
+  const retry = await setup();
+  retry.input.gatewayExecution = {
+    channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
+  };
+  retry.input.repository.bindGenerationAttemptInput = async (value) => ({
+    status: "BOUND", inputHash: value.inputHash,
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+    recoveryRecord: {
+      ...failed, ...failed.storedAsset, status: "FAILED", errorCode: "CHECKER_UNAVAILABLE",
+      errorRetryable: true, finalInputBoundAt: "2026-08-24T10:00:00.000Z",
+      profileId: retry.input.profile.id, profileVersion: retry.input.profile.configVersion,
+      modelName: retry.input.imageModel,
+      gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+    },
+  });
+  retry.input.repository.replaceUnusableGenerationEvidence = async () => {
+    const error = new Error("stale lease"); error.code = "AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED"; throw error;
+  };
+  retry.input.storage.getObjectBuffer = async () => Buffer.from("corrupt");
+
+  await assert.rejects(generateImageSlot(retry.input), { code: "AUTO_LISTING_IMAGE_REPOSITORY_FAILED" });
+
+  assert.equal(retry.gatewayCalls(), 0);
+  assert.equal(retry.calls.some(([name]) => ["stored", "complete"].includes(name)), false);
+});
+
 test("every accepted audit column is fail-closed on a corrupt completion row", async () => {
   for (const field of ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "inputHash", "role", "generationSize", "contentHash", "objectKey", "objectKeyVersion", "contentType", "width", "height", "size", "gatewayRequestId", "checkerRequestId", "modelEvidence", "profileId", "profileVersion", "modelName", "planHash", "sourceHash", "strategyHash", "configHash", "visualGroupsHash", "promptTemplateVersion", "promptHash", "checkerEvidence", "sourceAssetEvidence", "regeneration"]) {
     const fixture = await setup(); const original = fixture.input.repository.completeGenerationAttempt;

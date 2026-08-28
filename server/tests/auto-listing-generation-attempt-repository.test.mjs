@@ -355,6 +355,61 @@ test("memory reclaim keeps producer A when connection B reuses A's stored paid i
   assert.equal(rebound.recoveryRecord.gatewayConnectionId, "connection-a");
 });
 
+test("memory atomically replaces unusable producer A evidence with producer B", async () => {
+  let timestamp = 100;
+  let sequence = 0;
+  const repository = createMemoryGenerationAttemptRepository({
+    now: () => timestamp, leaseMs: 20, token: () => `replace-${++sequence}`,
+  });
+  const connectionA = { gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4 };
+  const connectionB = { gatewayConnectionId: "connection-b", gatewayConnectionVersion: 5 };
+  const first = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3, ...connectionA,
+  });
+  const ownerA = { ...scope, attemptIdentityHash, inputHash, generationSize, ...first, ...connectionA };
+  await repository.bindGenerationAttemptInput(ownerA);
+  const stored = complete(ownerA);
+  await repository.recordStoredGenerationAsset(stored);
+  await repository.releaseGenerationLease({
+    ...ownerA, errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED",
+    role: "MAIN", profileId: "profile-a", profileVersion: 1, modelName: "image-a",
+    gatewayRequestId: "gateway-a", checkerRequestId: "checker-b",
+    modelEvidence: { requestedImageModel: "image-a" },
+    checkerConnectionId: "connection-b", checkerConnectionVersion: 5,
+  });
+  const released = repository.snapshot()[0];
+  assert.equal(released.checkerConnectionId, "connection-b");
+  assert.equal(released.checkerConnectionVersion, 5);
+  timestamp += 1;
+  const reclaimed = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3, ...connectionB,
+  });
+  const rebound = await repository.bindGenerationAttemptInput({
+    ...scope, attemptIdentityHash, inputHash, generationSize, ...reclaimed,
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+  });
+  assert.equal(rebound.recoveryRecord.gatewayConnectionId, "connection-a");
+
+  const replaced = await repository.replaceUnusableGenerationEvidence({
+    ...scope, attemptIdentityHash, inputHash, generationSize,
+    attemptNo: reclaimed.attemptNo, leaseToken: reclaimed.leaseToken,
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+    replacementGatewayConnectionId: "connection-b", replacementGatewayConnectionVersion: 5,
+  });
+
+  assert.deepEqual(replaced, { gatewayConnectionId: "connection-b", gatewayConnectionVersion: 5 });
+  const row = repository.snapshot()[0];
+  assert.equal(row.gatewayConnectionId, "connection-b");
+  assert.equal(row.gatewayRequestId, null);
+  assert.equal(row.objectKey, null);
+  await assert.rejects(repository.failGenerationAttempt({
+    ...scope, attemptIdentityHash, inputHash, generationSize,
+    attemptNo: reclaimed.attemptNo, leaseToken: reclaimed.leaseToken,
+    ...connectionA, role: "MAIN", code: "STALE_A", retryable: true,
+    gatewayRequestId: null, checkerRequestId: null,
+  }), { code: "AUTO_LISTING_IMAGE_ATTEMPT_INVALID" });
+});
+
 test("legacy memory attempts retain exact null gateway provenance compatibility", async () => {
   const repository = createMemoryGenerationAttemptRepository({ token: () => "lease-legacy-null" });
   const lease = await repository.reserveGenerationAttempt({

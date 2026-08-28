@@ -23,6 +23,9 @@ const OWNER_KEYS = Object.freeze([
   ...SCOPE_KEYS, "attemptIdentityHash", "inputHash", "generationSize", "attemptNo", "leaseToken",
 ]);
 const BIND_KEYS = new Set(OWNER_KEYS);
+const REPLACE_EVIDENCE_KEYS = new Set([
+  ...OWNER_KEYS, "replacementGatewayConnectionId", "replacementGatewayConnectionVersion",
+]);
 const STORED_KEYS = Object.freeze([
   "objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height", "size",
 ]);
@@ -126,6 +129,20 @@ function validateOwner(input, keys) {
     || !safeIdentifier(input.leaseToken) || !validConnectionProvenance(input, "gateway")) {
     throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
   }
+  return input;
+}
+function validateReplaceEvidence(input) {
+  if (!exactObject(input, REPLACE_EVIDENCE_KEYS)
+    && !exactObject(input, gatewayKeys(REPLACE_EVIDENCE_KEYS))) {
+    throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
+  }
+  const owner = Object.fromEntries(Object.entries(input)
+    .filter(([key]) => !["replacementGatewayConnectionId", "replacementGatewayConnectionVersion"].includes(key)));
+  validateOwner(owner, BIND_KEYS);
+  if (!validConnectionProvenance({
+    gatewayConnectionId: input.replacementGatewayConnectionId,
+    gatewayConnectionVersion: input.replacementGatewayConnectionVersion,
+  }, "gateway")) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
   return input;
 }
 function validConnectionProvenance(input, prefix) {
@@ -761,6 +778,43 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
   return Object.freeze({
     reserveGenerationAttempt,
     bindGenerationAttemptInput,
+    async replaceUnusableGenerationEvidence(rawInput) {
+      const input = validateReplaceEvidence(rawInput);
+      const result = await query(
+        `UPDATE ai_generation_assets AS attempt
+            SET object_key_version=NULL,object_key=NULL,content_hash=NULL,content_type=NULL,
+                width=NULL,height=NULL,size_bytes=NULL,gateway_request_id=NULL,checker_request_id=NULL,
+                model_evidence=NULL,checker_result='{}'::JSONB,
+                checker_connection_id=NULL,checker_connection_version=NULL,
+                gateway_connection_id=$13,gateway_connection_version=$14,updated_at=NOW()
+           FROM auto_listing_job_items AS item
+          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.plan_id=$4
+            AND attempt.visual_group_key=$5 AND attempt.slot_key=$6 AND attempt.expected_status_version=$7
+            AND attempt.attempt_identity_hash=$8 AND attempt.input_hash=$9 AND attempt.generation_size=$10
+            AND attempt.attempt_no=$11 AND attempt.lease_token=$12 AND attempt.status='GENERATING'
+            AND attempt.lease_expires_at > NOW() AND attempt.final_input_bound_at IS NOT NULL
+            AND attempt.gateway_connection_id IS NOT DISTINCT FROM $15
+            AND attempt.gateway_connection_version IS NOT DISTINCT FROM $16
+            AND item.account_id=attempt.account_id AND item.job_id=attempt.job_id AND item.id=attempt.item_id
+            AND item.status='GENERATING' AND item.status_version=attempt.expected_status_version
+            AND item.active_content_plan_id=attempt.plan_id
+          RETURNING attempt.*`,
+        [...ownerValues(input), input.replacementGatewayConnectionId,
+          input.replacementGatewayConnectionVersion, input.gatewayConnectionId ?? null,
+          input.gatewayConnectionVersion ?? null],
+      );
+      const record = fromRow(result.rows?.[0]);
+      if (result.rowCount !== 1 || !record
+        || record.gatewayConnectionId !== input.replacementGatewayConnectionId
+        || record.gatewayConnectionVersion !== input.replacementGatewayConnectionVersion
+        || [record.objectKeyVersion, record.objectKey, record.contentHash, record.contentType,
+          record.width, record.height, record.size, record.gatewayRequestId, record.modelEvidence]
+          .some((value) => value !== null)) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED");
+      return Object.freeze({
+        gatewayConnectionId: record.gatewayConnectionId,
+        gatewayConnectionVersion: record.gatewayConnectionVersion,
+      });
+    },
     recordStoredGenerationAsset: (input) => transition(input, "STORE"),
     completeGenerationAttempt: (input) => transition(input, "COMPLETE"),
     rejectGenerationAttempt: (input) => transition(input, "REJECT"),

@@ -744,6 +744,190 @@ test("connection B reuses planner response produced by A without rewriting produ
   assert.equal(saved.gatewayConnectionVersion, 3);
 });
 
+test("connection B replaces semantically invalid planner evidence from A before one new paid call", async () => {
+  const built = planner();
+  const valid = validPlan(built);
+  const events = [];
+  let saved;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { attemptId: "attempt-a", reservationToken: "lease-a",
+        plannerStage: "VALIDATING_COPY", gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async replaceContentPlanReservation(input) {
+      events.push(["replace", input]);
+      return reserved(input, { attemptId: "attempt-b", attemptNo: 2, reservationToken: "lease-b",
+        plannerStage: "FILLING_COPY", gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9 });
+    },
+    async advanceContentPlanStage(input) { events.push(["stage", input]); return input; },
+    async saveContentPlan(input) { saved = input; return { id: "plan-b", ...input }; },
+    async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome(input) {
+      events.push(["load", input]);
+      return input.owner.id === "attempt-a"
+        ? { response: { id: "response-a", response: { version: 1, language: "ru", slots: [] }, gatewayRequestId: "gateway-a" },
+          validation: { id: "validation-a", status: "REJECTED", validatorVersion: "content-plan-validator-v1", issues: [{ path: "$.slots", code: "INVALID" }] } }
+        : null;
+    },
+    async recordResponse(input) {
+      events.push(["response", input]);
+      return { id: "response-b", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId };
+    },
+    async recordValidation(input) { events.push(["validation", input]); return { id: `validation-${input.responseId}`, ...input }; },
+  };
+  let paidCalls = 0;
+
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { paidCalls += 1; return { requestId: "gateway-b", value: structuredClone(valid) }; } },
+    repository,
+  });
+
+  assert.equal(result.id, "plan-b");
+  assert.equal(paidCalls, 1);
+  assert.equal(events.filter(([name]) => name === "replace").length, 1);
+  assert.equal(events.find(([name]) => name === "replace")[1].gatewayConnectionId, "connection-a");
+  assert.equal(events.find(([name]) => name === "replace")[1].replacementGatewayConnectionId, "connection-b");
+  assert.equal(events.filter(([name, input]) => name === "validation" && input.responseId === "response-a").length, 0);
+  assert.equal(events.find(([name]) => name === "response")[1].gatewayConnectionId, "connection-b");
+  assert.equal(saved.gatewayConnectionId, "connection-b");
+  assert.equal(saved.gatewayConnectionVersion, 9);
+});
+
+test("connection B replaces hash-conflicting planner evidence from A without a duplicate paid call", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  let replacements = 0;
+  let paidCalls = 0;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { attemptId: "attempt-a", reservationToken: "lease-a",
+        plannerStage: "VALIDATING_COPY", gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async replaceContentPlanReservation(input) {
+      replacements += 1;
+      return reserved(input, { attemptId: "attempt-b", attemptNo: 2, reservationToken: "lease-b",
+        plannerStage: "FILLING_COPY", gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9 });
+    },
+    async advanceContentPlanStage(input) { return input; },
+    async saveContentPlan(input) { return { id: "plan-b", ...input }; },
+    async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome(input) {
+      if (input.owner.id === "attempt-a") {
+        const error = new Error("stored response hash mismatch");
+        error.code = "AUTO_LISTING_CONTENT_PLAN_EVIDENCE_CONFLICT";
+        throw error;
+      }
+      return null;
+    },
+    async recordResponse(input) { return { id: "response-b", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId }; },
+    async recordValidation(input) { return { id: "validation-b", ...input }; },
+  };
+
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { paidCalls += 1; return { requestId: "gateway-b", value: structuredClone(output) }; } },
+    repository,
+  });
+
+  assert.equal(result.gatewayConnectionId, "connection-b");
+  assert.equal(replacements, 1);
+  assert.equal(paidCalls, 1);
+});
+
+test("connection B replaces malformed planner evidence from A before one paid call", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  let replacements = 0;
+  let paidCalls = 0;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { attemptId: "attempt-a", reservationToken: "lease-a",
+        plannerStage: "VALIDATING_COPY", gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async replaceContentPlanReservation(input) {
+      replacements += 1;
+      return reserved(input, { attemptId: "attempt-b", attemptNo: 2, reservationToken: "lease-b",
+        plannerStage: "FILLING_COPY", gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9 });
+    },
+    async advanceContentPlanStage(input) { return input; },
+    async saveContentPlan(input) { return { id: "plan-b", ...input }; },
+    async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome(input) {
+      if (input.owner.id === "attempt-a") {
+        const error = new Error("malformed stored validation");
+        error.code = "AUTO_LISTING_CONTENT_PLAN_EVIDENCE_INVALID";
+        throw error;
+      }
+      return null;
+    },
+    async recordResponse(input) { return { id: "response-b", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId }; },
+    async recordValidation(input) { return { id: "validation-b", ...input }; },
+  };
+
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { paidCalls += 1; return { requestId: "gateway-b", value: structuredClone(output) }; } },
+    repository,
+  });
+
+  assert.equal(result.gatewayConnectionId, "connection-b");
+  assert.equal(replacements, 1);
+  assert.equal(paidCalls, 1);
+});
+
+test("stale planner producer handoff makes no paid B call and writes no B evidence", async () => {
+  let paidCalls = 0;
+  let responseWrites = 0;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { attemptId: "attempt-a", reservationToken: "lease-a",
+        plannerStage: "VALIDATING_COPY", gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async replaceContentPlanReservation() {
+      const error = new Error("stale lease"); error.code = "AUTO_LISTING_CONTENT_PLAN_LEASE_CONFLICT"; throw error;
+    },
+    async advanceContentPlanStage() {}, async saveContentPlan() { throw new Error("must not save"); },
+    async releaseContentPlanReservation() {}, async releaseContentPlanChannelReservation() {},
+  };
+  const conflict = new Error("hash mismatch");
+  conflict.code = "AUTO_LISTING_CONTENT_PLAN_EVIDENCE_CONFLICT";
+  const evidenceRepository = {
+    async loadOutcome() { throw conflict; },
+    async recordResponse() { responseWrites += 1; },
+    async recordValidation() { throw new Error("must not validate"); },
+  };
+
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { paidCalls += 1; } }, repository,
+  }), { code: "AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED" });
+
+  assert.equal(paidCalls, 0);
+  assert.equal(responseWrites, 0);
+});
+
 test("fixed contract builds the configured skeleton, lets AI fill only claims, and persists exact identity", async () => {
   const planningArgs = plannerArgs();
   const fixedContext = buildPlannerInput({

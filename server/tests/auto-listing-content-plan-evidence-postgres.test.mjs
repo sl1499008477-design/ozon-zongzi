@@ -210,3 +210,22 @@ test("records one exact validation result and loads evidence only by the immutab
   assert.doesNotMatch(loadSql, /ORDER BY|LIMIT 1|MAX\(/i);
   assert.equal(JSON.stringify(outcome).includes(HASH_B), false);
 });
+
+test("load rejects a hash-conflicting planner response instead of treating it as reusable", async () => {
+  const db = scriptedPool((sql) => {
+    if (/LEFT JOIN auto_listing_content_plan_validation_results/iu.test(sql)) return { rows: [{
+      ...responseRow(), response_hash: HASH_B,
+      validation_id: null, validation_status: null, validator_version: null,
+      issues: null, validated_at: null,
+    }], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const evidence = createPostgresContentPlanEvidenceRepository({ pool: db.pool });
+
+  await assert.rejects(evidence.loadOutcome({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a",
+    owner: { kind: "ATTEMPT", id: "attempt-a" }, planningContract: "LEGACY_FULL_PLAN_V3",
+    inputHash: HASH_A, skeletonHash: null, profileId: "profile-a", profileVersion: 3,
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3,
+  }), { code: "AUTO_LISTING_CONTENT_PLAN_EVIDENCE_CONFLICT" });
+});
