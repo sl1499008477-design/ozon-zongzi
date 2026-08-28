@@ -185,6 +185,24 @@ test("enabling an inactive historical profile channel is rejected under the lock
   }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT", status: 409 });
 });
 
+test("revalidation compares fresh proof to the locked channel marker inside PostgreSQL without a JavaScript timestamp parameter", async () => {
+  const marker = new Date("2026-08-28T00:00:00.123Z");
+  const { pool, calls } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] },
+    { rows: [{ channel_id: "channel-b", channel_order: 2, enabled: false, requires_revalidation: true,
+      profile_enabled: true, connection_status: "VALIDATED", connection_id: "connection-b", connection_version: 2,
+      updated_at: marker }] },
+    { rows: [] }, { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: true,
+  }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_REVALIDATION_REQUIRED", status: 409 });
+  const evidence = calls.find(({ sql }) => /ai_gateway_capability_attempts evidence/iu.test(sql));
+  assert.match(evidence.sql, /evidence\.completed_at > \(SELECT marker\.updated_at/iu);
+  assert.equal(evidence.params.includes(marker), false);
+});
+
 test("a repeated channel state request returns the locked safe DTO without another write or audit", async () => {
   const disabled = { channel_id: "channel-b", display_name: "Gateway B", channel_order: 2, enabled: false,
     connection_id: "connection-b", connection_version: 2, connection_status: "VALIDATED",

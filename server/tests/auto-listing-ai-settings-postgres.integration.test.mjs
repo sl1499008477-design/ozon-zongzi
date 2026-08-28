@@ -82,6 +82,9 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
 
     pool = new Pool({ connectionString, max: 6, options: `-c search_path=${schema},public` });
     const repository = createAutoListingAiSettingsPostgres({ pool });
+    assert.deepEqual(await repository.listProfileChannels({
+      accountId: accountA, profileId: legacyProfileId, profileVersion: 1,
+    }), { channels: [], channelCandidates: [] }, "legacy environment profiles never gain fabricated channels or candidates");
     const encryptedSecret = {
       algorithm: "aes-256-gcm",
       ciphertext: "Y2lwaGVy",
@@ -1387,6 +1390,19 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       );
     }
     await seedChannelCapability(`channel-capability-${suffix}`);
+    await pool.query("UPDATE ai_gateway_profiles SET text_model='wrong-text' WHERE account_id=$1 AND id=$2 AND config_version=1", [accountA, channelProofProfileId]);
+    assert.equal((await repository.listProfileChannels({ accountId: accountA, profileId: profile.id, profileVersion: profile.configVersion }))
+      .channelCandidates.some((row) => row.connectionId === channelCandidate.id), false, "a passed proof with a mismatched text model is excluded");
+    await pool.query("UPDATE ai_gateway_profiles SET text_model=$3 WHERE account_id=$1 AND id=$2 AND config_version=1", [accountA, channelProofProfileId, profile.textModel]);
+    await pool.query("UPDATE ai_gateway_profiles SET image_model='wrong-image' WHERE account_id=$1 AND id=$2 AND config_version=1", [accountA, channelProofProfileId]);
+    assert.equal((await repository.listProfileChannels({ accountId: accountA, profileId: profile.id, profileVersion: profile.configVersion }))
+      .channelCandidates.some((row) => row.connectionId === channelCandidate.id), false, "a passed proof with a mismatched image model is excluded");
+    await pool.query("UPDATE ai_gateway_profiles SET image_model=$3 WHERE account_id=$1 AND id=$2 AND config_version=1", [accountA, channelProofProfileId, profile.imageModel]);
+    const otherImageProtocol = profile.imageProtocol === "SUB2API_OPENAI_IMAGES" ? "SUB2API_RESPONSES_IMAGE_TOOL" : "SUB2API_OPENAI_IMAGES";
+    await pool.query("UPDATE ai_gateway_profiles SET image_protocol=$3 WHERE account_id=$1 AND id=$2 AND config_version=1", [accountA, channelProofProfileId, otherImageProtocol]);
+    assert.equal((await repository.listProfileChannels({ accountId: accountA, profileId: profile.id, profileVersion: profile.configVersion }))
+      .channelCandidates.some((row) => row.connectionId === channelCandidate.id), false, "a passed proof with a mismatched image protocol is excluded");
+    await pool.query("UPDATE ai_gateway_profiles SET image_protocol=$3 WHERE account_id=$1 AND id=$2 AND config_version=1", [accountA, channelProofProfileId, profile.imageProtocol]);
     const beforeAdd = await repository.listProfileChannels({
       accountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
     });
@@ -1461,8 +1477,10 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       [accountA],
     )).rows[0].count), 1, "repeated disable is a no-op without a duplicate audit event");
     await pool.query(
-      "UPDATE auto_listing_ai_profile_channels SET requires_revalidation=TRUE,updated_at=NOW() WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4",
-      [accountA, profile.id, profile.configVersion, addedChannel.channelId],
+      `UPDATE auto_listing_ai_profile_channels SET requires_revalidation=TRUE,
+          updated_at=(SELECT completed_at FROM ai_gateway_capability_attempts WHERE account_id=$1 AND id=$5)
+        WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4`,
+      [accountA, profile.id, profile.configVersion, addedChannel.channelId, `channel-capability-${suffix}`],
     );
     await assert.rejects(repository.setProfileChannelEnabled({
       accountId: accountA, actorAccountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
@@ -1481,6 +1499,18 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       "SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CHANNEL_SET_ENABLED'",
       [accountA],
     )).rows[0].count), 2, "repeated eligible enable is a no-op without a duplicate audit event");
+    assert.equal((await repository.setProfileChannelEnabled({
+      accountId: accountA, actorAccountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
+      channelId: addedChannel.channelId, enabled: false,
+    })).enabled, false);
+    assert.equal((await repository.setProfileChannelEnabled({
+      accountId: accountA, actorAccountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
+      channelId: addedChannel.channelId, enabled: false,
+    })).enabled, false);
+    assert.equal(Number((await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CHANNEL_SET_ENABLED'",
+      [accountA],
+    )).rows[0].count), 3, "rapid disable-enable-disable creates one audit per real transition only");
     const channelAudits = (await pool.query(
       `SELECT metadata FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CHANNEL_SET_ENABLED'
        ORDER BY occurred_at,id`, [accountA],
@@ -1490,6 +1520,33 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       && metadata.connectionId === channelCandidate.id && metadata.connectionVersion === channelCandidate.version
       && ["ENABLE", "DISABLE"].includes(metadata.action) && metadata.result === "SUCCESS"
       && JSON.stringify(metadata).includes("lease") === false), true);
+
+    const activeForHistory = (await pool.query(
+      "SELECT id,version FROM ai_gateway_connection_versions WHERE account_id=$1 AND status='ACTIVE'",
+      [accountA],
+    )).rows[0];
+    const historicProfileId = `historic-profile-${suffix}`;
+    await pool.query(
+      `INSERT INTO ai_gateway_profiles (id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+         text_model,image_model,config_version,enabled,created_by,connection_id,connection_version)
+       VALUES ($1,$2,'Historical','https://gateway.example/v1','SUB2API_ENCRYPTED_KEY',$3,$4,$5,$6,1,FALSE,$2,$7,$8)`,
+      [historicProfileId, accountA, profile.textProtocol, profile.imageProtocol, profile.textModel, profile.imageModel,
+        activeForHistory.id, activeForHistory.version],
+    );
+    await pool.query(
+      `INSERT INTO auto_listing_ai_profile_channels (account_id,profile_id,profile_version,channel_id,display_name,
+         connection_id,connection_version,channel_order,enabled)
+       VALUES ($1,$2,1,'primary','Historical',$3,$4,1,TRUE)`,
+      [accountA, historicProfileId, activeForHistory.id, activeForHistory.version],
+    );
+    await assert.rejects(repository.setProfileChannelEnabled({
+      accountId: accountA, actorAccountId: accountA, profileId: historicProfileId, profileVersion: 1,
+      channelId: "primary", enabled: true,
+    }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT", status: 409 });
+    assert.equal((await repository.setProfileChannelEnabled({
+      accountId: accountA, actorAccountId: accountA, profileId: historicProfileId, profileVersion: 1,
+      channelId: "primary", enabled: false,
+    })).enabled, false, "disabled historical channels remain safely disableable");
 
     const eventRow = (await pool.query(
       "SELECT id FROM ai_gateway_model_sync_events WHERE account_id=$1 AND task_id=$2 ORDER BY created_at LIMIT 1",

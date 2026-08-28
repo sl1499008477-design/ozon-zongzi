@@ -1467,9 +1467,12 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
                   AND connection.id=$4 AND connection.version=$5
                 WHERE profile.account_id=$1 AND profile.id=$2 AND profile.config_version=$3
                   AND profile.api_key_env_name='SUB2API_ENCRYPTED_KEY'
-                  AND ${passedProfileCapabilityEvidence({ after: "$6::TIMESTAMPTZ" })}`,
+                  AND ${passedProfileCapabilityEvidence({ after: `(SELECT marker.updated_at
+                    FROM auto_listing_ai_profile_channels marker
+                   WHERE marker.account_id=$1 AND marker.profile_id=$2 AND marker.profile_version=$3
+                     AND marker.channel_id=$6)` })}`,
               [input.accountId, input.profileId, input.profileVersion, current.connection_id,
-                current.connection_version, current.updated_at]);
+                current.connection_version, input.channelId]);
             if (!revalidated.rows[0]) {
               throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_REVALIDATION_REQUIRED", 409);
             }
