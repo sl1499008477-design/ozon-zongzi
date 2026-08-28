@@ -7,7 +7,9 @@ Task 7 is implemented in commit `2b7ae449ed84ef226fa09c38b8e5d5d47d5a5af4`
 commit `b8867fc27a9a4480cf0501e6ea66c58016cefbb5`
 (`fix: fence AI attempts by exact execution owner`), and producer-provenance
 remediation commit `94363872782a9269d458680bf6944fffc69e2b7e`
-(`fix: preserve paid producer provenance across channel reclaim`). The original report was
+(`fix: preserve paid producer provenance across channel reclaim`), and validated-evidence
+remediation commit `b7b95c7fb5c260bcb2dfccb4ea2028b7e8ca1cd2`
+(`fix: validate paid evidence before preserving producer`). The original report was
 recorded in commit `100aeef8f3cf119a8720f51231a0fdbe1a998d8d`.
 
 Paid auto-listing phases now keep the job-frozen profile models and protocols while resolving only the exact adopted channel connection/version. No selector, arbitrary connection, current-profile, or default-connection fallback was added. Planner, image generator/checker, and rich-content attempts persist their leased connection provenance, and repository writes fence the account/item/status-version attempt owner and connection version.
@@ -30,6 +32,18 @@ recovery results return the immutable producer pair, while the Task 6 worker
 lease remains the authority for the current execution. If the repository cannot
 prove reusable paid evidence, the producer pair changes to B before B makes a
 paid producer call.
+
+The third fresh cumulative review failed with 0 Critical, 3 Important, and
+0 Minor findings. It found that the A-preservation predicate was still weaker
+than actual reuse: planner row existence could pin A before response and
+semantic validation, image reclaim could pin A before full frozen-runtime and
+stored-byte validation, and memory release omitted checker provenance. The
+third remediation closes all three findings. Planner A is preserved only after
+the loaded response passes hash/shape and current closed semantic validation;
+image A is preserved only after frozen model/input evidence plus actual stored
+bytes, hash, content type, dimensions, and size all pass. Invalid A evidence is
+exact-fenced before B performs one paid call. Memory and PostgreSQL-capable
+ports now retain the same producer/checker meanings.
 
 ## TDD evidence
 
@@ -66,6 +80,23 @@ added a corrupt stored-image RED: the old SQL considered non-null columns
 reusable and passed connection version `9` where the full validator had to return
 `false`. The production fix then reused the same object/runtime evidence
 validator for the reclaim decision.
+
+The third review remediation also followed strict RED/GREEN:
+
+- the planner focused RED failed 2/2 because the caller threw on invalid A
+  evidence and the repository had no atomic replacement operation;
+- the image/memory/PostgreSQL focused RED failed 3/3 because corrupt A evidence
+  threw `AUTO_LISTING_IMAGE_EXISTING_CORRUPT`, PostgreSQL had no exact evidence
+  replacement operation, and memory release returned no checker pair;
+- persisted `REJECTED` planner evidence then had a dedicated RED (`1 !== 0`)
+  proving stale validation was replayed before replacement; GREEN replaces A
+  before any A validation write;
+- malformed planner evidence had a dedicated RED that surfaced
+  `AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED`; GREEN treats the closed
+  evidence repository's INVALID/CONFLICT results as unusable A evidence and
+  exact-fenced replaces it before one B paid call;
+- race tests prove a stale replacement makes no B gateway/storage/evidence
+  call and no partial repository mutation.
 
 ### GREEN
 
@@ -153,9 +184,48 @@ fail 0
 skipped 1
 ```
 
-Both final skips are PostgreSQL integration gates requiring explicit
+Final third-review expanded direct regression:
+
+```text
+tests 414
+pass 412
+fail 0
+skipped 2
+```
+
+Final third-review Task 7 planned routing suite:
+
+```text
+tests 68
+pass 67
+fail 0
+skipped 1
+```
+
+Final third-review Task 6 memory parity regression:
+
+```text
+tests 139
+pass 138
+fail 0
+skipped 1
+```
+
+Final third-review Task 8 idle/delivery regression:
+
+```text
+tests 207
+pass 207
+fail 0
+skipped 0
+```
+
+The final skips are PostgreSQL integration gates requiring explicit
 nonproduction environment configuration. All ten files changed by the second
 remediation passed `node --check`; `git diff --check` also passed.
+
+All 13 `.mjs` files changed by the third remediation passed `node --check`, and
+`git diff --check` passed after the final code change.
 
 All changed `.mjs` files passed `node --check`. `git diff --check` passed. The exact credential-resolver regression passed unchanged, confirming it still decrypts only `{ accountId, connectionId, connectionVersion }` and provides no connection selector.
 
@@ -179,16 +249,30 @@ All changed `.mjs` files passed `node --check`. `git diff --check` passed. The e
 - Legacy v2 execution is allowed only for a legacy environment-backed profile with null connection provenance.
 - Planner repository/evidence commands carry `gatewayConnectionId/gatewayConnectionVersion`.
 - Planner reclaim checks for its persisted response evidence. Reclaim by B keeps
-  producer A when that paid response exists; otherwise the reservation returns
-  B. The planner uses the returned producer pair for evidence load, validation,
-  save, failure, and channel release, while its provider call still runs under
-  the current Task 6 execution lease.
+  producer A only when that paid response is hash-valid, structurally readable,
+  and accepted by the current closed semantic validator. A hash conflict,
+  malformed/partial response, persisted rejection, or newly diagnosed semantic
+  rejection atomically fails the exact leased A attempt and inserts attempt
+  N+1 for B before B performs one paid call. This uses the existing attempt
+  retry budget and respects `maxAttempts`; the transaction rolls back both
+  writes if replacement cannot complete. The planner uses the actual producer
+  pair for evidence load, validation, save, failure, and channel release, while
+  its provider call remains fenced by the current Task 6 execution lease.
 - Image attempt commands carry generator connection provenance and terminal checker connection provenance. Reserve, bind, storage, terminal, release, compensation, and lookup writes are fenced by the exact attempt connection pair.
 - Image reclaim keeps A only when the full stored-object and frozen-runtime
   evidence validator proves that A's paid bytes are reusable. Missing, partial,
   or corrupt evidence assigns B before a new producer call. A recovered image
   remains attributed to A while a checker executed by B records checker
   provenance B.
+- If full image reuse validation fails after reclaim, the repository atomically
+  clears unusable request/object/model/checker evidence and switches the exact
+  same leased attempt from producer A to B. PostgreSQL fences account/job/item,
+  current `GENERATING` status/version, active plan, immutable input identity,
+  attempt number, lease token/expiry, final binding, and old A pair in one
+  statement. A stale handoff cannot call B or partially clear A.
+- Memory channel release validates and persists
+  `checkerConnectionId/checkerConnectionVersion`; reclaim clears the stale
+  checker pair, matching PostgreSQL behavior.
 - Rich-content reserve/reclaim/terminal/release commands carry and fence `gatewayConnectionId/gatewayConnectionVersion`.
 - Rich-content commands also carry the orchestration message's exact
   `expectedStatusVersion`. Reservation locks only the account/job/item row in
@@ -254,6 +338,23 @@ production files and their direct tests:
 - `server/tests/auto-listing-generation-attempt-postgres.test.mjs`
 - `server/tests/auto-listing-image-generator.test.mjs`
 
+The third review remediation changed the same approved planner/image production
+scope and these direct or gated fixture tests:
+
+- `server/auto-listing-content-plan-repository.mjs`
+- `server/auto-listing-content-planner.mjs`
+- `server/auto-listing-generation-attempt-postgres.mjs`
+- `server/auto-listing-generation-attempt-repository.mjs`
+- `server/auto-listing-image-generator.mjs`
+- `server/tests/auto-listing-content-plan-evidence-postgres.test.mjs`
+- `server/tests/auto-listing-content-plan-repository.test.mjs`
+- `server/tests/auto-listing-content-planner.test.mjs`
+- `server/tests/auto-listing-generation-attempt-postgres-fixture.mjs`
+- `server/tests/auto-listing-generation-attempt-postgres.integration.test.mjs`
+- `server/tests/auto-listing-generation-attempt-postgres.test.mjs`
+- `server/tests/auto-listing-generation-attempt-repository.test.mjs`
+- `server/tests/auto-listing-image-generator.test.mjs`
+
 `server/auto-listing-ai-credential-resolver.mjs` did not require a production change: its existing exact-version resolver already met Task 7 and its direct regression remained green.
 
 ## Task 6 and Task 8 compatibility
@@ -283,10 +384,16 @@ production files and their direct tests:
   provenance. Legacy test/memory ports that omit the returned pair retain the
   previous current-execution fallback, while explicit all-null v2 provenance
   remains all-null.
+- Planner evidence tables are append-only and allow one response per attempt,
+  so safely replacing invalid paid evidence requires attempt N+1 rather than
+  overwriting history. That replacement consumes the normal business retry
+  budget. Image repair uses the same attempt because its mutable in-progress
+  evidence columns can be exact-fenced and cleared atomically.
 
 Rollback the implementation with:
 
 ```bash
+git revert b7b95c7fb5c260bcb2dfccb4ea2028b7e8ca1cd2
 git revert 94363872782a9269d458680bf6944fffc69e2b7e
 git revert b8867fc27a9a4480cf0501e6ea66c58016cefbb5
 git revert 2b7ae449ed84ef226fa09c38b8e5d5d47d5a5af4
