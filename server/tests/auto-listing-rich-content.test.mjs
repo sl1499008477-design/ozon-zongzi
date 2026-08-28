@@ -8,6 +8,11 @@ const richModule = () => import("../auto-listing-rich-content.mjs");
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+const deferred = () => {
+  let resolve; let reject;
+  const promise = new Promise((accept, decline) => { resolve = accept; reject = decline; });
+  return { promise, resolve, reject };
+};
 const reverseKeysDeep = (value) => Array.isArray(value) ? value.map(reverseKeysDeep) : value && typeof value === "object"
   ? Object.fromEntries(Object.entries(value).reverse().map(([key, child]) => [key, reverseKeysDeep(child)])) : value;
 const scope = Object.freeze({ accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-a" });
@@ -1395,6 +1400,72 @@ test("rich provider rejection rechecks the lease before channel release", async 
     assertLeaseActive() { if (!active) throw stale; },
   })), (error) => error === stale);
   assert.deepEqual(repo.calls.map(([name]) => name), ["reserve"]);
+});
+
+test("rich terminal repository boundaries prefer lease loss after deferred resolve or reject", async (t) => {
+  const { generateRichContent } = await richModule();
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  for (const target of ["completeRichContent", "rejectRichContent", "failRichContent"]) {
+    for (const settlement of ["resolve", "reject"]) {
+      await t.test(`${target}:${settlement}`, async () => {
+        const repo = repository();
+        let active = true;
+        let entered;
+        const enteredPromise = new Promise((resolve) => { entered = resolve; });
+        const pending = deferred();
+        const terminalWrites = [];
+        repo.completeRichContent = async (value) => {
+          terminalWrites.push("completeRichContent");
+          if (target === "failRichContent") throw new Error("force completion failure");
+          if (target === "completeRichContent") { entered(); await pending.promise; }
+          return { id: "rich-race", status: "ACCEPTED", ...value, acceptedAt: "2026-08-04T00:00:00.000Z",
+            leaseOwner: null, leaseToken: null, leaseExpiresAt: null, errorCode: null, errorRetryable: null };
+        };
+        repo.rejectRichContent = async (value) => {
+          terminalWrites.push("rejectRichContent");
+          if (target === "rejectRichContent") { entered(); await pending.promise; }
+          return value;
+        };
+        repo.failRichContent = async (value) => {
+          terminalWrites.push("failRichContent");
+          if (target === "failRichContent") { entered(); await pending.promise; }
+          return value;
+        };
+        repo.releaseRichContent = async (value) => { terminalWrites.push("releaseRichContent"); return value; };
+        let gatewayValue = validContent();
+        if (target === "rejectRichContent") {
+          gatewayValue = {
+            version: "AUTO_LISTING_RICH_CONTENT_V1",
+            language: "ru",
+            blocks: [
+              { type: "HEADING", text: "Термокружка SONLI", sourceFactIds: ["fact.brand"] },
+              { type: "TEXT", text: "Нержавеющая сталь, оставьте отзыв", sourceFactIds: ["fact.material"] },
+            ],
+          };
+        }
+        const work = generateRichContent(generationInput(repo, {
+          async createTextResponse() {
+            return { value: gatewayValue, requestId: "gateway-race", modelEvidence: {
+              requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model",
+              gatewayReportedTextModelPresent: true,
+            } };
+          },
+        }, {
+          assertLeaseActive() { if (!active) throw stale; },
+        }));
+        await enteredPromise;
+        active = false;
+        if (settlement === "resolve") pending.resolve();
+        else pending.reject(new Error(`deferred ${target} rejection`));
+
+        await assert.rejects(work, (error) => error === stale);
+        assert.deepEqual(terminalWrites, target === "failRichContent"
+          ? ["completeRichContent", "failRichContent"] : [target]);
+      });
+    }
+  }
 });
 
 test("falls back for malformed or unavailable gateways but still rejects policy violations", async () => {

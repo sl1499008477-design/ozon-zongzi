@@ -11,6 +11,11 @@ import { createContentPlanDiagnoser } from "../auto-listing-content-plan-validat
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+const deferred = () => {
+  let resolve; let reject;
+  const promise = new Promise((accept, decline) => { resolve = accept; reject = decline; });
+  return { promise, resolve, reject };
+};
 const image = (assetId, digit = "a") => ({ assetId, contentHash: digit.repeat(64) });
 const visualEvidence = (variantId) => ({
   contractVersion: 1,
@@ -1048,6 +1053,66 @@ test("planner provider rejection rechecks the lease before preserving a channel 
   }), (error) => error === stale);
   assert.deepEqual(writes, []);
   assert.equal(releases, 0);
+});
+
+test("planner repository boundaries prefer lease loss on deferred resolve or reject and never terminalize", async (t) => {
+  const built = planner();
+  const output = validPlan(built);
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  for (const boundary of ["recordResponse", "advance", "recordValidation", "save"]) {
+    for (const settlement of ["resolve", "reject"]) {
+      await t.test(`${boundary}:${settlement}`, async () => {
+        let active = true;
+        let entered;
+        const enteredPromise = new Promise((resolve) => { entered = resolve; });
+        const pending = deferred();
+        let terminalWrites = 0;
+        const pause = async (value, result) => {
+          entered();
+          await pending.promise;
+          return typeof result === "function" ? result(value) : result;
+        };
+        const repository = {
+          async reserveContentPlan(input) { return reserved(input); },
+          async advanceContentPlanStage(value) {
+            return boundary === "advance" ? pause(value, advanceStage) : advanceStage(value);
+          },
+          async saveContentPlan(value) {
+            return boundary === "save" ? pause(value, (input) => ({ id: "plan-race", ...input })) : { id: "plan-race", ...value };
+          },
+          async releaseContentPlanReservation() { terminalWrites += 1; },
+          async releaseContentPlanChannelReservation() { terminalWrites += 1; return { released: true }; },
+        };
+        const evidenceRepository = {
+          async loadOutcome() { return null; },
+          async recordResponse(value) {
+            const result = (input) => ({ id: "response-race", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId });
+            return boundary === "recordResponse" ? pause(value, result) : result(value);
+          },
+          async recordValidation(value) {
+            return boundary === "recordValidation" ? pause(value, (input) => ({ id: "validation-race", ...input })) : { id: "validation-race", ...value };
+          },
+        };
+        const work = createContentPlan({
+          accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+          ...plannerArgs(), evidenceRepository,
+          assertLeaseActive() { if (!active) throw stale; },
+          gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+          gateway: { async createTextResponse() { return { value: output, requestId: "gateway-race" }; } },
+          repository,
+        });
+        await enteredPromise;
+        active = false;
+        if (settlement === "resolve") pending.resolve();
+        else pending.reject(new Error(`deferred ${boundary} rejection`));
+
+        await assert.rejects(work, (error) => error === stale);
+        assert.equal(terminalWrites, 0);
+      });
+    }
+  }
 });
 
 test("planner lease loss between response evidence and later persistence stops every later result write", async () => {

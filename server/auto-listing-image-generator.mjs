@@ -58,6 +58,18 @@ function failure(code, retryable = false) { const error = new Error("自动上�
 function assertLeaseActive(input) {
   if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
 }
+
+async function leaseBound(input, operation) {
+  assertLeaseActive(input);
+  try {
+    const result = await operation();
+    assertLeaseActive(input);
+    return result;
+  } catch (cause) {
+    assertLeaseActive(input);
+    throw cause;
+  }
+}
 function isChannelFailure(error) {
   return CHANNEL_FAILURE_CODES.has(error?.code)
     || (error?.code === "NON_RETRYABLE_GATEWAY" && error?.status === 404);
@@ -804,13 +816,16 @@ function repositoryFailure() {
   return failure("AUTO_LISTING_IMAGE_REPOSITORY_FAILED", true);
 }
 
-async function repositoryCall(repository, method, value) {
+async function repositoryCall(repository, method, value, leaseInput = null) {
   if (typeof repository?.[method] !== "function") throw repositoryFailure();
-  try {
-    return await repository[method](value);
-  } catch {
-    throw repositoryFailure();
-  }
+  const operation = async () => {
+    try {
+      return await repository[method](value);
+    } catch {
+      throw repositoryFailure();
+    }
+  };
+  return leaseInput === null ? operation() : leaseBound(leaseInput, operation);
 }
 
 async function finalizeExhausted({ slot, error }) {
@@ -1022,7 +1037,7 @@ export async function generateImageSlot(input = {}) {
     }
     if (!checked.accepted) {
       assertLeaseActive(input);
-      await repositoryCall(repository, "rejectGenerationAttempt", { ...attempt, role: slot.role, ...storedAsset, code: checked.code, retryable: attempt.attemptNo < maxAttempts, checkerEvidence: checked.evidence, gatewayRequestId, checkerRequestId, modelEvidence: generatedModelEvidence });
+      await repositoryCall(repository, "rejectGenerationAttempt", { ...attempt, role: slot.role, ...storedAsset, code: checked.code, retryable: attempt.attemptNo < maxAttempts, checkerEvidence: checked.evidence, gatewayRequestId, checkerRequestId, modelEvidence: generatedModelEvidence }, input);
       terminalized = true;
       const rejected = failure(checked.code, attempt.attemptNo < maxAttempts);
       if (attempt.attemptNo >= maxAttempts) await finalizeExhausted({ repository, scope, slot, inputHash, attemptNo: attempt.attemptNo, error: rejected });
@@ -1034,7 +1049,7 @@ export async function generateImageSlot(input = {}) {
       planHash: plan.planHash, sourceHash: plan.sourceHash, strategyHash: plan.strategyHash, configHash: plan.configHash, visualGroupsHash: plan.visualGroupsHash,
       promptTemplateVersion: templateVersion, sourceAssetEvidence: sourceEvidence(references), regeneration: effectiveRegeneration, generationSize: validated.size };
     assertLeaseActive(input);
-    const completed = await repositoryCall(repository, "completeGenerationAttempt", completeInput);
+    const completed = await repositoryCall(repository, "completeGenerationAttempt", completeInput, input);
     terminalized = true;
     if (!verifyExistingAccepted(completed, scope, inputHash, { attemptIdentityHash, legacyHashes: legacyHashesFor(references), plan, slot, profile, imageModel, templateVersion, references, facts, promptHash, regeneration: effectiveRegeneration, textRequired, textForbidden, categoryStyle: validated.categoryStyle, categoryStyleReferences, generationSize: validated.size, stored: storedAsset })
       || completed.attemptNo !== attempt.attemptNo || !await verifyAcceptedObject(completed, storage)) throw repositoryFailure();
@@ -1043,6 +1058,7 @@ export async function generateImageSlot(input = {}) {
       ? { ...completed, acceptedWithWarnings: true, manualReviewWarnings }
       : completed;
   } catch (error) {
+    assertLeaseActive(input);
     if (error?.code === EXECUTION_LEASE_LOST) throw error;
     if (!terminalized && isChannelFailure(error)) {
       assertLeaseActive(input);
@@ -1056,7 +1072,7 @@ export async function generateImageSlot(input = {}) {
         gatewayRequestId,
         checkerRequestId,
         modelEvidence: generatedModelEvidence,
-      });
+      }, input);
       terminalized = true;
       throw error;
     }
@@ -1076,7 +1092,7 @@ export async function generateImageSlot(input = {}) {
               ...(error?.checkerEvidence ? { checkerEvidence: error.checkerEvidence } : {}),
             }
           : {}),
-      });
+      }, input);
       terminalized = true;
       if (!retryable) await finalizeExhausted({ repository, scope, slot, inputHash: attempt.inputHash, attemptNo: attempt.attemptNo, error });
     }

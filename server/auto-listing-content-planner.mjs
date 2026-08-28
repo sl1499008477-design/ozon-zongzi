@@ -87,6 +87,18 @@ function assertLeaseActive(input) {
   if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
 }
 
+async function leaseBound(input, operation) {
+  assertLeaseActive(input);
+  try {
+    const result = await operation();
+    assertLeaseActive(input);
+    return result;
+  } catch (cause) {
+    assertLeaseActive(input);
+    throw cause;
+  }
+}
+
 const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
   && !types.isProxy(value)
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -807,7 +819,7 @@ export async function createContentPlan(input = {}) {
   try {
     if (reservation.plannerStage === "BUILDING_SKELETON") {
       try {
-        await repository.advanceContentPlanStage({
+        await leaseBound(input, () => repository.advanceContentPlanStage({
           ...scope,
           sourceSnapshotId,
           attemptId: reservation.attemptId,
@@ -818,9 +830,11 @@ export async function createContentPlan(input = {}) {
           skeletonHash,
           fromStage: "BUILDING_SKELETON",
           toStage: "FILLING_COPY",
-        });
+        }));
         reservation = { ...reservation, plannerStage: "FILLING_COPY" };
-      } catch {
+      } catch (cause) {
+        assertLeaseActive(input);
+        if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
         throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片骨架阶段暂时无法保存");
       }
     }
@@ -835,7 +849,9 @@ export async function createContentPlan(input = {}) {
       profileVersion: plannerContext.plannerInput.profile.configVersion,
     };
     let outcome;
-    try { outcome = await evidenceRepository.loadOutcome(evidenceScope); } catch {
+    try { outcome = await leaseBound(input, () => evidenceRepository.loadOutcome(evidenceScope)); } catch (cause) {
+      assertLeaseActive(input);
+      if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
       throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划证据暂时无法读取");
     }
     let responseEvidence = outcome?.response || null;
@@ -875,14 +891,16 @@ export async function createContentPlan(input = {}) {
       }
       assertLeaseActive(input);
       try {
-        responseEvidence = await evidenceRepository.recordResponse({
+        responseEvidence = await leaseBound(input, () => evidenceRepository.recordResponse({
           ...evidenceScope,
           modelName: plannerContext.plannerInput.plannerModel,
           promptTemplateVersion: plannerContext.plannerInput.promptTemplateVersion,
           gatewayRequestId: optionalGatewayRequestId(response?.requestId),
           response: response?.value,
-        });
-      } catch {
+        }));
+      } catch (cause) {
+        assertLeaseActive(input);
+        if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
         throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划证据暂时无法保存");
       }
       assertLeaseActive(input);
@@ -893,7 +911,7 @@ export async function createContentPlan(input = {}) {
     if (reservation.plannerStage === "FILLING_COPY") {
       assertLeaseActive(input);
       try {
-        await repository.advanceContentPlanStage({
+        await leaseBound(input, () => repository.advanceContentPlanStage({
           ...scope,
           sourceSnapshotId,
           attemptId: reservation.attemptId,
@@ -904,8 +922,10 @@ export async function createContentPlan(input = {}) {
           skeletonHash,
           fromStage: "FILLING_COPY",
           toStage: "VALIDATING_COPY",
-        });
-      } catch {
+        }));
+      } catch (cause) {
+        assertLeaseActive(input);
+        if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
         throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划阶段暂时无法保存");
       }
     } else if (reservation.plannerStage !== "VALIDATING_COPY") {
@@ -928,14 +948,16 @@ export async function createContentPlan(input = {}) {
     } else diagnosis = diagnoseContentPlanClosed({ plan: responseEvidence.response, plannerContext });
     assertLeaseActive(input);
     try {
-      await evidenceRepository.recordValidation({
+      await leaseBound(input, () => evidenceRepository.recordValidation({
         accountId: scope.accountId,
         responseId: responseEvidence.id,
         status: diagnosis.status,
         validatorVersion: diagnosis.validatorVersion,
         issues: diagnosis.issues,
-      });
-    } catch {
+      }));
+    } catch (cause) {
+      assertLeaseActive(input);
+      if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
       throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划校验结果暂时无法保存");
     }
     assertLeaseActive(input);
@@ -947,7 +969,7 @@ export async function createContentPlan(input = {}) {
     let stored;
     assertLeaseActive(input);
     try {
-      stored = await repository.saveContentPlan({
+      stored = await leaseBound(input, () => repository.saveContentPlan({
         ...scope,
         sourceSnapshotId,
         planningContract,
@@ -972,15 +994,18 @@ export async function createContentPlan(input = {}) {
         gatewayRequestId,
         plan,
         planHash,
-      });
-    } catch {
+      }));
+    } catch (cause) {
+      assertLeaseActive(input);
+      if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
       throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划记录暂时无法保存");
     }
     return verifyStoredPlan(stored, scope, plannerContext, planningContract, skeletonHash);
   } catch (error) {
+    assertLeaseActive(input);
     if (error?.code === EXECUTION_LEASE_LOST) throw error;
     if (SAFE_GATEWAY_FAILURE_CODES.has(error?.code)) {
-      await repository.releaseContentPlanChannelReservation({
+      await leaseBound(input, () => repository.releaseContentPlanChannelReservation({
         ...scope,
         sourceSnapshotId,
         attemptId: reservation.attemptId,
@@ -993,17 +1018,22 @@ export async function createContentPlan(input = {}) {
         skeletonHash,
         reservationToken: reservation.reservationToken,
         errorCode: CHANNEL_RELEASED,
-      });
+      }));
       throw error;
     }
     if (typeof repository.releaseContentPlanReservation === "function") {
-      await repository.releaseContentPlanReservation({
-        ...scope,
-        inputHash: plannerContext.inputHash,
-        expectedStatusVersion,
-        reservationToken: reservation.reservationToken,
-        errorCode: error?.code || "AUTO_LISTING_CONTENT_PLAN_FAILED",
-      }).catch(() => {});
+      try {
+        await leaseBound(input, () => repository.releaseContentPlanReservation({
+          ...scope,
+          inputHash: plannerContext.inputHash,
+          expectedStatusVersion,
+          reservationToken: reservation.reservationToken,
+          errorCode: error?.code || "AUTO_LISTING_CONTENT_PLAN_FAILED",
+        }));
+      } catch (cause) {
+        assertLeaseActive(input);
+        if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
+      }
     }
     throw error;
   }

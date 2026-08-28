@@ -280,3 +280,70 @@ test("the versioned memory adapter matches the production stale/cancelled/active
     assert.deepEqual(repository.snapshot(), []);
   }
 });
+
+test("a versioned memory claim requires the live item-state reader instead of assuming CURRENT", async () => {
+  const repository = createMemoryGenerationAttemptRepository();
+  await assert.rejects(repository.reserveGenerationAttempt({
+    ...scope, expectedStatusVersion: 7, attemptIdentityHash, generationSize, maxAttempts: 3,
+  }), (error) => error?.code === "AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
+  assert.deepEqual(repository.snapshot(), []);
+});
+
+test("every memory owner operation rejects expired, stale, cancelled, wrong-plan, stale-token, and cross-scope claims without mutation", async (t) => {
+  const operations = {
+    bind: async ({ repository, owner }) => repository.bindGenerationAttemptInput(owner),
+    store: async ({ repository, owner, stored }) => repository.recordStoredGenerationAsset({ ...stored, ...owner }),
+    complete: async ({ repository, owner }) => repository.completeGenerationAttempt(complete(owner)),
+    reject: async ({ repository, owner }) => repository.rejectGenerationAttempt({ ...owner, code: "POLICY", retryable: false }),
+    fail: async ({ repository, owner }) => repository.failGenerationAttempt({ ...owner, code: "GATEWAY", retryable: true }),
+    release: async ({ repository, owner }) => repository.releaseGenerationLease({
+      ...owner, errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED",
+      role: "MAIN", profileId: "profile-a", profileVersion: 1, modelName: "image-a",
+      gatewayRequestId: null, checkerRequestId: null, modelEvidence: null,
+    }),
+    revert: async ({ repository, owner, stored }) => repository.revertStoredGenerationAsset({ ...stored, ...owner }),
+    find: async ({ repository, owner, stored }) => repository.findStoredGenerationAsset({ ...owner, contentHash: stored.contentHash }),
+  };
+  const fences = {
+    expired: ({ setTimestamp }) => setTimestamp(111),
+    stale_version: ({ itemState }) => { itemState.statusVersion = 8; },
+    cancelled: ({ itemState }) => { itemState.status = "CANCELLED"; },
+    wrong_plan: ({ itemState }) => { itemState.activeContentPlanId = "plan-b"; },
+    stale_token: ({ owner }) => { owner.leaseToken = "stale-token"; },
+    cross_scope: ({ owner }) => { owner.itemId = "item-b"; },
+  };
+  for (const [operationName, operation] of Object.entries(operations)) {
+    for (const [fenceName, applyFence] of Object.entries(fences)) {
+      await t.test(`${operationName}:${fenceName}`, async () => {
+        let timestamp = 100;
+        const itemState = { status: "GENERATING", statusVersion: 7, activeContentPlanId: scope.planId };
+        const repository = createMemoryGenerationAttemptRepository({
+          now: () => timestamp,
+          leaseMs: 10,
+          token: () => "lease-table",
+          readItemState: async () => ({ ...itemState }),
+        });
+        const lease = await repository.reserveGenerationAttempt({
+          ...scope, expectedStatusVersion: 7, attemptIdentityHash, generationSize, maxAttempts: 3,
+        });
+        const owner = {
+          ...scope, expectedStatusVersion: 7, attemptIdentityHash, inputHash,
+          generationSize, attemptNo: lease.attemptNo, leaseToken: lease.leaseToken,
+        };
+        if (operationName !== "bind") {
+          await repository.bindGenerationAttemptInput(owner);
+        }
+        const stored = complete(owner);
+        if (["revert", "find"].includes(operationName)) {
+          await repository.recordStoredGenerationAsset({ ...owner, ...stored });
+        }
+        applyFence({ owner, itemState, setTimestamp(value) { timestamp = value; } });
+        const before = repository.snapshot();
+
+        await assert.rejects(operation({ repository, owner, stored }),
+          (error) => error?.code === "AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
+        assert.deepEqual(repository.snapshot(), before);
+      });
+    }
+  }
+});

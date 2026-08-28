@@ -278,6 +278,9 @@ export async function runGenerationAttemptPostgresFixture({ connectionString } =
     )).rows;
     const memoryRepository = createMemoryGenerationAttemptRepository({
       token: (() => { let sequence = 0; return () => `memory-channel-${++sequence}`; })(),
+      readItemState: async () => ({
+        status: "GENERATING", statusVersion: scope.expectedStatusVersion, activeContentPlanId: scope.planId,
+      }),
     });
     const memoryLease = await memoryRepository.reserveGenerationAttempt({
       ...scope, attemptIdentityHash: channelIdentity, generationSize, maxAttempts: 3,

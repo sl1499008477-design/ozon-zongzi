@@ -18,6 +18,11 @@ const categoryStyle = Object.freeze({
   layout: "标题位于上方，产品保持完整可见",
 });
 const reserved = (attemptNo = 1, generationSize = "768x1024") => ({ status: "RESERVED", attemptNo, leaseToken: "lease-a", generationSize });
+const deferred = () => {
+  let resolve; let reject;
+  const promise = new Promise((accept, decline) => { resolve = accept; reject = decline; });
+  return { promise, resolve, reject };
+};
 async function image() { return sharp({ create: { width: 768, height: 1024, channels: 4, background: "#445566" } }).png().toBuffer(); }
 async function setup({ loaderEvidence = "CONTENT_HASH", existing = null } = {}) {
   const bytes = await image(); const asset = { assetId: "asset-a", sourceRef: null, evidenceKind: "CONTENT_HASH", contentHash: sha256(bytes) };
@@ -1273,6 +1278,52 @@ test("image provider rejection rechecks the lease before recording any failure",
 
   await assert.rejects(generateImageSlot(fixture.input), (error) => error === stale);
   assert.deepEqual(fixture.calls, []);
+});
+
+test("image terminal repository boundaries prefer lease loss after deferred resolve or reject", async (t) => {
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  for (const target of ["rejectGenerationAttempt", "completeGenerationAttempt", "failGenerationAttempt"]) {
+    for (const settlement of ["resolve", "reject"]) {
+      await t.test(`${target}:${settlement}`, async () => {
+        const fixture = await setup();
+        let active = true;
+        let entered;
+        const enteredPromise = new Promise((resolve) => { entered = resolve; });
+        const pending = deferred();
+        const terminalWrites = [];
+        fixture.input.assertLeaseActive = () => { if (!active) throw stale; };
+        for (const method of ["rejectGenerationAttempt", "completeGenerationAttempt", "failGenerationAttempt", "releaseGenerationLease"]) {
+          fixture.input.repository[method] = async (value) => {
+            terminalWrites.push(method);
+            if (method === target) {
+              entered();
+              await pending.promise;
+            }
+            if (method === "completeGenerationAttempt") return { status: "ACCEPTED", accepted: true, ...value };
+            return value;
+          };
+        }
+        if (target === "rejectGenerationAttempt") {
+          fixture.input.gateway.inspectImage = async () => checkerResponse(fixture, {}, {
+            identity: { color: false, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] },
+          });
+        } else if (target === "failGenerationAttempt") {
+          fixture.input.sourceAssetLoader.loadSourceAsset = async () => { throw new Error("source unavailable"); };
+        }
+
+        const work = generateImageSlot(fixture.input);
+        await enteredPromise;
+        active = false;
+        if (settlement === "resolve") pending.resolve();
+        else pending.reject(new Error(`deferred ${target} rejection`));
+
+        await assert.rejects(work, (error) => error === stale);
+        assert.deepEqual(terminalWrites, [target]);
+      });
+    }
+  }
 });
 
 test("image lease loss after asset persistence starts no checker and writes no later attempt result", async () => {

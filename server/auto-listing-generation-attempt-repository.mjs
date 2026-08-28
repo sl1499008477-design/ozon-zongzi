@@ -34,14 +34,13 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
   const rows = [];
   const stateDisposition = async (input) => {
     if (!Object.hasOwn(input, "expectedStatusVersion")) return "CURRENT";
+    if (readItemState === null) throw invalid();
     let state;
     try {
-      state = readItemState === null
-        ? { status: "GENERATING", statusVersion: input.expectedStatusVersion, activeContentPlanId: input.planId }
-        : await readItemState(Object.freeze({
-          accountId: input.accountId, jobId: input.jobId, itemId: input.itemId,
-          planId: input.planId, expectedStatusVersion: input.expectedStatusVersion,
-        }));
+      state = await readItemState(Object.freeze({
+        accountId: input.accountId, jobId: input.jobId, itemId: input.itemId,
+        planId: input.planId, expectedStatusVersion: input.expectedStatusVersion,
+      }));
     } catch { throw invalid(); }
     if (!state || typeof state.status !== "string" || !Number.isInteger(state.statusVersion)) throw invalid();
     if (state.status === "CANCELLED") return "CANCELLED";
@@ -53,13 +52,15 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
     const compatibleIdentities = new Set([input.attemptIdentityHash, input.legacyAttemptIdentityHash].filter(Boolean));
     return rows.filter((row) => keyOf(row) === keyOf(input) && compatibleIdentities.has(row.attemptIdentityHash));
   };
-  const own = (input) => {
+  const own = async (input, { allowFinalInputBinding = false } = {}) => {
     fence(input);
+    if (await stateDisposition(input) !== "CURRENT") throw invalid();
     const row = rows.find((candidate) => candidate.attemptNo === input.attemptNo && keyOf(candidate) === keyOf(input)
       && candidate.attemptIdentityHash === input.attemptIdentityHash);
     if (!row || row.leaseToken !== input.leaseToken || row.status !== "GENERATING"
-      || row.generationSize !== input.generationSize) throw invalid();
-    if (row.finalInputBoundAt !== null && input.inputHash !== row.inputHash) throw invalid();
+      || row.leaseExpiresAt <= now() || row.generationSize !== input.generationSize
+      || !HASH.test(input.inputHash || "")
+      || ((!allowFinalInputBinding || row.finalInputBoundAt !== null) && input.inputHash !== row.inputHash)) throw invalid();
     return row;
   };
   return Object.freeze({
@@ -103,7 +104,7 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
     },
     async bindGenerationAttemptInput(input) {
       if (!HASH.test(input?.inputHash || "")) throw invalid();
-      const row = own(input);
+      const row = await own(input, { allowFinalInputBinding: true });
       if (row.finalInputBoundAt !== null) {
         const reusable = row.objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
           && verifyGeneratedAssetObjectKey(row) && clean(row.gatewayRequestId) && row.modelEvidence;
@@ -134,22 +135,22 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
         ...(recoveryRecord ? { recoveryRecord: copy(recoveryRecord) } : {}) };
     },
     async recordStoredGenerationAsset(input) {
-      const row = own(input);
+      const row = await own(input);
       if (row.finalInputBoundAt === null || input.objectKeyVersion !== GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
         || !verifyGeneratedAssetObjectKey(input)) throw invalid();
       Object.assign(row, copy({ objectKeyVersion: input.objectKeyVersion, objectKey: input.objectKey, contentHash: input.contentHash, contentType: input.contentType, width: input.width, height: input.height, size: input.size }));
       return copy(row);
     },
     async completeGenerationAttempt(input) {
-      const row = own(input);
+      const row = await own(input);
       if (row.finalInputBoundAt === null || input.objectKeyVersion !== GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
         || !verifyGeneratedAssetObjectKey(input)) throw invalid();
       Object.assign(row, copy(input), { status: "ACCEPTED", leaseToken: null, leaseExpiresAt: null });
       return copy(row);
     },
-    async rejectGenerationAttempt(input) { const row = own(input); if (row.finalInputBoundAt === null) throw invalid(); Object.assign(row, copy(input), { status: "REJECTED", leaseToken: null, leaseExpiresAt: null }); return copy(row); },
+    async rejectGenerationAttempt(input) { const row = await own(input); if (row.finalInputBoundAt === null) throw invalid(); Object.assign(row, copy(input), { status: "REJECTED", leaseToken: null, leaseExpiresAt: null }); return copy(row); },
     async failGenerationAttempt(input) {
-      const row = own(input);
+      const row = await own(input);
       Object.assign(row, copy(input), {
         status: "FAILED", errorCode: input.code, errorRetryable: input.retryable,
         leaseToken: null, leaseExpiresAt: null,
@@ -163,7 +164,7 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
         || !(input.checkerRequestId === null || clean(input.checkerRequestId))
         || !(input.modelEvidence === null || (input.modelEvidence && typeof input.modelEvidence === "object"
           && !Array.isArray(input.modelEvidence) && Object.keys(input.modelEvidence).length > 0))) throw invalid();
-      const row = own(input);
+      const row = await own(input);
       if (row.finalInputBoundAt === null) throw invalid();
       Object.assign(row, copy({
         role: input.role, profileId: input.profileId, profileVersion: input.profileVersion,
@@ -177,11 +178,8 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       return copy(row);
     },
     async revertStoredGenerationAsset(input) {
-      const row = rows.find((candidate) => candidate.attemptNo === input?.attemptNo
-        && keyOf(candidate) === keyOf(input)
-        && candidate.attemptIdentityHash === input.attemptIdentityHash
-        && candidate.inputHash === input.inputHash && candidate.generationSize === input.generationSize);
-      if (!row || row.status !== "GENERATING" || row.leaseToken !== input.leaseToken) throw invalid();
+      const row = await own(input);
+      if (row.finalInputBoundAt === null) throw invalid();
       const storedKeys = ["objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height", "size"];
       const absent = storedKeys.every((key) => row[key] == null);
       if (absent) return { disposition: "ABSENT" };
@@ -192,14 +190,12 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       return { disposition: "REVERTED" };
     },
     async findStoredGenerationAsset(input) {
-      fence(input, "inputHash");
-      if (!Number.isInteger(input.attemptNo) || input.attemptNo < 1 || input.attemptNo > 3) throw invalid();
-      const row = rows.find((candidate) => keyOf(candidate) === keyOf(input)
-        && candidate.attemptIdentityHash === input.attemptIdentityHash && candidate.attemptNo === input.attemptNo
-        && candidate.inputHash === input.inputHash && candidate.generationSize === input.generationSize
-        && candidate.contentHash === input.contentHash && candidate.objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
-        && verifyGeneratedAssetObjectKey(candidate));
-      return row ? copy(row) : null;
+      const row = await own(input);
+      if (row.finalInputBoundAt === null) throw invalid();
+      if (row.contentHash !== input.contentHash
+        || row.objectKeyVersion !== GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
+        || !verifyGeneratedAssetObjectKey(row)) return null;
+      return copy(row);
     },
     snapshot() { return copy(rows); },
   });

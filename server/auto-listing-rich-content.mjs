@@ -88,6 +88,18 @@ function assertLeaseActive(input) {
   if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
 }
 
+async function leaseBound(input, operation) {
+  assertLeaseActive(input);
+  try {
+    const result = await operation();
+    assertLeaseActive(input);
+    return result;
+  } catch (cause) {
+    assertLeaseActive(input);
+    throw cause;
+  }
+}
+
 export const RICH_CONTENT_JSON_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
@@ -790,17 +802,17 @@ export async function generateRichContent(input = {}) {
     assertLeaseActive(input);
     if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
     if (SAFE_GATEWAY_FAILURE_CODES.has(cause?.code)) {
-      await port.release({
+      await leaseBound(input, () => port.release({
         ...reservationInput, ...lease,
         errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
-      });
+      }));
       throw cause;
     }
     completion = fallback("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED");
     if (!completion) {
       const gatewayFailure = richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED", "Шлюз генерации недоступен", cause?.retryable !== false);
       assertLeaseActive(input);
-      await port.fail({ ...reservationInput, ...lease, errorCode: gatewayFailure.code, errorRetryable: gatewayFailure.retryable });
+      await leaseBound(input, () => port.fail({ ...reservationInput, ...lease, errorCode: gatewayFailure.code, errorRetryable: gatewayFailure.retryable }));
       throw gatewayFailure;
     }
   }
@@ -810,7 +822,7 @@ export async function generateRichContent(input = {}) {
     if (!completion) {
       const invalidEvidence = richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_EVIDENCE_INVALID", "Шлюз не подтвердил запрос и модель", true);
       assertLeaseActive(input);
-      await port.fail({ ...reservationInput, ...lease, errorCode: invalidEvidence.code, errorRetryable: true });
+      await leaseBound(input, () => port.fail({ ...reservationInput, ...lease, errorCode: invalidEvidence.code, errorRetryable: true }));
       throw invalidEvidence;
     }
   }
@@ -821,15 +833,15 @@ export async function generateRichContent(input = {}) {
       const policy = checked.checkerResult.code === "POLICY_REJECTED";
       if (policy) {
         assertLeaseActive(input);
-        await port.reject({ ...reservationInput, ...lease,
-          errorCode: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED", errorRetryable: false });
+        await leaseBound(input, () => port.reject({ ...reservationInput, ...lease,
+          errorCode: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED", errorRetryable: false }));
         throw richError("AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED", "Модель вернула недопустимый документ", false);
       }
       completion = fallback("AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID");
       if (!completion) {
         assertLeaseActive(input);
-        await port.fail({ ...reservationInput, ...lease,
-          errorCode: "AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID", errorRetryable: true });
+        await leaseBound(input, () => port.fail({ ...reservationInput, ...lease,
+          errorCode: "AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID", errorRetryable: true }));
         throw richError("AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID", "Модель вернула недопустимый документ", true);
       }
     } else {
@@ -853,7 +865,7 @@ export async function generateRichContent(input = {}) {
   };
   try {
     assertLeaseActive(input);
-    const accepted = await port.complete(complete);
+    const accepted = await leaseBound(input, () => port.complete(complete));
     if (!plainObject(accepted) || !clean(accepted.id, 240) || accepted.status !== "ACCEPTED"
       || accepted.attemptNo !== complete.attemptNo
       || !(accepted.acceptedAt instanceof Date || Number.isFinite(accepted.acceptedAt)
@@ -874,8 +886,18 @@ export async function generateRichContent(input = {}) {
     }
     return accepted;
   } catch (cause) {
+    assertLeaseActive(input);
     if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
-    try { await port.fail({ ...reservationInput, ...lease, errorCode: "AUTO_LISTING_RICH_CONTENT_COMPLETE_FAILED", errorRetryable: true }); } catch {}
+    try {
+      await leaseBound(input, () => port.fail({
+        ...reservationInput, ...lease,
+        errorCode: "AUTO_LISTING_RICH_CONTENT_COMPLETE_FAILED",
+        errorRetryable: true,
+      }));
+    } catch (failureCause) {
+      assertLeaseActive(input);
+      if (failureCause?.code === EXECUTION_LEASE_LOST) throw failureCause;
+    }
     throw cause;
   }
 }
