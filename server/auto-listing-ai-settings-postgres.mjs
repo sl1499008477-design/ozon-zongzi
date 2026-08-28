@@ -1372,7 +1372,8 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
                 WHERE channel.account_id=profile.account_id AND channel.profile_id=profile.id
                   AND channel.profile_version=profile.config_version AND channel.connection_id=connection.id
                   AND channel.connection_version=connection.version)
-            ORDER BY connection.display_name,connection.id,connection.version`,
+            ORDER BY connection.display_name,connection.id,connection.version
+            LIMIT 100`,
           [input.accountId, input.profileId, input.profileVersion]);
         return { channels: channels.rows.map(channelDto), channelCandidates: candidates.rows.map(channelCandidateDto) };
       }, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -1439,7 +1440,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
         const current = (await query(client,
-          `SELECT channel.*,connection.status AS connection_status,connection.display_name AS connection_display_name,
+          `SELECT channel.*,profile.enabled AS profile_enabled,connection.status AS connection_status,connection.display_name AS connection_display_name,
                   CASE WHEN channel.requires_revalidation THEN 'REQUIRES_REVALIDATION' WHEN NOT channel.enabled THEN 'DISABLED'
                        WHEN channel.cooldown_until > NOW() THEN 'COOLDOWN' WHEN channel.assigned_item_id IS NOT NULL THEN 'BUSY'
                        ELSE 'AVAILABLE' END AS status
@@ -1452,6 +1453,9 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
             FOR UPDATE OF channel,connection,profile`, [input.accountId, input.profileId, input.profileVersion, input.channelId])).rows[0];
         if (!current) throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_FOUND", 404);
         if (input.enabled) {
+          if (current.profile_enabled !== true) {
+            throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT", 409);
+          }
           const requiredStatus = Number(current.channel_order) === 1 ? "ACTIVE" : "VALIDATED";
           if (current.connection_status !== requiredStatus) {
             throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INELIGIBLE", 409);
@@ -1491,7 +1495,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           [input.accountId, input.profileId, input.profileVersion, updated.channel_id])).rows[0];
         await auditMutation(client, { action, accountId: input.accountId, actorId: input.actorAccountId,
           correlationId: `channel:${input.channelId}`, entityType: "auto_listing_ai_profile_channel", entityId: input.channelId,
-          idempotencyKey: `${input.channelId}:${dtoTimestamp(current.updated_at)}:${input.enabled}`, requestHash, metadata: { profileId: input.profileId,
+          idempotencyKey: `${input.channelId}:${input.enabled}:${crypto.randomUUID()}`, requestHash, metadata: { profileId: input.profileId,
             profileVersion: input.profileVersion, channelId: input.channelId, connectionId: current.connection_id,
             connectionVersion: Number(current.connection_version), action: input.enabled ? "ENABLE" : "DISABLE",
             result: "SUCCESS" } });

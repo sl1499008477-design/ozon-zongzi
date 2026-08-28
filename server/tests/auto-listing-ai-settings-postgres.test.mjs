@@ -133,6 +133,7 @@ test("profile channel reads join the exact frozen connection version without the
   assert.match(calls[2].sql, /proof_profile\.image_model=profile\.image_model/iu);
   assert.match(calls[2].sql, /proof_profile\.text_protocol=profile\.text_protocol/iu);
   assert.match(calls[2].sql, /proof_profile\.image_protocol=profile\.image_protocol/iu);
+  assert.match(calls[2].sql, /LIMIT 100/iu, "candidate discovery is bounded independently from exact channel membership");
   assert.equal(remaining.length, 0);
 });
 
@@ -162,13 +163,26 @@ test("enabling always enforces the channel-order connection eligibility fence", 
   const { pool } = scriptedPool([
     { rows: [] }, { rows: [{ id: "account-a" }] },
     { rows: [{ channel_id: "channel-b", channel_order: 2, requires_revalidation: false,
-      connection_status: "RETIRED", connection_id: "connection-b", connection_version: 2 }] },
+      profile_enabled: true, connection_status: "RETIRED", connection_id: "connection-b", connection_version: 2 }] },
     { rows: [] },
   ]);
   await assert.rejects(createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
     accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
     channelId: "channel-b", enabled: true,
   }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INELIGIBLE", status: 409 });
+});
+
+test("enabling an inactive historical profile channel is rejected under the locked current-profile fence", async () => {
+  const { pool } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] },
+    { rows: [{ channel_id: "primary", channel_order: 1, enabled: false, requires_revalidation: false,
+      profile_enabled: false, connection_status: "ACTIVE", connection_id: "connection-a", connection_version: 1 }] },
+    { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-old", profileVersion: 1,
+    channelId: "primary", enabled: true,
+  }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT", status: 409 });
 });
 
 test("a repeated channel state request returns the locked safe DTO without another write or audit", async () => {
