@@ -606,14 +606,16 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
        ) progress ON TRUE
        LEFT JOIN LATERAL (
          SELECT CASE
-                  WHEN assigned_channel.execution_lease_expires_at > NOW()
+                  WHEN assigned_channel.exact IS TRUE
+                    AND assigned_channel.execution_lease_expires_at > NOW()
                     AND ai_queue.state='PROCESSING' AND ai_queue.lease_expires_at > NOW()
                     AND assigned_channel.execution_lease_owner=ai_queue.lease_owner
                     AND assigned_channel.execution_lease_token=ai_queue.lease_token
                     AND assigned_channel.execution_lease_expires_at=ai_queue.lease_expires_at
                     THEN 'CALLING_AI'
-                  WHEN assigned_channel.channel_id IS NOT NULL THEN 'WAITING_FOR_AI_CHANNEL'
-                  WHEN ai_queue.state='PENDING' AND ai_queue.last_error_code IN (
+                  WHEN assigned_channel.exact IS TRUE THEN 'WAITING_FOR_AI_CHANNEL'
+                  WHEN ai_queue.state='PENDING' AND assigned_channel.exact IS NOT TRUE
+                    AND ai_queue.last_error_code IN (
                     'AI_GATEWAY_NETWORK_FAILED','AI_GATEWAY_RATE_LIMITED','AI_GATEWAY_IDLE_TIMEOUT',
                     'AI_GATEWAY_UNEXPECTED_EOF','INVALID_GATEWAY_RESPONSE','RETRYABLE_GATEWAY',
                     'GATEWAY_TIMEOUT','AI_GATEWAY_UNAUTHORIZED','AI_GATEWAY_MODEL_NOT_FOUND',
@@ -623,8 +625,9 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
                   ELSE NULL
                 END AS queue_state,
                 CASE
-                  WHEN assigned_channel.channel_id IS NOT NULL THEN assigned_channel.display_name
-                  WHEN ai_queue.state='PENDING' AND ai_queue.last_error_code IN (
+                  WHEN assigned_channel.exact IS TRUE THEN assigned_channel.display_name
+                  WHEN ai_queue.state='PENDING' AND assigned_channel.exact IS NOT TRUE
+                    AND ai_queue.last_error_code IN (
                     'AI_GATEWAY_NETWORK_FAILED','AI_GATEWAY_RATE_LIMITED','AI_GATEWAY_IDLE_TIMEOUT',
                     'AI_GATEWAY_UNEXPECTED_EOF','INVALID_GATEWAY_RESPONSE','RETRYABLE_GATEWAY',
                     'GATEWAY_TIMEOUT','AI_GATEWAY_UNAUTHORIZED','AI_GATEWAY_MODEL_NOT_FOUND',
@@ -632,7 +635,7 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
                   ) THEN failed_channel.display_name
                   ELSE NULL
                 END AS channel_display_name,
-                (assigned_channel.channel_id IS NULL AND ai_queue.state='PENDING'
+                (assigned_channel.exact IS NOT TRUE AND ai_queue.state='PENDING'
                   AND ai_queue.last_error_code IN (
                     'AI_GATEWAY_NETWORK_FAILED','AI_GATEWAY_RATE_LIMITED','AI_GATEWAY_IDLE_TIMEOUT',
                     'AI_GATEWAY_UNEXPECTED_EOF','INVALID_GATEWAY_RESPONSE','RETRYABLE_GATEWAY',
@@ -640,7 +643,8 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
                     'AI_GATEWAY_CAPABILITY_INVALID','NON_RETRYABLE_AUTH'
                   )) AS channel_switching,
                 CASE
-                  WHEN assigned_channel.execution_lease_expires_at > NOW()
+                  WHEN assigned_channel.exact IS TRUE
+                    AND assigned_channel.execution_lease_expires_at > NOW()
                     AND ai_queue.state='PROCESSING' AND ai_queue.lease_expires_at > NOW()
                     AND assigned_channel.execution_lease_owner=ai_queue.lease_owner
                     AND assigned_channel.execution_lease_token=ai_queue.lease_token
@@ -651,31 +655,99 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
            FROM auto_listing_ai_outbox AS ai_queue
            JOIN auto_listing_jobs AS ai_job
              ON ai_job.account_id=ai_queue.account_id AND ai_job.id=ai_queue.job_id
+           JOIN ai_gateway_profiles AS ai_profile
+             ON ai_profile.account_id=ai_job.account_id AND ai_profile.id=ai_job.ai_profile_id
+            AND ai_profile.config_version=ai_job.ai_profile_version
+            AND ai_profile.connection_id IS NOT NULL AND ai_profile.connection_version IS NOT NULL
            LEFT JOIN LATERAL (
              SELECT assigned_channel.channel_id,assigned_channel.display_name,
                     assigned_channel.execution_lease_owner,assigned_channel.execution_lease_token,
-                    assigned_channel.execution_lease_expires_at
+                    assigned_channel.execution_lease_expires_at,
+                    assigned_channel.assigned_status_version=ai_queue.expected_status_version AS exact,
+                    (assigned_channel.assigned_status_version<>ai_queue.expected_status_version
+                      AND (assigned_channel.execution_lease_expires_at IS NULL
+                        OR assigned_channel.execution_lease_expires_at<=NOW())
+                      AND (assigned_item.status NOT IN ('PLANNING','GENERATING')
+                        OR NOT EXISTS (
+                          SELECT 1 FROM auto_listing_ai_outbox AS recoverable
+                           WHERE recoverable.account_id=assigned_channel.account_id
+                             AND recoverable.job_id=assigned_channel.assigned_job_id
+                             AND recoverable.item_id=assigned_channel.assigned_item_id
+                             AND recoverable.expected_status_version=assigned_channel.assigned_status_version
+                             AND recoverable.contract_version='V1'
+                             AND recoverable.state IN ('PENDING','PROCESSING')
+                        ))) AS stale
                FROM auto_listing_ai_profile_channels AS assigned_channel
+               JOIN auto_listing_job_items AS assigned_item
+                 ON assigned_item.account_id=assigned_channel.account_id
+                AND assigned_item.job_id=assigned_channel.assigned_job_id
+                AND assigned_item.id=assigned_channel.assigned_item_id
               WHERE assigned_channel.account_id=ai_queue.account_id
-                AND assigned_channel.profile_id=ai_job.ai_profile_id
-                AND assigned_channel.profile_version=ai_job.ai_profile_version
                 AND assigned_channel.assigned_job_id=ai_queue.job_id
                 AND assigned_channel.assigned_item_id=ai_queue.item_id
-                AND assigned_channel.assigned_status_version=i.status_version
               ORDER BY assigned_channel.channel_order,assigned_channel.channel_id
               LIMIT 1
            ) assigned_channel ON TRUE
            LEFT JOIN LATERAL (
-             SELECT available_channel.channel_id
+             SELECT available_channel.channel_id,
+                    (assigned_channel.exact IS TRUE
+                      AND available_channel.channel_id=assigned_channel.channel_id) AS fixed
                FROM auto_listing_ai_profile_channels AS available_channel
+               JOIN ai_gateway_connection_versions AS available_connection
+                 ON available_connection.account_id=available_channel.account_id
+                AND available_connection.id=available_channel.connection_id
+                AND available_connection.version=available_channel.connection_version
+               LEFT JOIN auto_listing_job_items AS available_assigned_item
+                 ON available_assigned_item.account_id=available_channel.account_id
+                AND available_assigned_item.job_id=available_channel.assigned_job_id
+                AND available_assigned_item.id=available_channel.assigned_item_id
               WHERE available_channel.account_id=ai_queue.account_id
                 AND available_channel.profile_id=ai_job.ai_profile_id
                 AND available_channel.profile_version=ai_job.ai_profile_version
                 AND available_channel.enabled IS TRUE
                 AND available_channel.requires_revalidation IS FALSE
                 AND (available_channel.cooldown_until IS NULL OR available_channel.cooldown_until<=NOW())
-                AND available_channel.assigned_job_id IS NULL
-              ORDER BY available_channel.channel_order,available_channel.channel_id
+                AND available_connection.status IN ('ACTIVE','VALIDATED','RETIRED')
+                AND (available_channel.execution_lease_expires_at IS NULL
+                  OR available_channel.execution_lease_expires_at<=NOW())
+                AND (
+                  (assigned_channel.exact IS TRUE
+                    AND available_channel.channel_id=assigned_channel.channel_id)
+                  OR (
+                    (assigned_channel.stale IS TRUE OR (assigned_channel.channel_id IS NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM auto_listing_ai_profile_channels AS assigned_probe
+                         WHERE assigned_probe.account_id=ai_queue.account_id
+                           AND assigned_probe.assigned_job_id=ai_queue.job_id
+                           AND assigned_probe.assigned_item_id=ai_queue.item_id
+                      )))
+                    AND (
+                      available_channel.assigned_job_id IS NULL
+                      OR (assigned_channel.stale IS TRUE
+                        AND available_channel.channel_id=assigned_channel.channel_id)
+                      OR ((available_channel.execution_lease_expires_at IS NULL
+                        OR available_channel.execution_lease_expires_at<=NOW())
+                        AND (available_assigned_item.status NOT IN ('PLANNING','GENERATING')
+                          OR NOT EXISTS (
+                            SELECT 1 FROM auto_listing_ai_outbox AS recoverable
+                             WHERE recoverable.account_id=available_channel.account_id
+                               AND recoverable.job_id=available_channel.assigned_job_id
+                               AND recoverable.item_id=available_channel.assigned_item_id
+                               AND recoverable.expected_status_version=available_channel.assigned_status_version
+                               AND recoverable.contract_version='V1'
+                               AND recoverable.state IN ('PENDING','PROCESSING')
+                          )))
+                    )
+                  )
+                )
+              ORDER BY CASE
+                         WHEN assigned_channel.exact IS TRUE
+                           AND available_channel.channel_id=assigned_channel.channel_id THEN 0
+                         WHEN available_channel.connection_id=i.last_ai_connection_id
+                           AND available_channel.connection_version=i.last_ai_connection_version THEN 1
+                         ELSE 2
+                       END,
+                       available_channel.channel_order,available_channel.channel_id
               LIMIT 1
            ) available_channel ON TRUE
            LEFT JOIN LATERAL (
@@ -692,16 +764,30 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
           WHERE ai_queue.account_id=$2 AND ai_queue.job_id=$1 AND ai_queue.item_id=i.id
             AND ai_queue.expected_status_version=i.status_version
             AND ai_queue.contract_version='V1'
-            AND ai_queue.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN',
-                                   'GENERATE_IMAGE_SLOT','GENERATE_RICH_CONTENT')
-            AND i.status IN ('PLANNING','GENERATING')
-            AND ((ai_queue.state='PENDING' AND COALESCE(ai_queue.next_retry_at,ai_queue.available_at)<=NOW())
-              OR ai_queue.state='PROCESSING')
-            AND EXISTS (
-              SELECT 1 FROM auto_listing_ai_profile_channels AS profile_channel
-               WHERE profile_channel.account_id=ai_queue.account_id
-                 AND profile_channel.profile_id=ai_job.ai_profile_id
-                 AND profile_channel.profile_version=ai_job.ai_profile_version
+            AND ((ai_queue.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
+                  AND i.status='PLANNING')
+              OR (ai_queue.phase IN ('GENERATE_IMAGE_SLOT','GENERATE_RICH_CONTENT')
+                  AND i.status='GENERATING'))
+            AND (
+              (((ai_queue.state='PENDING'
+                    AND COALESCE(ai_queue.next_retry_at,ai_queue.available_at)<=NOW())
+                  OR (ai_queue.state='PROCESSING' AND ai_queue.lease_expires_at<=NOW()))
+                AND (assigned_channel.exact IS NOT TRUE
+                  OR assigned_channel.execution_lease_expires_at IS NULL
+                  OR assigned_channel.execution_lease_expires_at<=NOW()))
+              OR (ai_queue.state='PROCESSING' AND ai_queue.lease_expires_at>NOW()
+                AND assigned_channel.exact IS TRUE
+                AND assigned_channel.execution_lease_expires_at>NOW()
+                AND assigned_channel.execution_lease_owner=ai_queue.lease_owner
+                AND assigned_channel.execution_lease_token=ai_queue.lease_token
+                AND assigned_channel.execution_lease_expires_at=ai_queue.lease_expires_at)
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM auto_listing_ai_outbox AS live
+               WHERE live.account_id=ai_queue.account_id AND live.job_id=ai_queue.job_id
+                 AND live.item_id=ai_queue.item_id AND live.id<>ai_queue.id
+                 AND live.contract_version='V1' AND live.state='PROCESSING'
+                 AND live.lease_expires_at>NOW()
             )
           ORDER BY ai_queue.created_at DESC,ai_queue.id DESC
           LIMIT 1
