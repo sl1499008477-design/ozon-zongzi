@@ -50,6 +50,27 @@ const FALLBACK_FAILURE = Object.freeze({
   GENERATE_IMAGE_SLOT: "AUTO_LISTING_IMAGE_FAILED",
   GENERATE_RICH_CONTENT: "AUTO_LISTING_RICH_CONTENT_FAILED",
 });
+const CHANNEL_TRANSIENT_CODES = new Set([
+  "AI_GATEWAY_NETWORK_FAILED",
+  "AI_GATEWAY_RATE_LIMITED",
+  "AI_GATEWAY_IDLE_TIMEOUT",
+  "AI_GATEWAY_UNEXPECTED_EOF",
+  "INVALID_GATEWAY_RESPONSE",
+  "RETRYABLE_GATEWAY",
+  "GATEWAY_TIMEOUT",
+]);
+const CHANNEL_REVALIDATION_CODES = new Set([
+  "AI_GATEWAY_UNAUTHORIZED",
+  "AI_GATEWAY_MODEL_NOT_FOUND",
+  "AI_GATEWAY_CAPABILITY_INVALID",
+  "NON_RETRYABLE_AUTH",
+]);
+const NOT_SENT_CHANNEL_CODES = new Set([
+  "AI_GATEWAY_RATE_LIMITED",
+  ...CHANNEL_REVALIDATION_CODES,
+]);
+const DELIVERY_STATES = new Set(["NOT_SENT", "POSSIBLY_SENT"]);
+const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1_000;
 const HASH = /^[a-f0-9]{64}$/u;
 const SAFE_FAILURE_CODES = Object.freeze({
   PLAN_CONTENT: new Set([
@@ -147,7 +168,7 @@ function safeId(value) {
   return isSafeAutoListingAiIdentifier(value);
 }
 
-function outcome(message, disposition, value, failureCode = null, retryable = false) {
+function outcome(message, disposition, value, failureCode = null, retryable = false, metadata = {}) {
   return Object.freeze({
     contractVersion: "V1",
     disposition,
@@ -156,6 +177,38 @@ function outcome(message, disposition, value, failureCode = null, retryable = fa
     retryable,
     failureCode,
     correlationId: message.correlationId,
+    failureScope: metadata.failureScope ?? null,
+    deliveryState: metadata.deliveryState ?? null,
+    retryAfterMs: metadata.retryAfterMs ?? null,
+  });
+}
+
+function ownErrorValue(error, key) {
+  try {
+    const descriptor = error && (typeof error === "object" || typeof error === "function")
+      ? Object.getOwnPropertyDescriptor(error, key) : null;
+    return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function channelFailure(message, error) {
+  const code = ownErrorValue(error, "code");
+  const failureScope = CHANNEL_TRANSIENT_CODES.has(code) ? "CHANNEL_TRANSIENT"
+    : CHANNEL_REVALIDATION_CODES.has(code) ? "CHANNEL_REVALIDATION" : null;
+  if (failureScope === null) return null;
+  const explicitDelivery = ownErrorValue(error, "deliveryState");
+  const deliveryState = DELIVERY_STATES.has(explicitDelivery)
+    ? explicitDelivery : NOT_SENT_CHANNEL_CODES.has(code) ? "NOT_SENT" : "POSSIBLY_SENT";
+  const explicitRetryAfter = ownErrorValue(error, "retryAfterMs");
+  const retryAfterMs = Number.isInteger(explicitRetryAfter)
+    && explicitRetryAfter >= 0 && explicitRetryAfter <= MAX_RETRY_AFTER_MS
+    ? explicitRetryAfter : null;
+  return outcome(message, "RETRY", "FAILED", code, true, {
+    failureScope,
+    deliveryState,
+    retryAfterMs,
   });
 }
 
@@ -317,19 +370,23 @@ function assertSuccessfulResult(result, phase, context, message, phaseInput) {
 }
 
 function serviceFailure(message, error) {
+  const channel = channelFailure(message, error);
+  if (channel) return channel;
   if (message.phase === "GENERATE_IMAGE_SLOT" && error?.retryable !== true) {
     if (error?.itemOutcome === "BLOCKED") {
-      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MAIN_IMAGE_REQUIRED", true);
+      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MAIN_IMAGE_REQUIRED", true, { failureScope: "BUSINESS" });
     }
     if (error?.itemOutcome === "CONTINUE_WITHOUT_SLOT") {
       return outcome(message, "ACK", "IMAGE_SLOT_SKIPPED", "AUTO_LISTING_IMAGE_POLICY_REJECTED", false);
     }
     if (error?.itemOutcome === "ITEM_INCOMPLETE") {
-      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET", true);
+      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET", true, { failureScope: "BUSINESS" });
     }
   }
   const retryable = error?.retryable === true;
-  return outcome(message, retryable ? "RETRY" : "FAIL", "FAILED", stableFailureCode(error, message.phase), retryable);
+  return outcome(message, retryable ? "RETRY" : "FAIL", "FAILED", stableFailureCode(error, message.phase), retryable, {
+    failureScope: "BUSINESS",
+  });
 }
 
 async function invokePhase(message, context, phaseInput, services) {
@@ -446,7 +503,7 @@ export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {
         return outcome(message, "ACK", "CANCELLED", result.reasonCode, false);
       }
       if (result.reasonCode === "AUTO_LISTING_SOURCE_MATERIALIZATION_IN_PROGRESS") {
-        return outcome(message, "RETRY", "IN_PROGRESS", result.reasonCode, true);
+        return outcome(message, "RETRY", "IN_PROGRESS", result.reasonCode, true, { failureScope: "BUSINESS" });
       }
       throw invalid();
     }

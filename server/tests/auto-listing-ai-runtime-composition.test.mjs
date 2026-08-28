@@ -92,6 +92,10 @@ function testPorts(events) {
           events.push(["apply-outcome", input]);
           return Object.freeze({ applied: true });
         },
+        async requeueChannelFailure(input) {
+          events.push(["requeue-channel", input]);
+          return Object.freeze({ requeued: true });
+        },
       });
     },
     createContentPlanRepository({ pool }) { events.push(["content", pool]); return repository("content"); },
@@ -171,7 +175,7 @@ test("production composition keeps account/job-frozen profiles per message and h
   });
 
   assert.equal(pools, 1);
-  assert.deepEqual(Object.keys(dependencies).sort(), ["bossFactory", "loadContext", "orchestrate", "workflow"]);
+  assert.deepEqual(Object.keys(dependencies).sort(), ["bossFactory", "executionRepository", "loadContext", "orchestrate", "workflow"]);
   assert.equal(events.filter(([name]) => name === "gateway").length, 1);
   assert.equal(events.filter(([name]) => name === "boss").length, 0);
   const options = events.find(([name]) => name === "context-loader")[1];
@@ -213,11 +217,15 @@ test("production composition keeps account/job-frozen profiles per message and h
   const appliedOutcome = Object.freeze({
     contractVersion: "V1", disposition: "ACK", phase: "PLAN_CONTENT", outcome: "PLAN_READY",
     retryable: false, failureCode: null, correlationId: appliedMessage.correlationId,
+    failureScope: null, deliveryState: null, retryAfterMs: null,
   });
-  assert.deepEqual(await dependencies.workflow.applyOutcome(appliedMessage, appliedOutcome), { applied: true });
+  assert.deepEqual(await dependencies.workflow.applyOutcome({
+    message: appliedMessage, outcome: appliedOutcome, execution: null,
+  }), { applied: true });
   assert.deepEqual(events.find(([name]) => name === "apply-outcome")[1], {
-    message: appliedMessage, outcome: appliedOutcome,
+    message: appliedMessage, outcome: appliedOutcome, execution: null,
   });
+  assert.deepEqual(Object.keys(dependencies.executionRepository).sort(), ["adopt", "renew", "requeueChannelFailure"]);
   assert.deepEqual(await dependencies.bossFactory(), { name: "boss-a" });
   assert.equal(events.filter(([name]) => name === "boss").length, 1);
 });
@@ -330,7 +338,7 @@ test("production composition accepts the host process.env object shape while sti
     resolvePool: async () => pool,
     ports: testPorts(events),
   });
-  assert.deepEqual(Object.keys(dependencies).sort(), ["bossFactory", "loadContext", "orchestrate", "workflow"]);
+  assert.deepEqual(Object.keys(dependencies).sort(), ["bossFactory", "executionRepository", "loadContext", "orchestrate", "workflow"]);
 });
 
 test("the real production dependency graph composes without starting PgBoss, MinIO, Sub2API or Ozon", async () => {
@@ -344,7 +352,7 @@ test("the real production dependency graph composes without starting PgBoss, Min
     env: enabledEnv(),
     resolvePool: async () => pool,
   });
-  assert.deepEqual(Object.keys(dependencies).sort(), ["bossFactory", "loadContext", "orchestrate", "workflow"]);
+  assert.deepEqual(Object.keys(dependencies).sort(), ["bossFactory", "executionRepository", "loadContext", "orchestrate", "workflow"]);
   assert.equal(queries, 0);
   assert.equal(connections, 0);
 });

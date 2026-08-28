@@ -6,6 +6,7 @@ import {
   isSafeAutoListingAiIdentifier,
   normalizeAutoListingAiMessage,
 } from "./auto-listing-ai-message.mjs";
+import { normalizeAutoListingAiWorkMessage } from "./auto-listing-ai-work-message.mjs";
 import { nextAutoListingStatus, recoveryPointForRetryableFailure } from "./auto-listing-state-machine.mjs";
 import { enqueueAutoListingUploadTask } from "./auto-listing-upload-task-postgres.mjs";
 
@@ -18,9 +19,11 @@ const APPLY_KEYS = new Set([
   "client", "accountId", "jobId", "itemId", "expectedStatusVersion", "correlationId",
   "phase", "phaseTargetId", "outcome",
 ]);
-const FACTORY_APPLY_KEYS = new Set(["message", "outcome"]);
+const FACTORY_APPLY_KEYS = new Set(["message", "outcome", "execution"]);
+const LEGACY_FACTORY_APPLY_KEYS = new Set(["message", "outcome"]);
 const OUTCOME_KEYS = new Set([
   "contractVersion", "disposition", "phase", "outcome", "retryable", "failureCode", "correlationId",
+  "failureScope", "deliveryState", "retryAfterMs",
 ]);
 const PHASE_STATUS = Object.freeze({
   PLAN_CONTENT: "PLANNING",
@@ -43,6 +46,11 @@ const MAX_VERSION = 2_147_483_647;
 const STATEMENT_TIMEOUT_MS = 25_000;
 const LOCK_TIMEOUT_MS = 5_000;
 const IDLE_TRANSACTION_TIMEOUT_MS = 30_000;
+const CHANNEL_FAILURE_SCOPES = new Set(["CHANNEL_TRANSIENT", "CHANNEL_REVALIDATION"]);
+const FAILURE_SCOPES = new Set([null, "BUSINESS", ...CHANNEL_FAILURE_SCOPES]);
+const DELIVERY_STATES = new Set([null, "NOT_SENT", "POSSIBLY_SENT"]);
+const DEFAULT_CHANNEL_COOLDOWN_MS = 60_000;
+const MAX_CHANNEL_COOLDOWN_MS = 86_400_000;
 
 function workflowError(code, retryable = false) {
   const error = new Error("自动上架 AI 工作流推进失败");
@@ -149,18 +157,51 @@ function phaseMessage(input, phase, expectedStatusVersion, target = null) {
   });
 }
 
-function validatedOutcome(rawOutcome, phase, correlationId) {
+function validatedOutcome(rawOutcome, phase, correlationId, { allowChannelRetry = false } = {}) {
   const result = plainData(rawOutcome, OUTCOME_KEYS);
   if (result.contractVersion !== "V1" || result.phase !== phase
     || result.correlationId !== correlationId
     || !["ACK", "RETRY", "FAIL"].includes(result.disposition)
-    || typeof result.outcome !== "string" || typeof result.retryable !== "boolean") throw invalid();
-  if (result.disposition === "RETRY") throw retryNotFinal();
+    || typeof result.outcome !== "string" || typeof result.retryable !== "boolean"
+    || !FAILURE_SCOPES.has(result.failureScope) || !DELIVERY_STATES.has(result.deliveryState)
+    || !(result.retryAfterMs === null || (Number.isInteger(result.retryAfterMs)
+      && result.retryAfterMs >= 0 && result.retryAfterMs <= MAX_CHANNEL_COOLDOWN_MS))
+    || (result.disposition === "ACK" && (result.failureScope !== null
+      || result.deliveryState !== null || result.retryAfterMs !== null))
+    || (result.failureScope === "BUSINESS" && (result.deliveryState !== null || result.retryAfterMs !== null))
+    || (CHANNEL_FAILURE_SCOPES.has(result.failureScope) && result.deliveryState === null)) throw invalid();
+  if (result.disposition === "RETRY"
+    && !(allowChannelRetry && CHANNEL_FAILURE_SCOPES.has(result.failureScope))) throw retryNotFinal();
   if (result.disposition === "ACK") {
     if (result.retryable || !SUCCESS_OUTCOME[phase].has(result.outcome)
       || !(result.failureCode === null || SAFE_FAILURE_CODE.test(result.failureCode))) throw invalid();
   } else if (!SAFE_FAILURE_CODE.test(result.failureCode || "")) throw invalid();
   return result;
+}
+
+function executionInput(message, rawExecution) {
+  if (rawExecution === null) return null;
+  try {
+    return normalizeAutoListingAiWorkMessage({
+      workContractVersion: "CHANNEL_WORK_V1",
+      message,
+      execution: rawExecution,
+    }).execution;
+  } catch {
+    throw invalid();
+  }
+}
+
+function factoryApplyEnvelope(raw) {
+  try {
+    const keys = Reflect.ownKeys(raw || {});
+    const expected = keys.length === FACTORY_APPLY_KEYS.size
+      ? FACTORY_APPLY_KEYS : LEGACY_FACTORY_APPLY_KEYS;
+    const value = plainData(raw, expected);
+    return { ...value, execution: Object.hasOwn(value, "execution") ? value.execution : null };
+  } catch {
+    throw invalid();
+  }
 }
 
 function applyInput(raw) {
@@ -594,6 +635,142 @@ export async function applyAutoListingAiPhaseOutcome(rawInput = {}, runtime = {}
   return applied("READY_FOR_REVIEW", nextVersion, 0);
 }
 
+async function lockExecutionFence(client, message, execution) {
+  const result = await query(client,
+    `SELECT outbox.id,outbox.job_id,outbox.uncertain_result_count,
+            item.status,item.status_version,channel.enabled
+       FROM auto_listing_ai_outbox AS outbox
+       JOIN auto_listing_job_items AS item
+         ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
+       JOIN auto_listing_ai_profile_channels AS channel
+         ON channel.account_id=outbox.account_id
+        AND channel.assigned_job_id=outbox.job_id AND channel.assigned_item_id=outbox.item_id
+      WHERE outbox.account_id=$1 AND outbox.id=$2 AND outbox.item_id=$3
+        AND outbox.dispatch_generation=$4
+        AND outbox.publication_id=outbox.dedupe_key || ':' || outbox.dispatch_generation
+        AND outbox.dispatch_contract_version='CHANNEL_WORK_V1' AND outbox.state='PROCESSING'
+        AND outbox.expected_status_version=$5
+        AND outbox.lease_owner=$6 AND outbox.lease_token=$7 AND outbox.lease_expires_at>NOW()
+        AND item.status_version=outbox.expected_status_version
+        AND channel.channel_id=$8 AND channel.connection_id=$9 AND channel.connection_version=$10
+        AND channel.assigned_status_version=outbox.expected_status_version
+        AND channel.execution_lease_owner=$6 AND channel.execution_lease_token=$7
+        AND channel.execution_lease_expires_at=outbox.lease_expires_at
+        AND channel.execution_lease_expires_at>NOW()
+      FOR UPDATE OF outbox,item,channel`,
+    [message.accountId, execution.outboxId, message.itemId, execution.dispatchGeneration,
+      message.expectedStatusVersion, execution.leaseOwner, execution.leaseToken,
+      execution.channelId, execution.connectionId, execution.connectionVersion],
+  );
+  return result?.rowCount === 1 ? result.rows?.[0] : null;
+}
+
+async function finishExecution(client, message, execution, result, resetChannelHealth) {
+  const outbox = await query(client,
+    `UPDATE auto_listing_ai_outbox
+        SET state='COMPLETED',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
+            next_retry_at=NULL,last_error_code=NULL,last_error_safe=NULL,updated_at=NOW()
+      WHERE account_id=$1 AND id=$2 AND item_id=$3 AND dispatch_generation=$4
+        AND state='PROCESSING' AND lease_owner=$5 AND lease_token=$6
+      RETURNING id`,
+    [message.accountId, execution.outboxId, message.itemId, execution.dispatchGeneration,
+      execution.leaseOwner, execution.leaseToken],
+  );
+  const keepAssignment = ["PLANNING", "GENERATING"].includes(result.status);
+  const channel = await query(client,
+    `UPDATE auto_listing_ai_profile_channels
+        SET execution_lease_owner=NULL,execution_lease_token=NULL,execution_lease_expires_at=NULL,
+            assigned_job_id=CASE WHEN enabled AND $8 THEN assigned_job_id ELSE NULL END,
+            assigned_item_id=CASE WHEN enabled AND $8 THEN assigned_item_id ELSE NULL END,
+            assigned_status_version=CASE WHEN enabled AND $8 THEN assigned_status_version ELSE NULL END,
+            assigned_at=CASE WHEN enabled AND $8 THEN assigned_at ELSE NULL END,
+            consecutive_failure_count=CASE WHEN $9 THEN 0 ELSE consecutive_failure_count END,
+            last_error_code=CASE WHEN $9 AND cooldown_until<=NOW() THEN NULL ELSE last_error_code END,
+            cooldown_until=CASE WHEN $9 AND cooldown_until<=NOW() THEN NULL ELSE cooldown_until END,
+            updated_at=NOW()
+      WHERE account_id=$1 AND channel_id=$2 AND assigned_item_id=$3
+        AND assigned_status_version=$4 AND execution_lease_owner=$5 AND execution_lease_token=$6
+        AND connection_id=$7
+      RETURNING channel_id`,
+    [message.accountId, execution.channelId, message.itemId, message.expectedStatusVersion,
+      execution.leaseOwner, execution.leaseToken, execution.connectionId, keepAssignment, resetChannelHealth],
+  );
+  if (outbox?.rowCount !== 1 || channel?.rowCount !== 1) throw conflict();
+}
+
+async function requeueExecution(client, message, execution, outcome, fence, runtime) {
+  const uncertain = outcome.deliveryState === "POSSIBLY_SENT";
+  const nextUncertainCount = Number(fence.uncertain_result_count) + (uncertain ? 1 : 0);
+  if (uncertain && nextUncertainCount >= 2) {
+    const terminalOutcome = Object.freeze({
+      contractVersion: "V1", disposition: "FAIL", phase: message.phase, outcome: "FAILED",
+      retryable: true, failureCode: "AUTO_LISTING_AI_RESULT_UNCERTAIN",
+      correlationId: message.correlationId,
+      failureScope: "BUSINESS", deliveryState: null, retryAfterMs: null,
+    });
+    const result = await applyAutoListingAiPhaseOutcome({
+      client, accountId: message.accountId, jobId: fence.job_id, itemId: message.itemId,
+      expectedStatusVersion: message.expectedStatusVersion, correlationId: message.correlationId,
+      phase: message.phase, phaseTargetId: message.sourceAssetId ?? message.slotKey ?? null,
+      outcome: terminalOutcome,
+    }, runtime);
+    const count = await query(client,
+      `UPDATE auto_listing_ai_outbox SET uncertain_result_count=2,updated_at=NOW()
+        WHERE account_id=$1 AND id=$2 AND item_id=$3 AND dispatch_generation=$4
+          AND lease_owner=$5 AND lease_token=$6 RETURNING id`,
+      [message.accountId, execution.outboxId, message.itemId, execution.dispatchGeneration,
+        execution.leaseOwner, execution.leaseToken],
+    );
+    if (count?.rowCount !== 1) throw conflict();
+    const cooldownMs = outcome.retryAfterMs ?? DEFAULT_CHANNEL_COOLDOWN_MS;
+    const failedChannel = await query(client,
+      `UPDATE auto_listing_ai_profile_channels
+          SET cooldown_until=NOW()+($8 * INTERVAL '1 millisecond'),
+              requires_revalidation=requires_revalidation OR $9,
+              last_error_code=$7,consecutive_failure_count=consecutive_failure_count+1,updated_at=NOW()
+        WHERE account_id=$1 AND channel_id=$2 AND assigned_item_id=$3
+          AND assigned_status_version=$4 AND execution_lease_owner=$5 AND execution_lease_token=$6
+        RETURNING channel_id`,
+      [message.accountId, execution.channelId, message.itemId, message.expectedStatusVersion,
+        execution.leaseOwner, execution.leaseToken, outcome.failureCode, cooldownMs,
+        outcome.failureScope === "CHANNEL_REVALIDATION"],
+    );
+    if (failedChannel?.rowCount !== 1) throw conflict();
+    await finishExecution(client, message, execution, result, false);
+    return result;
+  }
+
+  const cooldownMs = outcome.retryAfterMs ?? DEFAULT_CHANNEL_COOLDOWN_MS;
+  const channel = await query(client,
+    `UPDATE auto_listing_ai_profile_channels
+        SET cooldown_until=NOW()+($8 * INTERVAL '1 millisecond'),
+            requires_revalidation=requires_revalidation OR $9,
+            last_error_code=$7,consecutive_failure_count=consecutive_failure_count+1,
+            assigned_job_id=NULL,assigned_item_id=NULL,assigned_status_version=NULL,assigned_at=NULL,
+            execution_lease_owner=NULL,execution_lease_token=NULL,execution_lease_expires_at=NULL,updated_at=NOW()
+      WHERE account_id=$1 AND channel_id=$2 AND assigned_item_id=$3
+        AND assigned_status_version=$4 AND execution_lease_owner=$5 AND execution_lease_token=$6
+      RETURNING channel_id`,
+    [message.accountId, execution.channelId, message.itemId, message.expectedStatusVersion,
+      execution.leaseOwner, execution.leaseToken, outcome.failureCode, cooldownMs,
+      outcome.failureScope === "CHANNEL_REVALIDATION"],
+  );
+  const outbox = await query(client,
+    `UPDATE auto_listing_ai_outbox
+        SET state='PENDING',publication_id=NULL,published_at=NULL,dispatch_queued_at=NULL,
+            lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,next_retry_at=NOW(),
+            uncertain_result_count=$7,last_error_code=$8,last_error_safe=NULL,updated_at=NOW()
+      WHERE account_id=$1 AND id=$2 AND item_id=$3 AND dispatch_generation=$4
+        AND state='PROCESSING' AND lease_owner=$5 AND lease_token=$6
+      RETURNING id`,
+    [message.accountId, execution.outboxId, message.itemId, execution.dispatchGeneration,
+      execution.leaseOwner, execution.leaseToken, nextUncertainCount, outcome.failureCode],
+  );
+  if (channel?.rowCount !== 1 || outbox?.rowCount !== 1) throw conflict();
+  return Object.freeze({ disposition: "REQUEUED", status: fence.status,
+    statusVersion: fence.status_version, enqueued: 0, uncertainResultCount: nextUncertainCount });
+}
+
 export function createPostgresAutoListingAiWorkflow(rawOptions = {}) {
   const options = factoryOptions(rawOptions);
   const pool = options.pool;
@@ -601,20 +778,22 @@ export function createPostgresAutoListingAiWorkflow(rawOptions = {}) {
   return Object.freeze({
     stageInitialPlanWork,
     async applyPhaseOutcome(rawInput = {}) {
-      const envelope = plainData(rawInput, FACTORY_APPLY_KEYS);
+      const envelope = factoryApplyEnvelope(rawInput);
       let message;
       try { message = normalizeAutoListingAiMessage(envelope.message); } catch { throw invalid(); }
       const normalizedOutcome = validatedOutcome(envelope.outcome, message.phase, message.correlationId);
+      const execution = executionInput(message, envelope.execution);
       let client;
       try {
         client = await pool.connect();
         if (!client || typeof client.query !== "function") throw failed();
         await query(client, "BEGIN");
         await configureTransaction(client);
-        const scope = await query(client,
+        const fence = execution ? await lockExecutionFence(client, message, execution) : null;
+        const scope = execution ? null : await query(client,
           `SELECT job_id FROM auto_listing_job_items WHERE account_id=$1 AND id=$2`,
           [message.accountId, message.itemId]);
-        const jobId = scope?.rowCount === 1 ? scope.rows?.[0]?.job_id : null;
+        const jobId = execution ? fence?.job_id : scope?.rowCount === 1 ? scope.rows?.[0]?.job_id : null;
         if (!isSafeAutoListingAiIdentifier(jobId)) {
           await query(client, "COMMIT");
           return ignored("STALE", null);
@@ -625,6 +804,45 @@ export function createPostgresAutoListingAiWorkflow(rawOptions = {}) {
           expectedStatusVersion: message.expectedStatusVersion, correlationId: message.correlationId,
           phase: message.phase, phaseTargetId: target, outcome: normalizedOutcome,
         }, { directUploadAllowed: options.directUploadAllowed });
+        if (execution) {
+          await finishExecution(client, message, execution, result, normalizedOutcome.disposition === "ACK");
+        }
+        await query(client, "COMMIT");
+        return result;
+      } catch (error) {
+        if (client?.query) {
+          try { await client.query("ROLLBACK"); } catch {}
+        }
+        if (error?.code?.startsWith?.("AUTO_LISTING_AI_WORKFLOW_")) throw error;
+        throw failed();
+      } finally {
+        try { client?.release?.(); } catch {}
+      }
+    },
+    async requeueChannelFailure(rawInput = {}) {
+      const envelope = plainData(rawInput, FACTORY_APPLY_KEYS);
+      let message;
+      try { message = normalizeAutoListingAiMessage(envelope.message); } catch { throw invalid(); }
+      const outcome = validatedOutcome(envelope.outcome, message.phase, message.correlationId, {
+        allowChannelRetry: true,
+      });
+      if (!CHANNEL_FAILURE_SCOPES.has(outcome.failureScope)) throw invalid();
+      const execution = executionInput(message, envelope.execution);
+      if (!execution) throw invalid();
+      let client;
+      try {
+        client = await pool.connect();
+        if (!client || typeof client.query !== "function") throw failed();
+        await query(client, "BEGIN");
+        await configureTransaction(client);
+        const fence = await lockExecutionFence(client, message, execution);
+        if (!fence) {
+          await query(client, "COMMIT");
+          return ignored("STALE", null);
+        }
+        const result = await requeueExecution(client, message, execution, outcome, fence, {
+          directUploadAllowed: options.directUploadAllowed,
+        });
         await query(client, "COMMIT");
         return result;
       } catch (error) {

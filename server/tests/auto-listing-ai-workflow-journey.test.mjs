@@ -20,6 +20,9 @@ function outcome(message, value) {
     retryable: false,
     failureCode: null,
     correlationId,
+    failureScope: null,
+    deliveryState: null,
+    retryAfterMs: null,
   });
 }
 

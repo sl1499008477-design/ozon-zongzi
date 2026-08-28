@@ -150,6 +150,9 @@ test("ACKs a stale closed V1 message without reading phase input or calling a ph
     retryable: false,
     failureCode: "AUTO_LISTING_AI_STATUS_STALE",
     correlationId: "correlation-a",
+    failureScope: null,
+    deliveryState: null,
+    retryAfterMs: null,
   });
   assert.ok(Object.isFrozen(outcome));
 });
@@ -548,4 +551,53 @@ test("ACKs materialization/finalization duplicates after the active plan was alr
     assert.equal(result.outcome, phase === "FINALIZE_MATERIALIZED_PLAN" ? "MATERIALIZED_PLAN_READY" : "STALE");
   }
   assert.equal(calls, 0);
+});
+
+test("classifies every supported channel failure with explicit safe delivery metadata", async () => {
+  const cases = [
+    ["AI_GATEWAY_NETWORK_FAILED", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["AI_GATEWAY_RATE_LIMITED", "CHANNEL_TRANSIENT", "NOT_SENT", 12_000],
+    ["AI_GATEWAY_IDLE_TIMEOUT", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["AI_GATEWAY_UNEXPECTED_EOF", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["INVALID_GATEWAY_RESPONSE", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["RETRYABLE_GATEWAY", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["GATEWAY_TIMEOUT", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["AI_GATEWAY_UNAUTHORIZED", "CHANNEL_REVALIDATION", "NOT_SENT", null],
+    ["AI_GATEWAY_MODEL_NOT_FOUND", "CHANNEL_REVALIDATION", "NOT_SENT", null],
+    ["AI_GATEWAY_CAPABILITY_INVALID", "CHANNEL_REVALIDATION", "NOT_SENT", null],
+    ["NON_RETRYABLE_AUTH", "CHANNEL_REVALIDATION", "NOT_SENT", null],
+  ];
+  for (const [code, failureScope, deliveryState, retryAfterMs] of cases) {
+    const error = Object.assign(new Error("raw upstream detail must not leak"), {
+      code,
+      retryable: true,
+      deliveryState,
+      retryAfterMs,
+    });
+    const value = await orchestrateAutoListingAiPhase({
+      message: message("PLAN_CONTENT"), context: context("PLAN_CONTENT"),
+    }, services({ planContent: async () => { throw error; } }));
+
+    assert.equal(value.disposition, "RETRY", code);
+    assert.equal(value.failureCode, code, code);
+    assert.equal(value.failureScope, failureScope, code);
+    assert.equal(value.deliveryState, deliveryState, code);
+    assert.equal(value.retryAfterMs, retryAfterMs, code);
+    assert.doesNotMatch(JSON.stringify(value), /raw upstream detail/u);
+  }
+});
+
+test("keeps business validation and caller cancellation outside channel cooldown", async () => {
+  for (const [code, retryable] of [
+    ["AUTO_LISTING_CONTENT_PLAN_INVALID", false],
+    ["GATEWAY_CANCELLED", false],
+  ]) {
+    const error = Object.assign(new Error("private business detail"), { code, retryable });
+    const value = await orchestrateAutoListingAiPhase({
+      message: message("PLAN_CONTENT"), context: context("PLAN_CONTENT"),
+    }, services({ planContent: async () => { throw error; } }));
+    assert.equal(value.failureScope, "BUSINESS", code);
+    assert.equal(value.deliveryState, null, code);
+    assert.equal(value.retryAfterMs, null, code);
+  }
 });

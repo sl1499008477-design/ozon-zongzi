@@ -14,6 +14,7 @@ import {
   createLegacyAutoListingAiQueueAdapter,
 } from "./auto-listing-ai-queue.mjs";
 import { orchestrateAutoListingAiPhase } from "./auto-listing-ai-orchestrator.mjs";
+import { autoListingAiMessageDedupeKey } from "./auto-listing-ai-message.mjs";
 import { createPostgresContentPlanRepository } from "./auto-listing-content-plan-repository.mjs";
 import { createPostgresContentPlanEvidenceRepository } from "./auto-listing-content-plan-evidence-postgres.mjs";
 import { createContentPlan } from "./auto-listing-content-planner.mjs";
@@ -57,7 +58,7 @@ const PORT_KEYS = new Set([
   "createSourceAssetLoader", "createContextLoader", "orchestratePhase", "phaseServices",
   "loadCredentialKey", "createCipher", "createCredentialRepository", "createCredentialResolver",
 ]);
-const WORKFLOW_PORT_KEYS = new Set(["stageInitialPlanWork", "applyPhaseOutcome"]);
+const WORKFLOW_PORT_KEYS = new Set(["stageInitialPlanWork", "applyPhaseOutcome", "requeueChannelFailure"]);
 const SERVICE_KEYS = new Set([
   "planContent", "materializeSourceAsset", "finalizeMaterializedPlan",
   "generateImageSlot", "generateRichContent",
@@ -360,6 +361,7 @@ export async function createAutoListingAiProductionDependencies(input = {}) {
       pool,
       directUploadAllowed: config.directUploadAllowed,
     }));
+    const executionStore = createPostgresAiOutboxRepository({ pool });
     const gateway = assertPortShape(ports.createGateway({
       readSecret: secretReader(env, config.legacySecretEnvNames),
       resolveSecret: (scope) => credentialResolver.resolveSecret(scope),
@@ -413,10 +415,41 @@ export async function createAutoListingAiProductionDependencies(input = {}) {
     }
     return Object.freeze({
       bossFactory: () => ports.createBoss({ database: config.database, queue: config.queue }),
+      executionRepository: Object.freeze({
+        async adopt({ message, execution, workerId, leaseToken, leaseMs }) {
+          const row = await executionStore.adoptAutoListingAiWork({
+            accountId: message.accountId,
+            itemId: message.itemId,
+            id: execution.outboxId,
+            publicationId: `${autoListingAiMessageDedupeKey(message)}:${execution.dispatchGeneration}`,
+            dispatchGeneration: execution.dispatchGeneration,
+            relayOwner: execution.leaseOwner,
+            relayToken: execution.leaseToken,
+            workerId,
+            workerLeaseToken: leaseToken,
+            leaseMs,
+          });
+          return row?.workMessage?.execution ?? null;
+        },
+        async renew({ message, execution, leaseMs }) {
+          const row = await executionStore.renewAutoListingAiWorkLease({
+            accountId: message.accountId,
+            itemId: message.itemId,
+            id: execution.outboxId,
+            publicationId: `${autoListingAiMessageDedupeKey(message)}:${execution.dispatchGeneration}`,
+            dispatchGeneration: execution.dispatchGeneration,
+            workerId: execution.leaseOwner,
+            leaseToken: execution.leaseToken,
+            leaseMs,
+          });
+          return row?.workMessage?.execution ?? null;
+        },
+        requeueChannelFailure: (input) => aiWorkflow.requeueChannelFailure(input),
+      }),
       loadContext,
       orchestrate: (orchestratorInput) => ports.orchestratePhase(orchestratorInput, ports.phaseServices),
       workflow: Object.freeze({
-        applyOutcome: (message, outcome) => aiWorkflow.applyPhaseOutcome({ message, outcome }),
+        applyOutcome: (input) => aiWorkflow.applyPhaseOutcome(input),
       }),
     });
   } catch (error) {

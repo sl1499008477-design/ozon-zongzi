@@ -59,10 +59,181 @@ test("stageInitialPlanWork atomically locks a frozen-profile item, transitions S
 test("workflow factory is closed and exposes only the transaction stage port and transactional outcome port", () => {
   const pool = { async connect() {}, async query() {} };
   const workflow = createPostgresAutoListingAiWorkflow({ pool });
-  assert.deepEqual(Object.keys(workflow).sort(), ["applyPhaseOutcome", "stageInitialPlanWork"]);
+  assert.deepEqual(Object.keys(workflow).sort(), ["applyPhaseOutcome", "requeueChannelFailure", "stageInitialPlanWork"]);
   assert.throws(() => createPostgresAutoListingAiWorkflow({ pool, profileId: "global-profile" }), {
     code: "AUTO_LISTING_AI_WORKFLOW_INVALID",
   });
+});
+
+test("v3 factory outcome contract requires execution fencing and locks outbox item and channel before writes", async () => {
+  const calls = [];
+  const client = {
+    async query(sql, values = []) {
+      calls.push({ sql, values });
+      if (sql === "BEGIN") return {};
+      if (/set_config/iu.test(sql)) return { rowCount: 1, rows: [{}] };
+      if (/FOR UPDATE OF outbox,item,channel/iu.test(sql)) return { rowCount: 0, rows: [] };
+      if (sql === "COMMIT") return {};
+      throw new Error(`unexpected query: ${sql}`);
+    },
+    release() {},
+  };
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return client; } },
+  });
+  const message = {
+    contractVersion: "V1", accountId: "account-a", itemId: "item-a", phase: "PLAN_CONTENT",
+    expectedStatusVersion: 2, correlationId: "correlation-a",
+  };
+  const execution = {
+    outboxId: "outbox-a", dispatchGeneration: 2, channelId: "channel-a",
+    connectionId: "connection-a", connectionVersion: 3,
+    leaseOwner: "worker-a", leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+  const result = await workflow.applyPhaseOutcome({
+    message,
+    outcome: {
+      ...outcome("PLAN_CONTENT", "PLAN_READY"),
+      failureScope: null, deliveryState: null, retryAfterMs: null,
+    },
+    execution,
+  });
+
+  assert.equal(result.disposition, "STALE");
+  assert.match(calls[2].sql, /dispatch_generation[\s\S]*execution_lease_token[\s\S]*FOR UPDATE OF outbox,item,channel/iu);
+  assert.equal(calls.some(({ sql }) => /UPDATE auto_listing_job_items/iu.test(sql)), false);
+});
+
+function v3Execution() {
+  return {
+    outboxId: "outbox-a", dispatchGeneration: 2, channelId: "channel-a",
+    connectionId: "connection-a", connectionVersion: 3,
+    leaseOwner: "worker-a", leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+}
+
+function channelOutcome(code, failureScope, deliveryState, retryAfterMs = null) {
+  return {
+    contractVersion: "V1", disposition: "RETRY", phase: "PLAN_CONTENT", outcome: "FAILED",
+    retryable: true, failureCode: code, correlationId: "correlation-a",
+    failureScope, deliveryState, retryAfterMs,
+  };
+}
+
+test("NOT_SENT channel revalidation cools and requeues atomically without consuming uncertainty", async () => {
+  const client = scriptedClient([
+    {},
+    { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    {},
+  ]);
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...client, release() {} }; } },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const result = await workflow.requeueChannelFailure({
+    message,
+    outcome: channelOutcome("AI_GATEWAY_UNAUTHORIZED", "CHANNEL_REVALIDATION", "NOT_SENT"),
+    execution: v3Execution(),
+  });
+
+  assert.deepEqual(result, { disposition: "REQUEUED", status: "PLANNING",
+    statusVersion: 2, enqueued: 0, uncertainResultCount: 0 });
+  assert.match(client.calls[2].sql, /FOR UPDATE OF outbox,item,channel/iu);
+  assert.match(client.calls[3].sql, /requires_revalidation=requires_revalidation OR \$9/iu);
+  assert.equal(client.calls[3].values[7], 60_000);
+  assert.equal(client.calls[3].values[8], true);
+  assert.match(client.calls[4].sql, /state='PENDING'[\s\S]*publication_id=NULL[\s\S]*next_retry_at=NOW\(\)/iu);
+  assert.equal(client.calls[4].values[6], 0);
+});
+
+test("POSSIBLY_SENT requeues once, then the second uncertain result becomes a retryable item failure", async () => {
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const first = scriptedClient([
+    {}, { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] }, {},
+  ]);
+  const firstWorkflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...first, release() {} }; } },
+  });
+  assert.equal((await firstWorkflow.requeueChannelFailure({
+    message,
+    outcome: channelOutcome("AI_GATEWAY_UNEXPECTED_EOF", "CHANNEL_TRANSIENT", "POSSIBLY_SENT"),
+    execution: v3Execution(),
+  })).uncertainResultCount, 1);
+  assert.equal(first.calls[4].values[6], 1);
+
+  const second = scriptedClient([
+    {}, { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 1,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ status: "PLANNING", status_version: 2,
+      active_content_plan_id: null, planning_contract: "FIXED_SKELETON_V1" }] },
+    { rowCount: 1, rows: [{ status: "RETRYABLE_ERROR", status_version: 3 }] },
+    { rowCount: 1, rows: [{ id: "event-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    {},
+  ]);
+  const secondWorkflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...second, release() {} }; } },
+  });
+  const result = await secondWorkflow.requeueChannelFailure({
+    message,
+    outcome: channelOutcome("INVALID_GATEWAY_RESPONSE", "CHANNEL_TRANSIENT", "POSSIBLY_SENT"),
+    execution: v3Execution(),
+  });
+  assert.deepEqual(result, { disposition: "APPLIED", status: "RETRYABLE_ERROR",
+    statusVersion: 3, enqueued: 0 });
+  assert.equal(second.calls[4].values.includes("AUTO_LISTING_AI_RESULT_UNCERTAIN"), true);
+  assert.match(second.calls[6].sql, /uncertain_result_count=2/iu);
+  assert.match(second.calls[7].sql, /consecutive_failure_count=consecutive_failure_count\+1/iu);
+  assert.match(second.calls[9].sql, /assigned_job_id=CASE WHEN enabled AND \$8/iu);
+});
+
+test("a disabled busy channel finishes the accepted outcome then releases assignment and resets expired health", async () => {
+  const client = scriptedClient([
+    {}, { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: false }] },
+    { rowCount: 1, rows: [{ status: "PLANNING", status_version: 2,
+      active_content_plan_id: "plan-a", planning_contract: "FIXED_SKELETON_V1" }] },
+    { rowCount: 1, rows: [{ id: "plan-a", parent_plan_id: null,
+      derivation_kind: null, visual_groups: { groups: [] }, plan: {} }] },
+    { rowCount: 1, rows: [{ id: "event-a" }] },
+    { rowCount: 1, rows: [{ id: "next-outbox" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    {},
+  ]);
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...client, release() {} }; } },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const result = await workflow.applyPhaseOutcome({
+    message,
+    outcome: outcome("PLAN_CONTENT", "PLAN_READY"),
+    execution: v3Execution(),
+  });
+  assert.deepEqual(result, { disposition: "APPLIED", status: "PLANNING",
+    statusVersion: 2, enqueued: 1 });
+  assert.match(client.calls[8].sql, /assigned_job_id=CASE WHEN enabled AND \$8[\s\S]*consecutive_failure_count=CASE WHEN \$9 THEN 0/iu);
+  assert.equal(client.calls[8].values[7], true, "AI phase would normally keep affinity");
+  assert.equal(client.calls[8].values[8], true, "ACK resets channel health");
+  assert.match(client.calls[7].sql, /state='COMPLETED'/iu);
 });
 
 test("stageInitialPlanWork is idempotent only when the exact transition event and closed PLAN work already exist", async () => {
@@ -94,10 +265,12 @@ test("stageInitialPlanWork is idempotent only when the exact transition event an
 });
 
 function outcome(phase, value, overrides = {}) {
-  return {
+  const result = {
     contractVersion: "V1", disposition: "ACK", phase, outcome: value, retryable: false,
     failureCode: null, correlationId: "correlation-a", ...overrides,
   };
+  return { ...result, failureScope: result.disposition === "ACK" ? null : "BUSINESS",
+    deliveryState: null, retryAfterMs: null };
 }
 
 function applyInput(client, phase, value, overrides = {}) {
