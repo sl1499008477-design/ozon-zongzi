@@ -1345,15 +1345,24 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
         WHERE account_id=$1 AND id=$2 AND version=$3`,
       [accountA, channelCandidate.id, channelCandidate.version, "c".repeat(64)],
     );
+    const channelProofProfileId = `channel-proof-${suffix}`;
+    await pool.query(
+      `INSERT INTO ai_gateway_profiles (
+         id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+         text_model,image_model,config_version,enabled,created_by,connection_id,connection_version
+       ) VALUES ($1,$2,'Candidate proof','https://gateway.example/v1','SUB2API_ENCRYPTED_KEY',$3,$4,$5,$6,1,FALSE,$2,$7,$8)`,
+      [channelProofProfileId, accountA, profile.textProtocol, profile.imageProtocol, profile.textModel,
+        profile.imageModel, channelCandidate.id, channelCandidate.version],
+    );
     const channelCapability = { outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
       latencyMs: 1, models: { text: profile.textModel, image: profile.imageModel },
       checkedAt: new Date().toISOString(), errorCode: null };
     await pool.query(
       "UPDATE ai_gateway_profiles SET capability_result=$4::JSONB,capability_checked_at=$5 WHERE account_id=$1 AND id=$2 AND config_version=$3",
-      [accountA, profile.id, profile.configVersion, JSON.stringify(channelCapability), channelCapability.checkedAt],
+      [accountA, channelProofProfileId, 1, JSON.stringify(channelCapability), channelCapability.checkedAt],
     );
     async function seedChannelCapability(attemptId) {
-      const response = { profileId: profile.id, configVersion: profile.configVersion,
+      const response = { profileId: channelProofProfileId, configVersion: 1,
         ...channelCapability, enabled: true };
       const digest = crypto.createHash("sha256").update(attemptId).digest("hex");
       await pool.query(
@@ -1364,7 +1373,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
            target_connection_status,target_connection_status_version,authorized_at
          ) VALUES ($1,$2,$3,$4,$5,$6,NOW(),'PASSED',$7,$8::JSONB,NOW(),
            'AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1','PROFILE_CAPABILITY',TRUE,$7,$7,$2,$9,$10,'VALIDATED',$11,NOW())`,
-        [attemptId, accountA, profile.id, profile.configVersion, `corr-${attemptId}`, `lease-${attemptId}`,
+        [attemptId, accountA, channelProofProfileId, 1, `corr-${attemptId}`, `lease-${attemptId}`,
           digest, JSON.stringify(response), channelCandidate.id, channelCandidate.version, 2],
       );
       await pool.query(
@@ -1373,7 +1382,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
            entity_type,entity_id,correlation_id,metadata,occurred_at,created_at
          ) VALUES ($1,$2,NULL,'AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST','SUCCESS','account',$2,'',
            'auto-listing-ai-admin','ai_gateway_profile',$3,$4,$5::JSONB,NOW(),NOW())`,
-        [`audit-${attemptId}`, accountA, profile.id, `corr-${attemptId}`,
+        [`audit-${attemptId}`, accountA, channelProofProfileId, `corr-${attemptId}`,
           JSON.stringify({ attemptId, purpose: "PROFILE_CAPABILITY" })],
       );
     }
@@ -1391,6 +1400,10 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       accountId: accountB, actorAccountId: accountB, profileId: profile.id, profileVersion: profile.configVersion,
       connectionId: channelCandidate.id, connectionVersion: channelCandidate.version, displayName: "Foreign",
     }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT", status: 409 });
+    await assert.rejects(repository.addProfileChannel({
+      accountId: accountA, actorAccountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
+      connectionId: channelCandidate.id, connectionVersion: channelCandidate.version + 1, displayName: "Wrong version",
+    }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INCOMPATIBLE", status: 409 });
     const unvalidated = await repository.createPendingConnection({
       ...createInput, idempotencyKey: `channel-unvalidated-${suffix}`,
       correlationId: `channel-unvalidated-corr-${suffix}`, displayName: "Unvalidated",
@@ -1422,7 +1435,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       `UPDATE auto_listing_ai_profile_channels SET assigned_job_id=$5,assigned_item_id=$6,
           assigned_status_version=1,assigned_at=NOW(),execution_lease_owner='worker',execution_lease_token='lease',
           execution_lease_expires_at=NOW()+INTERVAL '1 minute'
-        WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4 RETURNING assigned_item_id,execution_lease_token`,
+        WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4 RETURNING assigned_item_id,assigned_status_version,execution_lease_token`,
       [accountA, profile.id, profile.configVersion, addedChannel.channelId, busyJob, busyItem],
     );
     assert.equal(busy.rowCount, 1);
@@ -1432,9 +1445,21 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     });
     assert.equal(disabledChannel.status, "DISABLED");
     assert.deepEqual((await pool.query(
-      "SELECT assigned_item_id,execution_lease_token FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4",
+      "SELECT assigned_item_id,assigned_status_version,execution_lease_token FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4",
       [accountA, profile.id, profile.configVersion, addedChannel.channelId],
-    )).rows[0], { assigned_item_id: busyItem, execution_lease_token: "lease" });
+    )).rows[0], { assigned_item_id: busyItem, assigned_status_version: 1, execution_lease_token: "lease" });
+    assert.equal(Number((await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CHANNEL_SET_ENABLED'",
+      [accountA],
+    )).rows[0].count), 1);
+    assert.equal((await repository.setProfileChannelEnabled({
+      accountId: accountA, actorAccountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
+      channelId: addedChannel.channelId, enabled: false,
+    })).enabled, false);
+    assert.equal(Number((await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CHANNEL_SET_ENABLED'",
+      [accountA],
+    )).rows[0].count), 1, "repeated disable is a no-op without a duplicate audit event");
     await pool.query(
       "UPDATE auto_listing_ai_profile_channels SET requires_revalidation=TRUE,updated_at=NOW() WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4",
       [accountA, profile.id, profile.configVersion, addedChannel.channelId],
@@ -1448,6 +1473,23 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       accountId: accountA, actorAccountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
       channelId: addedChannel.channelId, enabled: true,
     })).enabled, true);
+    assert.equal((await repository.setProfileChannelEnabled({
+      accountId: accountA, actorAccountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
+      channelId: addedChannel.channelId, enabled: true,
+    })).enabled, true);
+    assert.equal(Number((await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CHANNEL_SET_ENABLED'",
+      [accountA],
+    )).rows[0].count), 2, "repeated eligible enable is a no-op without a duplicate audit event");
+    const channelAudits = (await pool.query(
+      `SELECT metadata FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CHANNEL_SET_ENABLED'
+       ORDER BY occurred_at,id`, [accountA],
+    )).rows.map((row) => row.metadata);
+    assert.equal(channelAudits.every((metadata) => metadata.profileId === profile.id
+      && metadata.profileVersion === profile.configVersion && metadata.channelId === addedChannel.channelId
+      && metadata.connectionId === channelCandidate.id && metadata.connectionVersion === channelCandidate.version
+      && ["ENABLE", "DISABLE"].includes(metadata.action) && metadata.result === "SUCCESS"
+      && JSON.stringify(metadata).includes("lease") === false), true);
 
     const eventRow = (await pool.query(
       "SELECT id FROM ai_gateway_model_sync_events WHERE account_id=$1 AND task_id=$2 ORDER BY created_at LIMIT 1",

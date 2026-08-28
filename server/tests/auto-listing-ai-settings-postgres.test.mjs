@@ -127,6 +127,12 @@ test("profile channel reads join the exact frozen connection version without the
   assert.match(calls[2].sql, /STRUCTURED_TEXT/iu);
   assert.match(calls[2].sql, /IMAGE_GENERATION/iu);
   assert.match(calls[2].sql, /profile\.api_key_env_name='SUB2API_ENCRYPTED_KEY'/iu);
+  assert.match(calls[2].sql, /JOIN ai_gateway_profiles proof_profile/iu,
+    "candidate proof may come from an inactive profile bound to the exact candidate connection");
+  assert.match(calls[2].sql, /proof_profile\.text_model=profile\.text_model/iu);
+  assert.match(calls[2].sql, /proof_profile\.image_model=profile\.image_model/iu);
+  assert.match(calls[2].sql, /proof_profile\.text_protocol=profile\.text_protocol/iu);
+  assert.match(calls[2].sql, /proof_profile\.image_protocol=profile\.image_protocol/iu);
   assert.equal(remaining.length, 0);
 });
 
@@ -163,6 +169,25 @@ test("enabling always enforces the channel-order connection eligibility fence", 
     accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
     channelId: "channel-b", enabled: true,
   }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INELIGIBLE", status: 409 });
+});
+
+test("a repeated channel state request returns the locked safe DTO without another write or audit", async () => {
+  const disabled = { channel_id: "channel-b", display_name: "Gateway B", channel_order: 2, enabled: false,
+    connection_id: "connection-b", connection_version: 2, connection_status: "VALIDATED",
+    connection_display_name: "Gateway B", assigned_item_id: "item-a", cooldown_until: null,
+    requires_revalidation: false, last_error_code: null, status: "DISABLED" };
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [disabled] },
+    { rows: [] },
+  ]);
+  const result = await createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: false,
+  });
+  assert.equal(result.status, "DISABLED");
+  assert.equal(calls.some(({ sql }) => /UPDATE auto_listing_ai_profile_channels SET enabled=\$5/iu.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO audit_events/iu.test(sql)), false);
+  assert.equal(remaining.length, 0);
 });
 
 test("service-derived connection identity accepts randomized ciphertext replay by stable fingerprint", async () => {

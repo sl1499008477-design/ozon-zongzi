@@ -773,6 +773,10 @@ function channelEnabledRequest(raw) {
 function passedProfileCapabilityEvidence({ profile = "profile", connection = "connection", after = null } = {}) {
   return `EXISTS (
     SELECT 1 FROM ai_gateway_capability_attempts evidence
+    JOIN ai_gateway_profiles proof_profile
+      ON proof_profile.account_id=evidence.account_id
+     AND proof_profile.id=evidence.profile_id
+     AND proof_profile.config_version=evidence.config_version
     JOIN audit_events capability_audit
       ON capability_audit.account_id=evidence.account_id
      AND capability_audit.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST'
@@ -781,18 +785,27 @@ function passedProfileCapabilityEvidence({ profile = "profile", connection = "co
      AND capability_audit.entity_id=evidence.profile_id
      AND capability_audit.metadata->>'attemptId'=evidence.id
      AND capability_audit.metadata->>'purpose'='PROFILE_CAPABILITY'
-    WHERE evidence.account_id=${profile}.account_id AND evidence.profile_id=${profile}.id
-      AND evidence.config_version=${profile}.config_version
+    WHERE evidence.account_id=${profile}.account_id
       AND evidence.authorization_schema_version='AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1'
       AND evidence.purpose='PROFILE_CAPABILITY' AND evidence.cost_confirmed=TRUE
+      AND ${profile}.api_key_env_name='SUB2API_ENCRYPTED_KEY'
+      AND proof_profile.api_key_env_name='SUB2API_ENCRYPTED_KEY' AND proof_profile.enabled=FALSE
+      AND proof_profile.connection_id=${connection}.id
+      AND proof_profile.connection_version=${connection}.version
+      AND proof_profile.text_model=${profile}.text_model
+      AND proof_profile.image_model=${profile}.image_model
+      AND proof_profile.text_protocol=${profile}.text_protocol
+      AND proof_profile.image_protocol=${profile}.image_protocol
       AND evidence.target_connection_id=${connection}.id
       AND evidence.target_connection_version=${connection}.version
       AND evidence.status='PASSED' AND evidence.response->>'outcome'='PASSED'
       AND evidence.response->'features' @> '["STRUCTURED_TEXT","IMAGE_GENERATION"]'::JSONB
-      AND evidence.response->'models'->>'text'=${profile}.text_model
-      AND evidence.response->'models'->>'image'=${profile}.image_model
-      AND (evidence.response - 'profileId' - 'configVersion' - 'enabled')=${profile}.capability_result
-      ${after ? `AND evidence.completed_at >= ${after}` : ""}
+      AND evidence.response->>'profileId'=proof_profile.id
+      AND evidence.response->>'configVersion'=proof_profile.config_version::TEXT
+      AND evidence.response->'models'->>'text'=proof_profile.text_model
+      AND evidence.response->'models'->>'image'=proof_profile.image_model
+      AND (evidence.response - 'profileId' - 'configVersion' - 'enabled')=proof_profile.capability_result
+      ${after ? `AND evidence.completed_at > ${after}` : ""}
   )`;
 }
 
@@ -1426,7 +1439,11 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
         const current = (await query(client,
-          `SELECT channel.*,connection.status AS connection_status FROM auto_listing_ai_profile_channels channel
+          `SELECT channel.*,connection.status AS connection_status,connection.display_name AS connection_display_name,
+                  CASE WHEN channel.requires_revalidation THEN 'REQUIRES_REVALIDATION' WHEN NOT channel.enabled THEN 'DISABLED'
+                       WHEN channel.cooldown_until > NOW() THEN 'COOLDOWN' WHEN channel.assigned_item_id IS NOT NULL THEN 'BUSY'
+                       ELSE 'AVAILABLE' END AS status
+             FROM auto_listing_ai_profile_channels channel
              JOIN ai_gateway_connection_versions connection ON connection.account_id=channel.account_id
               AND connection.id=channel.connection_id AND connection.version=channel.connection_version
              JOIN ai_gateway_profiles profile ON profile.account_id=channel.account_id
@@ -1454,6 +1471,9 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
             }
           }
         }
+        if (current.enabled === input.enabled && !(input.enabled && current.requires_revalidation === true)) {
+          return channelDto(current);
+        }
         const updated = (await query(client,
           `UPDATE auto_listing_ai_profile_channels SET enabled=$5,
              requires_revalidation=CASE WHEN $5 AND requires_revalidation THEN FALSE ELSE requires_revalidation END,
@@ -1471,7 +1491,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           [input.accountId, input.profileId, input.profileVersion, updated.channel_id])).rows[0];
         await auditMutation(client, { action, accountId: input.accountId, actorId: input.actorAccountId,
           correlationId: `channel:${input.channelId}`, entityType: "auto_listing_ai_profile_channel", entityId: input.channelId,
-          idempotencyKey: `${input.channelId}:${input.enabled}`, requestHash, metadata: { profileId: input.profileId,
+          idempotencyKey: `${input.channelId}:${dtoTimestamp(current.updated_at)}:${input.enabled}`, requestHash, metadata: { profileId: input.profileId,
             profileVersion: input.profileVersion, channelId: input.channelId, connectionId: current.connection_id,
             connectionVersion: Number(current.connection_version), action: input.enabled ? "ENABLE" : "DISABLE",
             result: "SUCCESS" } });

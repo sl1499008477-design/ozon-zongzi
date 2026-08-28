@@ -120,7 +120,7 @@ function providerIdentity(execution) {
 
 function createControlledPersistence() {
   const state = {
-    connections: [], catalogs: [], syncTasks: [], profiles: [], audits: [], domainEvents: [],
+    connections: [], catalogs: [], syncTasks: [], profiles: [], channels: [], channelScopes: new Map(), audits: [], domainEvents: [],
     capabilityAttempts: new Map(), capabilitySubcalls: new Map(), publications: new Map(),
   };
   let catalogSequence = 0;
@@ -132,6 +132,7 @@ function createControlledPersistence() {
     return {
       accountId,
       activeConnection: connections.find((row) => row.status === "ACTIVE") || null,
+      activeProfile: profiles.find((row) => row.enabled === true) || null,
       connections,
       catalogs: state.catalogs.filter((row) => row.accountId === accountId).map((row) => structuredClone(row)),
       syncTasks: state.syncTasks.filter((row) => row.accountId === accountId).map((row) => structuredClone(row)),
@@ -334,9 +335,51 @@ function createControlledPersistence() {
       return { ...safeProfile(created), duplicate: false };
     },
 
-    async listProfileChannels() { return { channels: [], channelCandidates: [] }; },
-    async addProfileChannel() { throw new Error("channel commands are outside this existing journey"); },
-    async setProfileChannelEnabled() { throw new Error("channel commands are outside this existing journey"); },
+    async listProfileChannels(input) {
+      const selected = profile(input.accountId, input.profileId, input.profileVersion);
+      const channels = state.channels.filter((row) => {
+        const scope = state.channelScopes.get(row.channelId);
+        return scope?.accountId === input.accountId && scope.profileId === input.profileId
+          && scope.profileVersion === input.profileVersion;
+      }).map((row) => structuredClone(row));
+      const channelCandidates = state.connections.filter((candidate) => candidate.accountId === input.accountId
+        && candidate.status === "VALIDATED" && !channels.some((row) => row.connectionId === candidate.id
+          && row.connectionVersion === candidate.version)
+        && [...state.capabilityAttempts.values()].some((attempt) => attempt.status === "PASSED"
+          && attempt.execution.purpose === "PROFILE_CAPABILITY" && attempt.execution.connectionId === candidate.id
+          && attempt.execution.connectionVersion === candidate.version && attempt.profile.enabled === false
+          && attempt.profile.apiKeyEnvName === "SUB2API_ENCRYPTED_KEY"
+          && attempt.profile.textModel === selected.textModel && attempt.profile.imageModel === selected.imageModel
+          && attempt.profile.textProtocol === selected.textProtocol && attempt.profile.imageProtocol === selected.imageProtocol))
+        .map((candidate) => ({ connectionId: candidate.id, connectionVersion: candidate.version,
+          connectionDisplayName: candidate.displayName }));
+      return { channels, channelCandidates };
+    },
+    async addProfileChannel(input) {
+      const candidates = await this.listProfileChannels(input);
+      const candidate = candidates.channelCandidates.find((row) => row.connectionId === input.connectionId
+        && row.connectionVersion === input.connectionVersion);
+      assert.ok(candidate);
+      const row = { channelId: `channel-${state.channels.length + 1}`, displayName: input.displayName,
+        channelOrder: candidates.channels.length + 1, enabled: true, status: "AVAILABLE",
+        connectionDisplayName: candidate.connectionDisplayName, connectionId: input.connectionId,
+        connectionVersion: input.connectionVersion, assignedItemId: null, cooldownUntil: null,
+        requiresRevalidation: false, lastErrorCode: null };
+      state.channels.push(row);
+      state.channelScopes.set(row.channelId, { accountId: input.accountId, profileId: input.profileId,
+        profileVersion: input.profileVersion });
+      return structuredClone(row);
+    },
+    async setProfileChannelEnabled(input) {
+      const row = state.channels.find((candidate) => candidate.channelId === input.channelId
+        && state.channelScopes.get(candidate.channelId)?.accountId === input.accountId
+        && state.channelScopes.get(candidate.channelId)?.profileId === input.profileId
+        && state.channelScopes.get(candidate.channelId)?.profileVersion === input.profileVersion);
+      assert.ok(row);
+      row.enabled = input.enabled;
+      row.status = input.enabled ? "AVAILABLE" : "DISABLED";
+      return structuredClone(row);
+    },
 
     async loadConnectionForSecretResolution({ accountId, connectionId, connectionVersion }) {
       const row = connection(accountId, connectionId, connectionVersion);
@@ -473,6 +516,12 @@ function createControlledPersistence() {
       selectedConnection.status = "ACTIVE";
       selectedConnection.statusVersion += 1;
       selectedConnection.activatedAt = FIXED_NOW;
+      state.channels.push({ channelId: "primary", displayName: selected.displayName, channelOrder: 1, enabled: true,
+        status: "AVAILABLE", connectionDisplayName: selectedConnection.displayName, connectionId: selectedConnection.id,
+        connectionVersion: selectedConnection.version, assignedItemId: null, cooldownUntil: null,
+        requiresRevalidation: false, lastErrorCode: null });
+      state.channelScopes.set("primary", { accountId: input.accountId, profileId: selected.id,
+        profileVersion: selected.configVersion });
       state.publications.set(input.idempotencyKey, selected);
       audit("AUTO_LISTING_AI_PROFILE_PUBLISH", input.accountId, {
         profileId: selected.id, configVersion: selected.configVersion,
@@ -830,7 +879,7 @@ test("controlled loopback sub2API closes encrypted settings, no-cost sync, paid 
   });
   const dtos = [];
 
-  async function publishConnection({ suffix, gatewayKey }) {
+  async function publishConnection({ suffix, gatewayKey, publish = true }) {
     const created = await settings.createConnection({
       actor: ADMIN,
       idempotencyKey: `connection-${suffix}`,
@@ -887,21 +936,31 @@ test("controlled loopback sub2API closes encrypted settings, no-cost sync, paid 
     dtos.push(tested);
     assert.deepEqual(tested.features, ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"]);
 
-    const published = await settings.publishProfile({
-      actor: ADMIN,
-      profileId: selected.id,
-      configVersion: selected.configVersion,
-      idempotencyKey: `publish-${suffix}`,
-      correlationId: `corr-publish-${suffix}`,
-    });
-    dtos.push(published, await settings.getOverview({ actor: ADMIN }));
-    assert.equal(published.enabled, true);
-    assert.equal(persistence.connection(ADMIN.id, created.id, created.version).status, "ACTIVE");
+    if (publish) {
+      const published = await settings.publishProfile({
+        actor: ADMIN,
+        profileId: selected.id,
+        configVersion: selected.configVersion,
+        idempotencyKey: `publish-${suffix}`,
+        correlationId: `corr-publish-${suffix}`,
+      });
+      dtos.push(published, await settings.getOverview({ actor: ADMIN }));
+      assert.equal(published.enabled, true);
+      assert.equal(persistence.connection(ADMIN.id, created.id, created.version).status, "ACTIVE");
+    }
     return { connection: created, profile: selected, catalog };
   }
 
   try {
     const first = await publishConnection({ suffix: "a", gatewayKey: gatewayKeyA });
+    const candidate = await publishConnection({ suffix: "candidate", gatewayKey: gatewayKeyB, publish: false });
+    const candidateOverview = await settings.getOverview({ actor: ADMIN });
+    assert.deepEqual(candidateOverview.channelCandidates, [{ connectionId: candidate.connection.id,
+      connectionVersion: candidate.connection.version, connectionDisplayName: candidate.connection.displayName }]);
+    const addedCandidate = await settings.addProfileChannel({ actor: ADMIN, profileId: first.profile.id,
+      profileVersion: first.profile.configVersion, connectionId: candidate.connection.id,
+      connectionVersion: candidate.connection.version, displayName: "Candidate channel" });
+    assert.equal(addedCandidate.channelOrder, 2);
     const jobPersistence = createJobPersistence(persistence.state);
     const firstJob = await jobPersistence.repository.createJobGraph(jobGraph("job-before-rotation"));
     const persistedFirstJob = jobPersistence.jobs.get(firstJob.id);
@@ -940,9 +999,9 @@ test("controlled loopback sub2API closes encrypted settings, no-cost sync, paid 
       connectionVersion: first.connection.version,
     }, "rotating and publishing a new connection must not rewrite an existing job's profile or connection evidence");
 
-    assert.equal(fake.requests.filter((request) => request.path === "/v1/responses").length, 2);
-    assert.equal(fake.requests.filter((request) => request.path === "/v1/images/edits").length, 2);
-    assert.equal(fake.requests.filter((request) => request.path === "/v1/models").length, 4);
+    assert.equal(fake.requests.filter((request) => request.path === "/v1/responses").length, 3);
+    assert.equal(fake.requests.filter((request) => request.path === "/v1/images/edits").length, 3);
+    assert.equal(fake.requests.filter((request) => request.path === "/v1/models").length, 6);
     assert.ok(persistence.state.audits.some((entry) => entry.action === "AUTO_LISTING_AI_CONNECTION_CREATE"));
     assert.ok(persistence.state.audits.some((entry) => entry.action === "AUTO_LISTING_AI_MODEL_SYNC_COMPLETE"));
     assert.ok(persistence.state.audits.some((entry) => entry.action === "AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST"));
