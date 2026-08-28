@@ -1348,6 +1348,27 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
         WHERE account_id=$1 AND id=$2 AND version=$3`,
       [accountA, channelCandidate.id, channelCandidate.version, "c".repeat(64)],
     );
+    const catalogOnlyTask = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: channelCandidate.id,
+      connectionVersion: channelCandidate.version, expectedConnectionStatusVersion: 2,
+      idempotencyKey: `channel-catalog-only-${suffix}`, correlationId: `channel-catalog-only-corr-${suffix}`,
+      maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
+    });
+    const catalogOnlyLease = await repository.claimModelSync({ accountId: accountA, workerId: "worker-channel-catalog-only", leaseMs: 30_000 });
+    await repository.completeModelSync({
+      accountId: accountA, workerId: "worker-channel-catalog-only", taskId: catalogOnlyTask.id,
+      leaseVersion: catalogOnlyLease.leaseVersion, leaseToken: catalogOnlyLease.leaseToken,
+      correlationId: `channel-catalog-only-complete-${suffix}`, catalog,
+      capabilityResult: { outcome: "NOT_TESTED", checkedAt: new Date().toISOString(), text: false, image: false },
+    });
+    assert.equal((await repository.listProfileChannels({
+      accountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
+    })).channelCandidates.some((row) => row.connectionId === channelCandidate.id), false,
+    "a validated connection with only a successful exact catalog is not a channel candidate");
+    await assert.rejects(repository.addProfileChannel({
+      accountId: accountA, actorAccountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
+      connectionId: channelCandidate.id, connectionVersion: channelCandidate.version, displayName: "Catalog only channel",
+    }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INCOMPATIBLE", status: 409 });
     const channelProofProfileId = `channel-proof-${suffix}`;
     await pool.query(
       `INSERT INTO ai_gateway_profiles (
@@ -1547,6 +1568,26 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       accountId: accountA, actorAccountId: accountA, profileId: historicProfileId, profileVersion: 1,
       channelId: "primary", enabled: false,
     })).enabled, false, "disabled historical channels remain safely disableable");
+    await pool.query(
+      "UPDATE ai_gateway_connection_versions SET status='RETIRED',status_version=status_version+1 WHERE account_id=$1 AND id=$2 AND version=$3",
+      [accountA, activeForHistory.id, activeForHistory.version],
+    );
+    await pool.query(
+      "UPDATE ai_gateway_connection_versions SET status='ACTIVE',status_version=status_version+1 WHERE account_id=$1 AND id=$2 AND version=$3",
+      [accountA, channelCandidate.id, channelCandidate.version],
+    );
+    await pool.query(
+      "UPDATE ai_gateway_connection_versions SET status='RETIRED',status_version=status_version+1 WHERE account_id=$1 AND id=$2 AND version=$3",
+      [accountA, channelCandidate.id, channelCandidate.version],
+    );
+    await assert.rejects(repository.setProfileChannelEnabled({
+      accountId: accountA, actorAccountId: accountA, profileId: profile.id, profileVersion: profile.configVersion,
+      channelId: addedChannel.channelId, enabled: true,
+    }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INELIGIBLE", status: 409 });
+    assert.equal((await pool.query(
+      "SELECT enabled FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4",
+      [accountA, profile.id, profile.configVersion, addedChannel.channelId],
+    )).rows[0].enabled, false, "an ineligible retired extra channel remains disabled");
 
     const eventRow = (await pool.query(
       "SELECT id FROM ai_gateway_model_sync_events WHERE account_id=$1 AND task_id=$2 ORDER BY created_at LIMIT 1",
