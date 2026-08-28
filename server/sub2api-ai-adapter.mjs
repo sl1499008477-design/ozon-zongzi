@@ -824,6 +824,15 @@ async function abortableResult(promise, signal, abandonLateValue = null) {
   }
 }
 
+async function abortableCapabilityPersistence(operation, signal) {
+  const pending = Promise.resolve().then(operation);
+  if (signal?.aborted) {
+    pending.catch(() => {});
+    throw signal.reason || new DOMException("aborted", "AbortError");
+  }
+  return abortableResult(pending, signal, () => {});
+}
+
 async function fetchWithBoundary({
   fetchImpl, url, init, boundary, authorized, signal, verifyTarget, beforeSend, onFetchStart,
   rejectRedirects = false,
@@ -1581,6 +1590,7 @@ export function createSub2ApiAdapter({
     const url = endpointUrl(normalizedProfile, endpoint);
     let fetchStarted = false;
     let capabilityPrepared = false;
+    let capabilitySendingStarted = false;
     let capabilitySending = false;
     let capabilitySettled = false;
     try {
@@ -1670,8 +1680,10 @@ export function createSub2ApiAdapter({
         },
         beforeSend: capabilityExecution === null ? undefined : async () => {
           if (capabilitySending) return;
-          const sendingIdentity = await Promise.resolve()
-            .then(() => markCapabilitySubcallSending(capabilityExecution));
+          capabilitySendingStarted = true;
+          const sendingIdentity = await abortableCapabilityPersistence(
+            () => markCapabilitySubcallSending(capabilityExecution), abort.signal,
+          );
           if (sendingIdentity?.providerRequestKey !== requestKey
             || sendingIdentity?.providerCorrelationId !== correlationId) {
             throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
@@ -1689,20 +1701,21 @@ export function createSub2ApiAdapter({
         const failure = classifyHttp(response);
         abandonResponse(response);
         if (capabilityExecution !== null) {
-          await Promise.resolve(completeCapabilitySubcall(
+          await abortableCapabilityPersistence(() => completeCapabilitySubcall(
             capabilityExecution, "FAILED", "PROVIDER_REJECTED",
-          ));
+          ), abort.signal);
           capabilitySettled = true;
         }
         throw failure;
       }
       if (capabilityExecution !== null) {
         try {
-          await Promise.resolve(completeCapabilitySubcall(
+          await abortableCapabilityPersistence(() => completeCapabilitySubcall(
             capabilityExecution, "SUCCEEDED", "PROVIDER_ACCEPTED",
-          ));
-        } catch {
+          ), abort.signal);
+        } catch (error) {
           abandonResponse(response);
+          if (abort.signal.aborted) throw error;
           throw gatewayError("AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", { retryable: true, status: 409 });
         }
         capabilitySettled = true;
@@ -1720,20 +1733,28 @@ export function createSub2ApiAdapter({
     } catch (error) {
       let failure = error;
       let capabilitySettlementUnknown = false;
-      if (capabilityExecution !== null && capabilityPrepared && !capabilitySending && !capabilitySettled) {
+      if (capabilityExecution !== null && capabilityPrepared
+        && !capabilitySendingStarted && !capabilitySettled) {
         try {
-          await Promise.resolve(completeCapabilitySubcall(capabilityExecution, "FAILED",
-            abort.state().callerCancelled || abort.state().timedOut ? "PRE_SEND_ABORTED" : "PRE_SEND_FAILED"));
+          await abortableCapabilityPersistence(
+            () => completeCapabilitySubcall(capabilityExecution, "FAILED",
+              abort.state().callerCancelled || abort.state().timedOut
+                ? "PRE_SEND_ABORTED" : "PRE_SEND_FAILED"),
+            abort.signal,
+          );
           capabilitySettled = true;
         } catch (settlementError) {
           failure = settlementError;
           capabilitySettlementUnknown = true;
         }
       }
-      const safe = capabilityExecution !== null
-        && (capabilitySettlementUnknown || (capabilitySending && !capabilitySettled))
+      const abortState = abort.state();
+      const safe = abortState.callerCancelled || abortState.timedOut || abortState.idleTimedOut
+        ? classifyFetchFailure(failure, abortState, { fetchStarted })
+        : capabilityExecution !== null
+        && (capabilitySettlementUnknown || (capabilitySendingStarted && !capabilitySettled))
         ? gatewayError("AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", { retryable: true, status: 409 })
-        : classifyFetchFailure(failure, abort.state(), { fetchStarted });
+        : classifyFetchFailure(failure, abortState, { fetchStarted });
       safeLog(logger, "warn", "ai_gateway.request_failed", {
         profileId: normalizedProfile.id,
         profileVersion: normalizedProfile.configVersion,
@@ -2029,7 +2050,10 @@ export function createSub2ApiAdapter({
             () => verifyGatewayBoundary(normalizedProfile, execution.abort),
           );
         } catch (error) {
-          throw classifyFetchFailure(error, execution.abort.state(), { fetchStarted: true });
+          throw reframeDeliveryState(
+            classifyFetchFailure(error, execution.abort.state(), { fetchStarted: true }),
+            "POSSIBLY_SENT",
+          );
         }
       } else throw gatewayError("INVALID_GATEWAY_RESPONSE");
       return normalizedImage(bytes, {

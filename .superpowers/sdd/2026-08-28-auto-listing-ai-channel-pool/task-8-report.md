@@ -87,3 +87,23 @@
 - public catch 对无精确 metadata 的错误按 `anyStarted` 选择 `NOT_SENT/POSSIBLY_SENT`；已有 `POSSIBLY_SENT` 原样保留；已有 `NOT_SENT` 仅在当前子调用之前已经发生过 fetch 时，以相同安全 code/status/requestId/retryAfter 重新构造为整体 `POSSIBLY_SENT`。
 - 因此完全 prefetch invalid 和 fetch 前 caller abort 仍为 `NOT_SENT` 且保留原错误码；首子请求即明确拒绝仍可精确 `NOT_SENT`；但任一先前 probe 已发送后，后续本地错误或明确拒绝都不会宣称整个 compound 操作可安全整体重试。
 - 聚焦终审探针：`8/8` 通过；adapter/gateway boundary：`138/138` 通过；brief 四文件组合：`193/193` 通过；四 caller：`256/256` 通过；Task 6 orchestrator/worker：`55/55` 通过。Task 8 的 11 个 `.mjs` 逐一通过 `node --check`，`git diff --check` 退出码为 `0`。
+
+## 第四轮终审修复
+
+### 终审 RED
+
+- 在 `ebd98ffad28282170e8d0530da996f8476436902` 上新增 OpenAI Images 复合调用探针。主生成 POST 成功后，二次 URL 下载分别返回 401/403/404/429、network failure 和不可解析图片；聚焦运行 `7` 项时 `2` 通过、`5` 失败，四个明确 HTTP 拒绝错误都错误保留了下载级 `NOT_SENT`。
+- 新增四个 never-settling persistence 探针，分别卡住 `markCapabilitySubcallSending`、provider-rejected completion、provider-accepted completion 和 pre-send failure completion。聚焦运行 `5` 项时 `0` 通过、`5` 失败：总 timeout 或 caller abort 后操作仍等待持久化 promise。
+
+### 终审 GREEN
+
+- OpenAI Images 的 URL 下载只会发生在主生成 POST 已成功返回之后；下载阶段任意错误现在以明确 prior-send 语义重构为整体 `POSSIBLY_SENT`。重构只保留既有安全 `code/status/requestId/retryAfterMs`，所以 401/403/404/429、network 和 parse failure 都不会把整个付费操作误报为可安全重试；429 的严格 Retry-After 仍保持不变。
+- 对 adapter 内所有 fetch 序列做了静态审计：能力测试的 reachability/text/image 多 probe 已由不可注入的 compound tracker 覆盖；OpenAI Images 的主 POST→URL GET 是此次修复的另一条真实多-fetch 复合操作；catalog sync 是单请求，`fetchWithBoundary` 的 redirect 循环是同一请求边界且既有 delivery classification 不变。没有发现其他需要升级整体投递状态的多-fetch 序列。
+- 四个 capability persistence 写入均通过专用 abort-aware await。abort 会立即移除本次 listener 并返回；底层 promise 的迟到 resolve/reject 会被消费，不会二次改变结果或形成 unhandled rejection。SENDING persistence 一旦启动就不会被 catch 错误终结为 PREPARED failure。
+- caller abort/总 timeout 的错误码优先于 capability-result-unknown：fetch 前仍为 `NOT_SENT`，fetch 已开始后的 completion ambiguity 为 `POSSIBLY_SENT`。非 abort 的持久化不确定性继续使用既有 `AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN` guard，没有内联重试或吞错。
+- 聚焦 Images 探针：`7/7` 通过；聚焦 persistence 探针：`5/5` 通过；adapter/gateway boundary：`150/150` 通过；brief 四文件组合：`205/205` 通过；四 caller：`256/256` 通过；Task 6 orchestrator/worker：`55/55` 通过。Task 8 的 11 个 `.mjs` 逐一通过 `node --check`。
+
+### 未验证、风险与回滚补充
+
+- 未连接真实 Sub2API/Ozon、真实长连接、生产存储或生产数据库；never-settling/late-settling 行为由受控 promise、受控 stream 和注入 timer 验证。
+- 剩余风险集中在外部 provider 对成功生成后临时图片 URL 的非标准行为；适配器会保留安全错误分类，但因主 POST 已发生，不再允许整体自动安全重试。回滚本轮可单独 revert 第四轮终审修复提交；无需数据库恢复，回滚前应先停止新 worker intake 并允许在途付费调用到达 guard 边界。

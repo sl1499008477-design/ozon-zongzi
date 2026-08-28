@@ -140,6 +140,35 @@ async function waitFor(assertion, attempts = 40) {
   throw lastError;
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function trackedAbortSignal(controller) {
+  const listeners = new Set();
+  return {
+    signal: {
+      get aborted() { return controller.signal.aborted; },
+      get reason() { return controller.signal.reason; },
+      addEventListener(type, listener, options) {
+        if (type === "abort") listeners.add(listener);
+        controller.signal.addEventListener(type, listener, options);
+      },
+      removeEventListener(type, listener) {
+        if (type === "abort") listeners.delete(listener);
+        controller.signal.removeEventListener(type, listener);
+      },
+    },
+    activeCount: () => listeners.size,
+  };
+}
+
 function controlledResponse(contentType, headers = {}) {
   let controller;
   let cancelled = false;
@@ -1569,6 +1598,42 @@ test("OpenAI Images URL output downloads bytes without authorization inside the 
   assert.equal(requests[1].init.redirect, "manual");
 });
 
+test("OpenAI Images URL download failures stay POSSIBLY_SENT after the paid generation POST", async (t) => {
+  const sensitive = "private-download-response";
+  for (const [name, download, expectedCode, expectedStatus, expectedRetryAfter] of [
+    ["401", () => jsonResponse({ error: sensitive }, { status: 401, headers: { "x-request-id": "download-401" } }), "NON_RETRYABLE_AUTH", 401, null],
+    ["403", () => jsonResponse({ error: sensitive }, { status: 403, headers: { "x-request-id": "download-403" } }), "NON_RETRYABLE_AUTH", 403, null],
+    ["404", () => jsonResponse({ error: sensitive }, { status: 404, headers: { "x-request-id": "download-404" } }), "NON_RETRYABLE_GATEWAY", 404, null],
+    ["429", () => jsonResponse({ error: sensitive }, { status: 429, headers: { "retry-after": "120", "x-request-id": "download-429" } }), "AI_GATEWAY_RATE_LIMITED", 429, 120_000],
+    ["network", () => { throw new TypeError(sensitive); }, "AI_GATEWAY_NETWORK_FAILED", null, null],
+    ["parse", () => new Response("not-an-image", { headers: { "content-type": "image/png" } }), "INVALID_GATEWAY_RESPONSE", null, null],
+  ]) {
+    await t.test(name, async () => {
+      let fetches = 0;
+      const gateway = adapter(async () => {
+        fetches += 1;
+        if (fetches === 1) {
+          return jsonResponse({ data: [{ url: "https://gateway.example.test/tenant/v1/media/generated.png" }] });
+        }
+        return download();
+      });
+      await assert.rejects(gateway.generateImage(imageInput({
+        profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+      })), (error) => {
+        assert.equal(error?.code, expectedCode);
+        assert.equal(error?.status, expectedStatus);
+        assert.equal(error?.deliveryState, "POSSIBLY_SENT");
+        assert.equal(error?.retryAfterMs, expectedRetryAfter);
+        if (expectedStatus) assert.equal(error?.requestId, `download-${name}`);
+        assert.doesNotMatch(error?.message || "", new RegExp(sensitive));
+        assert.doesNotMatch(JSON.stringify(error), new RegExp(sensitive));
+        return true;
+      });
+      assert.equal(fetches, 2);
+    });
+  }
+});
+
 test("gateway and returned-image redirects cannot escape the configured origin and base path", async () => {
   for (const mode of ["gateway", "image"]) {
     const calls = [];
@@ -2738,7 +2803,7 @@ test("an uncertain PREPARED commit response never terminals the attempt as a cre
   assert.deepEqual({ completions, fetches }, { completions: 0, fetches: 0 });
 });
 
-test("abort before SENDING terminals PREPARED while abort after SENDING stays reclaimable", async () => {
+test("caller abort keeps cancellation semantics before transport regardless of SENDING persistence", async () => {
   for (const abortPoint of ["before-sending", "after-sending"]) {
     const controller = new AbortController();
     const completed = [];
@@ -2770,14 +2835,11 @@ test("abort before SENDING terminals PREPARED while abort after SENDING stays re
         return { terminal: true };
       },
     });
-    const expectedCode = abortPoint === "before-sending"
-      ? "GATEWAY_CANCELLED" : "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN";
     await assert.rejects(gateway.testCapabilities({
       profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
       timeoutMs: 500, signal: controller.signal, capabilityExecution,
-    }), (error) => error?.code === expectedCode
-      && (abortPoint !== "before-sending" || (error?.deliveryState === "NOT_SENT"
-        && error?.retryAfterMs === null)));
+    }), (error) => error?.code === "GATEWAY_CANCELLED"
+      && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null);
     assert.equal(fetches, 0);
     if (abortPoint === "before-sending") {
       assert.deepEqual({ marks, completed }, {
@@ -2787,6 +2849,197 @@ test("abort before SENDING terminals PREPARED while abort after SENDING stays re
       assert.deepEqual({ marks, completed }, { marks: 1, completed: [] });
     }
   }
+});
+
+test("capability persistence awaits obey timeout and caller abort without leaking late promises", async (t) => {
+  const profileInput = { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" };
+  const hooks = (overrides = {}) => ({
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async resolveCapabilityCredential(execution) {
+      return {
+        accountId: "account-a", profileId: "profile-1", configVersion: 7,
+        connectionId: "connection-a", connectionVersion: 3,
+        ...capabilityProviderIdentities[execution.probe], secret,
+      };
+    },
+    async markCapabilitySubcallSending(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async completeCapabilitySubcall() { return { terminal: true }; },
+    ...overrides,
+  });
+  const immediateOutcome = async (promise) => Promise.race([
+    promise.then((value) => ({ value }), (error) => ({ error })),
+    new Promise((resolve) => setImmediate(() => resolve(null))),
+  ]);
+
+  await t.test("SENDING persistence timeout is pre-send and consumes a late resolve", async () => {
+    const pending = deferred();
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const tracked = trackedAbortSignal(controller);
+    let marks = 0;
+    let fetches = 0;
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      throw new Error("must not fetch while SENDING persistence is pending");
+    }, {
+      timers,
+      ...hooks({
+        async markCapabilitySubcallSending() {
+          marks += 1;
+          return pending.promise;
+        },
+      }),
+    });
+    const request = gateway.testCapabilities({
+      profile: profileInput, timeoutMs: 5, signal: tracked.signal, capabilityExecution,
+    });
+    await waitFor(() => assert.equal(marks, 1));
+    timers.advanceBy(5);
+    let immediate = await immediateOutcome(request);
+    if (immediate === null) {
+      pending.resolve(capabilityProviderIdentities.REACHABILITY);
+      await assert.rejects(request);
+    }
+    assert.notEqual(immediate, null, "timeout must not wait for SENDING persistence");
+    assert.equal(immediate.error?.code, "GATEWAY_TIMEOUT");
+    assert.equal(immediate.error?.deliveryState, "NOT_SENT");
+    assert.equal(fetches, 0);
+    assert.deepEqual({ timers: timers.activeCount(), listeners: tracked.activeCount() }, {
+      timers: 0, listeners: 0,
+    });
+    pending.resolve(capabilityProviderIdentities.REACHABILITY);
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  await t.test("provider-rejected settlement caller abort is uncertain and consumes a late reject", async () => {
+    const pending = deferred();
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const tracked = trackedAbortSignal(controller);
+    let settlements = 0;
+    let fetches = 0;
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      return jsonResponse({ error: { message: "denied" } }, { status: 401 });
+    }, {
+      timers,
+      ...hooks({
+        async completeCapabilitySubcall(_execution, outcome, reason) {
+          assert.deepEqual([outcome, reason], ["FAILED", "PROVIDER_REJECTED"]);
+          settlements += 1;
+          return pending.promise;
+        },
+      }),
+    });
+    const request = gateway.testCapabilities({
+      profile: profileInput, timeoutMs: 500, signal: tracked.signal, capabilityExecution,
+    });
+    await waitFor(() => assert.equal(settlements, 1));
+    controller.abort();
+    let immediate = await immediateOutcome(request);
+    if (immediate === null) {
+      pending.resolve({ terminal: true });
+      await assert.rejects(request);
+    }
+    assert.notEqual(immediate, null, "caller abort must not wait for rejected settlement");
+    assert.equal(immediate.error?.code, "GATEWAY_CANCELLED");
+    assert.equal(immediate.error?.deliveryState, "POSSIBLY_SENT");
+    assert.equal(fetches, 1);
+    assert.deepEqual({ timers: timers.activeCount(), listeners: tracked.activeCount() }, {
+      timers: 0, listeners: 0,
+    });
+    pending.reject(new Error("late rejected-settlement failure must be consumed"));
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  await t.test("provider-accepted settlement timeout is uncertain and consumes a late reject", async () => {
+    const pending = deferred();
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const tracked = trackedAbortSignal(controller);
+    let settlements = 0;
+    let fetches = 0;
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      return jsonResponse({ object: "list", data: [] });
+    }, {
+      timers,
+      ...hooks({
+        async completeCapabilitySubcall(_execution, outcome, reason) {
+          assert.deepEqual([outcome, reason], ["SUCCEEDED", "PROVIDER_ACCEPTED"]);
+          settlements += 1;
+          return pending.promise;
+        },
+      }),
+    });
+    const request = gateway.testCapabilities({
+      profile: profileInput, timeoutMs: 5, signal: tracked.signal, capabilityExecution,
+    });
+    await waitFor(() => assert.equal(settlements, 1));
+    timers.advanceBy(5);
+    let immediate = await immediateOutcome(request);
+    if (immediate === null) {
+      pending.resolve({ terminal: true });
+      await assert.rejects(request);
+    }
+    assert.notEqual(immediate, null, "timeout must not wait for accepted settlement");
+    assert.equal(immediate.error?.code, "GATEWAY_TIMEOUT");
+    assert.equal(immediate.error?.deliveryState, "POSSIBLY_SENT");
+    assert.equal(fetches, 1);
+    assert.deepEqual({ timers: timers.activeCount(), listeners: tracked.activeCount() }, {
+      timers: 0, listeners: 0,
+    });
+    pending.reject(new Error("late accepted-settlement failure must be consumed"));
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  await t.test("pre-send failure settlement caller abort stays NOT_SENT and consumes a late resolve", async () => {
+    const pending = deferred();
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const tracked = trackedAbortSignal(controller);
+    let settlements = 0;
+    let fetches = 0;
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      throw new Error("must not fetch after credential failure");
+    }, {
+      timers,
+      ...hooks({
+        async resolveCapabilityCredential() {
+          throw Object.assign(new Error("decrypt failed"), { code: "AI_GATEWAY_SECRET_MISSING" });
+        },
+        async completeCapabilitySubcall(_execution, outcome, reason) {
+          assert.deepEqual([outcome, reason], ["FAILED", "PRE_SEND_FAILED"]);
+          settlements += 1;
+          return pending.promise;
+        },
+      }),
+    });
+    const request = gateway.testCapabilities({
+      profile: profileInput, timeoutMs: 500, signal: tracked.signal, capabilityExecution,
+    });
+    await waitFor(() => assert.equal(settlements, 1));
+    controller.abort();
+    let immediate = await immediateOutcome(request);
+    if (immediate === null) {
+      pending.resolve({ terminal: true });
+      await assert.rejects(request);
+    }
+    assert.notEqual(immediate, null, "caller abort must not wait for pre-send settlement");
+    assert.equal(immediate.error?.code, "GATEWAY_CANCELLED");
+    assert.equal(immediate.error?.deliveryState, "NOT_SENT");
+    assert.equal(fetches, 0);
+    assert.deepEqual({ timers: timers.activeCount(), listeners: tracked.activeCount() }, {
+      timers: 0, listeners: 0,
+    });
+    pending.resolve({ terminal: true });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
 });
 
 test("a PREPARED terminal-write failure stays unknown and reclaimable instead of failing the paid attempt", async () => {
@@ -2860,7 +3113,10 @@ test("recovered SENDING stays unknown when secret DNS or abort fails before same
     await assert.rejects(gateway.testCapabilities({
       profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
       timeoutMs: 500, signal: controller.signal, capabilityExecution,
-    }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+    }), failurePoint === "abort"
+      ? (error) => error?.code === "GATEWAY_CANCELLED"
+        && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null
+      : { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
     assert.equal(fetches, 0);
     assert.equal(marks, 0);
     assert.deepEqual(settlements, [["REACHABILITY", "FAILED",
