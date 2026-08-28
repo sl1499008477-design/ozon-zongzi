@@ -146,6 +146,8 @@ test("legacy PostgreSQL claim excludes every job whose frozen profile has a conn
   assert.match(sql, /profile\.id=job\.ai_profile_id/iu);
   assert.match(sql, /profile\.config_version=job\.ai_profile_version/iu);
   assert.match(sql, /profile\.connection_id IS NULL/iu);
+  assert.match(sql, /exhausted_outbox\.dispatch_contract_version IS NULL/iu);
+  assert.match(sql, /outbox\.dispatch_contract_version IS NULL/iu);
   assert.match(sql, /UPDATE auto_listing_ai_outbox AS exhausted_outbox[\s\S]*?exhausted_profile\.account_id=exhausted_job\.account_id[\s\S]*?exhausted_profile\.id=exhausted_job\.ai_profile_id[\s\S]*?exhausted_profile\.config_version=exhausted_job\.ai_profile_version[\s\S]*?exhausted_profile\.connection_id IS NULL/iu);
   assert.doesNotMatch(sql, /INSERT INTO auto_listing_ai_channels|dispatch_contract_version='CHANNEL_WORK_V1'/iu);
 });
@@ -206,11 +208,11 @@ test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1 account
   }), ["account-b", "account-c"]);
 
   assert.match(pool.calls[0].sql, /contract_version='V1'/iu);
-  assert.match(pool.calls[0].sql, /outbox\.state='PENDING'[\s\S]*?outbox\.next_retry_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL OR outbox\.attempts < \$3/iu);
-  assert.match(pool.calls[0].sql, /outbox\.state='PROCESSING'[\s\S]*?outbox\.lease_expires_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL OR outbox\.attempts < \$3/iu);
-  assert.match(pool.calls[0].sql, /profile\.connection_id IS NULL AND outbox\.state='DEAD'[\s\S]*?dispatch_contract_version IS DISTINCT FROM 'CHANNEL_WORK_V1'[\s\S]*?i\.status_version=outbox\.expected_status_version/iu);
+  assert.match(pool.calls[0].sql, /outbox\.state='PENDING'[\s\S]*?outbox\.next_retry_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL[\s\S]*?outbox\.dispatch_contract_version IS NULL AND outbox\.attempts < \$3/iu);
+  assert.match(pool.calls[0].sql, /outbox\.state='PROCESSING'[\s\S]*?outbox\.lease_expires_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL[\s\S]*?outbox\.dispatch_contract_version IS NULL AND outbox\.attempts < \$3/iu);
+  assert.match(pool.calls[0].sql, /profile\.connection_id IS NULL AND outbox\.state='DEAD'[\s\S]*?outbox\.dispatch_contract_version IS NULL[\s\S]*?i\.status_version=outbox\.expected_status_version/iu);
   assert.match(pool.calls[0].sql, /i\.status='PLANNING'[\s\S]*?i\.status='GENERATING'/iu);
-  assert.match(pool.calls[0].sql, /profile\.connection_id IS NULL AND outbox\.state='COMPLETED'[\s\S]*?INTERVAL '3 hours'[\s\S]*?NOT EXISTS/iu);
+  assert.match(pool.calls[0].sql, /profile\.connection_id IS NULL AND outbox\.state='COMPLETED'[\s\S]*?outbox\.dispatch_contract_version IS NULL[\s\S]*?INTERVAL '3 hours'[\s\S]*?NOT EXISTS/iu);
   assert.doesNotMatch(pool.calls[0].sql, /outbox\.contract_version='V1' AND outbox\.attempts < \$3/iu);
   assert.match(pool.calls[0].sql, /outbox\.account_id > \$1/iu);
   assert.match(pool.calls[0].sql, /GROUP BY outbox\.account_id[\s\S]*?ORDER BY outbox\.account_id[\s\S]*?LIMIT \$2/iu);
@@ -236,6 +238,8 @@ test("DEAD reconciliation is account scoped, status-version fenced, audited and 
 
   const sql = pool.calls[0].sql;
   assert.match(sql, /o\.account_id=\$1[\s\S]*?o\.state='DEAD'/iu);
+  assert.match(sql, /o\.dispatch_contract_version IS NULL/iu);
+  assert.match(sql, /profile\.id=job\.ai_profile_id[\s\S]*?profile\.config_version=job\.ai_profile_version[\s\S]*?profile\.connection_id IS NULL/iu);
   assert.match(sql, /i\.status_version=o\.expected_status_version/iu);
   assert.match(sql, /FOR UPDATE OF i SKIP LOCKED/iu);
   assert.match(sql, /SET status='RETRYABLE_ERROR'[\s\S]*?recovery_point=CASE/iu);
@@ -279,6 +283,7 @@ test("interrupted worker reconciliation waits beyond the queue budget, excludes 
   assert.match(sql, /i\.account_id=\$1[\s\S]*?i\.status IN \('PLANNING','GENERATING'\)/iu);
   assert.match(sql, /i\.updated_at <= NOW\(\)-INTERVAL '3 hours'/iu);
   assert.match(sql, /done\.state='COMPLETED'[\s\S]*?done\.expected_status_version=i\.status_version/iu);
+  assert.match(sql, /done\.dispatch_contract_version IS NULL/iu);
   assert.match(sql, /live\.state IN \('PENDING','PROCESSING'\)/iu);
   assert.match(sql, /FOR UPDATE OF i SKIP LOCKED/iu);
   assert.match(sql, /status='RETRYABLE_ERROR'[\s\S]*?AUTO_LISTING_AI_WORKER_INTERRUPTED/iu);
@@ -309,6 +314,8 @@ test("renew, complete and failure transitions require the unexpired exact accoun
     assert.match(call.sql, /account_id=\$1/i);
     assert.match(call.sql, /item_id=\$3[\s\S]*?lease_owner=\$4 AND lease_token=\$5/i);
     assert.match(call.sql, /lease_expires_at > NOW\(\)/i);
+    assert.match(call.sql, /dispatch_contract_version IS NULL/iu);
+    assert.match(call.sql, /frozen_profile\.id=frozen_job\.ai_profile_id[\s\S]*?frozen_profile\.config_version=frozen_job\.ai_profile_version[\s\S]*?frozen_profile\.connection_id IS NULL/iu);
   }
 });
 

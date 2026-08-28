@@ -207,6 +207,27 @@ async function completePublishedClaim(row) {
   );
 }
 
+async function executionSnapshot(scenario, row) {
+  return (await pool.query(
+    `SELECT o.state,o.attempts,o.dispatch_contract_version,o.dispatch_generation,
+            o.publication_id,o.published_at,o.lease_owner,o.lease_token,o.lease_expires_at,
+            o.last_error_code,o.dead_at,
+            i.status AS item_status,i.status_version AS item_status_version,
+            i.last_ai_connection_id,i.last_ai_connection_version,
+            c.assigned_job_id,c.assigned_item_id,c.assigned_status_version,
+            c.execution_lease_owner,c.execution_lease_token,c.execution_lease_expires_at,
+            (SELECT COUNT(*)::INTEGER FROM auto_listing_events AS event
+              WHERE event.account_id=o.account_id AND event.item_id=o.item_id) AS event_count
+       FROM auto_listing_ai_outbox AS o
+       JOIN auto_listing_job_items AS i
+         ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id
+       JOIN auto_listing_ai_profile_channels AS c
+         ON c.account_id=o.account_id AND c.assigned_job_id=o.job_id AND c.assigned_item_id=o.item_id
+      WHERE o.account_id=$1 AND o.id=$2 AND c.channel_id=$3`,
+    [scenario.accountId, row.id, row.workMessage.execution.channelId],
+  )).rows[0];
+}
+
 test("one connected channel allocates only the earliest item without touching the waiter", {
   skip: enabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
   timeout: 90_000,
@@ -250,20 +271,104 @@ test("a fixed item's next phase has capacity precedence and keeps its channel", 
   const repository = createPostgresAiOutboxRepository({ pool });
   const [first] = await claim(repository, scenario, "relay-first", 1);
   await completePublishedClaim(first);
+  await pool.query(
+    "UPDATE auto_listing_ai_outbox SET next_retry_at='2020-01-01T00:00:00Z'::TIMESTAMPTZ WHERE id=$1",
+    [scenario.items[1].outboxId],
+  );
   const next = await insertOutbox(scenario, {
     itemId: scenario.items[0].itemId, phase: "MATERIALIZE_SOURCE_ASSET",
     target: `source-${suffix}`, suffixLabel: `fixed-next-${sequence}`,
-    nextRetryAt: new Date(Date.now() - 1_000),
+    nextRetryAt: new Date("2021-01-01T00:00:00Z"),
   });
 
   const [claimed] = await claim(repository, scenario, "relay-next", 1);
   assert.equal(claimed.id, next.outboxId);
   assert.equal(claimed.itemId, scenario.items[0].itemId);
   assert.equal(claimed.workMessage.execution.channelId, first.workMessage.execution.channelId);
+  assert.equal((await pool.query(
+    "SELECT assigned_status_version FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND channel_id=$2",
+    [scenario.accountId, scenario.channelIds[0]],
+  )).rows[0].assigned_status_version, 3);
   assert.deepEqual((await pool.query(
     "SELECT state,attempts FROM auto_listing_ai_outbox WHERE id=$1",
     [scenario.items[1].outboxId],
   )).rows[0], { state: "PENDING", attempts: 0 });
+});
+
+test("an old status-version assignment with recoverable old work blocks the current generation", {
+  skip: enabled ? false : "requires PostgreSQL",
+}, async () => {
+  const scenario = await seedScenario({ itemCount: 1, channelCount: 1 });
+  await pool.query(
+    `UPDATE auto_listing_ai_profile_channels
+        SET assigned_job_id=$3,assigned_item_id=$4,assigned_status_version=3,assigned_at=NOW()
+      WHERE account_id=$1 AND channel_id=$2`,
+    [scenario.accountId, scenario.channelIds[0], scenario.jobId, scenario.items[0].itemId],
+  );
+  await pool.query(
+    "UPDATE auto_listing_job_items SET status_version=4 WHERE account_id=$1 AND id=$2",
+    [scenario.accountId, scenario.items[0].itemId],
+  );
+  const current = await insertOutbox(scenario, {
+    itemId: scenario.items[0].itemId, phase: "PLAN_CONTENT", expectedStatusVersion: 4,
+    suffixLabel: `current-generation-blocked-${sequence}`,
+  });
+
+  assert.deepEqual(await claim(createPostgresAiOutboxRepository({ pool }), scenario, "relay-current-blocked", 1), []);
+  assert.deepEqual((await pool.query(
+    `SELECT assigned_job_id,assigned_item_id,assigned_status_version
+       FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND channel_id=$2`,
+    [scenario.accountId, scenario.channelIds[0]],
+  )).rows[0], {
+    assigned_job_id: scenario.jobId,
+    assigned_item_id: scenario.items[0].itemId,
+    assigned_status_version: 3,
+  });
+  assert.deepEqual((await pool.query(
+    "SELECT state,attempts,dispatch_generation FROM auto_listing_ai_outbox WHERE id=$1",
+    [current.outboxId],
+  )).rows[0], { state: "PENDING", attempts: 0, dispatch_generation: 0 });
+});
+
+test("a stale status-version assignment is cleared before normal affinity selection", {
+  skip: enabled ? false : "requires PostgreSQL",
+}, async () => {
+  const scenario = await seedScenario({ itemCount: 1, channelCount: 2 });
+  await pool.query(
+    `UPDATE auto_listing_ai_outbox
+        SET state='COMPLETED',publication_id=dedupe_key,published_at=NOW(),next_retry_at=NULL
+      WHERE id=$1`,
+    [scenario.items[0].outboxId],
+  );
+  await pool.query(
+    `UPDATE auto_listing_job_items
+        SET status_version=4,last_ai_connection_id=$3,last_ai_connection_version=1,
+            last_ai_channel_assigned_at=NOW()
+      WHERE account_id=$1 AND id=$2`,
+    [scenario.accountId, scenario.items[0].itemId, scenario.connectionIds[1]],
+  );
+  await pool.query(
+    `UPDATE auto_listing_ai_profile_channels
+        SET assigned_job_id=$3,assigned_item_id=$4,assigned_status_version=3,assigned_at=NOW()
+      WHERE account_id=$1 AND channel_id=$2`,
+    [scenario.accountId, scenario.channelIds[0], scenario.jobId, scenario.items[0].itemId],
+  );
+  const current = await insertOutbox(scenario, {
+    itemId: scenario.items[0].itemId, phase: "PLAN_CONTENT", expectedStatusVersion: 4,
+    suffixLabel: `current-generation-affinity-${sequence}`,
+  });
+
+  const [claimed] = await claim(createPostgresAiOutboxRepository({ pool }), scenario, "relay-current-affinity", 1);
+  assert.equal(claimed.id, current.outboxId);
+  assert.equal(claimed.workMessage.execution.channelId, scenario.channelIds[1]);
+  assert.deepEqual((await pool.query(
+    `SELECT channel_id,assigned_item_id,assigned_status_version
+       FROM auto_listing_ai_profile_channels WHERE account_id=$1 ORDER BY channel_order`,
+    [scenario.accountId],
+  )).rows, [
+    { channel_id: scenario.channelIds[0], assigned_item_id: null, assigned_status_version: null },
+    { channel_id: scenario.channelIds[1], assigned_item_id: scenario.items[0].itemId, assigned_status_version: 4 },
+  ]);
 });
 
 test("multiple image slots for one item never receive simultaneous execution leases", {
@@ -456,6 +561,26 @@ test("concurrent workers cannot allocate one channel or item twice", {
   )).rows[0].count, 1);
 });
 
+test("concurrent workers cannot allocate one item across two available channels", {
+  skip: enabled ? false : "requires PostgreSQL",
+}, async () => {
+  const scenario = await seedScenario({ itemCount: 1, channelCount: 2 });
+  const results = await Promise.all([
+    claim(createPostgresAiOutboxRepository({ pool }), scenario, "relay-one-item-a", 1),
+    claim(createPostgresAiOutboxRepository({ pool }), scenario, "relay-one-item-b", 1),
+  ]);
+  assert.equal(results.flat().length, 1);
+  assert.equal((await pool.query(
+    `SELECT COUNT(*)::INTEGER AS count FROM auto_listing_ai_profile_channels
+      WHERE account_id=$1 AND assigned_item_id=$2`,
+    [scenario.accountId, scenario.items[0].itemId],
+  )).rows[0].count, 1);
+  assert.deepEqual((await pool.query(
+    "SELECT state,attempts,dispatch_generation FROM auto_listing_ai_outbox WHERE id=$1",
+    [scenario.items[0].outboxId],
+  )).rows[0], { state: "PROCESSING", attempts: 1, dispatch_generation: 1 });
+});
+
 test("old disabled frozen profiles keep using their retired exact-version channel", {
   skip: enabled ? false : "requires PostgreSQL",
 }, async () => {
@@ -574,6 +699,29 @@ test("job creation time precedes item source order when retry times tie", {
   assert.equal(claimed.id, older.outboxId);
 });
 
+test("outbox creation time wins before lexical ID when earlier ordering fields tie", {
+  skip: enabled ? false : "requires PostgreSQL",
+}, async () => {
+  const scenario = await seedScenario({ itemCount: 1, channelCount: 2 });
+  const earlier = await insertOutbox(scenario, {
+    itemId: scenario.items[0].itemId, phase: "MATERIALIZE_SOURCE_ASSET",
+    target: `created-at-source-${suffix}`, suffixLabel: `created-earlier-${sequence}`,
+    nextRetryAt: new Date("2020-01-01T00:00:00Z"),
+    createdAt: new Date("2021-01-01T00:00:00Z"),
+  });
+  await pool.query(
+    `UPDATE auto_listing_ai_outbox
+        SET next_retry_at='2020-01-01T00:00:00Z'::TIMESTAMPTZ,
+            available_at='2020-01-01T00:00:00Z'::TIMESTAMPTZ,
+            created_at='2022-01-01T00:00:00Z'::TIMESTAMPTZ
+      WHERE account_id=$1 AND id=$2`,
+    [scenario.accountId, scenario.items[0].outboxId],
+  );
+  const [claimed] = await claim(createPostgresAiOutboxRepository({ pool }), scenario, "relay-created-at", 1);
+  assert.equal(claimed.id, earlier.outboxId);
+  assert.equal(scenario.items[0].outboxId < earlier.outboxId, true);
+});
+
 test("marking publication is exact and keeps both execution leases live", {
   skip: enabled ? false : "requires PostgreSQL",
 }, async () => {
@@ -683,11 +831,17 @@ test("adopt and renew replace and extend both exact leases atomically", {
   for (const stale of [
     { ...adoptCommand, accountId: `wrong-${suffix}` },
     { ...adoptCommand, itemId: `wrong-${suffix}` },
+    { ...adoptCommand, publicationId: `${adoptCommand.publicationId}-wrong` },
     { ...adoptCommand, dispatchGeneration: adoptCommand.dispatchGeneration + 1 },
+    { ...adoptCommand, relayOwner: `wrong-${suffix}` },
     { ...adoptCommand, relayToken: `wrong-${suffix}` },
-  ]) await assert.rejects(repository.adoptAutoListingAiWork(stale), {
-    code: "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED",
-  });
+  ]) {
+    const before = await executionSnapshot(scenario, row);
+    await assert.rejects(repository.adoptAutoListingAiWork(stale), {
+      code: "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED",
+    });
+    assert.deepEqual(await executionSnapshot(scenario, row), before);
+  }
   const adopted = await repository.adoptAutoListingAiWork(adoptCommand);
   assert.equal(adopted.workMessage.execution.leaseOwner, "worker-adopted");
   assert.equal(adopted.workMessage.execution.leaseToken, `worker-token-${suffix}`);
@@ -701,11 +855,17 @@ test("adopt and renew replace and extend both exact leases atomically", {
   for (const stale of [
     { ...renewCommand, accountId: `wrong-${suffix}` },
     { ...renewCommand, itemId: `wrong-${suffix}` },
+    { ...renewCommand, publicationId: `${renewCommand.publicationId}-wrong` },
     { ...renewCommand, dispatchGeneration: renewCommand.dispatchGeneration + 1 },
+    { ...renewCommand, workerId: `wrong-${suffix}` },
     { ...renewCommand, leaseToken: `wrong-${suffix}` },
-  ]) await assert.rejects(repository.renewAutoListingAiWorkLease(stale), {
-    code: "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED",
-  });
+  ]) {
+    const before = await executionSnapshot(scenario, adopted);
+    await assert.rejects(repository.renewAutoListingAiWorkLease(stale), {
+      code: "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED",
+    });
+    assert.deepEqual(await executionSnapshot(scenario, adopted), before);
+  }
   const renewed = await repository.renewAutoListingAiWorkLease(renewCommand);
   assert.equal(Date.parse(renewed.workMessage.execution.leaseExpiresAt) > firstExpiry, true);
   const leases = (await pool.query(
@@ -748,4 +908,119 @@ test("a channel-side fencing mismatch prevents one-sided renewal", {
     [row.id],
   )).rows[0].lease_expires_at;
   assert.equal(after.getTime(), before.getTime());
+});
+
+test("legacy lifecycle methods reject v3 work without mutating either lease or business state", {
+  skip: enabled ? false : "requires PostgreSQL",
+}, async () => {
+  const cases = [
+    ["renew", (repository, row) => repository.renewAutoListingAiMessageLease({
+      accountId: row.accountId, itemId: row.itemId, id: row.id,
+      workerId: row.leaseOwner, leaseToken: row.leaseToken, leaseMs: 180_000,
+    })],
+    ["complete", (repository, row) => repository.completeAutoListingAiMessage({
+      accountId: row.accountId, itemId: row.itemId, id: row.id,
+      workerId: row.leaseOwner, leaseToken: row.leaseToken,
+    })],
+    ["fail", (repository, row) => repository.failAutoListingAiMessage({
+      accountId: row.accountId, itemId: row.itemId, id: row.id,
+      workerId: row.leaseOwner, leaseToken: row.leaseToken,
+      errorCode: "AUTO_LISTING_AI_PUBLISH_RETRYABLE",
+    })],
+    ["dead-letter", (repository, row) => repository.deadLetterAutoListingAiMessage({
+      accountId: row.accountId, itemId: row.itemId, id: row.id,
+      workerId: row.leaseOwner, leaseToken: row.leaseToken,
+      errorCode: "AUTO_LISTING_AI_PUBLISH_FAILED",
+    })],
+  ];
+  for (const [name, execute] of cases) {
+    const scenario = await seedScenario({ itemCount: 1, channelCount: 1 });
+    const repository = createPostgresAiOutboxRepository({ pool });
+    const [row] = await claim(repository, scenario, `relay-legacy-${name}`, 1);
+    const before = await executionSnapshot(scenario, row);
+    await assert.rejects(execute(repository, row), {
+      code: "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED",
+    });
+    assert.deepEqual(await executionSnapshot(scenario, row), before);
+  }
+});
+
+test("legacy lifecycle methods also reject null-dispatch work from a connected frozen profile", {
+  skip: enabled ? false : "requires PostgreSQL",
+}, async () => {
+  const scenario = await seedScenario({ itemCount: 1, channelCount: 1 });
+  const repository = createPostgresAiOutboxRepository({ pool });
+  const [row] = await claim(repository, scenario, "relay-connected-null-dispatch", 1);
+  await pool.query(
+    `UPDATE auto_listing_ai_outbox
+        SET dispatch_contract_version=NULL,dispatch_generation=0,dispatch_queued_at=NULL,publication_id=NULL
+      WHERE account_id=$1 AND id=$2`,
+    [row.accountId, row.id],
+  );
+  const before = await executionSnapshot(scenario, row);
+  await assert.rejects(repository.renewAutoListingAiMessageLease({
+    accountId: row.accountId, itemId: row.itemId, id: row.id,
+    workerId: row.leaseOwner, leaseToken: row.leaseToken, leaseMs: 180_000,
+  }), { code: "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED" });
+  assert.deepEqual(await executionSnapshot(scenario, row), before);
+});
+
+test("legacy reconciliation never projects v3 DEAD or interrupted rows", {
+  skip: enabled ? false : "requires PostgreSQL",
+}, async () => {
+  const deadScenario = await seedScenario({ itemCount: 1, channelCount: 1 });
+  const repository = createPostgresAiOutboxRepository({ pool });
+  const [deadRow] = await claim(repository, deadScenario, "relay-v3-dead", 1);
+  await pool.query(
+    `UPDATE auto_listing_ai_outbox
+        SET state='DEAD',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
+            publication_id=NULL,published_at=NULL,next_retry_at=NULL,dead_at=NOW(),
+            last_error_code='AUTO_LISTING_AI_PUBLISH_FAILED'
+      WHERE account_id=$1 AND id=$2`,
+    [deadRow.accountId, deadRow.id],
+  );
+  await pool.query(
+    `UPDATE auto_listing_ai_profile_channels
+        SET execution_lease_owner=NULL,execution_lease_token=NULL,execution_lease_expires_at=NULL
+      WHERE account_id=$1 AND channel_id=$2`,
+    [deadScenario.accountId, deadScenario.channelIds[0]],
+  );
+  const deadBefore = await executionSnapshot(deadScenario, deadRow);
+  assert.deepEqual(await repository.reconcileDeadAutoListingAiMessages({
+    accountId: deadScenario.accountId, limit: 10,
+  }), { recovered: 0 });
+  assert.deepEqual(await repository.reconcileDeadLegacyAutoListingAiMessages({
+    accountId: deadScenario.accountId, limit: 10,
+  }), { recovered: 0 });
+  assert.deepEqual(await executionSnapshot(deadScenario, deadRow), deadBefore);
+
+  const interruptedScenario = await seedScenario({ itemCount: 1, channelCount: 1 });
+  const [interruptedRow] = await claim(repository, interruptedScenario, "relay-v3-interrupted", 1);
+  await repository.markAutoListingAiWorkPublished({
+    accountId: interruptedRow.accountId, itemId: interruptedRow.itemId, id: interruptedRow.id,
+    workerId: interruptedRow.leaseOwner, leaseToken: interruptedRow.leaseToken,
+    publicationId: interruptedRow.publicationId,
+  });
+  await pool.query(
+    `UPDATE auto_listing_ai_outbox
+        SET state='COMPLETED',published_at=NOW()-INTERVAL '4 hours',next_retry_at=NULL,
+            lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
+      WHERE account_id=$1 AND id=$2`,
+    [interruptedRow.accountId, interruptedRow.id],
+  );
+  await pool.query(
+    "UPDATE auto_listing_job_items SET updated_at=NOW()-INTERVAL '4 hours' WHERE account_id=$1 AND id=$2",
+    [interruptedScenario.accountId, interruptedScenario.items[0].itemId],
+  );
+  await pool.query(
+    `UPDATE auto_listing_ai_profile_channels
+        SET execution_lease_owner=NULL,execution_lease_token=NULL,execution_lease_expires_at=NULL
+      WHERE account_id=$1 AND channel_id=$2`,
+    [interruptedScenario.accountId, interruptedScenario.channelIds[0]],
+  );
+  const interruptedBefore = await executionSnapshot(interruptedScenario, interruptedRow);
+  assert.deepEqual(await repository.reconcileInterruptedAutoListingAiItems({
+    accountId: interruptedScenario.accountId, limit: 10,
+  }), { recovered: 0 });
+  assert.deepEqual(await executionSnapshot(interruptedScenario, interruptedRow), interruptedBefore);
 });

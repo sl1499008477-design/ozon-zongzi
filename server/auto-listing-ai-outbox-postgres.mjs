@@ -325,15 +325,15 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
       }
     }
   };
-  const reconcileDeadMessages = async (input, { legacy }) => {
+  const reconcileDeadMessages = async (input) => {
     const request = reconcileInput(input);
-    const frozenLegacyJoin = legacy ? `
+    const frozenLegacyJoin = `
              JOIN auto_listing_jobs AS job
                ON job.account_id=o.account_id AND job.id=o.job_id
              JOIN ai_gateway_profiles AS profile
                ON profile.account_id=job.account_id AND profile.id=job.ai_profile_id
               AND profile.config_version=job.ai_profile_version
-              AND profile.connection_id IS NULL` : "";
+              AND profile.connection_id IS NULL`;
     const result = await query(
       `WITH candidates AS MATERIALIZED (
            SELECT o.id AS outbox_id,o.account_id,o.job_id,o.item_id,o.phase,
@@ -342,7 +342,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
              JOIN auto_listing_job_items AS i
                ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id${frozenLegacyJoin}
             WHERE o.account_id=$1 AND o.contract_version='V1' AND o.state='DEAD'
-              AND o.dispatch_contract_version IS DISTINCT FROM 'CHANNEL_WORK_V1'
+              AND o.dispatch_contract_version IS NULL
               AND i.status_version=o.expected_status_version
               AND ((o.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
                     AND i.status='PLANNING')
@@ -398,11 +398,13 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
          WHERE outbox.contract_version='V1'
            AND ($1::TEXT IS NULL OR outbox.account_id > $1)
            AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW()
-                 AND (profile.connection_id IS NOT NULL OR outbox.attempts < $3))
+                 AND (profile.connection_id IS NOT NULL
+                   OR (outbox.dispatch_contract_version IS NULL AND outbox.attempts < $3)))
              OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()
-                 AND (profile.connection_id IS NOT NULL OR outbox.attempts < $3))
+                 AND (profile.connection_id IS NOT NULL
+                   OR (outbox.dispatch_contract_version IS NULL AND outbox.attempts < $3)))
              OR (profile.connection_id IS NULL AND outbox.state='DEAD'
-               AND outbox.dispatch_contract_version IS DISTINCT FROM 'CHANNEL_WORK_V1' AND EXISTS (
+               AND outbox.dispatch_contract_version IS NULL AND EXISTS (
                SELECT 1 FROM auto_listing_job_items AS i
                 WHERE i.account_id=outbox.account_id
                   AND i.job_id=outbox.job_id
@@ -414,6 +416,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                         AND i.status='GENERATING'))
              ))
              OR (profile.connection_id IS NULL AND outbox.state='COMPLETED'
+               AND outbox.dispatch_contract_version IS NULL
                AND outbox.published_at <= NOW()-INTERVAL '3 hours'
                AND EXISTS (
                  SELECT 1 FROM auto_listing_job_items AS i
@@ -452,11 +455,11 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
     },
 
     async reconcileDeadAutoListingAiMessages(input) {
-      return reconcileDeadMessages(input, { legacy: false });
+      return reconcileDeadMessages(input);
     },
 
     async reconcileDeadLegacyAutoListingAiMessages(input) {
-      return reconcileDeadMessages(input, { legacy: true });
+      return reconcileDeadMessages(input);
     },
 
     async reconcileInterruptedAutoListingAiItems(input) {
@@ -475,6 +478,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                 SELECT 1 FROM auto_listing_ai_outbox AS done
                  WHERE done.account_id=i.account_id AND done.job_id=i.job_id AND done.item_id=i.id
                    AND done.contract_version='V1' AND done.state='COMPLETED'
+                   AND done.dispatch_contract_version IS NULL
                    AND done.expected_status_version=i.status_version
                    AND done.published_at <= NOW()-INTERVAL '3 hours'
               )
@@ -614,6 +618,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                 SET state='DEAD',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
                     last_error_code='AUTO_LISTING_AI_LEASE_EXHAUSTED',dead_at=NOW(),next_retry_at=NULL,updated_at=NOW()
               WHERE exhausted_outbox.account_id=$1 AND exhausted_outbox.contract_version='V1'
+                AND exhausted_outbox.dispatch_contract_version IS NULL
                 AND exhausted_outbox.state='PROCESSING'
                 AND exhausted_outbox.lease_expires_at <= NOW() AND exhausted_outbox.attempts >= $3
                 AND EXISTS (
@@ -641,7 +646,8 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                  JOIN auto_listing_job_items AS item
                    ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
                 WHERE outbox.account_id=job.account_id AND outbox.job_id=job.id
-                  AND outbox.contract_version='V1' AND outbox.attempts < $3
+                  AND outbox.contract_version='V1' AND outbox.dispatch_contract_version IS NULL
+                  AND outbox.attempts < $3
                   AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW())
                     OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
                   AND NOT EXISTS (
@@ -689,7 +695,8 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                       AND profile.config_version=frozen_job.ai_profile_version
                       AND profile.connection_id IS NULL
                     WHERE outbox.account_id=$1 AND outbox.job_id=locked.job_id
-                      AND outbox.contract_version='V1' AND outbox.attempts < $5
+                      AND outbox.contract_version='V1' AND outbox.dispatch_contract_version IS NULL
+                      AND outbox.attempts < $5
                       AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW())
                         OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
                       AND NOT EXISTS (
@@ -715,6 +722,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                     lease_expires_at=NOW()+($4 * INTERVAL '1 millisecond'),updated_at=NOW()
                FROM candidates
               WHERE outbox.id=candidates.id AND outbox.account_id=$1
+                AND outbox.dispatch_contract_version IS NULL
                 AND EXISTS (
                   SELECT 1
                     FROM auto_listing_jobs AS claimed_job
@@ -774,6 +782,11 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
             `SELECT outbox.*,job.ai_profile_id,job.ai_profile_version,
                     item.status AS item_status,item.status_version AS item_status_version,
                     channel.channel_id,channel.connection_id,channel.connection_version,
+                    channel.candidate_assigned_job_id,channel.candidate_assigned_item_id,
+                    channel.candidate_assigned_status_version,
+                    assignment.channel_id AS assignment_channel_id,
+                    assignment.assigned_status_version AS assignment_status_version,
+                    assignment.exact AS assignment_exact,assignment.stale AS assignment_stale,
                     NOW()+($2 * INTERVAL '1 millisecond') AS claim_lease_expires_at
                FROM auto_listing_ai_outbox AS outbox
                JOIN auto_listing_jobs AS job
@@ -784,9 +797,39 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                 AND profile.connection_id IS NOT NULL AND profile.connection_version IS NOT NULL
                JOIN auto_listing_job_items AS item
                  ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
+               LEFT JOIN LATERAL (
+                 SELECT assigned.channel_id,assigned.assigned_status_version,
+                        assigned.assigned_status_version=outbox.expected_status_version AS exact,
+                        (assigned.assigned_status_version<>outbox.expected_status_version
+                          AND (assigned.execution_lease_expires_at IS NULL
+                            OR assigned.execution_lease_expires_at <= NOW())
+                          AND (assigned_item.status NOT IN ('PLANNING','GENERATING')
+                            OR NOT EXISTS (
+                              SELECT 1 FROM auto_listing_ai_outbox AS recoverable
+                               WHERE recoverable.account_id=assigned.account_id
+                                 AND recoverable.job_id=assigned.assigned_job_id
+                                 AND recoverable.item_id=assigned.assigned_item_id
+                                 AND recoverable.expected_status_version=assigned.assigned_status_version
+                                 AND recoverable.contract_version='V1'
+                                 AND recoverable.state IN ('PENDING','PROCESSING')
+                            ))) AS stale
+                   FROM auto_listing_ai_profile_channels AS assigned
+                   JOIN auto_listing_job_items AS assigned_item
+                     ON assigned_item.account_id=assigned.account_id
+                    AND assigned_item.job_id=assigned.assigned_job_id
+                    AND assigned_item.id=assigned.assigned_item_id
+                  WHERE assigned.account_id=outbox.account_id
+                    AND assigned.assigned_job_id=outbox.job_id
+                    AND assigned.assigned_item_id=outbox.item_id
+                  LIMIT 1
+                  FOR UPDATE OF assigned SKIP LOCKED
+               ) AS assignment ON TRUE
                JOIN LATERAL (
                  SELECT candidate.channel_id,candidate.connection_id,candidate.connection_version,
-                        (candidate.assigned_job_id=outbox.job_id AND candidate.assigned_item_id=outbox.item_id) AS fixed
+                        candidate.assigned_job_id AS candidate_assigned_job_id,
+                        candidate.assigned_item_id AS candidate_assigned_item_id,
+                        candidate.assigned_status_version AS candidate_assigned_status_version,
+                        (assignment.exact IS TRUE AND candidate.channel_id=assignment.channel_id) AS fixed
                    FROM auto_listing_ai_profile_channels AS candidate
                    JOIN ai_gateway_connection_versions AS connection
                      ON connection.account_id=candidate.account_id
@@ -805,18 +848,17 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                     AND connection.status IN ('ACTIVE','VALIDATED','RETIRED')
                     AND (candidate.execution_lease_expires_at IS NULL OR candidate.execution_lease_expires_at <= NOW())
                     AND (
-                      (candidate.assigned_job_id=outbox.job_id AND candidate.assigned_item_id=outbox.item_id)
+                      (assignment.exact IS TRUE AND candidate.channel_id=assignment.channel_id)
                       OR (
-                        NOT EXISTS (
-                          SELECT 1 FROM auto_listing_ai_profile_channels AS fixed_channel
-                           WHERE fixed_channel.account_id=outbox.account_id
-                             AND fixed_channel.profile_id=job.ai_profile_id
-                             AND fixed_channel.profile_version=job.ai_profile_version
-                             AND fixed_channel.assigned_job_id=outbox.job_id
-                             AND fixed_channel.assigned_item_id=outbox.item_id
-                        )
+                        (assignment.stale IS TRUE OR (assignment.channel_id IS NULL AND NOT EXISTS (
+                          SELECT 1 FROM auto_listing_ai_profile_channels AS assigned_probe
+                           WHERE assigned_probe.account_id=outbox.account_id
+                             AND assigned_probe.assigned_job_id=outbox.job_id
+                             AND assigned_probe.assigned_item_id=outbox.item_id
+                        )))
                         AND (
                           candidate.assigned_job_id IS NULL
+                          OR (assignment.stale IS TRUE AND candidate.channel_id=assignment.channel_id)
                           OR (candidate.execution_lease_expires_at IS NULL OR candidate.execution_lease_expires_at <= NOW())
                             AND (assigned_item.status NOT IN ('PLANNING','GENERATING')
                               OR NOT EXISTS (
@@ -824,6 +866,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                                  WHERE recoverable.account_id=candidate.account_id
                                    AND recoverable.job_id=candidate.assigned_job_id
                                    AND recoverable.item_id=candidate.assigned_item_id
+                                   AND recoverable.expected_status_version=candidate.assigned_status_version
                                    AND recoverable.contract_version='V1'
                                    AND recoverable.state IN ('PENDING','PROCESSING')
                               ))
@@ -831,7 +874,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                       )
                     )
                   ORDER BY
-                    CASE WHEN candidate.assigned_job_id=outbox.job_id AND candidate.assigned_item_id=outbox.item_id THEN 0
+                    CASE WHEN assignment.exact IS TRUE AND candidate.channel_id=assignment.channel_id THEN 0
                          WHEN candidate.connection_id=item.last_ai_connection_id
                           AND candidate.connection_version=item.last_ai_connection_version THEN 1
                          ELSE 2 END,
@@ -868,16 +911,59 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
             throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
           }
           const leaseExpiresAt = candidate.claim_lease_expires_at;
+          const staleAssignment = candidate.assignment_stale === true && candidate.assignment_exact !== true;
+          if (staleAssignment) {
+            const cleared = await clientQuery.call(
+              client,
+              `UPDATE auto_listing_ai_profile_channels AS stale
+                  SET assigned_job_id=NULL,assigned_item_id=NULL,assigned_status_version=NULL,assigned_at=NULL,
+                      execution_lease_owner=NULL,execution_lease_token=NULL,execution_lease_expires_at=NULL,updated_at=NOW()
+                WHERE stale.account_id=$1 AND stale.channel_id=$2
+                  AND stale.assigned_job_id=$3 AND stale.assigned_item_id=$4
+                  AND stale.assigned_status_version=$5
+                  AND (stale.execution_lease_expires_at IS NULL OR stale.execution_lease_expires_at <= NOW())
+                  AND (EXISTS (
+                    SELECT 1 FROM auto_listing_job_items AS assigned_item
+                     WHERE assigned_item.account_id=stale.account_id
+                       AND assigned_item.job_id=stale.assigned_job_id
+                       AND assigned_item.id=stale.assigned_item_id
+                       AND assigned_item.status NOT IN ('PLANNING','GENERATING')
+                  ) OR NOT EXISTS (
+                    SELECT 1 FROM auto_listing_ai_outbox AS recoverable
+                     WHERE recoverable.account_id=stale.account_id
+                       AND recoverable.job_id=stale.assigned_job_id
+                       AND recoverable.item_id=stale.assigned_item_id
+                       AND recoverable.expected_status_version=stale.assigned_status_version
+                       AND recoverable.contract_version='V1'
+                       AND recoverable.state IN ('PENDING','PROCESSING')
+                  ))
+                RETURNING channel_id`,
+              [request.accountId, candidate.assignment_channel_id, candidate.job_id,
+                candidate.item_id, candidate.assignment_status_version],
+            );
+            if (cleared.rows?.length !== 1) throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+          }
+          const selectedChannelWasCleared = staleAssignment
+            && candidate.channel_id === candidate.assignment_channel_id;
           const channelUpdate = await clientQuery.call(
             client,
             `UPDATE auto_listing_ai_profile_channels
                 SET assigned_job_id=$5,assigned_item_id=$6,assigned_status_version=$7,assigned_at=NOW(),
                     execution_lease_owner=$8,execution_lease_token=$9,execution_lease_expires_at=$10,updated_at=NOW()
               WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4
+                AND assigned_job_id IS NOT DISTINCT FROM $11
+                AND assigned_item_id IS NOT DISTINCT FROM $12
+                AND assigned_status_version IS NOT DISTINCT FROM $13
+                AND enabled IS TRUE AND requires_revalidation IS FALSE
+                AND (cooldown_until IS NULL OR cooldown_until <= NOW())
+                AND (execution_lease_expires_at IS NULL OR execution_lease_expires_at <= NOW())
               RETURNING channel_id,connection_id,connection_version`,
             [request.accountId, candidate.ai_profile_id, candidate.ai_profile_version, candidate.channel_id,
               candidate.job_id, candidate.item_id, candidate.expected_status_version, request.workerId,
-              leaseToken, leaseExpiresAt],
+              leaseToken, leaseExpiresAt,
+              selectedChannelWasCleared ? null : candidate.candidate_assigned_job_id,
+              selectedChannelWasCleared ? null : candidate.candidate_assigned_item_id,
+              selectedChannelWasCleared ? null : candidate.candidate_assigned_status_version],
           );
           if (channelUpdate.rows?.length !== 1) throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
           const itemUpdate = await clientQuery.call(
@@ -1123,7 +1209,18 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
         `UPDATE auto_listing_ai_outbox
          SET lease_expires_at=NOW()+($6 * INTERVAL '1 millisecond'),updated_at=NOW()
          WHERE account_id=$1 AND id=$2 AND item_id=$3 AND lease_owner=$4 AND lease_token=$5
-           AND contract_version='V1' AND state='PROCESSING' AND lease_expires_at > NOW()
+           AND contract_version='V1' AND dispatch_contract_version IS NULL
+           AND state='PROCESSING' AND lease_expires_at > NOW()
+           AND EXISTS (
+             SELECT 1 FROM auto_listing_jobs AS frozen_job
+             JOIN ai_gateway_profiles AS frozen_profile
+               ON frozen_profile.account_id=frozen_job.account_id
+              AND frozen_profile.id=frozen_job.ai_profile_id
+              AND frozen_profile.config_version=frozen_job.ai_profile_version
+              AND frozen_profile.connection_id IS NULL
+            WHERE frozen_job.account_id=auto_listing_ai_outbox.account_id
+              AND frozen_job.id=auto_listing_ai_outbox.job_id
+           )
          RETURNING *`,
         [value.accountId, value.id, value.itemId, value.workerId, value.leaseToken, value.leaseMs],
       ));
@@ -1136,7 +1233,18 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
          SET state='COMPLETED',publication_id=dedupe_key,published_at=NOW(),next_retry_at=NULL,
            lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,last_error_code=NULL,last_error_safe=NULL,updated_at=NOW()
          WHERE account_id=$1 AND id=$2 AND item_id=$3 AND lease_owner=$4 AND lease_token=$5
-           AND contract_version='V1' AND state='PROCESSING' AND lease_expires_at > NOW()
+           AND contract_version='V1' AND dispatch_contract_version IS NULL
+           AND state='PROCESSING' AND lease_expires_at > NOW()
+           AND EXISTS (
+             SELECT 1 FROM auto_listing_jobs AS frozen_job
+             JOIN ai_gateway_profiles AS frozen_profile
+               ON frozen_profile.account_id=frozen_job.account_id
+              AND frozen_profile.id=frozen_job.ai_profile_id
+              AND frozen_profile.config_version=frozen_job.ai_profile_version
+              AND frozen_profile.connection_id IS NULL
+            WHERE frozen_job.account_id=auto_listing_ai_outbox.account_id
+              AND frozen_job.id=auto_listing_ai_outbox.job_id
+           )
          RETURNING *`,
         [value.accountId, value.id, value.itemId, value.workerId, value.leaseToken],
       ));
@@ -1152,7 +1260,18 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
              LEAST($8 * POWER(2,LEAST(GREATEST(attempts-1,0),30)),$9) * INTERVAL '1 millisecond') END,
            dead_at=CASE WHEN attempts >= $6 THEN NOW() ELSE NULL END,updated_at=NOW()
          WHERE account_id=$1 AND id=$2 AND item_id=$3 AND lease_owner=$4 AND lease_token=$5
-           AND contract_version='V1' AND state='PROCESSING' AND lease_expires_at > NOW()
+           AND contract_version='V1' AND dispatch_contract_version IS NULL
+           AND state='PROCESSING' AND lease_expires_at > NOW()
+           AND EXISTS (
+             SELECT 1 FROM auto_listing_jobs AS frozen_job
+             JOIN ai_gateway_profiles AS frozen_profile
+               ON frozen_profile.account_id=frozen_job.account_id
+              AND frozen_profile.id=frozen_job.ai_profile_id
+              AND frozen_profile.config_version=frozen_job.ai_profile_version
+              AND frozen_profile.connection_id IS NULL
+            WHERE frozen_job.account_id=auto_listing_ai_outbox.account_id
+              AND frozen_job.id=auto_listing_ai_outbox.job_id
+           )
          RETURNING *`,
         [value.accountId, value.id, value.itemId, value.workerId, value.leaseToken, maxAttempts, value.errorCode, baseRetryMs, maxRetryMs],
       ));
@@ -1165,7 +1284,18 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
          SET state='DEAD',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
            last_error_code=$6,last_error_safe=NULL,next_retry_at=NULL,dead_at=NOW(),updated_at=NOW()
          WHERE account_id=$1 AND id=$2 AND item_id=$3 AND lease_owner=$4 AND lease_token=$5
-           AND contract_version='V1' AND state='PROCESSING' AND lease_expires_at > NOW()
+           AND contract_version='V1' AND dispatch_contract_version IS NULL
+           AND state='PROCESSING' AND lease_expires_at > NOW()
+           AND EXISTS (
+             SELECT 1 FROM auto_listing_jobs AS frozen_job
+             JOIN ai_gateway_profiles AS frozen_profile
+               ON frozen_profile.account_id=frozen_job.account_id
+              AND frozen_profile.id=frozen_job.ai_profile_id
+              AND frozen_profile.config_version=frozen_job.ai_profile_version
+              AND frozen_profile.connection_id IS NULL
+            WHERE frozen_job.account_id=auto_listing_ai_outbox.account_id
+              AND frozen_job.id=auto_listing_ai_outbox.job_id
+           )
          RETURNING *`,
         [value.accountId, value.id, value.itemId, value.workerId, value.leaseToken, value.errorCode],
       ));
