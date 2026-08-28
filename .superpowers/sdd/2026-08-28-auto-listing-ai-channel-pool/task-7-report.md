@@ -3,11 +3,21 @@
 ## Outcome
 
 Task 7 is implemented in commit `2b7ae449ed84ef226fa09c38b8e5d5d47d5a5af4`
-(`feat: route auto-listing phases through leased channels`).
+(`feat: route auto-listing phases through leased channels`) and review remediation
+commit `b8867fc27a9a4480cf0501e6ea66c58016cefbb5`
+(`fix: fence AI attempts by exact execution owner`). The original report was
+recorded in commit `100aeef8f3cf119a8720f51231a0fdbe1a998d8d`.
 
 Paid auto-listing phases now keep the job-frozen profile models and protocols while resolving only the exact adopted channel connection/version. No selector, arbitrary connection, current-profile, or default-connection fallback was added. Planner, image generator/checker, and rich-content attempts persist their leased connection provenance, and repository writes fence the account/item/status-version attempt owner and connection version.
 
 No real AI, Sub2API, Ozon, deployment, or push side effect was performed.
+
+The initial independent Task 7 review failed with 0 Critical, 2 Important, and
+0 Minor findings. It found that rich-content reserve/terminal/release operations
+did not yet lock and fence the current `GENERATING` item status/version/active
+plan, and that the exported memory image-attempt repository did not enforce the
+same exact gateway connection pair as PostgreSQL. Both findings are closed by
+the remediation commit above.
 
 ## TDD evidence
 
@@ -22,6 +32,18 @@ Tests were added before implementation for these missing contracts:
 - caller/repository tests require leased idle timeout, generator/checker provenance, and exact SQL connection fences.
 
 The first focused RED run failed at the intended boundaries: the context loader still accepted a raw message and used profile routing, the worker passed only the message, the orchestrator rejected `gatewayExecution`, and planner-attempt reservation rejected/omitted the new provenance fields. A later focused run had 4 stale-contract failures (phase input/value assertions and two worker fixtures); those were updated only after the production contracts existed.
+
+Review remediation also followed RED/GREEN in two passes:
+
+- the first four-file run had 6 intended failures: rich caller/orchestrator did
+  not propagate `expectedStatusVersion`; PostgreSQL rich reserve did not fence
+  `GENERATING`/status version/active plan; rich terminal/release SQL did not
+  include the current item; and memory generation allowed connection B to
+  terminalize or reclaim connection A;
+- after the basic live-item `UPDATE ... FROM` fence was green, an additional
+  race test intentionally failed until terminal and release statements acquired
+  the current item row with `FOR UPDATE` before changing an attempt. This closes
+  the status-transition race rather than merely checking a statement snapshot.
 
 ### GREEN
 
@@ -46,7 +68,34 @@ fail 0
 skipped 0
 ```
 
-All 11 changed production `.mjs` files passed `node --check`. `git diff --check` passed. The exact credential-resolver regression passed unchanged, confirming it still decrypts only `{ accountId, connectionId, connectionVersion }` and provides no connection selector.
+Final review-remediation focused caller/repository/orchestrator run:
+
+```text
+tests 202
+pass 202
+fail 0
+skipped 0
+```
+
+Final prior-Task-7 plus Task-6 memory-parity regression:
+
+```text
+tests 500
+pass 499
+fail 0
+skipped 1
+```
+
+Final Task-8 adapter/caller plus Task-6 worker/memory regression:
+
+```text
+tests 356
+pass 356
+fail 0
+skipped 0
+```
+
+All changed `.mjs` files passed `node --check`. `git diff --check` passed. The exact credential-resolver regression passed unchanged, confirming it still decrypts only `{ accountId, connectionId, connectionVersion }` and provides no connection selector.
 
 ## Public contracts
 
@@ -69,6 +118,16 @@ All 11 changed production `.mjs` files passed `node --check`. `git diff --check`
 - Planner repository/evidence commands carry `gatewayConnectionId/gatewayConnectionVersion`.
 - Image attempt commands carry generator connection provenance and terminal checker connection provenance. Reserve, bind, storage, terminal, release, compensation, and lookup writes are fenced by the exact attempt connection pair.
 - Rich-content reserve/reclaim/terminal/release commands carry and fence `gatewayConnectionId/gatewayConnectionVersion`.
+- Rich-content commands also carry the orchestration message's exact
+  `expectedStatusVersion`. Reservation locks only the account/job/item row in
+  `GENERATING` at that version and with the exact active plan before any attempt
+  mutation. Complete/reject/fail/release acquire the same item row with
+  `FOR UPDATE` in the atomic statement and retain every Task 6 attempt, evidence,
+  token, expiry, and connection predicate.
+- The exported memory image-attempt repository now validates, stores, and owns
+  the exact gateway connection id/version on reserve and reclaim. All owner
+  operations reject a different pair without mutation; an omitted or explicit
+  all-null pair remains compatible with legacy v2 attempts.
 - All paid gateway calls use the `idleTimeoutMs` supplied by the leased execution; legacy calls retain the existing 300-second value.
 
 ## Files changed
@@ -87,6 +146,7 @@ Paid callers and evidence owners:
 - `server/auto-listing-image-generator.mjs`
 - `server/auto-listing-result-checker.mjs`
 - `server/auto-listing-generation-attempt-postgres.mjs`
+- `server/auto-listing-generation-attempt-repository.mjs`
 - `server/auto-listing-rich-content.mjs`
 - `server/auto-listing-rich-content-repository.mjs`
 
@@ -102,8 +162,11 @@ Tests:
 - `server/tests/auto-listing-image-generator.test.mjs`
 - `server/tests/auto-listing-result-checker.test.mjs`
 - `server/tests/auto-listing-generation-attempt-postgres.test.mjs`
+- `server/tests/auto-listing-generation-attempt-repository.test.mjs`
 - `server/tests/auto-listing-rich-content.test.mjs`
 - `server/tests/auto-listing-rich-content-repository.test.mjs`
+- `server/tests/auto-listing-rich-content-postgres-fixture.mjs`
+- `server/tests/auto-listing-ai-workflow-postgres.integration.test.mjs`
 
 `server/auto-listing-ai-credential-resolver.mjs` did not require a production change: its existing exact-version resolver already met Task 7 and its direct regression remained green.
 
@@ -116,7 +179,13 @@ Tests:
 
 ## Risks, unverified scope, and rollback
 
-- The real PostgreSQL integration test was not executed because the explicit nonproduction database environment was unavailable. Unit tests assert SQL shape and parameters, but a gated PostgreSQL run remains the recommended next verification.
+- The real PostgreSQL integration tests were not executed because
+  `AUTO_LISTING_POSTGRES_TESTS=1` and `SONLI_MIGRATION_TEST_DATABASE_URL` were
+  both unavailable. Their fixtures were updated for the exact status version,
+  `GENERATING` item, active plan, and current additive columns; unit tests prove
+  the row-locking SQL shape, exact parameters, stale row-count rejection, and
+  no attempt write before a failed reserve boundary. A gated PostgreSQL run
+  remains the recommended next verification.
 - No real independent second key was configured, so real dual-channel paid concurrency is not claimed.
 - No real gateway or Ozon call was made, by design.
 - The legacy v2 path intentionally supports only null connection provenance; connection-backed work must use adopted v3 execution evidence.
@@ -124,6 +193,7 @@ Tests:
 Rollback the implementation with:
 
 ```bash
+git revert b8867fc27a9a4480cf0501e6ea66c58016cefbb5
 git revert 2b7ae449ed84ef226fa09c38b8e5d5d47d5a5af4
 ```
 
