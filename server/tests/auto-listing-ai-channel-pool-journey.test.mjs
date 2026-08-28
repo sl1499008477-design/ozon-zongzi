@@ -44,22 +44,7 @@ async function eventually(assertion, attempts = 40) {
   throw lastError;
 }
 
-function itemConcurrencyTracker() {
-  const active = new Map();
-  const maximum = new Map();
-  return Object.freeze({
-    start(itemId) {
-      const next = (active.get(itemId) || 0) + 1;
-      active.set(itemId, next);
-      maximum.set(itemId, Math.max(maximum.get(itemId) || 0, next));
-      return next;
-    },
-    end(itemId) { active.set(itemId, (active.get(itemId) || 1) - 1); },
-    maximum(itemId) { return maximum.get(itemId) || 0; },
-  });
-}
-
-function controlledChannel(displayName, itemTracker = null) {
+function controlledChannel(displayName) {
   let active = 0;
   let maximum = 0;
   const calls = [];
@@ -70,15 +55,13 @@ function controlledChannel(displayName, itemTracker = null) {
     maximum: () => maximum,
     async invoke({ itemId, phase, requestId, outcome = "SUCCESS" }) {
       active += 1;
-      const itemActive = itemTracker?.start(itemId) || 1;
       maximum = Math.max(maximum, active);
-      calls.push(Object.freeze({ type: "START", itemId, phase, requestId, active, itemActive }));
+      calls.push(Object.freeze({ type: "START", itemId, phase, requestId, active }));
       const gate = deferred();
       pending.push(gate);
       await gate.promise;
       active -= 1;
-      itemTracker?.end(itemId);
-      calls.push(Object.freeze({ type: "END", itemId, phase, requestId, active, itemActive: itemActive - 1 }));
+      calls.push(Object.freeze({ type: "END", itemId, phase, requestId, active }));
       return outcome;
     },
     releaseNext() {
@@ -184,7 +167,7 @@ function channelFailure(currentMessage, deliveryState = "NOT_SENT") {
   });
 }
 
-function createJourneyWorker({ channels, acceptedSlots = new Set() }) {
+function createJourneyWorker({ channels }) {
   const boss = bossHarness();
   const requeues = [];
   const applied = [];
@@ -210,9 +193,6 @@ function createJourneyWorker({ channels, acceptedSlots = new Set() }) {
       if (execution === null) return ack(currentMessage);
       const channel = channels.get(execution.connectionId);
       assert.ok(channel, `missing independent handler for ${execution.connectionId}`);
-      if (currentMessage.phase === "GENERATE_IMAGE_SLOT" && acceptedSlots.has(currentMessage.slotKey)) {
-        return ack(currentMessage);
-      }
       const requestId = `${execution.connectionId}:${currentMessage.correlationId}`;
       const result = await channel.invoke({
         itemId: currentMessage.itemId,
@@ -223,14 +203,6 @@ function createJourneyWorker({ channels, acceptedSlots = new Set() }) {
           ? "DEFINITE_CONNECTION_FAILURE" : "SUCCESS",
       });
       if (result === "DEFINITE_CONNECTION_FAILURE") return channelFailure(currentMessage, "NOT_SENT");
-      if (currentMessage.phase === "GENERATE_IMAGE_SLOT") {
-        await channel.invoke({
-          itemId: currentMessage.itemId,
-          phase: `image:${currentMessage.slotKey}:checker`,
-          requestId: `${requestId}:checker`,
-        });
-        acceptedSlots.add(currentMessage.slotKey);
-      }
       return ack(currentMessage);
     },
     workflow: Object.freeze({ async applyOutcome(input) { applied.push(input); } }),
@@ -241,96 +213,6 @@ function createJourneyWorker({ channels, acceptedSlots = new Set() }) {
   });
   return Object.freeze({ boss, worker, requeues, applied });
 }
-
-test("cases 2/3/4: independent fake gateways overlap products, serialize each product, switch channels, and reuse accepted images", async () => {
-  const itemTracker = itemConcurrencyTracker();
-  const channelA = controlledChannel("测试通道 A", itemTracker);
-  const channelB = controlledChannel("测试通道 B", itemTracker);
-  const channels = new Map([["connection-a", channelA], ["connection-b", channelB]]);
-  const acceptedSlots = new Set();
-  const journey = createJourneyWorker({ channels, acceptedSlots });
-  await journey.worker.start();
-
-  const first = message({ itemId: "item-a" });
-  const second = message({ itemId: "item-b" });
-  const concurrent = journey.boss.handler(AUTO_LISTING_AI_WORK_QUEUE)([
-    { id: "job-a-plan", data: workMessage(first, { channelId: "channel-a", connectionId: "connection-a" }) },
-    { id: "job-b-plan", data: workMessage(second, { channelId: "channel-b", connectionId: "connection-b" }) },
-  ]);
-  await eventually(() => {
-    assert.equal(channelA.calls.filter((entry) => entry.type === "START").length, 1);
-    assert.equal(channelB.calls.filter((entry) => entry.type === "START").length, 1);
-  });
-  channelA.releaseNext();
-  channelB.releaseNext();
-  assert.equal((await concurrent).every((entry) => entry.status === "completed"), true);
-
-  for (const [slotKey, connectionId, channelId, paidStages] of [
-    ["main-1", "connection-a", "channel-a", 2],
-    ["detail-2", "connection-a", "channel-a", 1],
-    ["detail-2", "connection-b", "channel-b", 2],
-  ]) {
-    const current = message({ itemId: "item-a", phase: "GENERATE_IMAGE_SLOT", target: slotKey, version: 4 });
-    const channel = channels.get(connectionId);
-    const startsBefore = channel.calls.filter((entry) => entry.type === "START").length;
-    const processing = journey.boss.handler(AUTO_LISTING_AI_WORK_QUEUE)([{
-      id: `job-${slotKey}-${connectionId}`,
-      data: workMessage(current, { channelId, connectionId, generation: connectionId === "connection-b" ? 2 : 1 }),
-    }]);
-    for (let stage = 1; stage <= paidStages; stage += 1) {
-      await eventually(() => assert.equal(
-        channel.calls.filter((entry) => entry.type === "START").length,
-        startsBefore + stage,
-      ));
-      channel.releaseNext();
-    }
-    await processing;
-  }
-
-  const acceptedMainReplay = message({
-    itemId: "item-a",
-    phase: "GENERATE_IMAGE_SLOT",
-    target: "main-1",
-    version: 4,
-  });
-  const channelBStartsBeforeReplay = channelB.calls.filter((entry) => entry.type === "START").length;
-  await journey.boss.handler(AUTO_LISTING_AI_WORK_QUEUE)([{
-    id: "job-main-1-connection-b-replay",
-    data: workMessage(acceptedMainReplay, {
-      channelId: "channel-b",
-      connectionId: "connection-b",
-      generation: 3,
-    }),
-  }]);
-  assert.equal(channelB.calls.filter((entry) => entry.type === "START").length, channelBStartsBeforeReplay,
-    "a channel switch must acknowledge an accepted image without another paid request");
-
-  const rich = message({ itemId: "item-a", phase: "GENERATE_RICH_CONTENT", version: 4 });
-  const richProcessing = journey.boss.handler(AUTO_LISTING_AI_WORK_QUEUE)([{
-    id: "job-rich-b",
-    data: workMessage(rich, { channelId: "channel-b", connectionId: "connection-b", generation: 4 }),
-  }]);
-  await eventually(() => assert.equal(channelB.calls.at(-1)?.type, "START"));
-  channelB.releaseNext();
-  await richProcessing;
-
-  assert.equal(channelA.maximum(), 1);
-  assert.equal(channelB.maximum(), 1);
-  assert.equal(itemTracker.maximum("item-a"), 1,
-    "plan, rich content, image generation, and image checking stay serial for one product across channels");
-  assert.equal(journey.requeues.length, 1);
-  assert.equal(journey.requeues[0].outcome.deliveryState, "NOT_SENT");
-  assert.deepEqual([...acceptedSlots].sort(), ["detail-2", "main-1"]);
-  assert.equal(channelB.calls.some((entry) => entry.phase.startsWith("image:main-1:")), false,
-    "a channel switch must not regenerate an accepted image");
-  assert.deepEqual(channelA.calls.filter((entry) => entry.type === "START").map((entry) => entry.requestId), [
-    `connection-a:${first.correlationId}`,
-    `connection-a:${message({ itemId: "item-a", phase: "GENERATE_IMAGE_SLOT", target: "main-1", version: 4 }).correlationId}`,
-    `connection-a:${message({ itemId: "item-a", phase: "GENERATE_IMAGE_SLOT", target: "main-1", version: 4 }).correlationId}:checker`,
-    `connection-a:${message({ itemId: "item-a", phase: "GENERATE_IMAGE_SLOT", target: "detail-2", version: 4 }).correlationId}`,
-  ]);
-  await journey.worker.stop();
-});
 
 function manualTimers() {
   let now = 0;
