@@ -31,6 +31,8 @@ if (!enabled) {
     const schemaSql = quoteIdentifier(schema);
     const ids = Object.fromEntries(["account", "store", "warehouse", "strategy", "snapshot", "job", "item", "profile"]
       .map((key) => [key, `${key}-${suffix}`]));
+    ids.connectionA = `connection-a-${suffix}`;
+    ids.connectionB = `connection-b-${suffix}`;
     let scopedPool;
     try {
       await admin.query(`CREATE SCHEMA ${schemaSql}`);
@@ -47,6 +49,33 @@ if (!enabled) {
         "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
         [ids.account, `user-${suffix}`],
       );
+      for (const [connectionId, marker] of [[ids.connectionA, "a"], [ids.connectionB, "b"]]) {
+        await admin.query(
+          `INSERT INTO ai_gateway_connection_versions (
+             account_id,id,version,display_name,base_url,ciphertext,iv,auth_tag,algorithm,key_version,
+             fingerprint,status,status_version,idempotency_key,request_hash,correlation_id,created_by
+           ) VALUES ($1,$2,1,$2,'https://gateway.invalid','cipher','iv','tag','aes-256-gcm','key-1',
+             $3,'PENDING',1,$4,$5,$6,$1)`,
+          [ids.account, connectionId, marker.repeat(64), `connection-key-${connectionId}`,
+            hash({ connectionId }), `correlation-${connectionId}`],
+        );
+        const validation = { outcome: "PASSED", connectionId, connectionVersion: 1 };
+        const validated = await admin.query(
+          `UPDATE ai_gateway_connection_versions
+              SET status='VALIDATED',status_version=2,validation_result=$3::JSONB,validation_hash=$4,
+                  validated_at=NOW(),validated_by=$1
+            WHERE account_id=$1 AND id=$2 AND version=1 AND status='PENDING' AND status_version=1`,
+          [ids.account, connectionId, JSON.stringify(validation), hash(validation)],
+        );
+        assert.equal(validated.rowCount, 1);
+      }
+      const activated = await admin.query(
+        `UPDATE ai_gateway_connection_versions
+            SET status='ACTIVE',status_version=3,activated_at=NOW(),activated_by=$1
+          WHERE account_id=$1 AND id=$2 AND version=1 AND status='VALIDATED' AND status_version=2`,
+        [ids.account, ids.connectionA],
+      );
+      assert.equal(activated.rowCount, 1);
       await admin.query(
         "INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,$2,$2,$3,'active',$4)",
         [ids.store, `Store ${suffix}`, `client-${suffix}`, ids.account],
@@ -93,6 +122,8 @@ if (!enabled) {
         planningContract: "LEGACY_FULL_PLAN_V3",
         skeletonHash: null,
         requestKey: `auto-listing-plan-${"b".repeat(64)}`,
+        gatewayConnectionId: ids.connectionA,
+        gatewayConnectionVersion: 1,
       };
       const claimed = await Promise.all([repository.reserveContentPlan(request), repository.reserveContentPlan(request)]);
       assert.deepEqual(claimed.map((entry) => entry.status).sort(), ["IN_PROGRESS", "RESERVED"]);
@@ -192,6 +223,7 @@ if (!enabled) {
           inputHash: businessRequest.inputHash, expectedStatusVersion: 7,
           reservationToken: businessOwner.reservationToken,
           errorCode: "AUTO_LISTING_CONTENT_PLAN_BUSINESS_FAILED",
+          gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
         }), { released: true });
       }
       await assert.rejects(
@@ -231,6 +263,7 @@ if (!enabled) {
         inputHash: request.inputHash, skeletonHash: null, profileId: ids.profile, profileVersion: 3,
         modelName: "planner-model", promptTemplateVersion: "planner-v1",
         gatewayRequestId: "gateway-request-a", response: plan,
+        gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
       });
       await new Promise((resolve) => setTimeout(resolve, 80));
       const resumed = await repository.reserveContentPlan(request);
@@ -243,6 +276,7 @@ if (!enabled) {
         attemptId: owner.attemptId, inputHash: request.inputHash, expectedStatusVersion: 7,
         reservationToken: owner.reservationToken, planningContract: "LEGACY_FULL_PLAN_V3",
         skeletonHash: null, fromStage: "FILLING_COPY", toStage: "VALIDATING_COPY",
+        gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
       });
       await evidenceRepository.recordValidation({
         accountId: ids.account, responseId: recordedResponse.id, status: "ACCEPTED",
@@ -273,6 +307,7 @@ if (!enabled) {
         accountId: ids.account, jobId: ids.job, itemId: ids.item, sourceSnapshotId: ids.snapshot,
         owner: { kind: "ATTEMPT", id: owner.attemptId }, planningContract: "LEGACY_FULL_PLAN_V3",
         inputHash: request.inputHash, skeletonHash: null, profileId: ids.profile, profileVersion: 3,
+        gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
       });
       assert.equal(recordedOutcome.response.id, recordedResponse.id);
       assert.equal(recordedOutcome.validation.status, "ACCEPTED");
@@ -401,6 +436,7 @@ if (!enabled) {
         inputHash: "c".repeat(64), expectedStatusVersion: 7,
         planningContract: "FIXED_SKELETON_V1", skeletonHash,
         requestKey: `auto-listing-plan-${"e".repeat(64)}`,
+        gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
       };
       const fixedOwner = await fixedRepository.reserveContentPlan(fixedRequest);
       assert.deepEqual({ stage: fixedOwner.plannerStage, skeletonHash: fixedOwner.skeletonHash }, {
@@ -412,6 +448,7 @@ if (!enabled) {
         inputHash: fixedRequest.inputHash, expectedStatusVersion: 7,
         reservationToken: fixedOwner.reservationToken, planningContract: "FIXED_SKELETON_V1",
         skeletonHash, fromStage: "BUILDING_SKELETON", toStage: "FILLING_COPY",
+        gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
       });
       const fixedEvidence = createPostgresContentPlanEvidenceRepository({
         pool: scopedPool,
@@ -425,6 +462,7 @@ if (!enabled) {
         profileId: ids.profile, profileVersion: 3, modelName: "planner-model",
         promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V1", gatewayRequestId: "gateway-fixed",
         response: { version: 1, language: "ru", fills: {} },
+        gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
       });
       await fixedRepository.advanceContentPlanStage({
         accountId: ids.account, jobId: fixedIds.job, itemId: fixedIds.item,
@@ -432,6 +470,7 @@ if (!enabled) {
         inputHash: fixedRequest.inputHash, expectedStatusVersion: 7,
         reservationToken: fixedOwner.reservationToken, planningContract: "FIXED_SKELETON_V1",
         skeletonHash, fromStage: "FILLING_COPY", toStage: "VALIDATING_COPY",
+        gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
       });
       await fixedEvidence.recordValidation({
         accountId: ids.account, responseId: fixedResponse.id, status: "ACCEPTED",
@@ -457,6 +496,192 @@ if (!enabled) {
       assert.deepEqual(fixedRows.rows, [{
         skeleton_hash: skeletonHash, planner_stage: "COMPLETED", plan_skeleton_hash: skeletonHash,
       }]);
+
+      let provenanceSequence = 0;
+      const provenanceRepository = createPostgresContentPlanRepository({
+        pool: scopedPool,
+        leaseMs: 60_000,
+        token: () => `provenance-lease-${++provenanceSequence}-${suffix}`,
+        id: () => `provenance-attempt-${++provenanceSequence}-${suffix}`,
+      });
+      const provenanceEvidence = createPostgresContentPlanEvidenceRepository({
+        pool: scopedPool,
+        responseId: () => `provenance-response-${++provenanceSequence}-${suffix}`,
+        validationId: () => `provenance-validation-${++provenanceSequence}-${suffix}`,
+      });
+      const createProvenanceRequest = async (label) => {
+        const snapshotId = `snapshot-${label}-${suffix}`;
+        const jobId = `job-${label}-${suffix}`;
+        const itemId = `item-${label}-${suffix}`;
+        await admin.query(
+          "INSERT INTO auto_listing_source_snapshots (id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash) VALUES ($1,$2,'COLLECT_BOX',$3,'1','{}'::JSONB,$4)",
+          [snapshotId, ids.account, `record-${label}-${suffix}`, hash({ label, kind: "source" })],
+        );
+        await admin.query(
+          "INSERT INTO auto_listing_jobs (id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,strategy_version_id,correlation_id) VALUES ($1,$2,'COLLECT_BOX','PLANNING',$3,'{}'::JSONB,$4,$5,$6)",
+          [jobId, ids.account, `idem-${label}-${suffix}`, hash({ label, kind: "config" }), ids.strategy,
+            `corr-${label}-${suffix}`],
+        );
+        await admin.query(
+          "INSERT INTO auto_listing_job_items (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',7,1)",
+          [itemId, jobId, ids.account, snapshotId, ids.store, ids.warehouse],
+        );
+        return {
+          accountId: ids.account, jobId, itemId, sourceSnapshotId: snapshotId,
+          profileId: ids.profile, profileVersion: 3,
+          inputHash: hash({ label, kind: "input" }), expectedStatusVersion: 7,
+          planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null,
+          requestKey: `auto-listing-plan-${hash({ label, kind: "request" })}`,
+          gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
+        };
+      };
+      const plannerRows = async (requestInput) => (await admin.query(
+        `SELECT id,attempt_no,status,planner_stage,error_code,lease_token,lease_expires_at,
+                gateway_connection_id,gateway_connection_version
+           FROM auto_listing_content_plan_attempts
+          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND input_hash=$4
+          ORDER BY attempt_no`,
+        [requestInput.accountId, requestInput.jobId, requestInput.itemId, requestInput.inputHash],
+      )).rows;
+      const connectionBRequest = (requestInput) => ({
+        ...requestInput, gatewayConnectionId: ids.connectionB, gatewayConnectionVersion: 1,
+      });
+      const plannerEvidenceScope = (requestInput, attemptId) => ({
+        accountId: requestInput.accountId, jobId: requestInput.jobId, itemId: requestInput.itemId,
+        sourceSnapshotId: requestInput.sourceSnapshotId, owner: { kind: "ATTEMPT", id: attemptId },
+        planningContract: requestInput.planningContract, inputHash: requestInput.inputHash,
+        skeletonHash: requestInput.skeletonHash, profileId: requestInput.profileId,
+        profileVersion: requestInput.profileVersion,
+        gatewayConnectionId: requestInput.gatewayConnectionId,
+        gatewayConnectionVersion: requestInput.gatewayConnectionVersion,
+      });
+
+      const reusableRequest = await createProvenanceRequest("reusable-a-to-b");
+      const reusableA = await provenanceRepository.reserveContentPlan(reusableRequest);
+      const reusableResponse = await provenanceEvidence.recordResponse({
+        ...plannerEvidenceScope(reusableRequest, reusableA.attemptId),
+        modelName: "planner-model", promptTemplateVersion: "planner-v1",
+        gatewayRequestId: `gateway-reusable-${suffix}`,
+        response: { version: 1, language: "ru", slots: [] },
+      });
+      await provenanceEvidence.recordValidation({
+        accountId: ids.account, responseId: reusableResponse.id, status: "ACCEPTED",
+        validatorVersion: "AUTO_LISTING_CONTENT_PLAN_VALIDATOR_V1", issues: [],
+      });
+      await admin.query(
+        "UPDATE auto_listing_content_plan_attempts SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+        [ids.account, reusableA.attemptId],
+      );
+      const reusableB = await provenanceRepository.reserveContentPlan(connectionBRequest(reusableRequest));
+      assert.deepEqual({
+        status: reusableB.status, attemptId: reusableB.attemptId, attemptNo: reusableB.attemptNo,
+        gatewayConnectionId: reusableB.gatewayConnectionId,
+        gatewayConnectionVersion: reusableB.gatewayConnectionVersion,
+      }, {
+        status: "RESERVED", attemptId: reusableA.attemptId, attemptNo: 1,
+        gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
+      });
+      const reusableOutcome = await provenanceEvidence.loadOutcome({
+        ...plannerEvidenceScope(reusableRequest, reusableB.attemptId),
+      });
+      assert.equal(reusableOutcome.response.id, reusableResponse.id);
+      assert.equal(reusableOutcome.validation.status, "ACCEPTED");
+
+      const invalidRequest = await createProvenanceRequest("invalid-a-to-b");
+      const invalidA = await provenanceRepository.reserveContentPlan(invalidRequest);
+      const invalidResponse = await provenanceEvidence.recordResponse({
+        ...plannerEvidenceScope(invalidRequest, invalidA.attemptId),
+        modelName: "planner-model", promptTemplateVersion: "planner-v1",
+        gatewayRequestId: `gateway-invalid-${suffix}`,
+        response: { version: 1, language: "ru", slots: [] },
+      });
+      await provenanceEvidence.recordValidation({
+        accountId: ids.account, responseId: invalidResponse.id, status: "REJECTED",
+        validatorVersion: "AUTO_LISTING_CONTENT_PLAN_VALIDATOR_V1",
+        issues: [{ code: "SLOTS_REQUIRED", slotKey: null, claimIndex: null, field: "slots", expected: "non-empty", actual: "empty" }],
+      });
+      const replaceInvalid = (overrides = {}) => ({
+        ...invalidRequest, attemptId: invalidA.attemptId, reservationToken: invalidA.reservationToken,
+        replacementGatewayConnectionId: ids.connectionB, replacementGatewayConnectionVersion: 1,
+        ...overrides,
+      });
+      const invalidBaseline = await plannerRows(invalidRequest);
+      for (const mutation of [
+        { gatewayConnectionId: ids.connectionB },
+        { reservationToken: `stale-${invalidA.reservationToken}` },
+        { expectedStatusVersion: 8 },
+      ]) {
+        await assert.rejects(
+          provenanceRepository.replaceContentPlanReservation(replaceInvalid(mutation)),
+          (error) => ["AUTO_LISTING_CONTENT_PLAN_LEASE_CONFLICT", "AUTO_LISTING_CONTENT_PLAN_STATUS_VERSION_CONFLICT"]
+            .includes(error?.code),
+        );
+        assert.deepEqual(await plannerRows(invalidRequest), invalidBaseline);
+      }
+      await admin.query(
+        "UPDATE auto_listing_job_items SET status='GENERATING' WHERE account_id=$1 AND job_id=$2 AND id=$3",
+        [invalidRequest.accountId, invalidRequest.jobId, invalidRequest.itemId],
+      );
+      await assert.rejects(
+        provenanceRepository.replaceContentPlanReservation(replaceInvalid()),
+        (error) => error?.code === "AUTO_LISTING_CONTENT_PLAN_STATUS_VERSION_CONFLICT",
+      );
+      assert.deepEqual(await plannerRows(invalidRequest), invalidBaseline);
+      await admin.query(
+        "UPDATE auto_listing_job_items SET status='PLANNING' WHERE account_id=$1 AND job_id=$2 AND id=$3",
+        [invalidRequest.accountId, invalidRequest.jobId, invalidRequest.itemId],
+      );
+      const invalidB = await provenanceRepository.replaceContentPlanReservation(replaceInvalid());
+      assert.deepEqual({
+        status: invalidB.status, attemptNo: invalidB.attemptNo,
+        gatewayConnectionId: invalidB.gatewayConnectionId,
+        gatewayConnectionVersion: invalidB.gatewayConnectionVersion,
+      }, {
+        status: "RESERVED", attemptNo: 2,
+        gatewayConnectionId: ids.connectionB, gatewayConnectionVersion: 1,
+      });
+      assert.deepEqual((await plannerRows(invalidRequest)).map((row) => ({
+        attempt_no: row.attempt_no, status: row.status, planner_stage: row.planner_stage,
+        error_code: row.error_code, gateway_connection_id: row.gateway_connection_id,
+        gateway_connection_version: row.gateway_connection_version,
+      })), [
+        { attempt_no: 1, status: "FAILED", planner_stage: "FAILED",
+          error_code: "EVIDENCE_NOT_REUSABLE", gateway_connection_id: ids.connectionA,
+          gateway_connection_version: 1 },
+        { attempt_no: 2, status: "PLANNING", planner_stage: "FILLING_COPY",
+          error_code: null, gateway_connection_id: ids.connectionB,
+          gateway_connection_version: 1 },
+      ]);
+
+      const noEvidenceRequest = await createProvenanceRequest("no-evidence-a-to-b");
+      const noEvidenceA = await provenanceRepository.reserveContentPlan(noEvidenceRequest);
+      await admin.query(
+        "UPDATE auto_listing_content_plan_attempts SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+        [ids.account, noEvidenceA.attemptId],
+      );
+      const noEvidenceB = await provenanceRepository.reserveContentPlan(connectionBRequest(noEvidenceRequest));
+      assert.deepEqual({
+        attemptId: noEvidenceB.attemptId, attemptNo: noEvidenceB.attemptNo,
+        gatewayConnectionId: noEvidenceB.gatewayConnectionId,
+        gatewayConnectionVersion: noEvidenceB.gatewayConnectionVersion,
+      }, {
+        attemptId: noEvidenceA.attemptId, attemptNo: 1,
+        gatewayConnectionId: ids.connectionB, gatewayConnectionVersion: 1,
+      });
+      assert.equal((await plannerRows(noEvidenceRequest)).length, 1);
+
+      const expiredRequest = await createProvenanceRequest("expired-replacement");
+      const expiredA = await provenanceRepository.reserveContentPlan(expiredRequest);
+      await admin.query(
+        "UPDATE auto_listing_content_plan_attempts SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+        [ids.account, expiredA.attemptId],
+      );
+      const expiredBaseline = await plannerRows(expiredRequest);
+      await assert.rejects(provenanceRepository.replaceContentPlanReservation({
+        ...expiredRequest, attemptId: expiredA.attemptId, reservationToken: expiredA.reservationToken,
+        replacementGatewayConnectionId: ids.connectionB, replacementGatewayConnectionVersion: 1,
+      }), (error) => error?.code === "AUTO_LISTING_CONTENT_PLAN_LEASE_CONFLICT");
+      assert.deepEqual(await plannerRows(expiredRequest), expiredBaseline);
     } finally {
       try {
         await scopedPool?.end();
