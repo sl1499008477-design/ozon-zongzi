@@ -831,6 +831,169 @@ test("case 8: generation-2 takeover fences generation-1 renew and outcome persis
     "a stale generation must not alter the generation-2 owner or item state");
 });
 
+test("case 8b: generation-2 reservation wait is durable and later reclaims the same fixed channel", {
+  skip: enabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
+  timeout: 120_000,
+}, async () => {
+  const scenario = await seedConnectedScenario({ itemCount: 2, channelCount: 1, label: "reservation-defer" });
+  const repository = outboxRepository("reservation-defer");
+  const [generationOne] = await claim(repository, scenario, "relay-reservation-one", 1);
+  const adoptedOne = await markPublishedAndAdopt(repository, generationOne, "worker-reservation-one");
+  await pool.query(
+    "UPDATE auto_listing_ai_outbox SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+    [scenario.account, generationOne.id],
+  );
+  await pool.query(
+    `UPDATE auto_listing_ai_profile_channels
+        SET execution_lease_expires_at=NOW()-INTERVAL '1 second'
+      WHERE account_id=$1 AND channel_id=$2`,
+    [scenario.account, generationOne.workMessage.execution.channelId],
+  );
+
+  const [generationTwo] = await claim(repository, scenario, "relay-reservation-two", 1);
+  assert.equal(generationTwo.itemId, scenario.items[0].itemId);
+  assert.equal(generationTwo.workMessage.execution.dispatchGeneration, 2);
+  const adoptedTwo = await markPublishedAndAdopt(repository, generationTwo, "worker-reservation-two");
+  const workflow = createPostgresAutoListingAiWorkflow({ pool });
+  assert.deepEqual(await workflow.applyPhaseOutcome({
+    message: scenario.items[0].message,
+    outcome: {
+      contractVersion: "V1", disposition: "RETRY", phase: "PLAN_CONTENT", outcome: "IN_PROGRESS",
+      retryable: true, failureCode: "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+      correlationId: scenario.items[0].message.correlationId,
+      failureScope: "RESERVATION_BUSY", deliveryState: null, retryAfterMs: 30_000,
+    },
+    execution: adoptedTwo.workMessage.execution,
+  }), { disposition: "DEFERRED", status: "PLANNING", statusVersion: 3, enqueued: 0 });
+
+  assert.deepEqual((await pool.query(
+    `SELECT item.status,item.status_version,outbox.state,outbox.uncertain_result_count,
+            outbox.attempts,outbox.next_retry_at>NOW() AS deferred,
+            channel.assigned_item_id,channel.enabled,channel.execution_lease_owner,
+            channel.consecutive_failure_count,channel.last_error_code
+       FROM auto_listing_job_items AS item
+       JOIN auto_listing_ai_outbox AS outbox
+         ON outbox.account_id=item.account_id AND outbox.item_id=item.id
+       JOIN auto_listing_ai_profile_channels AS channel
+         ON channel.account_id=item.account_id AND channel.assigned_item_id=item.id
+      WHERE item.account_id=$1 AND item.id=$2`,
+    [scenario.account, scenario.items[0].itemId],
+  )).rows[0], {
+    status: "PLANNING", status_version: 3, state: "PENDING", uncertain_result_count: 0,
+    attempts: 2, deferred: true, assigned_item_id: scenario.items[0].itemId,
+    enabled: true, execution_lease_owner: null, consecutive_failure_count: 0, last_error_code: null,
+  });
+  assert.deepEqual(await workflow.applyPhaseOutcome({
+    message: scenario.items[0].message,
+    outcome: ackOutcome(scenario.items[0].message),
+    execution: adoptedOne.workMessage.execution,
+  }), { disposition: "STALE", status: null, statusVersion: null, enqueued: 0 });
+
+  await pool.query(
+    "UPDATE auto_listing_ai_outbox SET next_retry_at=NOW() WHERE account_id=$1 AND id=$2",
+    [scenario.account, generationOne.id],
+  );
+  const [generationThree] = await claim(repository, scenario, "relay-reservation-three", 1);
+  assert.equal(generationThree.itemId, scenario.items[0].itemId);
+  assert.equal(generationThree.workMessage.execution.channelId, generationOne.workMessage.execution.channelId);
+  assert.equal(generationThree.workMessage.execution.dispatchGeneration, 3);
+  assert.deepEqual((await pool.query(
+    "SELECT status,status_version,failure_code FROM auto_listing_job_items WHERE account_id=$1 AND id=$2",
+    [scenario.account, scenario.items[0].itemId],
+  )).rows[0], { status: "PLANNING", status_version: 3, failure_code: null });
+  assert.deepEqual((await pool.query(
+    "SELECT state,attempts FROM auto_listing_ai_outbox WHERE account_id=$1 AND id=$2",
+    [scenario.account, scenario.items[1].outboxId],
+  )).rows[0], { state: "PENDING", attempts: 0 });
+});
+
+test("case 8c: a disabled crashed busy channel reclaims only its fixed item then releases before the next phase", {
+  skip: enabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
+  timeout: 120_000,
+}, async () => {
+  const scenario = await seedConnectedScenario({ itemCount: 2, channelCount: 2, label: "disabled-takeover" });
+  const otherTenant = await seedConnectedScenario({ itemCount: 1, channelCount: 1, label: "disabled-other-tenant" });
+  const repository = outboxRepository("disabled-takeover");
+  const [generationOne] = await claim(repository, scenario, "relay-disabled-one", 1);
+  const adoptedOne = await markPublishedAndAdopt(repository, generationOne, "worker-disabled-one");
+  const disabledChannel = generationOne.workMessage.execution.channelId;
+  await pool.query(
+    "UPDATE auto_listing_ai_profile_channels SET enabled=FALSE WHERE account_id=$1 AND channel_id=$2",
+    [scenario.account, disabledChannel],
+  );
+  await pool.query(
+    "UPDATE auto_listing_ai_outbox SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+    [scenario.account, generationOne.id],
+  );
+  await pool.query(
+    `UPDATE auto_listing_ai_profile_channels
+        SET execution_lease_expires_at=NOW()-INTERVAL '1 second'
+      WHERE account_id=$1 AND channel_id=$2`,
+    [scenario.account, disabledChannel],
+  );
+
+  const [generationTwo] = await claim(repository, scenario, "relay-disabled-two", 1);
+  assert.equal(generationTwo.itemId, scenario.items[0].itemId);
+  assert.equal(generationTwo.workMessage.execution.channelId, disabledChannel);
+  assert.equal(generationTwo.workMessage.execution.dispatchGeneration, 2);
+  const adoptedTwo = await markPublishedAndAdopt(repository, generationTwo, "worker-disabled-two");
+  await assert.rejects(repository.renewAutoListingAiWorkLease({
+    accountId: scenario.account, itemId: generationOne.itemId, id: generationOne.id,
+    publicationId: generationOne.publicationId,
+    dispatchGeneration: adoptedOne.workMessage.execution.dispatchGeneration,
+    workerId: adoptedOne.workMessage.execution.leaseOwner,
+    leaseToken: adoptedOne.workMessage.execution.leaseToken,
+    leaseMs: 60_000,
+  }), { code: "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED" });
+  assert.deepEqual((await pool.query(
+    "SELECT state,attempts FROM auto_listing_ai_outbox WHERE account_id=$1 AND id=$2",
+    [scenario.account, scenario.items[1].outboxId],
+  )).rows[0], { state: "PENDING", attempts: 0 });
+  assert.deepEqual((await pool.query(
+    "SELECT assigned_item_id,execution_lease_owner FROM auto_listing_ai_profile_channels WHERE account_id=$1",
+    [otherTenant.account],
+  )).rows, [{ assigned_item_id: null, execution_lease_owner: null }]);
+
+  const planId = `plan-${scenario.marker}`;
+  await pool.query(
+    `INSERT INTO ai_content_plans (
+       id,account_id,job_id,item_id,source_snapshot_id,strategy_version_id,profile_id,
+       strategy_hash,config_hash,source_hash,input_hash,planner_model,profile_version,
+       prompt_template_version,plan,plan_hash,visual_groups_hash,visual_groups,gateway_request_id
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$8,$9,'planner',1,'plan-v1',
+       '{"slots":[]}'::JSONB,$8,$8,'{"groups":[]}'::JSONB,'gateway-request')`,
+    [planId, scenario.account, scenario.job, scenario.items[0].itemId,
+      scenario.items[0].snapshotId, scenario.strategy, scenario.profile, hash("8"), hash("9")],
+  );
+  await pool.query(
+    "UPDATE auto_listing_job_items SET active_content_plan_id=$3 WHERE account_id=$1 AND id=$2",
+    [scenario.account, scenario.items[0].itemId, planId],
+  );
+  const workflow = createPostgresAutoListingAiWorkflow({ pool });
+  assert.deepEqual(await workflow.applyPhaseOutcome({
+    message: scenario.items[0].message,
+    outcome: ackOutcome(scenario.items[0].message),
+    execution: adoptedTwo.workMessage.execution,
+  }), { disposition: "APPLIED", status: "PLANNING", statusVersion: 3, enqueued: 1 });
+  assert.deepEqual((await pool.query(
+    `SELECT assigned_item_id,execution_lease_owner
+       FROM auto_listing_ai_profile_channels
+      WHERE account_id=$1 AND channel_id=$2`,
+    [scenario.account, disabledChannel],
+  )).rows[0], { assigned_item_id: null, execution_lease_owner: null });
+
+  const [newItem] = await claim(repository, scenario, "relay-new-item-after-disabled", 1);
+  assert.equal(newItem.itemId, scenario.items[1].itemId);
+  assert.notEqual(newItem.workMessage.execution.channelId, disabledChannel);
+  assert.equal(newItem.workMessage.execution.channelId, scenario.channels[1]);
+  await completeAiAndRelease(scenario, newItem);
+
+  const [nextPhase] = await claim(repository, scenario, "relay-next-phase-after-disabled", 1);
+  assert.equal(nextPhase.itemId, scenario.items[0].itemId);
+  assert.notEqual(nextPhase.workMessage.execution.channelId, disabledChannel);
+  assert.equal(nextPhase.workMessage.execution.channelId, scenario.channels[1]);
+});
+
 test("case 9: later AI completion is allowed but its Ozon upload cannot overtake source_order", {
   skip: enabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
   timeout: 120_000,

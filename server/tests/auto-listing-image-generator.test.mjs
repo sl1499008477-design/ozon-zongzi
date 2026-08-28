@@ -1074,7 +1074,7 @@ test("an occupied preliminary lease prevents a concurrent duplicate source downl
   const first = generateImageSlot(fixture.input);
   while (loads === 0) await new Promise((resolve) => setImmediate(resolve));
   try {
-    await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_IMAGE_RESERVATION_FAILED");
+    await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_IMAGE_IN_PROGRESS");
     assert.equal(loads, 1);
   } finally {
     releaseFirst();
@@ -1123,7 +1123,7 @@ test("does not reuse a corrupt accepted record", async () => {
 test("an occupied lease has no external call and gateway failure is terminalized through its own lease token", async () => {
   const occupied = await setup();
   occupied.input.repository.reserveGenerationAttempt = async () => ({ status: "IN_PROGRESS" });
-  await assert.rejects(generateImageSlot(occupied.input), (error) => error?.code === "AUTO_LISTING_IMAGE_RESERVATION_FAILED" && error?.retryable === true);
+  await assert.rejects(generateImageSlot(occupied.input), (error) => error?.code === "AUTO_LISTING_IMAGE_IN_PROGRESS" && error?.retryable === true);
   assert.equal(occupied.loaderCalls(), 0); assert.equal(occupied.gatewayCalls(), 0);
 
   const failing = await setup();

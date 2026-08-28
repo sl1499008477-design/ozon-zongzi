@@ -842,7 +842,8 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                   WHERE candidate.account_id=job.account_id
                     AND candidate.profile_id=job.ai_profile_id
                     AND candidate.profile_version=job.ai_profile_version
-                    AND candidate.enabled IS TRUE
+                    AND (candidate.enabled IS TRUE
+                      OR (assignment.exact IS TRUE AND candidate.channel_id=assignment.channel_id))
                     AND candidate.requires_revalidation IS FALSE
                     AND (candidate.cooldown_until IS NULL OR candidate.cooldown_until <= NOW())
                     AND connection.status IN ('ACTIVE','VALIDATED','RETIRED')
@@ -954,7 +955,9 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                 AND assigned_job_id IS NOT DISTINCT FROM $11
                 AND assigned_item_id IS NOT DISTINCT FROM $12
                 AND assigned_status_version IS NOT DISTINCT FROM $13
-                AND enabled IS TRUE AND requires_revalidation IS FALSE
+                AND (enabled IS TRUE OR (assigned_job_id=$5 AND assigned_item_id=$6
+                  AND assigned_status_version=$7))
+                AND requires_revalidation IS FALSE
                 AND (cooldown_until IS NULL OR cooldown_until <= NOW())
                 AND (execution_lease_expires_at IS NULL OR execution_lease_expires_at <= NOW())
               RETURNING channel_id,connection_id,connection_version`,

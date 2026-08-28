@@ -188,39 +188,13 @@ function assertLeaseActive(input) {
 }
 
 async function cleanupAfterLeaseLoss({ input, scope, stored, cause }) {
-  try {
-    await cleanupOrRecord({
-      storage: input.storage,
-      repository: input.repository,
-      scope,
-      stored,
-      reason: "EXECUTION_LEASE_LOST",
-      originalErrorCode: cause?.code || "AUTO_LISTING_AI_EXECUTION_LEASE_LOST",
-      logger: input.logger ?? null,
-    });
-  } catch {}
   throw cause;
 }
 
 async function compensateStoredAfterLeaseLoss({ input, scope, stored, cause }) {
-  let cleanupSafe = false;
   try {
-    const compensation = await input.repository.revertStoredGenerationAsset({ ...scope, ...stored });
-    cleanupSafe = ["REVERTED", "ABSENT"].includes(compensation?.disposition);
+    await input.repository.revertStoredGenerationAsset({ ...scope, ...stored });
   } catch {}
-  if (cleanupSafe) {
-    try {
-      await cleanupOrRecord({
-        storage: input.storage,
-        repository: input.repository,
-        scope,
-        stored,
-        reason: "EXECUTION_LEASE_LOST",
-        originalErrorCode: cause?.code || "AUTO_LISTING_AI_EXECUTION_LEASE_LOST",
-        logger: input.logger ?? null,
-      });
-    } catch {}
-  }
   throw cause;
 }
 

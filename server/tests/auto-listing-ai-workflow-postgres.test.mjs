@@ -65,6 +65,64 @@ test("workflow factory is closed and exposes only the transaction stage port and
   });
 });
 
+test("v3 reservation busy durably defers the exact generation while preserving item and fixed channel", async () => {
+  const client = scriptedClient([
+    {},
+    { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    {},
+  ]);
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...client, release() {} }; } },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const result = await workflow.applyPhaseOutcome({
+    message,
+    outcome: {
+      contractVersion: "V1", disposition: "RETRY", phase: "PLAN_CONTENT", outcome: "IN_PROGRESS",
+      retryable: true, failureCode: "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+      correlationId: "correlation-a", failureScope: "RESERVATION_BUSY",
+      deliveryState: null, retryAfterMs: 30_000,
+    },
+    execution: v3Execution(),
+  });
+
+  assert.deepEqual(result, { disposition: "DEFERRED", status: "PLANNING",
+    statusVersion: 2, enqueued: 0 });
+  assert.match(client.calls[3].sql, /execution_lease_owner=NULL/iu);
+  assert.doesNotMatch(client.calls[3].sql, /assigned_job_id=NULL/iu);
+  assert.match(client.calls[4].sql, /state='PENDING'[\s\S]*next_retry_at=NOW\(\)\+\(\$7 \* INTERVAL '1 millisecond'\)/iu);
+  assert.equal(client.calls[4].values[6], 30_000);
+  assert.equal(client.calls.some(({ sql }) => /UPDATE auto_listing_job_items/iu.test(sql)), false);
+});
+
+test("v3 reservation busy rejects a failure code belonging to another phase before PostgreSQL", async () => {
+  let connections = 0;
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: {
+      async query() {},
+      async connect() { connections += 1; throw new Error("must not connect"); },
+    },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  await assert.rejects(workflow.applyPhaseOutcome({
+    message,
+    outcome: {
+      contractVersion: "V1", disposition: "RETRY", phase: "PLAN_CONTENT", outcome: "IN_PROGRESS",
+      retryable: true, failureCode: "AUTO_LISTING_IMAGE_IN_PROGRESS",
+      correlationId: "correlation-a", failureScope: "RESERVATION_BUSY",
+      deliveryState: null, retryAfterMs: 30_000,
+    },
+    execution: v3Execution(),
+  }), { code: "AUTO_LISTING_AI_WORKFLOW_INVALID" });
+  assert.equal(connections, 0);
+});
+
 test("v3 factory outcome contract requires execution fencing and locks outbox item and channel before writes", async () => {
   const calls = [];
   const client = {

@@ -69,6 +69,12 @@ const CHANNEL_REVALIDATION_CODES = new Set([
   "AI_GATEWAY_CAPABILITY_INVALID",
   "NON_RETRYABLE_AUTH",
 ]);
+const RESERVATION_BUSY_CODES = new Set([
+  "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+  "AUTO_LISTING_IMAGE_IN_PROGRESS",
+  "AUTO_LISTING_RICH_CONTENT_IN_PROGRESS",
+]);
+const RESERVATION_BUSY_RETRY_MS = 30_000;
 const NOT_SENT_CHANNEL_CODES = new Set([
   "AI_GATEWAY_RATE_LIMITED",
   ...CHANNEL_REVALIDATION_CODES,
@@ -380,7 +386,13 @@ function assertSuccessfulResult(result, phase, context, message, phaseInput) {
     || result.itemId !== context.itemId || result.planId !== context.activeContentPlanId) throw invalid();
 }
 
-function serviceFailure(message, error) {
+function serviceFailure(message, error, { allowReservationBusy = false } = {}) {
+  if (allowReservationBusy && RESERVATION_BUSY_CODES.has(error?.code)) {
+    return outcome(message, "RETRY", "IN_PROGRESS", error.code, true, {
+      failureScope: "RESERVATION_BUSY",
+      retryAfterMs: RESERVATION_BUSY_RETRY_MS,
+    });
+  }
   const channel = channelFailure(message, error);
   if (channel) return channel;
   if (message.phase === "GENERATE_IMAGE_SLOT" && error?.retryable !== true) {
@@ -542,6 +554,6 @@ export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {
     return outcome(message, "ACK", SUCCESS_OUTCOME[message.phase], null, false);
   } catch (error) {
     if (error?.code === "AUTO_LISTING_AI_EXECUTION_LEASE_LOST") throw error;
-    return serviceFailure(message, error);
+    return serviceFailure(message, error, { allowReservationBusy: leased });
   }
 }

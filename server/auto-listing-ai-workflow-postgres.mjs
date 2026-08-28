@@ -47,7 +47,13 @@ const STATEMENT_TIMEOUT_MS = 25_000;
 const LOCK_TIMEOUT_MS = 5_000;
 const IDLE_TRANSACTION_TIMEOUT_MS = 30_000;
 const CHANNEL_FAILURE_SCOPES = new Set(["CHANNEL_TRANSIENT", "CHANNEL_REVALIDATION"]);
-const FAILURE_SCOPES = new Set([null, "BUSINESS", ...CHANNEL_FAILURE_SCOPES]);
+const RESERVATION_BUSY_SCOPE = "RESERVATION_BUSY";
+const RESERVATION_BUSY_CODE = Object.freeze({
+  PLAN_CONTENT: "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+  GENERATE_IMAGE_SLOT: "AUTO_LISTING_IMAGE_IN_PROGRESS",
+  GENERATE_RICH_CONTENT: "AUTO_LISTING_RICH_CONTENT_IN_PROGRESS",
+});
+const FAILURE_SCOPES = new Set([null, "BUSINESS", RESERVATION_BUSY_SCOPE, ...CHANNEL_FAILURE_SCOPES]);
 const DELIVERY_STATES = new Set([null, "NOT_SENT", "POSSIBLY_SENT"]);
 const DEFAULT_CHANNEL_COOLDOWN_MS = 60_000;
 const MAX_CHANNEL_COOLDOWN_MS = 86_400_000;
@@ -157,7 +163,10 @@ function phaseMessage(input, phase, expectedStatusVersion, target = null) {
   });
 }
 
-function validatedOutcome(rawOutcome, phase, correlationId, { allowChannelRetry = false } = {}) {
+function validatedOutcome(rawOutcome, phase, correlationId, {
+  allowChannelRetry = false,
+  allowReservationBusy = false,
+} = {}) {
   const result = plainData(rawOutcome, OUTCOME_KEYS);
   if (result.contractVersion !== "V1" || result.phase !== phase
     || result.correlationId !== correlationId
@@ -169,9 +178,13 @@ function validatedOutcome(rawOutcome, phase, correlationId, { allowChannelRetry 
     || (result.disposition === "ACK" && (result.failureScope !== null
       || result.deliveryState !== null || result.retryAfterMs !== null))
     || (result.failureScope === "BUSINESS" && (result.deliveryState !== null || result.retryAfterMs !== null))
+    || (result.failureScope === RESERVATION_BUSY_SCOPE && (result.disposition !== "RETRY"
+      || result.deliveryState !== null || !Number.isInteger(result.retryAfterMs) || result.retryAfterMs < 1
+      || result.failureCode !== RESERVATION_BUSY_CODE[phase]))
     || (CHANNEL_FAILURE_SCOPES.has(result.failureScope) && result.deliveryState === null)) throw invalid();
   if (result.disposition === "RETRY"
-    && !(allowChannelRetry && CHANNEL_FAILURE_SCOPES.has(result.failureScope))) throw retryNotFinal();
+    && !((allowChannelRetry && CHANNEL_FAILURE_SCOPES.has(result.failureScope))
+      || (allowReservationBusy && result.failureScope === RESERVATION_BUSY_SCOPE))) throw retryNotFinal();
   if (result.disposition === "ACK") {
     if (result.retryable || !SUCCESS_OUTCOME[phase].has(result.outcome)
       || !(result.failureCode === null || SAFE_FAILURE_CODE.test(result.failureCode))) throw invalid();
@@ -772,6 +785,34 @@ async function requeueExecution(client, message, execution, outcome, fence, runt
     statusVersion: fence.status_version, enqueued: 0, uncertainResultCount: nextUncertainCount });
 }
 
+async function deferBusyReservation(client, message, execution, outcome, fence) {
+  const channel = await query(client,
+    `UPDATE auto_listing_ai_profile_channels
+        SET execution_lease_owner=NULL,execution_lease_token=NULL,execution_lease_expires_at=NULL,updated_at=NOW()
+      WHERE account_id=$1 AND channel_id=$2 AND assigned_item_id=$3
+        AND assigned_status_version=$4 AND execution_lease_owner=$5 AND execution_lease_token=$6
+        AND connection_id=$7 AND connection_version=$8
+      RETURNING channel_id`,
+    [message.accountId, execution.channelId, message.itemId, message.expectedStatusVersion,
+      execution.leaseOwner, execution.leaseToken, execution.connectionId, execution.connectionVersion],
+  );
+  const outbox = await query(client,
+    `UPDATE auto_listing_ai_outbox
+        SET state='PENDING',publication_id=NULL,published_at=NULL,dispatch_queued_at=NULL,
+            lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
+            next_retry_at=NOW()+($7 * INTERVAL '1 millisecond'),
+            last_error_code=NULL,last_error_safe=NULL,updated_at=NOW()
+      WHERE account_id=$1 AND id=$2 AND item_id=$3 AND dispatch_generation=$4
+        AND state='PROCESSING' AND lease_owner=$5 AND lease_token=$6
+      RETURNING id`,
+    [message.accountId, execution.outboxId, message.itemId, execution.dispatchGeneration,
+      execution.leaseOwner, execution.leaseToken, outcome.retryAfterMs],
+  );
+  if (channel?.rowCount !== 1 || outbox?.rowCount !== 1) throw conflict();
+  return Object.freeze({ disposition: "DEFERRED", status: fence.status,
+    statusVersion: fence.status_version, enqueued: 0 });
+}
+
 export function createPostgresAutoListingAiWorkflow(rawOptions = {}) {
   const options = factoryOptions(rawOptions);
   const pool = options.pool;
@@ -782,8 +823,10 @@ export function createPostgresAutoListingAiWorkflow(rawOptions = {}) {
       const envelope = factoryApplyEnvelope(rawInput);
       let message;
       try { message = normalizeAutoListingAiMessage(envelope.message); } catch { throw invalid(); }
-      const normalizedOutcome = validatedOutcome(envelope.outcome, message.phase, message.correlationId);
       const execution = executionInput(message, envelope.execution);
+      const normalizedOutcome = validatedOutcome(envelope.outcome, message.phase, message.correlationId, {
+        allowReservationBusy: execution !== null,
+      });
       let client;
       try {
         client = await pool.connect();
@@ -798,6 +841,11 @@ export function createPostgresAutoListingAiWorkflow(rawOptions = {}) {
         if (!isSafeAutoListingAiIdentifier(jobId)) {
           await query(client, "COMMIT");
           return ignored("STALE", null);
+        }
+        if (normalizedOutcome.failureScope === RESERVATION_BUSY_SCOPE) {
+          const deferred = await deferBusyReservation(client, message, execution, normalizedOutcome, fence);
+          await query(client, "COMMIT");
+          return deferred;
         }
         const target = message.sourceAssetId ?? message.slotKey ?? null;
         const result = await applyAutoListingAiPhaseOutcome({

@@ -166,7 +166,7 @@ test("reuses a byte-identical scoped object and never records acceptance after s
 });
 
 for (const lossPoint of ["put", "readback"]) {
-  test(`lease loss after object ${lossPoint} cleans the object and never records it`, async () => {
+  test(`lease loss after object ${lossPoint} preserves the deterministic object and never schedules cleanup`, async () => {
     const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
     const stale = Object.assign(new Error("stale execution"), {
       code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
@@ -201,12 +201,12 @@ for (const lossPoint of ["put", "readback"]) {
 
     assert.equal(recorded, 0);
     assert.deepEqual(calls, lossPoint === "put"
-      ? ["put", "remove"]
-      : ["put", "readback", "remove"]);
+      ? ["put"]
+      : ["put", "readback"]);
   });
 }
 
-test("lease loss records the cleanup obligation when a newly written object cannot be removed", async () => {
+test("lease loss never removes or records cleanup for a deterministic object key", async () => {
   const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
   const stale = Object.assign(new Error("stale execution"), {
     code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
@@ -237,10 +237,7 @@ test("lease loss records the cleanup obligation when a newly written object cann
     },
   }), (error) => error === stale);
 
-  assert.deepEqual(calls, [
-    ["remove"],
-    ["cleanup", "EXECUTION_LEASE_LOST", "AUTO_LISTING_AI_EXECUTION_LEASE_LOST"],
-  ]);
+  assert.deepEqual(calls, []);
 });
 
 for (const lossPoint of ["find", "put rejection", "readback rejection"]) {
@@ -277,11 +274,11 @@ for (const lossPoint of ["find", "put rejection", "readback rejection"]) {
       assertLeaseActive() { if (!active) throw stale; },
     }), (error) => error === stale);
 
-    assert.equal(removed, lossPoint === "find" ? 0 : 1);
+    assert.equal(removed, 0);
   });
 }
 
-test("lease loss while the stored-evidence record is committing compensates before deleting the object", async () => {
+test("lease loss while the stored-evidence record is committing compensates the row but preserves the object", async () => {
   const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
   const stale = Object.assign(new Error("stale execution"), {
     code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
@@ -324,7 +321,7 @@ test("lease loss while the stored-evidence record is committing compensates befo
 
   await assert.rejects(pending, (error) => error === stale);
   assert.equal(databaseStored, false);
-  assert.equal(objectExists, false);
+  assert.equal(objectExists, true);
 });
 
 test("failed stored-evidence compensation retains both the database pointer and object and preserves stale", async () => {
@@ -362,7 +359,7 @@ test("failed stored-evidence compensation retains both the database pointer and 
   assert.equal(removals, 0);
 });
 
-test("cleanup failure after stored-evidence compensation records an obligation and preserves stale", async () => {
+test("stored-evidence compensation after lease loss never schedules object cleanup", async () => {
   const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
   const stale = Object.assign(new Error("stale execution"), {
     code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
@@ -401,7 +398,64 @@ test("cleanup failure after stored-evidence compensation records an obligation a
 
   assert.equal(databaseStored, false);
   assert.equal(objectExists, true);
-  assert.equal(cleanupRecorded, true);
+  assert.equal(cleanupRecorded, false);
+});
+
+test("a stale delayed PUT cannot delete the successor record or same deterministic object", async () => {
+  const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let oldActive = true;
+  let objectBytes = null;
+  let storedRecord = null;
+  let releaseOldPut;
+  let oldPutStarted;
+  const oldPutGate = new Promise((resolve) => { releaseOldPut = resolve; });
+  const oldPutReady = new Promise((resolve) => { oldPutStarted = resolve; });
+  const sharedRepository = repository({
+    async findStoredGenerationAsset() { return storedRecord; },
+    async recordStoredGenerationAsset(value) { storedRecord = { ...value }; return storedRecord; },
+    async revertStoredGenerationAsset(value) {
+      if (storedRecord?.attemptNo === value.attemptNo && storedRecord?.objectKey === value.objectKey) {
+        storedRecord = null;
+        return { disposition: "REVERTED" };
+      }
+      return { disposition: "ABSENT" };
+    },
+    async recordAssetCleanupRequired() { throw new Error("lease loss must not enqueue cleanup"); },
+  });
+  let removals = 0;
+  let puts = 0;
+  const storage = {
+    async putObjectFromBuffer(input) {
+      puts += 1;
+      objectBytes = Buffer.from(input.buffer);
+      if (puts === 1) {
+        oldPutStarted();
+        await oldPutGate;
+      }
+      return { key: input.key, sha256: normalized.contentHash,
+        contentType: normalized.contentType, size: normalized.bytes.length };
+    },
+    async getObjectBuffer() { return objectBytes; },
+    async removeObject() { removals += 1; objectBytes = null; },
+  };
+
+  const oldStore = storeGeneratedAsset({
+    scope, normalized, storage, repository: sharedRepository,
+    assertLeaseActive() { if (!oldActive) throw stale; },
+  });
+  await oldPutReady;
+  const successor = await storeGeneratedAsset({ scope, normalized, storage, repository: sharedRepository });
+  oldActive = false;
+  releaseOldPut();
+  await assert.rejects(oldStore, (error) => error === stale);
+
+  assert.equal(successor.objectKey, buildGeneratedAssetObjectKey({ ...scope, contentHash: normalized.contentHash }));
+  assert.equal(storedRecord?.objectKey, successor.objectKey);
+  assert.equal(objectBytes?.equals(normalized.bytes), true);
+  assert.equal(removals, 0);
 });
 
 test("put and reuse fail closed when bounded object readback differs from normalized bytes", async () => {

@@ -281,9 +281,13 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       requestEvidence: { requestKey: `auto-listing-rich-${inputHash}`, schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1" },
       maxAttempts: 3,
     };
+    let richTokenSequence = 0;
+    let richIdSequence = 0;
     const repository = createPostgresRichContentRepository({
       pool: { query: (...args) => client.query(...args) },
-      token: () => `lease-${suffix}`, id: () => `rich-${suffix}`,
+      leaseMs: 60_000,
+      token: () => `lease-${++richTokenSequence}-${suffix}`,
+      id: () => `rich-${++richIdSequence}-${suffix}`,
     });
     const lease = await repository.reserveRichContentAttempt(reservation);
     const concurrent = await repository.reserveRichContentAttempt(reservation);
@@ -297,8 +301,26 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     } catch (error) {
       wrongScopeRejected = error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID";
     }
+    const expiredRichLease = await client.query(
+      `UPDATE ai_rich_content_results SET lease_expires_at=NOW()-INTERVAL '1 second'
+        WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
+          AND input_hash=$5 AND attempt_no=$6 AND lease_token=$7`,
+      [accountId, jobId, itemId, planId, inputHash, lease.attemptNo, lease.leaseToken],
+    );
+    assert.equal(expiredRichLease.rowCount, 1);
+    const reclaimedAfterExpiry = await repository.reserveRichContentAttempt(reservation);
+    let expiredOwnerRejected = false;
+    try {
+      await repository.completeRichContentAttempt({
+        ...reservation, ...lease,
+        richContent,
+        outputHash: sha256(richContent), checkerResult, gatewayRequestId: "gateway-rich", modelEvidence,
+      });
+    } catch (error) {
+      expiredOwnerRejected = error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID";
+    }
     const accepted = await repository.completeRichContentAttempt({
-      ...reservation, ...lease,
+      ...reservation, ...reclaimedAfterExpiry,
       richContent,
       outputHash: sha256(richContent), checkerResult, gatewayRequestId: "gateway-rich", modelEvidence,
     });
@@ -598,6 +620,8 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       legacyTerminalPreserved,
       nullAcceptedRejected,
       fullScopeLeaseCas: lease.status === "RESERVED" && concurrent.status === "IN_PROGRESS" && wrongScopeRejected,
+      expiredLeaseReclaimed: reclaimedAfterExpiry.status === "RESERVED"
+        && reclaimedAfterExpiry.attemptNo === 2 && expiredOwnerRejected,
       acceptedReplayUnique: replay.status === "EXISTING_ACCEPTED" && duplicateRejected,
     };
   } finally {

@@ -39,7 +39,14 @@ const STOP_TIMEOUT_MS = 300_000;
 const EXECUTION_LEASE_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = Math.floor(EXECUTION_LEASE_MS / 3);
 const RETRY_AFTER_EXTERNAL_ACTION = new Set(["AI_GATEWAY_RATE_LIMITED"]);
-const FAILURE_SCOPES = new Set([null, "BUSINESS", "CHANNEL_TRANSIENT", "CHANNEL_REVALIDATION"]);
+const FAILURE_SCOPES = new Set([
+  null, "BUSINESS", "CHANNEL_TRANSIENT", "CHANNEL_REVALIDATION", "RESERVATION_BUSY",
+]);
+const RESERVATION_BUSY_CODE = Object.freeze({
+  PLAN_CONTENT: "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+  GENERATE_IMAGE_SLOT: "AUTO_LISTING_IMAGE_IN_PROGRESS",
+  GENERATE_RICH_CONTENT: "AUTO_LISTING_RICH_CONTENT_IN_PROGRESS",
+});
 const DELIVERY_STATES = new Set([null, "NOT_SENT", "POSSIBLY_SENT"]);
 
 export const AUTO_LISTING_AI_PHASE_POLICIES = Object.freeze({
@@ -202,6 +209,9 @@ function normalizeOrchestratorOutcome(value, message) {
     || (value.disposition === "ACK" && (value.failureScope !== null
       || value.deliveryState !== null || value.retryAfterMs !== null))
     || (value.failureScope === "BUSINESS" && (value.deliveryState !== null || value.retryAfterMs !== null))
+    || (value.failureScope === "RESERVATION_BUSY" && (value.disposition !== "RETRY"
+      || value.deliveryState !== null || !Number.isInteger(value.retryAfterMs) || value.retryAfterMs < 1
+      || value.failureCode !== RESERVATION_BUSY_CODE[message.phase]))
     || (typeof value.failureScope === "string" && value.failureScope.startsWith("CHANNEL_")
       && value.deliveryState === null)
     || (value.disposition === "ACK" && value.retryable)
@@ -347,6 +357,9 @@ export function createAutoListingAiWorker(config = {}) {
       && normalized.failureScope.startsWith("CHANNEL_")) {
       return Object.freeze({ persist: true, outcome: normalized });
     }
+    if (execution && normalized.failureScope === "RESERVATION_BUSY") {
+      return Object.freeze({ persist: true, outcome: normalized });
+    }
     if (normalized.disposition === "RETRY" && !finalAttempt
       && !RETRY_AFTER_EXTERNAL_ACTION.has(normalized.failureCode)) {
       return Object.freeze({ persist: false, outcome: normalized });
@@ -374,7 +387,8 @@ export function createAutoListingAiWorker(config = {}) {
             const result = await executePhaseAttempt(message, attempt > policy.retryLimit, execution);
             if (result.outcome.disposition !== "RETRY"
               || (execution && typeof result.outcome.failureScope === "string"
-                && result.outcome.failureScope.startsWith("CHANNEL_"))) {
+                && (result.outcome.failureScope.startsWith("CHANNEL_")
+                  || result.outcome.failureScope === "RESERVATION_BUSY"))) {
               terminal = result;
               break;
             }

@@ -1498,6 +1498,27 @@ test("repository reservation serializes concurrent same-input planning so the ga
   assert.deepEqual(first, second);
 });
 
+test("a live planner reservation reports exact busy state without gateway or business-attempt writes", async () => {
+  const planningArgs = plannerArgs();
+  let gatewayCalls = 0;
+  let terminalWrites = 0;
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope, ...planningArgs,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7,
+      textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { gatewayCalls += 1; } },
+    repository: {
+      async reserveContentPlan() { return { status: "IN_PROGRESS" }; },
+      async advanceContentPlanStage() { terminalWrites += 1; },
+      async releaseContentPlanChannelReservation() { terminalWrites += 1; },
+      async releaseContentPlanReservation() { terminalWrites += 1; },
+    },
+    evidenceRepository: passthroughEvidenceRepository,
+  }), (error) => error?.code === "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS" && error?.retryable === true);
+  assert.equal(gatewayCalls, 0);
+  assert.equal(terminalWrites, 0);
+});
+
 test("production repository port receives frozen snapshot, profile, request, and status-version fences on every transition", async () => {
   const planningArgs = plannerArgs();
   const built = planner();

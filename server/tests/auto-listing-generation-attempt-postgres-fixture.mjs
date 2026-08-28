@@ -407,6 +407,51 @@ export async function runGenerationAttemptPostgresFixture({ connectionString } =
       recoveryGatewayRequestId: rebound.recoveryRecord?.gatewayRequestId,
       recoveryGatewayConnectionId: rebound.recoveryRecord?.gatewayConnectionId,
     };
+    let expiryTokenSequence = 0;
+    let expiryIdSequence = 0;
+    const expiryRepository = createPostgresGenerationAttemptRepository({
+      pool: {
+        async connect() {
+          const connection = await pool.connect();
+          await connection.query(`SET search_path TO ${quote(schema)}, public`);
+          return connection;
+        },
+      },
+      leaseMs: 60_000,
+      token: () => `expiry-lease-${++expiryTokenSequence}-${suffix}`,
+      id: () => `expiry-generation-${++expiryIdSequence}-${suffix}`,
+    });
+    const expiryIdentity = crypto.createHash("sha256").update(`expiry-${suffix}`).digest("hex");
+    const expiryLease = await expiryRepository.reserveGenerationAttempt({
+      ...scope, attemptIdentityHash: expiryIdentity, generationSize, maxAttempts: 3,
+      gatewayConnectionId: connectionAId, gatewayConnectionVersion: 1,
+    });
+    const expiryBusy = await expiryRepository.reserveGenerationAttempt({
+      ...scope, attemptIdentityHash: expiryIdentity, generationSize, maxAttempts: 3,
+      gatewayConnectionId: connectionAId, gatewayConnectionVersion: 1,
+    });
+    const expiredGenerationLease = await client.query(
+      `UPDATE ai_generation_assets SET lease_expires_at=NOW()-INTERVAL '1 second'
+        WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
+          AND attempt_identity_hash=$5 AND attempt_no=$6 AND lease_token=$7`,
+      [accountId, jobId, itemId, planId, expiryIdentity, expiryLease.attemptNo, expiryLease.leaseToken],
+    );
+    if (expiredGenerationLease.rowCount !== 1) throw new Error("generation expiry setup failed");
+    const expiryReclaimed = await expiryRepository.reserveGenerationAttempt({
+      ...scope, attemptIdentityHash: expiryIdentity, generationSize, maxAttempts: 3,
+      gatewayConnectionId: connectionAId, gatewayConnectionVersion: 1,
+    });
+    let expiredGenerationOwnerRejected = false;
+    try {
+      await expiryRepository.bindGenerationAttemptInput({
+        ...scope, attemptIdentityHash: expiryIdentity,
+        inputHash: crypto.createHash("sha256").update(`expiry-input-${suffix}`).digest("hex"),
+        generationSize, attemptNo: expiryLease.attemptNo, leaseToken: expiryLease.leaseToken,
+        gatewayConnectionId: connectionAId, gatewayConnectionVersion: 1,
+      });
+    } catch (error) {
+      expiredGenerationOwnerRejected = error?.code === "AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED";
+    }
     return {
       acceptedReplay: lease.status === "RESERVED" && bound.status === "BOUND"
         && accepted.status === "ACCEPTED" && replay.status === "EXISTING_ACCEPTED"
@@ -427,6 +472,9 @@ export async function runGenerationAttemptPostgresFixture({ connectionString } =
         && occupied?.status === "IN_PROGRESS" && channelRows.length === 1
         && channelRows[0].attempt_no === 1 && channelRows[0].status === "GENERATING"
         && channelRows[0].lease_token === reclaimed.leaseToken && channelRows[0].error_code === null,
+      expiredLeaseReclaimed: expiryLease.status === "RESERVED" && expiryBusy.status === "IN_PROGRESS"
+        && expiryReclaimed.status === "RESERVED" && expiryReclaimed.attemptNo === 2
+        && expiryReclaimed.leaseToken !== expiryLease.leaseToken && expiredGenerationOwnerRejected,
       storedImageReusable: rebound.status === "BOUND"
         && rebound.recoveryRecord?.objectKey === channelStored.objectKey
         && rebound.recoveryRecord?.gatewayRequestId === `channel-gateway-${suffix}`,

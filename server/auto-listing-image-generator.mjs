@@ -906,6 +906,9 @@ export async function generateImageSlot(input = {}) {
     await finalizeExhausted({ repository, scope, slot, inputHash: attemptIdentityHash, attemptNo: maxAttempts, error: exhausted });
     throw exhausted;
   }
+  if (reservation?.status === "IN_PROGRESS") {
+    throw failure("AUTO_LISTING_IMAGE_IN_PROGRESS", true);
+  }
   if (reservation?.status !== "RESERVED" || !strictText(reservation.leaseToken) || !Number.isInteger(reservation.attemptNo)
     || reservation.attemptNo < 1 || reservation.attemptNo > maxAttempts
     || reservation.generationSize !== validated.size) throw failure("AUTO_LISTING_IMAGE_RESERVATION_FAILED", true);

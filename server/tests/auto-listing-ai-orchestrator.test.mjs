@@ -674,6 +674,37 @@ test("classifies every supported channel failure with explicit safe delivery met
   }
 });
 
+test("classifies live inner reservations as durable v3 deferrals instead of business failures", async () => {
+  const cases = [
+    ["PLAN_CONTENT", "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS", "planContent"],
+    ["GENERATE_IMAGE_SLOT", "AUTO_LISTING_IMAGE_IN_PROGRESS", "generateImageSlot"],
+    ["GENERATE_RICH_CONTENT", "AUTO_LISTING_RICH_CONTENT_IN_PROGRESS", "generateRichContent"],
+  ];
+  for (const [phase, code, service] of cases) {
+    const busy = Object.assign(new Error("private reservation owner"), {
+      code,
+      retryable: true,
+    });
+    const value = await orchestrateAutoListingAiPhase({
+      message: message(phase), context: context(phase), assertLeaseActive() {},
+    }, services({ [service]: async () => { throw busy; } }));
+
+    assert.deepEqual(value, {
+      contractVersion: "V1",
+      disposition: "RETRY",
+      phase,
+      outcome: "IN_PROGRESS",
+      retryable: true,
+      failureCode: code,
+      correlationId: "correlation-a",
+      failureScope: "RESERVATION_BUSY",
+      deliveryState: null,
+      retryAfterMs: 30_000,
+    });
+    assert.doesNotMatch(JSON.stringify(value), /private reservation owner/u);
+  }
+});
+
 test("classifies adapter 404 model rejection as NOT_SENT revalidation without broadening other 4xx failures", async () => {
   for (const [status, expectedScope, expectedDelivery] of [
     [404, "CHANNEL_REVALIDATION", "NOT_SENT"],

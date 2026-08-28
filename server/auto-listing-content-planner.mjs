@@ -817,6 +817,11 @@ export async function createContentPlan(input = {}) {
   if (reservation?.status === "EXISTING") return verifyStoredPlan(
     reservation.record, scope, plannerContext, planningContract, skeletonHash,
   );
+  if (reservation?.status === "IN_PROGRESS") {
+    const busy = plannerError("AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS", "图片规划正在由其他执行者处理");
+    busy.retryable = true;
+    throw busy;
+  }
   if (typeof repository?.advanceContentPlanStage !== "function"
     || typeof repository?.releaseContentPlanChannelReservation !== "function"
     || typeof evidenceRepository?.loadOutcome !== "function"

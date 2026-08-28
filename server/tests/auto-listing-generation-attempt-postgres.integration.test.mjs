@@ -16,6 +16,7 @@ if (!enabled) {
       abaFenced: true,
       staleBeforeAttempt: true,
       channelReclaimed: true,
+      expiredLeaseReclaimed: true,
       storedImageReusable: true,
       memoryPostgresChannelParity: true,
       storedEvidenceCompensated: true,

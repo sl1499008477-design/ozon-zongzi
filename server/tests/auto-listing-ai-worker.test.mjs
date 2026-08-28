@@ -1157,6 +1157,93 @@ test("v3 channel failure is requeued once without inline retry or item failure p
   await worker.stop();
 });
 
+test("v3 inner reservation busy is durably deferred once without inline retry or business outcome", async () => {
+  const harness = dualBossHarness();
+  const events = [];
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { events.push("adopt"); return adoptedExecution; },
+      async renew() { events.push("renew"); return adoptedExecution; },
+      async requeueChannelFailure() { throw new Error("reservation wait must not switch channel"); },
+    }),
+    loadContext: async (message) => { events.push("load"); return context(message); },
+    orchestrate: async ({ message }) => {
+      events.push("phase");
+      return phaseOutcome(message, {
+        disposition: "RETRY", outcome: "IN_PROGRESS", retryable: true,
+        failureCode: "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+        failureScope: "RESERVATION_BUSY", retryAfterMs: 30_000,
+      });
+    },
+    workflow: Object.freeze({ async applyOutcome(input) { events.push(["defer", input]); } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 2 } }),
+  });
+  await worker.start();
+
+  const result = await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{
+    id: "v3-reservation-busy", data: workMessage(),
+  }]);
+
+  assert.equal(result[0].status, "completed");
+  assert.deepEqual(events.map((entry) => Array.isArray(entry) ? entry[0] : entry), [
+    "adopt", "load", "phase", "defer",
+  ]);
+  assert.deepEqual(events.at(-1)[1].execution, adoptedExecution);
+  assert.equal(events.at(-1)[1].outcome.failureScope, "RESERVATION_BUSY");
+  await worker.stop();
+});
+
+test("v3 reservation busy rejects a failure code belonging to another phase", async () => {
+  const harness = dualBossHarness();
+  let persisted = null;
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() { return adoptedExecution; },
+      async requeueChannelFailure() { throw new Error("must not switch channel"); },
+    }),
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => phaseOutcome(message, {
+      disposition: "RETRY", outcome: "IN_PROGRESS", retryable: true,
+      failureCode: "AUTO_LISTING_IMAGE_IN_PROGRESS",
+      failureScope: "RESERVATION_BUSY", retryAfterMs: 30_000,
+    }),
+    workflow: Object.freeze({ async applyOutcome(input) { persisted = input; } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies(),
+  });
+  await worker.start();
+
+  const [result] = await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{
+    id: "v3-invalid-reservation-busy", data: workMessage(),
+  }]);
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.output, {
+    disposition: "FAIL", code: "AUTO_LISTING_AI_ORCHESTRATOR_OUTCOME_INVALID",
+  });
+  assert.equal(persisted.outcome.failureScope, "BUSINESS");
+  assert.equal(persisted.outcome.failureCode, "AUTO_LISTING_AI_ORCHESTRATOR_OUTCOME_INVALID");
+  await worker.stop();
+});
+
 test("v3 renews within one third of its lease, stops heartbeat, and never saves after lease loss", async () => {
   const harness = dualBossHarness();
   const timers = manualTimers();

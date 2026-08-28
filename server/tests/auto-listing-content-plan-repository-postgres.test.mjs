@@ -110,7 +110,7 @@ if (!enabled) {
 
       const repository = createPostgresContentPlanRepository({
         pool: scopedPool,
-        leaseMs: 50,
+        leaseMs: 60_000,
         token: (() => { let next = 0; return () => `lease-${++next}-${suffix}`; })(),
         id: (() => { let next = 0; return () => `attempt-${++next}-${suffix}`; })(),
         planId: () => `plan-parent-${suffix}`,
@@ -265,7 +265,13 @@ if (!enabled) {
         gatewayRequestId: "gateway-request-a", response: plan,
         gatewayConnectionId: ids.connectionA, gatewayConnectionVersion: 1,
       });
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      const expiredPlanLease = await admin.query(
+        `UPDATE auto_listing_content_plan_attempts SET lease_expires_at=NOW()-INTERVAL '1 second'
+          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND input_hash=$4
+            AND id=$5 AND lease_token=$6`,
+        [ids.account, ids.job, ids.item, request.inputHash, owner.attemptId, owner.reservationToken],
+      );
+      assert.equal(expiredPlanLease.rowCount, 1);
       const resumed = await repository.reserveContentPlan(request);
       assert.equal(resumed.status, "RESERVED");
       assert.equal(resumed.attemptId, owner.attemptId);
