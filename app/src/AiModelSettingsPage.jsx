@@ -166,6 +166,11 @@ function withSignal(intent, signal) {
   return Object.freeze({ ...intent, signal });
 }
 
+function activeProfileScope(profile) {
+  return profile?.id && Number.isSafeInteger(profile?.configVersion)
+    ? `${profile.id}:${profile.configVersion}` : "";
+}
+
 function GatewayConnectionSection({
   activeRequest, baseUrl, busy, canCreateConnection, displayName, gatewayKey,
   onBaseUrlChange, onDisplayNameChange, onGatewayKeyChange, onOpenDashboard,
@@ -272,7 +277,7 @@ function AutoListingChannelSection({
       : row.status === "BUSY" ? "processing" : row.status === "COOLDOWN" ? "warning" : "default"}>{row.statusLabel}</Tag> },
     { title: "当前商品", dataIndex: "assignedItemId", render: (value) => value || "—" },
     { title: "操作", key: "action", render: (_value, row) => <Space direction="vertical" size={4}>
-      <Button size="small" disabled={busy} loading={activeRequest === (row.enabled ? "停用独立通道" : "启用独立通道")}
+      <Button size="small" disabled={busy} loading={activeRequest === `${row.enabled ? "停用独立通道" : "启用独立通道"}:${row.channelId}`}
         onClick={() => onSetChannelEnabled(row, !row.enabled)}>{row.enabled ? "停用" : "启用"}</Button>
       {row.status === "BUSY" && row.enabled ? <span className="ai-model-settings-hint">当前商品完成后停用生效</span> : null}
     </Space> },
@@ -282,7 +287,8 @@ function AutoListingChannelSection({
     {channelsWarning ? <Alert type="warning" showIcon title={channelsWarning} /> : null}
     {!activeProfile ? <Alert type="info" showIcon title="请先发布正式 AI 配置" /> : <>
       <Space wrap className="ai-model-settings-channel-add">
-        <Select value={selectedCandidateId || undefined} disabled={busy || !channelCandidates.length}
+        <Select aria-label="选择已验证兼容连接" showSearch optionFilterProp="label"
+          value={selectedCandidateId || undefined} disabled={busy || !channelCandidates.length}
           placeholder="选择已验证兼容连接" onChange={setSelectedCandidateId}
           options={channelCandidates.map((row) => ({ value: row.connectionId, label: row.connectionDisplayName }))} />
         <Button type="primary" disabled={busy || !candidate} loading={activeRequest === "添加独立通道"}
@@ -666,7 +672,7 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     }
   };
 
-  const runAction = async (name, operation, successMessage) => {
+  const runAction = async (name, operation, successMessage, profileScope = "") => {
     if (actionInFlightRef.current) return;
     actionInFlightRef.current = true;
     const controller = new AbortController();
@@ -674,16 +680,20 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     setActiveRequest(name);
     setError("");
     setNotice("");
+    let refreshed = false;
     try {
       await operation(controller.signal);
-      if (activeActionControllerRef.current === controller) setNotice(successMessage);
+      const latest = await refreshOverview({ silent: true });
+      refreshed = true;
+      if (activeActionControllerRef.current === controller && latest
+        && (!profileScope || profileScope === activeProfileScope(latest.activeProfile))) setNotice(successMessage);
     } catch (caught) {
       if (activeActionControllerRef.current === controller && caught?.code !== "REQUEST_ABORTED") {
         setError(actionError(caught, `${name}失败`));
       }
     } finally {
       if (activeActionControllerRef.current !== controller) return;
-      await refreshOverview({ silent: true });
+      if (!refreshed) await refreshOverview({ silent: true });
       if (activeActionControllerRef.current !== controller) return;
       activeActionControllerRef.current = null;
       actionInFlightRef.current = false;
@@ -765,20 +775,24 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     }, withSignal(intent, signal));
   }, "AI 模型配置已发布，仅影响新建自动上架任务");
 
-  const addChannel = (candidate) => runAction("添加独立通道", async () => {
-    const activeProfile = overview?.activeProfile;
-    if (!activeProfile || !candidate) throw new Error("请先发布正式 AI 配置并选择已验证兼容连接");
-    await addAutoListingAiChannel({ profileId: activeProfile.id, profileVersion: activeProfile.configVersion,
-      connectionId: candidate.connectionId, connectionVersion: candidate.connectionVersion,
-      displayName: candidate.connectionDisplayName });
-  }, "独立通道已添加");
+  const addChannel = (candidate) => {
+    const activeProfile = overview?.activeProfile || null;
+    return runAction("添加独立通道", async () => {
+      if (!activeProfile || !candidate) throw new Error("请先发布正式 AI 配置并选择已验证兼容连接");
+      await addAutoListingAiChannel({ profileId: activeProfile.id, profileVersion: activeProfile.configVersion,
+        connectionId: candidate.connectionId, connectionVersion: candidate.connectionVersion,
+        displayName: candidate.connectionDisplayName });
+    }, "独立通道已添加", activeProfileScope(activeProfile));
+  };
 
-  const setChannelEnabled = (channel, enabled) => runAction(enabled ? "启用独立通道" : "停用独立通道", async () => {
-    const activeProfile = overview?.activeProfile;
-    if (!activeProfile || !channel) throw new Error("当前正式 AI 配置不可用");
-    await setAutoListingAiChannelEnabled({ profileId: activeProfile.id, profileVersion: activeProfile.configVersion,
-      channelId: channel.channelId, enabled });
-  }, enabled ? "独立通道已启用" : "独立通道已停用");
+  const setChannelEnabled = (channel, enabled) => {
+    const activeProfile = overview?.activeProfile || null;
+    return runAction(`${enabled ? "启用独立通道" : "停用独立通道"}:${channel?.channelId || ""}`, async () => {
+      if (!activeProfile || !channel) throw new Error("当前正式 AI 配置不可用");
+      await setAutoListingAiChannelEnabled({ profileId: activeProfile.id, profileVersion: activeProfile.configVersion,
+        channelId: channel.channelId, enabled });
+    }, enabled ? "独立通道已启用" : "独立通道已停用", activeProfileScope(activeProfile));
+  };
 
   const rollbackProfile = (profile) => runAction("安全回退", async (signal) => {
     const view = presentation.profiles.find((row) => row.id === profile.id);

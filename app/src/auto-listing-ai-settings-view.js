@@ -69,6 +69,17 @@ function safeChannelErrorCode(value) {
   return value === null || (typeof value === "string" && /^[A-Z][A-Z0-9_]{0,119}$/u.test(value));
 }
 
+function channelStatusFieldsAreConsistent(value) {
+  if (value.status === "AVAILABLE") return value.enabled === true && value.requiresRevalidation === false
+    && value.assignedItemId === null;
+  if (value.status === "BUSY") return value.enabled === true && value.requiresRevalidation === false
+    && value.assignedItemId !== null;
+  if (value.status === "COOLDOWN") return value.enabled === true && value.requiresRevalidation === false
+    && value.cooldownUntil !== null;
+  if (value.status === "REQUIRES_REVALIDATION") return value.requiresRevalidation === true;
+  return value.status === "DISABLED" && value.enabled === false && value.requiresRevalidation === false;
+}
+
 function channelPresentation(raw) {
   const value = exactRecord(raw, CHANNEL_KEYS);
   if (!value || !safeEntityId(value.channelId) || !safeChannelText(value.displayName)
@@ -77,7 +88,7 @@ function channelPresentation(raw) {
     || !safeEntityId(value.connectionId) || !Number.isSafeInteger(value.connectionVersion) || value.connectionVersion < 1
     || !(value.assignedItemId === null || safeEntityId(value.assignedItemId))
     || !(value.cooldownUntil === null || iso(value.cooldownUntil)) || typeof value.requiresRevalidation !== "boolean"
-    || !safeChannelErrorCode(value.lastErrorCode)) return null;
+    || !safeChannelErrorCode(value.lastErrorCode) || !channelStatusFieldsAreConsistent(value)) return null;
   return Object.freeze({
     channelId: value.channelId,
     displayName: value.displayName,

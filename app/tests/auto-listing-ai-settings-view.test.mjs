@@ -67,9 +67,22 @@ test("channel presentation maps only known channel statuses and keeps the DTO cl
 test("channel presentation warns only when configured channels cannot process work", () => {
   assert.equal(aiSettingsPresentation(overview({ channels: [channel({ status: "DISABLED", enabled: false })] })).channelsWarning,
     "当前没有可用的独立通道，请检查通道配置");
-  assert.equal(aiSettingsPresentation(overview({ channels: [channel({ status: "COOLDOWN" })] })).channelsWarning,
+  assert.equal(aiSettingsPresentation(overview({ channels: [channel({ status: "COOLDOWN", cooldownUntil: CHECKED_AT })] })).channelsWarning,
     "当前没有可用的独立通道，请检查通道配置");
   assert.equal(aiSettingsPresentation(overview({ channels: [channel({ status: "AVAILABLE" })] })).channelsWarning, null);
+});
+
+test("channel presentation fails closed on contradictory derived status fields", () => {
+  for (const mutation of [
+    { status: "BUSY", assignedItemId: null },
+    { status: "AVAILABLE", enabled: false },
+    { status: "DISABLED", enabled: true },
+    { status: "REQUIRES_REVALIDATION", requiresRevalidation: false },
+    { status: "COOLDOWN", cooldownUntil: null },
+  ]) assert.deepEqual(aiSettingsPresentation(overview({ channels: [channel(mutation)] })).channels, []);
+
+  assert.equal(aiSettingsPresentation(overview({ channels: [channel({ status: "DISABLED", enabled: false,
+    assignedItemId: "item-a" })] })).channels[0].assignedItemId, "item-a");
 });
 
 test("presentation exposes only closed audit-backed activation evidence and never falls back to createdAt", () => {

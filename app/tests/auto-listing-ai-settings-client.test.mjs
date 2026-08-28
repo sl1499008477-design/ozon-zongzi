@@ -391,6 +391,24 @@ test("channel DTOs reject unknown fields, unsafe values, and sensitive aliases",
   }
 });
 
+test("channel DTOs reject contradictory derived status fields", async (t) => {
+  const base = overview({ channels: [channel()], channelCandidates: [channelCandidate()] });
+  installTransport(t, async () => response(base));
+  for (const mutation of [
+    { status: "BUSY", assignedItemId: null },
+    { status: "AVAILABLE", enabled: false },
+    { status: "DISABLED", enabled: true },
+    { status: "REQUIRES_REVALIDATION", requiresRevalidation: false },
+    { status: "COOLDOWN", cooldownUntil: null },
+  ]) {
+    globalThis.fetch = async () => response({ ...base, channels: [channel(mutation)] });
+    await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+  }
+
+  globalThis.fetch = async () => response({ ...base, channels: [channel({ status: "DISABLED", enabled: false, assignedItemId: "item-a" })] });
+  assert.equal((await loadAiSettings()).channels[0].assignedItemId, "item-a");
+});
+
 test("abort, 64 KiB body limits, accessors, proxies, secret or oversized responses fail closed", async (t) => {
   let calls = 0;
   installTransport(t, async () => { calls += 1; return response(connection()); });

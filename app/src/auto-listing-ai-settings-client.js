@@ -505,6 +505,17 @@ function safeChannelErrorCode(value) {
   return value === null || (typeof value === "string" && /^[A-Z][A-Z0-9_]{0,119}$/u.test(value));
 }
 
+function channelStatusFieldsAreConsistent(value) {
+  if (value.status === "AVAILABLE") return value.enabled === true && value.requiresRevalidation === false
+    && value.assignedItemId === null;
+  if (value.status === "BUSY") return value.enabled === true && value.requiresRevalidation === false
+    && value.assignedItemId !== null;
+  if (value.status === "COOLDOWN") return value.enabled === true && value.requiresRevalidation === false
+    && value.cooldownUntil !== null;
+  if (value.status === "REQUIRES_REVALIDATION") return value.requiresRevalidation === true;
+  return value.status === "DISABLED" && value.enabled === false && value.requiresRevalidation === false;
+}
+
 function validateChannel(raw) {
   return responseValidation(() => {
     const value = exactResponse(raw, CHANNEL_KEYS);
@@ -512,7 +523,8 @@ function validateChannel(raw) {
       || value.channelOrder < 1 || typeof value.enabled !== "boolean" || !CHANNEL_STATUSES.has(value.status)
       || !safeChannelText(value.connectionDisplayName) || !id(value.connectionId) || version(value.connectionVersion) < 1
       || !(value.assignedItemId === null || id(value.assignedItemId)) || !isoTimestamp(value.cooldownUntil, true)
-      || typeof value.requiresRevalidation !== "boolean" || !safeChannelErrorCode(value.lastErrorCode)) {
+      || typeof value.requiresRevalidation !== "boolean" || !safeChannelErrorCode(value.lastErrorCode)
+      || !channelStatusFieldsAreConsistent(value)) {
       throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     }
     return Object.freeze(value);
