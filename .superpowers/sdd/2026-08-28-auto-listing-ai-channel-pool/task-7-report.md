@@ -5,7 +5,9 @@
 Task 7 is implemented in commit `2b7ae449ed84ef226fa09c38b8e5d5d47d5a5af4`
 (`feat: route auto-listing phases through leased channels`) and review remediation
 commit `b8867fc27a9a4480cf0501e6ea66c58016cefbb5`
-(`fix: fence AI attempts by exact execution owner`). The original report was
+(`fix: fence AI attempts by exact execution owner`), and producer-provenance
+remediation commit `94363872782a9269d458680bf6944fffc69e2b7e`
+(`fix: preserve paid producer provenance across channel reclaim`). The original report was
 recorded in commit `100aeef8f3cf119a8720f51231a0fdbe1a998d8d`.
 
 Paid auto-listing phases now keep the job-frozen profile models and protocols while resolving only the exact adopted channel connection/version. No selector, arbitrary connection, current-profile, or default-connection fallback was added. Planner, image generator/checker, and rich-content attempts persist their leased connection provenance, and repository writes fence the account/item/status-version attempt owner and connection version.
@@ -18,6 +20,16 @@ did not yet lock and fence the current `GENERATING` item status/version/active
 plan, and that the exported memory image-attempt repository did not enforce the
 same exact gateway connection pair as PostgreSQL. Both findings are closed by
 the remediation commit above.
+
+The second fresh cumulative review failed with 0 Critical, 1 Important, and
+0 Minor finding. It identified that channel reclaim still treated mutable
+execution ownership as producer provenance: channel B overwrote channel A even
+when B reused A's already-paid planner response or generated image. The second
+remediation separates these meanings without adding columns: reservation and
+recovery results return the immutable producer pair, while the Task 6 worker
+lease remains the authority for the current execution. If the repository cannot
+prove reusable paid evidence, the producer pair changes to B before B makes a
+paid producer call.
 
 ## TDD evidence
 
@@ -44,6 +56,16 @@ Review remediation also followed RED/GREEN in two passes:
   race test intentionally failed until terminal and release statements acquired
   the current item row with `FOR UPDATE` before changing an attempt. This closes
   the status-transition race rather than merely checking a statement snapshot.
+
+The second review remediation began with 6 intended focused failures across
+planner/image memory and PostgreSQL-capable repositories and callers. The RED
+cases proved that reclaim returned B instead of A for reusable evidence, callers
+loaded or terminalized A's evidence through B, and the no-evidence path did not
+consistently return B. After those became green, a further repository audit
+added a corrupt stored-image RED: the old SQL considered non-null columns
+reusable and passed connection version `9` where the full validator had to return
+`false`. The production fix then reused the same object/runtime evidence
+validator for the reclaim decision.
 
 ### GREEN
 
@@ -95,6 +117,46 @@ fail 0
 skipped 0
 ```
 
+Final second-review focused planner/image repository and caller regression:
+
+```text
+tests 234
+pass 234
+fail 0
+skipped 0
+```
+
+Final cumulative Task 7 regression after producer-provenance remediation:
+
+```text
+tests 505
+pass 504
+fail 0
+skipped 1
+```
+
+Final exact Task 8 adapter/orchestrator/worker regression:
+
+```text
+tests 207
+pass 207
+fail 0
+skipped 0
+```
+
+Final Task 6 worker/workflow/memory parity regression:
+
+```text
+tests 138
+pass 137
+fail 0
+skipped 1
+```
+
+Both final skips are PostgreSQL integration gates requiring explicit
+nonproduction environment configuration. All ten files changed by the second
+remediation passed `node --check`; `git diff --check` also passed.
+
 All changed `.mjs` files passed `node --check`. `git diff --check` passed. The exact credential-resolver regression passed unchanged, confirming it still decrypts only `{ accountId, connectionId, connectionVersion }` and provides no connection selector.
 
 ## Public contracts
@@ -116,7 +178,17 @@ All changed `.mjs` files passed `node --check`. `git diff --check` passed. The e
 - The phase context SQL joins the exact frozen profile channel and exact connection-version row, including assigned job/item/status version plus execution lease owner/token/expiry. A missing or mismatched row is a safe context evidence error; it does not fall back.
 - Legacy v2 execution is allowed only for a legacy environment-backed profile with null connection provenance.
 - Planner repository/evidence commands carry `gatewayConnectionId/gatewayConnectionVersion`.
+- Planner reclaim checks for its persisted response evidence. Reclaim by B keeps
+  producer A when that paid response exists; otherwise the reservation returns
+  B. The planner uses the returned producer pair for evidence load, validation,
+  save, failure, and channel release, while its provider call still runs under
+  the current Task 6 execution lease.
 - Image attempt commands carry generator connection provenance and terminal checker connection provenance. Reserve, bind, storage, terminal, release, compensation, and lookup writes are fenced by the exact attempt connection pair.
+- Image reclaim keeps A only when the full stored-object and frozen-runtime
+  evidence validator proves that A's paid bytes are reusable. Missing, partial,
+  or corrupt evidence assigns B before a new producer call. A recovered image
+  remains attributed to A while a checker executed by B records checker
+  provenance B.
 - Rich-content reserve/reclaim/terminal/release commands carry and fence `gatewayConnectionId/gatewayConnectionVersion`.
 - Rich-content commands also carry the orchestration message's exact
   `expectedStatusVersion`. Reservation locks only the account/job/item row in
@@ -168,11 +240,28 @@ Tests:
 - `server/tests/auto-listing-rich-content-postgres-fixture.mjs`
 - `server/tests/auto-listing-ai-workflow-postgres.integration.test.mjs`
 
+The second review remediation changed only the already approved planner/image
+production files and their direct tests:
+
+- `server/auto-listing-content-plan-repository.mjs`
+- `server/auto-listing-content-planner.mjs`
+- `server/auto-listing-generation-attempt-repository.mjs`
+- `server/auto-listing-generation-attempt-postgres.mjs`
+- `server/auto-listing-image-generator.mjs`
+- `server/tests/auto-listing-content-plan-repository.test.mjs`
+- `server/tests/auto-listing-content-planner.test.mjs`
+- `server/tests/auto-listing-generation-attempt-repository.test.mjs`
+- `server/tests/auto-listing-generation-attempt-postgres.test.mjs`
+- `server/tests/auto-listing-image-generator.test.mjs`
+
 `server/auto-listing-ai-credential-resolver.mjs` did not require a production change: its existing exact-version resolver already met Task 7 and its direct regression remained green.
 
 ## Task 6 and Task 8 compatibility
 
 - Task 6 execution heartbeat/fencing remains authoritative. Context loading uses `execution.current()`, and lease-loss guards still surround provider and repository boundaries.
+- Reclaim does not replace or weaken the Task 6 worker/channel lease. The
+  returned producer pair is cost/source evidence; current checker execution is
+  still the adopted worker execution and is persisted separately.
 - Task 6 channel failure behavior still releases and reclaims the same planner/image/rich attempt without consuming a business-attempt budget.
 - Task 8 provider-delivery classification and no-inline-paid-retry behavior are unchanged.
 - The 300-second idle timeout is now sourced from the closed leased-execution contract; no outer application deadline was reintroduced.
@@ -189,10 +278,16 @@ Tests:
 - No real independent second key was configured, so real dual-channel paid concurrency is not claimed.
 - No real gateway or Ozon call was made, by design.
 - The legacy v2 path intentionally supports only null connection provenance; connection-backed work must use adopted v3 execution evidence.
+- Existing columns were sufficient. No migration or schema expansion was made;
+  the risk is confined to the reclaim/resume contracts that now return producer
+  provenance. Legacy test/memory ports that omit the returned pair retain the
+  previous current-execution fallback, while explicit all-null v2 provenance
+  remains all-null.
 
 Rollback the implementation with:
 
 ```bash
+git revert 94363872782a9269d458680bf6944fffc69e2b7e
 git revert b8867fc27a9a4480cf0501e6ea66c58016cefbb5
 git revert 2b7ae449ed84ef226fa09c38b8e5d5d47d5a5af4
 ```
