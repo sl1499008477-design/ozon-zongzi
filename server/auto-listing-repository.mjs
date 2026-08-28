@@ -447,6 +447,16 @@ const EMPTY_AI_QUEUE_PROJECTION = Object.freeze({
   aiChannelWaitStartedAt: null,
 });
 
+function normalizedAiChannelDisplayName(value) {
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const normalized = value
+    .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return normalized && normalized.length <= 200 ? normalized : null;
+}
+
 function itemAiQueueProjection(item) {
   if (!["PLANNING", "GENERATING"].includes(item.status)) return EMPTY_AI_QUEUE_PROJECTION;
   const state = item.ai_queue_state;
@@ -454,12 +464,7 @@ function itemAiQueueProjection(item) {
   if (!["WAITING_FOR_AI_CHANNEL", "CALLING_AI", "SWITCHING_AI_CHANNEL"].includes(state)) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
-  const displayName = item.ai_channel_display_name === null
-    ? null : typeof item.ai_channel_display_name === "string"
-      && item.ai_channel_display_name.trim().length > 0
-      && item.ai_channel_display_name.length <= 200
-      && !/[\u0000-\u001f\u007f]/u.test(item.ai_channel_display_name)
-      ? item.ai_channel_display_name : undefined;
+  const displayName = normalizedAiChannelDisplayName(item.ai_channel_display_name);
   const switching = item.ai_channel_switching === true;
   const waitStartedAt = item.ai_channel_wait_started_at ?? null;
   const validWaitStartedAt = waitStartedAt instanceof Date
@@ -467,10 +472,11 @@ function itemAiQueueProjection(item) {
     : typeof waitStartedAt === "string" && Number.isFinite(Date.parse(waitStartedAt));
   if (displayName === undefined
     || switching !== (state === "SWITCHING_AI_CHANNEL")
-    || (state === "CALLING_AI" && (displayName === null || waitStartedAt !== null))
+    || (state === "CALLING_AI" && waitStartedAt !== null)
     || (state !== "CALLING_AI" && !validWaitStartedAt)) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
+  if (state === "CALLING_AI" && displayName === null) return EMPTY_AI_QUEUE_PROJECTION;
   return Object.freeze({
     aiQueueState: state,
     aiChannelDisplayName: displayName,
@@ -684,12 +690,28 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
                   'AI_GATEWAY_NETWORK_FAILED','AI_GATEWAY_RATE_LIMITED','AI_GATEWAY_IDLE_TIMEOUT',
                   'AI_GATEWAY_UNEXPECTED_EOF','INVALID_GATEWAY_RESPONSE','RETRYABLE_GATEWAY',
                   'GATEWAY_TIMEOUT','AI_GATEWAY_UNAUTHORIZED','AI_GATEWAY_MODEL_NOT_FOUND',
-                  'AI_GATEWAY_CAPABILITY_INVALID','NON_RETRYABLE_AUTH'
+                  'AI_GATEWAY_CAPABILITY_INVALID','NON_RETRYABLE_AUTH','NON_RETRYABLE_GATEWAY'
                 )
                 AND ((failed_queue.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
                       AND i.status='PLANNING')
                   OR (failed_queue.phase IN ('GENERATE_IMAGE_SLOT','GENERATE_RICH_CONTENT')
                       AND i.status='GENERATING'))
+                AND NOT EXISTS (
+                  SELECT 1 FROM auto_listing_ai_profile_channels AS failed_assignment
+                   WHERE failed_assignment.account_id=failed_queue.account_id
+                     AND failed_assignment.assigned_job_id=failed_queue.job_id
+                     AND failed_assignment.assigned_item_id=failed_queue.item_id
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM auto_listing_ai_outbox AS failed_live
+                   WHERE failed_live.account_id=failed_queue.account_id
+                     AND failed_live.job_id=failed_queue.job_id
+                     AND failed_live.item_id=failed_queue.item_id
+                     AND failed_live.id<>failed_queue.id
+                     AND failed_live.contract_version='V1'
+                     AND failed_live.state='PROCESSING'
+                     AND failed_live.lease_expires_at>NOW()
+                )
               ORDER BY failed_queue.updated_at DESC,failed_queue.created_at DESC,failed_queue.id DESC
               LIMIT 1
            ) latest_failure ON TRUE

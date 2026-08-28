@@ -52,6 +52,7 @@ async function seedScenario(label, {
   leaseExpiresAt = null,
   lastErrorCode = null,
   channelMode = "free",
+  channelDisplayName = `Channel ${label}`,
   addNewerPendingSibling = false,
   phaseTargetId = null,
 } = {}) {
@@ -166,7 +167,7 @@ async function seedScenario(label, {
        channel_order,enabled,assigned_job_id,assigned_item_id,assigned_status_version,assigned_at,
        execution_lease_owner,execution_lease_token,execution_lease_expires_at
      ) VALUES ($1,$2,1,$3,$4,$5,1,1,$6,$7,$8,$9,$10,$11,$12,$13)`,
-    [accountId, profileId, channelId, `Channel ${label}`, connectionId,
+    [accountId, profileId, channelId, channelDisplayName, connectionId,
       channelMode !== "unavailable",
       fixed ? jobId : staleJobId,
       fixed ? itemId : staleItemId,
@@ -237,6 +238,7 @@ async function seedScenario(label, {
 async function addReplacementCapacity(scenario, label) {
   const marker = `${label}-${suffix}`;
   const connectionId = `connection-${marker}`;
+  const channelId = `channel-${marker}`;
   await pool.query(
     `INSERT INTO ai_gateway_connection_versions (
        account_id,id,version,display_name,base_url,ciphertext,iv,auth_tag,algorithm,key_version,
@@ -258,8 +260,9 @@ async function addReplacementCapacity(scenario, label) {
        account_id,profile_id,profile_version,channel_id,display_name,connection_id,connection_version,
        channel_order,enabled
      ) VALUES ($1,$2,1,$3,$4,$5,1,2,TRUE)`,
-    [scenario.accountId, scenario.profileId, `channel-${marker}`, `Replacement ${label}`, connectionId],
+    [scenario.accountId, scenario.profileId, channelId, `Replacement ${label}`, connectionId],
   );
+  return { channelId, connectionId };
 }
 
 async function insertImageSibling(scenario, {
@@ -544,5 +547,102 @@ test("latest channel failure outranks clean sibling image work and owns the swit
     aiChannelDisplayName: "Channel image-siblings-replacement",
     aiChannelSwitching: true,
     aiChannelWaitStartedAt: new Date("2026-08-28T00:06:00.000Z"),
+  });
+});
+
+test("current fixed replacement assignment outranks stale channel failure evidence", {
+  skip: enabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
+  timeout: 120_000,
+}, async () => {
+  const scenario = await seedScenario("failure-with-fixed-replacement", {
+    lastErrorCode: "AI_GATEWAY_RATE_LIMITED",
+    channelMode: "unavailable",
+  });
+  const replacement = await addReplacementCapacity(scenario, "fixed-after-failure");
+  await pool.query(
+    `UPDATE auto_listing_ai_profile_channels
+        SET assigned_job_id=$3,assigned_item_id=$4,assigned_status_version=$5,assigned_at=NOW()
+      WHERE account_id=$1 AND channel_id=$2`,
+    [scenario.accountId, replacement.channelId, scenario.jobId, scenario.itemId,
+      scenario.expectedStatusVersion],
+  );
+
+  assert.deepEqual(await queueProjection(scenario), {
+    aiQueueState: "WAITING_FOR_AI_CHANNEL",
+    aiChannelDisplayName: "Replacement fixed-after-failure",
+    aiChannelSwitching: false,
+    aiChannelWaitStartedAt: new Date("2020-01-01T00:00:00.000Z"),
+  });
+});
+
+test("live sibling without an exact channel lease blocks stale failure evidence", {
+  skip: enabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
+  timeout: 120_000,
+}, async () => {
+  const scenario = await seedScenario("failure-with-live-mismatched-sibling", {
+    status: "GENERATING",
+    phase: "GENERATE_IMAGE_SLOT",
+    phaseTargetId: "slot-a",
+    lastErrorCode: "AI_GATEWAY_NETWORK_FAILED",
+    channelMode: "free",
+  });
+  const siblingId = await insertImageSibling(scenario, {
+    label: "live-mismatched-sibling",
+    slotKey: "slot-b",
+    nextRetryAt: "2020-01-01T00:00:00.000Z",
+    createdAt: "2026-08-28T00:00:01.000Z",
+    updatedAt: "2026-08-28T00:00:01.000Z",
+  });
+  await pool.query(
+    `UPDATE auto_listing_ai_outbox
+        SET state='PROCESSING',lease_owner='other-worker',lease_token='other-token',
+            lease_expires_at='2099-01-01T00:00:00.000Z'::TIMESTAMPTZ
+      WHERE account_id=$1 AND id=$2`,
+    [scenario.accountId, siblingId],
+  );
+
+  assert.deepEqual(await queueProjection(scenario), emptyProjection);
+});
+
+test("persisted model-404 gateway code projects safe channel switching", {
+  skip: enabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
+  timeout: 120_000,
+}, async () => {
+  const scenario = await seedScenario("model-404-requeued", {
+    lastErrorCode: "NON_RETRYABLE_GATEWAY",
+    channelMode: "free",
+  });
+  await pool.query(
+    `UPDATE auto_listing_ai_profile_channels
+        SET requires_revalidation=TRUE,cooldown_until='2099-01-01T00:00:00.000Z'::TIMESTAMPTZ,
+            last_error_code='NON_RETRYABLE_GATEWAY'
+      WHERE account_id=$1 AND channel_id=$2`,
+    [scenario.accountId, scenario.channelId],
+  );
+
+  assert.deepEqual(await queueProjection(scenario), {
+    aiQueueState: "SWITCHING_AI_CHANNEL",
+    aiChannelDisplayName: "Channel model-404-requeued",
+    aiChannelSwitching: true,
+    aiChannelWaitStartedAt: new Date("2020-01-01T00:00:00.000Z"),
+  });
+});
+
+test("settings-valid channel controls are normalized before task projection", {
+  skip: enabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
+  timeout: 120_000,
+}, async () => {
+  const scenario = await seedScenario("controlled-display-name", {
+    outboxState: "PROCESSING",
+    leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+    channelMode: "calling",
+    channelDisplayName: "  Tab\tChannel\u0001  Name  ",
+  });
+
+  assert.deepEqual(await queueProjection(scenario), {
+    aiQueueState: "CALLING_AI",
+    aiChannelDisplayName: "Tab Channel Name",
+    aiChannelSwitching: false,
+    aiChannelWaitStartedAt: null,
   });
 });
