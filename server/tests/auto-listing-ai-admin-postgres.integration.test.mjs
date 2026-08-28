@@ -812,6 +812,13 @@ if (!enabled) {
         accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
         idempotencyKey: `publish-first-${suffix}`, correlationId: `publish-first-corr-${suffix}`,
       });
+      assert.deepEqual((await pool.query(
+        `SELECT channel_id,channel_order,connection_id,connection_version
+           FROM auto_listing_ai_profile_channels
+          WHERE account_id=$1 AND profile_id=$2 AND profile_version=1`,
+        [accountId, first.profile.id],
+      )).rows, [{ channel_id: "primary", channel_order: 1, connection_id: first.connection.id,
+        connection_version: 1 }]);
       const activeAttemptCountBefore = (await pool.query(
         "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_attempts WHERE account_id=$1",
         [accountId],

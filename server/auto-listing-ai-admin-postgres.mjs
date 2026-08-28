@@ -1811,6 +1811,16 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           [input.accountId, input.profileId, input.configVersion]);
         const row = profileRow(published.rows[0]);
         if (!row || !row.enabled || row.accountId !== input.accountId) throw databaseFailed();
+        if (row.connectionId !== null) {
+          await query(client,
+            `INSERT INTO auto_listing_ai_profile_channels (
+               account_id,profile_id,profile_version,channel_id,display_name,
+               connection_id,connection_version,channel_order
+             ) VALUES ($1,$2,$3,'primary',$4,$5,$6,1)
+             ON CONFLICT (account_id,profile_id,profile_version,channel_id) DO NOTHING`,
+            [input.accountId, row.id, row.configVersion, row.displayName,
+              row.connectionId, row.connectionVersion]);
+        }
         const activation = activationFromAuditRow(await insertAudit(client, {
           ...input, ...audit, action, entityType: "ai_gateway_profile", entityId: row.id,
           metadata: { requestHash, entityId: row.id, configVersion: row.configVersion },

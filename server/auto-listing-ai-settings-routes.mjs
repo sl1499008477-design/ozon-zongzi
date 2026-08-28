@@ -5,6 +5,8 @@ const CONNECTIONS = `${BASE}/connections`;
 const PROFILES = `${BASE}/profiles`;
 const CONNECTION_SYNC = /^\/admin\/auto-listing\/ai-settings\/connections\/([^/]+)\/sync$/u;
 const PROFILE_ACTION = /^\/admin\/auto-listing\/ai-settings\/profiles\/([^/]+)\/(test|publish|rollback)$/u;
+const PROFILE_CHANNEL_ADD = /^\/admin\/auto-listing\/ai-settings\/profiles\/([^/]+)\/versions\/([1-9][0-9]*)\/channels$/u;
+const PROFILE_CHANNEL_STATUS = /^\/admin\/auto-listing\/ai-settings\/profiles\/([^/]+)\/versions\/([1-9][0-9]*)\/channels\/([^/]+)\/status$/u;
 const CATALOG = /^\/admin\/auto-listing\/ai-settings\/catalogs\/([^/]+)$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const OVERVIEW_RESPONSE_BYTES = 64 * 1024;
@@ -29,6 +31,8 @@ export const AUTO_LISTING_AI_SETTINGS_SAFE_CODES = Object.freeze([
   "AI_GATEWAY_PROFILE_NOT_FOUND", "AI_GATEWAY_PROFILE_VERSION_CONFLICT", "AI_GATEWAY_CAPABILITY_IN_PROGRESS",
   "AI_GATEWAY_CAPABILITY_REQUEST_INVALID", "PERMISSION_FORBIDDEN",
   "AUTO_LISTING_AI_SETTINGS_RESPONSE_TOO_LARGE",
+  "AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_FOUND", "AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT",
+  "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INCOMPATIBLE", "AUTO_LISTING_AI_PROFILE_CHANNEL_REVALIDATION_REQUIRED",
 ]);
 const SAFE_CODES = new Set(AUTO_LISTING_AI_SETTINGS_SAFE_CODES);
 const SECRET_KEYS = new Set([
@@ -58,6 +62,11 @@ function classify(url) {
   if (url.pathname === BASE) return { kind: "overview" };
   if (url.pathname === CONNECTIONS) return { kind: "connection" };
   if (url.pathname === PROFILES) return { kind: "selection" };
+  const channelStatus = PROFILE_CHANNEL_STATUS.exec(url.pathname);
+  if (channelStatus) return { kind: "channel-status", id: decodeId(channelStatus[1]),
+    version: Number(channelStatus[2]), channelId: decodeId(channelStatus[3]) };
+  const channelAdd = PROFILE_CHANNEL_ADD.exec(url.pathname);
+  if (channelAdd) return { kind: "channel-add", id: decodeId(channelAdd[1]), version: Number(channelAdd[2]) };
   const sync = CONNECTION_SYNC.exec(url.pathname);
   if (sync) return { kind: "sync", id: decodeId(sync[1]) };
   const action = PROFILE_ACTION.exec(url.pathname);
@@ -160,7 +169,7 @@ function boundedSuccess(data, maximumBytes) {
 
 function allowed(route, method) {
   return ["overview", "catalog"].includes(route.kind) ? method === "GET"
-    : ["connection", "selection", "sync", "test", "publish", "rollback"].includes(route.kind)
+    : ["connection", "selection", "sync", "test", "publish", "rollback", "channel-add", "channel-status"].includes(route.kind)
       ? method === "POST" : false;
 }
 
@@ -212,6 +221,12 @@ export function createAutoListingAiSettingsHttpHandler({ authenticate, getServic
         } else if (route.kind === "publish") {
           data = await service.publishProfile({ actor, profileId: route.id,
             ...body(raw, ["configVersion", "idempotencyKey", "correlationId"]) });
+        } else if (route.kind === "channel-add") {
+          data = await service.addProfileChannel({ actor, profileId: route.id, profileVersion: route.version,
+            ...body(raw, ["connectionId", "connectionVersion", "displayName"]) });
+        } else if (route.kind === "channel-status") {
+          data = await service.setProfileChannelEnabled({ actor, profileId: route.id, profileVersion: route.version,
+            channelId: route.channelId, ...body(raw, ["enabled"]) });
         } else {
           data = await service.rollbackProfile({ actor, profileId: route.id,
             ...body(raw, ["configVersion", "idempotencyKey", "correlationId", "costConfirmed"]) });

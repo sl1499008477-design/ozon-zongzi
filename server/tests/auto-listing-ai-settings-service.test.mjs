@@ -80,6 +80,24 @@ function harness({ currentOverview = overview(), referencedConnections = [], con
         createdAt: "2026-08-08T00:00:00.000Z", duplicate: false,
       };
     },
+    async listProfileChannels(input) {
+      calls.push(["list-channels", input]);
+      return { channels: [], channelCandidates: [] };
+    },
+    async addProfileChannel(input) {
+      calls.push(["add-channel", input]);
+      return { channelId: "channel-b", displayName: input.displayName, channelOrder: 2,
+        enabled: true, status: "AVAILABLE", connectionDisplayName: "Gateway B",
+        connectionId: input.connectionId, connectionVersion: input.connectionVersion,
+        assignedItemId: null, cooldownUntil: null, requiresRevalidation: false, lastErrorCode: null };
+    },
+    async setProfileChannelEnabled(input) {
+      calls.push(["set-channel-enabled", input]);
+      return { channelId: input.channelId, displayName: "Gateway B", channelOrder: 2,
+        enabled: input.enabled, status: input.enabled ? "AVAILABLE" : "DISABLED",
+        connectionDisplayName: "Gateway B", connectionId: "connection-b", connectionVersion: 1,
+        assignedItemId: null, cooldownUntil: null, requiresRevalidation: false, lastErrorCode: null };
+    },
   };
   const profileRepository = {
     async prepareProfileRollback(input) {
@@ -320,6 +338,45 @@ test("overview returns an account-scoped closed DTO with explicit server action 
     rollbackProfileIds: [],
   });
   assert.equal(JSON.stringify(result).includes("ciphertext"), false);
+});
+
+test("channel membership is scoped to the exact active profile version and exposes only bounded safe DTOs", async () => {
+  const currentOverview = overview({ activeProfile: { id: "profile-a", accountId: "account-a", configVersion: 3,
+    connectionId: "connection-a", connectionVersion: 1, enabled: true }, });
+  const { service, repository } = harness({ currentOverview });
+  repository.listProfileChannels = async (input) => ({
+    channels: [{ channelId: "primary", displayName: "Primary", channelOrder: 1, enabled: true,
+      status: "AVAILABLE", connectionDisplayName: "Gateway A", connectionId: "connection-a", connectionVersion: 1,
+      assignedItemId: null, cooldownUntil: null, requiresRevalidation: false, lastErrorCode: null,
+      ciphertext: "must-not-leak" }],
+    channelCandidates: [{ connectionId: "connection-b", connectionVersion: 2, connectionDisplayName: "Gateway B",
+      baseUrl: "https://must-not-leak.example/v1" }],
+  });
+  const result = await service.getOverview({ actor: admin });
+  assert.deepEqual(result.channels, [{ channelId: "primary", displayName: "Primary", channelOrder: 1, enabled: true,
+    status: "AVAILABLE", connectionDisplayName: "Gateway A", connectionId: "connection-a", connectionVersion: 1,
+    assignedItemId: null, cooldownUntil: null, requiresRevalidation: false, lastErrorCode: null }]);
+  assert.deepEqual(result.channelCandidates, [{ connectionId: "connection-b", connectionVersion: 2,
+    connectionDisplayName: "Gateway B" }]);
+  assert.equal(JSON.stringify(result).includes("must-not-leak"), false);
+});
+
+test("channel commands retain account and exact profile-version fences", async () => {
+  const { service, calls } = harness();
+  const added = await service.addProfileChannel({ actor: admin, profileId: "profile-a", profileVersion: 1,
+    connectionId: "connection-b", connectionVersion: 2, displayName: "Gateway B" });
+  assert.equal(added.channelId, "channel-b");
+  assert.deepEqual(calls.find(([name]) => name === "add-channel")[1], {
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    connectionId: "connection-b", connectionVersion: 2, displayName: "Gateway B",
+  });
+  const updated = await service.setProfileChannelEnabled({ actor: admin, profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: false });
+  assert.equal(updated.enabled, false);
+  assert.deepEqual(calls.find(([name]) => name === "set-channel-enabled")[1], {
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: false,
+  });
 });
 
 test("overview preserves only the repository activation evidence for the exact account profile version", async () => {

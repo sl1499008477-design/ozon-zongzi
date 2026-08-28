@@ -17,6 +17,8 @@ function harness({ actor = admin, service = null, readResult = {} } = {}) {
     async testProfile(input) { calls.push(["test", input]); return { profileId: input.profileId, outcome: "PASSED" }; },
     async publishProfile(input) { calls.push(["publish", input]); return { id: input.profileId, enabled: true }; },
     async rollbackProfile(input) { calls.push(["rollback", input]); return { id: input.profileId, enabled: true }; },
+    async addProfileChannel(input) { calls.push(["add-channel", input]); return { channelId: "channel-b" }; },
+    async setProfileChannelEnabled(input) { calls.push(["channel-status", input]); return { channelId: input.channelId, enabled: input.enabled }; },
   });
   const responses = [];
   const handler = createAutoListingAiSettingsHttpHandler({
@@ -43,6 +45,8 @@ test("settings routes expose only the stable path and method allowlist", async (
     ["POST", "/admin/auto-listing/ai-settings/profiles/profile-a/test", "test"],
     ["POST", "/admin/auto-listing/ai-settings/profiles/profile-a/publish", "publish"],
     ["POST", "/admin/auto-listing/ai-settings/profiles/profile-a/rollback", "rollback"],
+    ["POST", "/admin/auto-listing/ai-settings/profiles/profile-a/versions/1/channels", "add-channel"],
+    ["POST", "/admin/auto-listing/ai-settings/profiles/profile-a/versions/1/channels/channel-b/status", "channel-status"],
   ];
   for (const [method, path, operation] of cases) {
     const readResult = operation === "connection" ? { idempotencyKey: "intent-a", correlationId: "corr-a",
@@ -54,7 +58,9 @@ test("settings routes expose only the stable path and method allowlist", async (
           : operation === "test" ? { configVersion: 1, correlationId: "corr-a", costConfirmed: true }
             : operation === "publish" ? { configVersion: 1, idempotencyKey: "publish-a", correlationId: "corr-a" }
               : operation === "rollback" ? { configVersion: 1, idempotencyKey: "rollback-a",
-                correlationId: "corr-a", costConfirmed: true } : {};
+                correlationId: "corr-a", costConfirmed: true }
+                : operation === "add-channel" ? { connectionId: "connection-b", connectionVersion: 2, displayName: "Gateway B" }
+                  : operation === "channel-status" ? { enabled: false } : {};
     const h = harness({ readResult });
     const { handled, response } = await h.request(method, path);
     assert.equal(handled, true);

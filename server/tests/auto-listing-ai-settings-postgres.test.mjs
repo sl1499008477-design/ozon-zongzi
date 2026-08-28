@@ -62,6 +62,7 @@ function scriptedPool(steps) {
 test("settings PostgreSQL repository factory is closed and exposes the exact stable contract", () => {
   const pool = { async connect() {}, async query() {} };
   assert.deepEqual(Object.keys(createAutoListingAiSettingsPostgres({ pool })).sort(), [
+    "addProfileChannel",
     "claimModelSync",
     "completeModelSync",
     "connectionIdForIntent",
@@ -69,6 +70,7 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
     "createProfileFromSelection",
     "enqueueModelSync",
     "failModelSync",
+    "listProfileChannels",
     "listRunnableSyncAccountIds",
     "loadCatalogSyncConnectionForSecretResolution",
     "loadConnectionForSecretResolution",
@@ -78,6 +80,7 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
     "loadSettingsOverview",
     "loadSettingsOverviewPage",
     "markConnectionValidated",
+    "setProfileChannelEnabled",
   ]);
   assert.throws(() => createAutoListingAiSettingsPostgres({ pool, secret: "raw" }), {
     code: "AUTO_LISTING_AI_SETTINGS_REPOSITORY_INVALID",
@@ -98,6 +101,49 @@ test("connection intent identity is deterministic and rejects cross-shape input 
   assert.throws(() => repository.connectionIdForIntent({ accountId: "account-a", idempotencyKey: "intent-a", extra: true }), {
     code: "AUTO_LISTING_AI_SETTINGS_REPOSITORY_INVALID",
   });
+});
+
+test("profile channel reads join the exact frozen connection version without the bounded overview directory", async () => {
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] },
+    { rows: [{ channel_id: "primary", display_name: "Primary", channel_order: 1, enabled: true,
+      status: "BUSY", connection_display_name: "Gateway A", connection_id: "connection-a", connection_version: 2,
+      assigned_item_id: "item-a", cooldown_until: null, requires_revalidation: false, last_error_code: null }] },
+    { rows: [{ connection_id: "connection-b", connection_version: 3, connection_display_name: "Gateway B" }] },
+    { rows: [] },
+  ]);
+  const result = await createAutoListingAiSettingsPostgres({ pool }).listProfileChannels({
+    accountId: "account-a", profileId: "profile-a", profileVersion: 4,
+  });
+  assert.equal(result.channels[0].connectionVersion, 2);
+  assert.deepEqual(result.channelCandidates, [{ connectionId: "connection-b", connectionVersion: 3,
+    connectionDisplayName: "Gateway B" }]);
+  assert.match(calls[1].sql, /connection\.version=channel\.connection_version/iu);
+  assert.match(calls[1].sql, /channel\.account_id=\$1 AND channel\.profile_id=\$2 AND channel\.profile_version=\$3/iu);
+  assert.doesNotMatch(calls[1].sql, /loadSettingsOverview|LIMIT 10/iu);
+  assert.equal(remaining.length, 0);
+});
+
+test("disabling a busy channel leaves its frozen assignment and execution lease untouched", async () => {
+  const busy = { channel_id: "channel-b", display_name: "Gateway B", channel_order: 2, enabled: true,
+    connection_id: "connection-b", connection_version: 2, connection_status: "VALIDATED",
+    assigned_item_id: "item-a", assigned_status_version: 7, execution_lease_token: "lease-secret",
+    requires_revalidation: false, cooldown_until: null, last_error_code: null };
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [busy] },
+    { rows: [{ ...busy, enabled: false }] },
+    { rows: [{ ...busy, enabled: false, connection_display_name: "Gateway B", status: "DISABLED" }] },
+    { rowCount: 1, rows: [{ event_id: "audit-channel" }] }, { rows: [] },
+  ]);
+  const result = await createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: false,
+  });
+  assert.equal(result.status, "DISABLED");
+  const update = calls.find(({ sql }) => /UPDATE auto_listing_ai_profile_channels SET enabled=\$5/iu.test(sql));
+  assert.doesNotMatch(update.sql, /assigned_|execution_lease_/iu);
+  assert.equal(update.params.includes("lease-secret"), false);
+  assert.equal(remaining.length, 0);
 });
 
 test("service-derived connection identity accepts randomized ciphertext replay by stable fingerprint", async () => {

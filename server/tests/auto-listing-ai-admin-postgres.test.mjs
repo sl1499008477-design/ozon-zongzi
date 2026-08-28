@@ -484,6 +484,7 @@ test("publishing a tested successor on its already ACTIVE connection atomically 
     { rows: [{ id: "profile-current", config_version: 1 }] }, { rows: [] },
     { rows: [{ id: "connection-active", version: 1, status_version: 3 }] },
     { rows: [{ ...passed, enabled: true }] },
+    { rows: [] },
     { rowCount: 1, rows: [{ event_id: "audit-profile", action: "AUTO_LISTING_AI_PROFILE_PUBLISH",
       actor_id: "account-a", occurred_at: new Date("2026-08-09T02:03:04.000Z") }] }, { rows: [] },
   ]);
@@ -500,8 +501,33 @@ test("publishing a tested successor on its already ACTIVE connection atomically 
   assert.equal(calls.some(({ sql }) => /SET status='RETIRED'|SET status='ACTIVE'/iu.test(sql)), false);
   assert.equal(calls.some(({ sql }) => /SET enabled=FALSE/iu.test(sql)), true);
   assert.equal(calls.some(({ sql }) => /SET enabled=TRUE/iu.test(sql)), true);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_ai_profile_channels/iu.test(sql)), true);
   assert.equal(calls.at(-2).sql, "COMMIT");
   assert.equal(remaining.length, 0);
+});
+
+test("a primary channel insert failure rolls back the publication transaction before activation audit", async () => {
+  const passed = { ...profileRow, api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+    connection_id: "connection-active", connection_version: 1,
+    capability_result: { outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
+      models: { text: "text-model-a", image: "image-model-a" }, checkedAt: "2026-08-04T10:01:00.000Z" },
+    capability_checked_at: "2026-08-04T10:01:00.000Z" };
+  const { pool, calls } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [] }, { rows: [passed] },
+    { rows: [{ id: "catalog-active", status: "ACTIVE", version: 1, status_version: 3 }] },
+    { rows: [{ active_profile_id: "profile-current", catalog_id: "catalog-active" }] },
+    { rows: [{ id: "profile-current", config_version: 1 }] }, { rows: [] },
+    { rows: [{ id: "connection-active", version: 1, status_version: 3 }] },
+    { rows: [{ ...passed, enabled: true }] },
+    (sql) => { assert.match(sql, /INSERT INTO auto_listing_ai_profile_channels/iu); throw new Error("channel insert failed"); },
+    { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiAdminPostgres({ pool }).publishProfile({
+    accountId: "account-a", actorId: "account-a", profileId: "profile-a", configVersion: 1,
+    idempotencyKey: "publish-primary-insert-failure", correlationId: "corr-primary-insert-failure",
+  }), { code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED", status: 503 });
+  assert.equal(calls.some(({ sql }) => /INSERT INTO audit_events/iu.test(sql)), false);
+  assert.equal(calls.at(-2).sql, "ROLLBACK");
 });
 
 test("paid credential preparation recovers exact ownership after its COMMIT response is lost", async () => {
@@ -896,6 +922,7 @@ test("connection-backed publish activates the validated target and retires the p
     { rows: [{ id: "connection-new", version: 1, status_version: 3 }] },
     { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-active" }] },
     { rows: [{ ...passed, enabled: true }] },
+    { rows: [] },
     { rowCount: 1, rows: [{ event_id: "audit-profile" }] }, { rows: [] },
   ]);
   const result = await createAutoListingAiAdminPostgres({ pool }).publishProfile({
@@ -907,6 +934,8 @@ test("connection-backed publish activates the validated target and retires the p
   const activated = calls.find(({ sql }) => /UPDATE ai_gateway_connection_versions[\s\S]*SET status='ACTIVE'/iu.test(sql));
   assert.deepEqual(retired.params.slice(0, 3), ["account-a", "connection-old", 1]);
   assert.deepEqual(activated.params.slice(0, 3), ["account-a", "connection-new", 1]);
+  const primary = calls.find(({ sql }) => /INSERT INTO auto_listing_ai_profile_channels/iu.test(sql));
+  assert.deepEqual(primary.params, ["account-a", "profile-a", 1, "Profile A", "connection-new", 1]);
   assert.equal(calls.at(-2).sql, "COMMIT");
 });
 
@@ -932,6 +961,8 @@ test("publishing a legacy profile retires the prior active encrypted connection 
     idempotencyKey: "publish-legacy-a", correlationId: "corr-legacy-a",
   });
   assert.equal(result.enabled, true);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_ai_profile_channels/iu.test(sql)), false,
+    "legacy env-var profiles must not receive a fabricated primary channel");
   const retired = calls.find(({ sql }) => /UPDATE ai_gateway_connection_versions[\s\S]*SET status='RETIRED'/iu.test(sql));
   assert.deepEqual(retired.params.slice(0, 3), ["account-a", "connection-old", 1]);
   assert.equal(calls.some(({ sql }) => /SET status='ACTIVE'/iu.test(sql)), false);

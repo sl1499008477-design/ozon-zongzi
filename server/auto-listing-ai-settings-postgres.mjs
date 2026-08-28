@@ -732,6 +732,44 @@ function catalogHasModel(catalog, modelId) {
   return Array.isArray(catalog?.models) && catalog.models.some((model) => model?.id === modelId);
 }
 
+function channelDto(row) {
+  if (!row) return null;
+  return { channelId: row.channel_id, displayName: row.display_name, channelOrder: Number(row.channel_order),
+    enabled: row.enabled === true, status: row.status, connectionDisplayName: row.connection_display_name,
+    connectionId: row.connection_id, connectionVersion: Number(row.connection_version),
+    assignedItemId: row.assigned_item_id ?? null, cooldownUntil: dtoTimestamp(row.cooldown_until),
+    requiresRevalidation: row.requires_revalidation === true, lastErrorCode: row.last_error_code ?? null };
+}
+
+function channelCandidateDto(row) {
+  if (!row) return null;
+  return { connectionId: row.connection_id, connectionVersion: Number(row.connection_version),
+    connectionDisplayName: row.connection_display_name };
+}
+
+function channelListRequest(raw) {
+  const input = exactKeys(raw, ["accountId", "profileId", "profileVersion"]);
+  return { accountId: identifier(input.accountId), profileId: identifier(input.profileId),
+    profileVersion: positiveInteger(input.profileVersion) };
+}
+
+function addChannelRequest(raw) {
+  const input = exactKeys(raw, ["accountId", "profileId", "profileVersion", "connectionId", "connectionVersion", "displayName", "actorAccountId"]);
+  const accountId = identifier(input.accountId);
+  if (identifier(input.actorAccountId) !== accountId) throw invalid();
+  return { accountId, actorAccountId: accountId, profileId: identifier(input.profileId),
+    profileVersion: positiveInteger(input.profileVersion), connectionId: identifier(input.connectionId),
+    connectionVersion: positiveInteger(input.connectionVersion), displayName: safeText(input.displayName, 200) };
+}
+
+function channelEnabledRequest(raw) {
+  const input = exactKeys(raw, ["accountId", "profileId", "profileVersion", "channelId", "enabled", "actorAccountId"]);
+  const accountId = identifier(input.accountId);
+  if (identifier(input.actorAccountId) !== accountId || typeof input.enabled !== "boolean") throw invalid();
+  return { accountId, actorAccountId: accountId, profileId: identifier(input.profileId),
+    profileVersion: positiveInteger(input.profileVersion), channelId: identifier(input.channelId), enabled: input.enabled };
+}
+
 export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
   const { pool } = closedFactory(rawOptions);
   if (!pool || typeof pool.connect !== "function" || typeof pool.query !== "function") throw invalid();
@@ -1263,6 +1301,145 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           LIMIT 1`, [identifier(input.accountId), identifier(input.connectionId),
           positiveInteger(input.connectionVersion)]);
       return connectionDto(result.rows[0] ?? null);
+    },
+
+    async listProfileChannels(rawInput = {}) {
+      const input = channelListRequest(rawInput);
+      return transaction(pool, async (client) => {
+        const channels = await query(client,
+          `SELECT channel.*, connection.display_name AS connection_display_name,
+                  CASE WHEN channel.requires_revalidation THEN 'REQUIRES_REVALIDATION'
+                       WHEN NOT channel.enabled THEN 'DISABLED'
+                       WHEN channel.cooldown_until > NOW() THEN 'COOLDOWN'
+                       WHEN channel.assigned_item_id IS NOT NULL THEN 'BUSY' ELSE 'AVAILABLE' END AS status
+             FROM auto_listing_ai_profile_channels channel
+             JOIN ai_gateway_connection_versions connection ON connection.account_id=channel.account_id
+              AND connection.id=channel.connection_id AND connection.version=channel.connection_version
+            WHERE channel.account_id=$1 AND channel.profile_id=$2 AND channel.profile_version=$3
+            ORDER BY channel.channel_order`, [input.accountId, input.profileId, input.profileVersion]);
+        const candidates = await query(client,
+          `SELECT connection.id AS connection_id,connection.version AS connection_version,
+                  connection.display_name AS connection_display_name
+             FROM ai_gateway_profiles profile
+             JOIN ai_gateway_connection_versions connection
+               ON connection.account_id=profile.account_id AND connection.status='VALIDATED'
+             JOIN LATERAL (
+               SELECT catalog.catalog FROM ai_gateway_model_catalogs catalog
+               JOIN ai_gateway_model_sync_tasks task ON task.account_id=catalog.account_id AND task.id=catalog.sync_task_id
+                 AND task.connection_id=catalog.connection_id AND task.connection_version=catalog.connection_version
+                WHERE catalog.account_id=connection.account_id AND catalog.connection_id=connection.id
+                  AND catalog.connection_version=connection.version AND task.sync_purpose='CATALOG_SYNC'
+                  AND task.status='SUCCEEDED' ORDER BY catalog.created_at DESC,catalog.id DESC LIMIT 1
+             ) evidence ON TRUE
+            WHERE profile.account_id=$1 AND profile.id=$2 AND profile.config_version=$3 AND profile.enabled=TRUE
+              AND profile.text_protocol='SUB2API_RESPONSES'
+              AND profile.image_protocol IN ('SUB2API_RESPONSES_IMAGE_TOOL','SUB2API_OPENAI_IMAGES')
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(evidence.catalog->'models') model WHERE model->>'id'=profile.text_model)
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(evidence.catalog->'models') model WHERE model->>'id'=profile.image_model)
+              AND NOT EXISTS (SELECT 1 FROM auto_listing_ai_profile_channels channel
+                WHERE channel.account_id=profile.account_id AND channel.profile_id=profile.id
+                  AND channel.profile_version=profile.config_version AND channel.connection_id=connection.id
+                  AND channel.connection_version=connection.version)
+            ORDER BY connection.display_name,connection.id,connection.version`,
+          [input.accountId, input.profileId, input.profileVersion]);
+        return { channels: channels.rows.map(channelDto), channelCandidates: candidates.rows.map(channelCandidateDto) };
+      }, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    },
+
+    async addProfileChannel(rawInput = {}) {
+      const input = addChannelRequest(rawInput);
+      const action = "AUTO_LISTING_AI_PROFILE_CHANNEL_ADD";
+      const requestHash = hash({ action, accountId: input.accountId, profileId: input.profileId,
+        profileVersion: input.profileVersion, connectionId: input.connectionId, connectionVersion: input.connectionVersion });
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        const profile = (await query(client,
+          `SELECT * FROM ai_gateway_profiles WHERE account_id=$1 AND id=$2 AND config_version=$3 AND enabled=TRUE FOR UPDATE`,
+          [input.accountId, input.profileId, input.profileVersion])).rows[0];
+        if (!profile) throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT", 409);
+        const compatible = (await query(client,
+          `SELECT connection.id FROM ai_gateway_connection_versions connection JOIN LATERAL (
+             SELECT catalog.catalog FROM ai_gateway_model_catalogs catalog
+             JOIN ai_gateway_model_sync_tasks task ON task.account_id=catalog.account_id AND task.id=catalog.sync_task_id
+               AND task.connection_id=catalog.connection_id AND task.connection_version=catalog.connection_version
+              WHERE catalog.account_id=connection.account_id AND catalog.connection_id=connection.id
+                AND catalog.connection_version=connection.version AND task.sync_purpose='CATALOG_SYNC'
+                AND task.status='SUCCEEDED' ORDER BY catalog.created_at DESC,catalog.id DESC LIMIT 1
+           ) evidence ON TRUE
+           WHERE connection.account_id=$1 AND connection.id=$2 AND connection.version=$3 AND connection.status='VALIDATED'
+             AND EXISTS (SELECT 1 FROM jsonb_array_elements(evidence.catalog->'models') model WHERE model->>'id'=$4)
+             AND EXISTS (SELECT 1 FROM jsonb_array_elements(evidence.catalog->'models') model WHERE model->>'id'=$5)
+           FOR UPDATE OF connection`,
+          [input.accountId, input.connectionId, input.connectionVersion, profile.text_model, profile.image_model])).rows[0];
+        if (!compatible) throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INCOMPATIBLE", 409);
+        const next = (await query(client,
+          `SELECT COALESCE(MAX(channel_order),0)+1 AS channel_order FROM auto_listing_ai_profile_channels
+            WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3`,
+          [input.accountId, input.profileId, input.profileVersion])).rows[0];
+        const channelId = deterministicId("aigchannel", input.accountId, input.profileId, input.profileVersion,
+          input.connectionId, input.connectionVersion);
+        await query(client,
+          `INSERT INTO auto_listing_ai_profile_channels (
+             account_id,profile_id,profile_version,channel_id,display_name,connection_id,connection_version,channel_order
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [input.accountId, input.profileId, input.profileVersion, channelId, input.displayName,
+            input.connectionId, input.connectionVersion, Number(next.channel_order)]);
+        const row = (await query(client,
+          `SELECT channel.*,connection.display_name AS connection_display_name,'AVAILABLE' AS status
+             FROM auto_listing_ai_profile_channels channel JOIN ai_gateway_connection_versions connection
+               ON connection.account_id=channel.account_id AND connection.id=channel.connection_id
+              AND connection.version=channel.connection_version
+            WHERE channel.account_id=$1 AND channel.profile_id=$2 AND channel.profile_version=$3 AND channel.channel_id=$4`,
+          [input.accountId, input.profileId, input.profileVersion, channelId])).rows[0];
+        await auditMutation(client, { action, accountId: input.accountId, actorId: input.actorAccountId,
+          correlationId: `channel:${channelId}`, entityType: "auto_listing_ai_profile_channel", entityId: channelId,
+          idempotencyKey: channelId, requestHash, metadata: { profileId: input.profileId,
+            profileVersion: input.profileVersion, channelId, connectionId: input.connectionId,
+            connectionVersion: input.connectionVersion, action: "ADD", result: "SUCCESS" } });
+        return channelDto(row);
+      });
+    },
+
+    async setProfileChannelEnabled(rawInput = {}) {
+      const input = channelEnabledRequest(rawInput);
+      const action = "AUTO_LISTING_AI_PROFILE_CHANNEL_SET_ENABLED";
+      const requestHash = hash({ action, accountId: input.accountId, profileId: input.profileId,
+        profileVersion: input.profileVersion, channelId: input.channelId, enabled: input.enabled });
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        const current = (await query(client,
+          `SELECT channel.*,connection.status AS connection_status FROM auto_listing_ai_profile_channels channel
+             JOIN ai_gateway_connection_versions connection ON connection.account_id=channel.account_id
+              AND connection.id=channel.connection_id AND connection.version=channel.connection_version
+            WHERE channel.account_id=$1 AND channel.profile_id=$2 AND channel.profile_version=$3 AND channel.channel_id=$4
+            FOR UPDATE OF channel,connection`, [input.accountId, input.profileId, input.profileVersion, input.channelId])).rows[0];
+        if (!current) throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_FOUND", 404);
+        if (input.enabled && current.requires_revalidation === true
+          && !["VALIDATED", "ACTIVE"].includes(current.connection_status)) {
+          throw repositoryError("AUTO_LISTING_AI_PROFILE_CHANNEL_REVALIDATION_REQUIRED", 409);
+        }
+        const updated = (await query(client,
+          `UPDATE auto_listing_ai_profile_channels SET enabled=$5,
+             requires_revalidation=CASE WHEN $5 AND requires_revalidation THEN FALSE ELSE requires_revalidation END,
+             updated_at=NOW() WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4 RETURNING *`,
+          [input.accountId, input.profileId, input.profileVersion, input.channelId, input.enabled])).rows[0];
+        const row = (await query(client,
+          `SELECT channel.*,connection.display_name AS connection_display_name,
+             CASE WHEN channel.requires_revalidation THEN 'REQUIRES_REVALIDATION' WHEN NOT channel.enabled THEN 'DISABLED'
+                  WHEN channel.cooldown_until > NOW() THEN 'COOLDOWN' WHEN channel.assigned_item_id IS NOT NULL THEN 'BUSY'
+                  ELSE 'AVAILABLE' END AS status
+             FROM auto_listing_ai_profile_channels channel JOIN ai_gateway_connection_versions connection
+               ON connection.account_id=channel.account_id AND connection.id=channel.connection_id
+              AND connection.version=channel.connection_version
+            WHERE channel.account_id=$1 AND channel.profile_id=$2 AND channel.profile_version=$3 AND channel.channel_id=$4`,
+          [input.accountId, input.profileId, input.profileVersion, updated.channel_id])).rows[0];
+        await auditMutation(client, { action, accountId: input.accountId, actorId: input.actorAccountId,
+          correlationId: `channel:${input.channelId}`, entityType: "auto_listing_ai_profile_channel", entityId: input.channelId,
+          idempotencyKey: `${input.channelId}:${input.enabled}`, requestHash, metadata: { profileId: input.profileId,
+            profileVersion: input.profileVersion, channelId: input.channelId, action: input.enabled ? "ENABLE" : "DISABLE",
+            result: "SUCCESS" } });
+        return channelDto(row);
+      });
     },
 
     async enqueueModelSync(rawInput = {}) {

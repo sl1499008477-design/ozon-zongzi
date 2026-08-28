@@ -271,6 +271,48 @@ function connectionReference(row, { nullable = false } = {}) {
   return Object.freeze({ connectionId, connectionVersion });
 }
 
+const CHANNEL_KEYS = new Set(["channelId", "displayName", "channelOrder", "enabled", "status",
+  "connectionDisplayName", "connectionId", "connectionVersion", "assignedItemId", "cooldownUntil",
+  "requiresRevalidation", "lastErrorCode"]);
+
+function safeChannel(row) {
+  const source = safeValue(row, "");
+  if (!plainRecord(source)
+    || typeof source.channelId !== "string" || !SAFE_ID.test(source.channelId)
+    || typeof source.displayName !== "string" || typeof source.connectionDisplayName !== "string"
+    || typeof source.connectionId !== "string" || !SAFE_ID.test(source.connectionId)
+    || !Number.isSafeInteger(source.channelOrder) || source.channelOrder < 1
+    || !Number.isSafeInteger(source.connectionVersion) || source.connectionVersion < 1
+    || typeof source.enabled !== "boolean" || typeof source.requiresRevalidation !== "boolean"
+    || !["AVAILABLE", "BUSY", "COOLDOWN", "DISABLED", "REQUIRES_REVALIDATION"].includes(source.status)
+    || !(source.assignedItemId === null || (typeof source.assignedItemId === "string" && SAFE_ID.test(source.assignedItemId)))
+    || !(source.cooldownUntil === null || (typeof source.cooldownUntil === "string" && !Number.isNaN(Date.parse(source.cooldownUntil))))
+    || !(source.lastErrorCode === null || (typeof source.lastErrorCode === "string" && /^[A-Z][A-Z0-9_]{0,119}$/u.test(source.lastErrorCode)))) {
+    throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+  }
+  return Object.freeze({ channelId: source.channelId, displayName: source.displayName,
+    channelOrder: source.channelOrder, enabled: source.enabled, status: source.status,
+    connectionDisplayName: source.connectionDisplayName, connectionId: source.connectionId,
+    connectionVersion: source.connectionVersion, assignedItemId: source.assignedItemId,
+    cooldownUntil: source.cooldownUntil, requiresRevalidation: source.requiresRevalidation,
+    lastErrorCode: source.lastErrorCode });
+}
+
+function safeChannelCandidates(value) {
+  if (!Array.isArray(value)) throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+  return Object.freeze(value.map((row) => {
+    const source = safeValue(row, "");
+    if (!plainRecord(source) || !["connectionId", "connectionVersion", "connectionDisplayName"].every((key) => Object.hasOwn(source, key))
+      || typeof source.connectionId !== "string" || !SAFE_ID.test(source.connectionId)
+      || !Number.isSafeInteger(source.connectionVersion) || source.connectionVersion < 1
+      || typeof source.connectionDisplayName !== "string") {
+      throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+    }
+    return Object.freeze({ connectionId: source.connectionId, connectionVersion: source.connectionVersion,
+      connectionDisplayName: source.connectionDisplayName });
+  }));
+}
+
 async function actionOverview({ safe, repository, accountId }) {
   const visibleProfiles = Array.isArray(safe.profiles) ? safe.profiles : [];
   const profiles = [...visibleProfiles,
@@ -346,6 +388,14 @@ export function createAutoListingAiSettingsService({
         throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
       }
       const actionSource = await actionOverview({ safe, repository, accountId });
+      const membership = typeof repository.listProfileChannels === "function" && safe.activeProfile && typeof safe.activeProfile.id === "string"
+        && Number.isSafeInteger(safe.activeProfile.configVersion) && safe.activeProfile.configVersion > 0
+        ? await repository.listProfileChannels({ accountId, profileId: safe.activeProfile.id,
+          profileVersion: safe.activeProfile.configVersion }) : { channels: [], channelCandidates: [] };
+      const safeMembership = safeValue(membership, accountId);
+      if (!plainRecord(safeMembership) || !Array.isArray(safeMembership.channels)) {
+        throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+      }
       const pagination = {
         connections: {
           pageSize: safe.pageInfo.connections.pageSize,
@@ -366,6 +416,8 @@ export function createAutoListingAiSettingsService({
         catalogs: (Array.isArray(safe.catalogs) ? safe.catalogs : []).map(catalogSummary),
         syncTasks: Array.isArray(safe.syncTasks) ? safe.syncTasks : [],
         profiles: Array.isArray(safe.profiles) ? safe.profiles : [],
+        channels: Object.freeze(safeMembership.channels.map(safeChannel)),
+        channelCandidates: safeChannelCandidates(safeMembership.channelCandidates),
         pagination,
         actions: explicitActions(actionSource),
       });
@@ -494,6 +546,24 @@ export function createAutoListingAiSettingsService({
         correlationId: text(input.correlationId),
       });
       return Object.freeze(safeValue(row, accountId));
+    },
+
+    async addProfileChannel(raw = {}) {
+      const input = closed(raw, new Set(["actor", "profileId", "profileVersion", "connectionId", "connectionVersion", "displayName"]));
+      const accountId = actorScope(input.actor);
+      return safeChannel(await repository.addProfileChannel({ accountId, actorAccountId: accountId,
+        profileId: text(input.profileId), profileVersion: version(input.profileVersion),
+        connectionId: text(input.connectionId), connectionVersion: version(input.connectionVersion),
+        displayName: text(input.displayName, { maximum: 200, pattern: null }) }));
+    },
+
+    async setProfileChannelEnabled(raw = {}) {
+      const input = closed(raw, new Set(["actor", "profileId", "profileVersion", "channelId", "enabled"]));
+      const accountId = actorScope(input.actor);
+      if (typeof input.enabled !== "boolean") throw settingsError("AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID");
+      return safeChannel(await repository.setProfileChannelEnabled({ accountId, actorAccountId: accountId,
+        profileId: text(input.profileId), profileVersion: version(input.profileVersion), channelId: text(input.channelId),
+        enabled: input.enabled }));
     },
 
     async rollbackProfile(raw = {}) {
