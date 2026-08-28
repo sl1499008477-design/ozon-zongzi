@@ -24,8 +24,6 @@ CREATE TABLE IF NOT EXISTS auto_listing_ai_profile_channels (
   execution_lease_owner TEXT,
   execution_lease_token TEXT,
   execution_lease_expires_at TIMESTAMPTZ,
-  dispatch_generation INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_generation >= 0),
-  uncertain_result_count INTEGER NOT NULL DEFAULT 0 CHECK (uncertain_result_count BETWEEN 0 AND 2),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (account_id, profile_id, profile_version, channel_id),
@@ -42,7 +40,8 @@ CREATE TABLE IF NOT EXISTS auto_listing_ai_profile_channels (
     (assigned_job_id IS NULL AND assigned_item_id IS NULL
       AND assigned_status_version IS NULL AND assigned_at IS NULL)
     OR (assigned_job_id IS NOT NULL AND assigned_item_id IS NOT NULL
-      AND assigned_status_version > 0 AND assigned_at IS NOT NULL)
+      AND assigned_status_version IS NOT NULL AND assigned_status_version > 0
+      AND assigned_at IS NOT NULL)
   ),
   CHECK (
     (execution_lease_owner IS NULL AND execution_lease_token IS NULL AND execution_lease_expires_at IS NULL)
@@ -53,8 +52,9 @@ CREATE TABLE IF NOT EXISTS auto_listing_ai_profile_channels (
   )
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS auto_listing_ai_profile_channels_assigned_item_uq
-  ON auto_listing_ai_profile_channels(account_id, assigned_job_id, assigned_item_id, assigned_status_version)
+DROP INDEX IF EXISTS auto_listing_ai_profile_channels_assigned_item_uq;
+CREATE UNIQUE INDEX auto_listing_ai_profile_channels_assigned_item_uq
+  ON auto_listing_ai_profile_channels(account_id, assigned_job_id, assigned_item_id)
   WHERE assigned_job_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION auto_listing_ai_profile_channels_require_connection_status()
@@ -88,6 +88,20 @@ BEFORE INSERT OR UPDATE OF account_id, connection_id, connection_version, channe
 ON auto_listing_ai_profile_channels
 FOR EACH ROW EXECUTE FUNCTION auto_listing_ai_profile_channels_require_connection_status();
 
+CREATE OR REPLACE FUNCTION auto_listing_ai_profile_channels_prevent_delete()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'AI profile channels must be disabled, not deleted' USING ERRCODE = '23514';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS auto_listing_ai_profile_channels_no_delete ON auto_listing_ai_profile_channels;
+CREATE TRIGGER auto_listing_ai_profile_channels_no_delete
+BEFORE DELETE ON auto_listing_ai_profile_channels
+FOR EACH ROW EXECUTE FUNCTION auto_listing_ai_profile_channels_prevent_delete();
+
 ALTER TABLE auto_listing_job_items
   ADD COLUMN IF NOT EXISTS last_ai_connection_id TEXT,
   ADD COLUMN IF NOT EXISTS last_ai_connection_version INTEGER,
@@ -100,7 +114,8 @@ ALTER TABLE auto_listing_job_items
 ALTER TABLE auto_listing_job_items
   ADD CONSTRAINT auto_listing_job_items_last_ai_connection_pair_check CHECK (
     (last_ai_connection_id IS NULL AND last_ai_connection_version IS NULL AND last_ai_channel_assigned_at IS NULL)
-    OR (last_ai_connection_id IS NOT NULL AND last_ai_connection_version > 0 AND last_ai_channel_assigned_at IS NOT NULL)
+    OR (last_ai_connection_id IS NOT NULL AND last_ai_connection_version IS NOT NULL
+      AND last_ai_connection_version > 0 AND last_ai_channel_assigned_at IS NOT NULL)
   ) NOT VALID,
   ADD CONSTRAINT auto_listing_job_items_last_ai_connection_scope_fk
     FOREIGN KEY (account_id, last_ai_connection_id, last_ai_connection_version)
@@ -117,7 +132,8 @@ ALTER TABLE auto_listing_content_plan_attempts
 ALTER TABLE auto_listing_content_plan_attempts
   ADD CONSTRAINT auto_listing_content_plan_attempts_gateway_connection_pair_check CHECK (
     (gateway_connection_id IS NULL AND gateway_connection_version IS NULL)
-    OR (gateway_connection_id IS NOT NULL AND gateway_connection_version > 0)
+    OR (gateway_connection_id IS NOT NULL AND gateway_connection_version IS NOT NULL
+      AND gateway_connection_version > 0)
   ) NOT VALID,
   ADD CONSTRAINT auto_listing_content_plan_attempts_gateway_connection_scope_fk
     FOREIGN KEY (account_id, gateway_connection_id, gateway_connection_version)
@@ -138,14 +154,16 @@ ALTER TABLE ai_generation_assets
 ALTER TABLE ai_generation_assets
   ADD CONSTRAINT ai_generation_assets_gateway_connection_pair_check CHECK (
     (gateway_connection_id IS NULL AND gateway_connection_version IS NULL)
-    OR (gateway_connection_id IS NOT NULL AND gateway_connection_version > 0)
+    OR (gateway_connection_id IS NOT NULL AND gateway_connection_version IS NOT NULL
+      AND gateway_connection_version > 0)
   ) NOT VALID,
   ADD CONSTRAINT ai_generation_assets_gateway_connection_scope_fk
     FOREIGN KEY (account_id, gateway_connection_id, gateway_connection_version)
     REFERENCES ai_gateway_connection_versions(account_id, id, version) ON DELETE RESTRICT NOT VALID,
   ADD CONSTRAINT ai_generation_assets_checker_connection_pair_check CHECK (
     (checker_connection_id IS NULL AND checker_connection_version IS NULL)
-    OR (checker_connection_id IS NOT NULL AND checker_connection_version > 0)
+    OR (checker_connection_id IS NOT NULL AND checker_connection_version IS NOT NULL
+      AND checker_connection_version > 0)
   ) NOT VALID,
   ADD CONSTRAINT ai_generation_assets_checker_connection_scope_fk
     FOREIGN KEY (account_id, checker_connection_id, checker_connection_version)
@@ -162,7 +180,8 @@ ALTER TABLE ai_rich_content_results
 ALTER TABLE ai_rich_content_results
   ADD CONSTRAINT ai_rich_content_results_gateway_connection_pair_check CHECK (
     (gateway_connection_id IS NULL AND gateway_connection_version IS NULL)
-    OR (gateway_connection_id IS NOT NULL AND gateway_connection_version > 0)
+    OR (gateway_connection_id IS NOT NULL AND gateway_connection_version IS NOT NULL
+      AND gateway_connection_version > 0)
   ) NOT VALID,
   ADD CONSTRAINT ai_rich_content_results_gateway_connection_scope_fk
     FOREIGN KEY (account_id, gateway_connection_id, gateway_connection_version)
@@ -199,7 +218,7 @@ ALTER TABLE auto_listing_ai_outbox
           AND publication_id IS NULL AND published_at IS NULL AND dispatch_queued_at IS NULL)
         OR (dispatch_contract_version = 'CHANNEL_WORK_V1'
           AND publication_id = dedupe_key || ':' || dispatch_generation
-          AND dispatch_queued_at IS NOT NULL AND published_at IS NULL)
+          AND dispatch_queued_at IS NOT NULL)
       ))
       OR (state = 'COMPLETED' AND (
         (dispatch_contract_version IS NULL
