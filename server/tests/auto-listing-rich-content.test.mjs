@@ -1022,6 +1022,7 @@ test("reserves before its one text gateway call, persists deterministic checker 
     assert.equal(repo.calls[0][0], "reserve");
     assert.equal(request.model, "rich-model");
     assert.equal(Object.hasOwn(request, "timeoutMs"), false);
+    assert.equal(request.idleTimeoutMs, 300_000);
     assert.doesNotMatch(request.prompt, /https?:\/\/|secret/i);
     return { value: validContent(), requestId: "gateway-1", modelEvidence: { requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model", gatewayReportedTextModelPresent: true }, usage: { totalTokens: 42 } };
   } };

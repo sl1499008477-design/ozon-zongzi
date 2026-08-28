@@ -554,6 +554,7 @@ test("createContentPlan reserves before one gateway call, persists canonical evi
     assert.match(input.requestKey, /^auto-listing-plan-[a-f0-9]{64}$/);
     assert.equal(input.model, "planner-model");
     assert.equal(Object.hasOwn(input, "timeoutMs"), false);
+    assert.equal(input.idleTimeoutMs, 300_000);
     assert.doesNotMatch(input.prompt, /store-a|warehouse-a|blackKopecks|apiKey/i);
     return { value: output, requestId: "gateway-request-1", usage: { totalTokens: 100 } };
   } };

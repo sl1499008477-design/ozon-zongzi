@@ -31,6 +31,8 @@ const MAX_PROMPT_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
 const MAX_MODELS = 2_000;
 const MAX_CATALOG_SYNC_TIMEOUT_MS = 60_000;
+const MAX_CALL_TIMEOUT_MS = 600_000;
+const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1_000;
 const CATALOG_SYNC_DATABASE_MARGIN_MS = 15_000;
 const ENCRYPTED_SECRET_REFERENCE = "SUB2API_ENCRYPTED_KEY";
 const SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
@@ -79,6 +81,11 @@ const AUTH_TERMINAL_TOKENS = new Set([
   "invalid_api_key",
   "unauthorized",
 ]);
+const MODEL_NOT_FOUND_TERMINAL_TOKENS = new Set([
+  "model_not_found",
+  "model_not_exists",
+  "unknown_model",
+]);
 
 const schemaCompiler = new Ajv({
   allErrors: true,
@@ -108,7 +115,10 @@ function gatewayError(code, options = {}) {
     AI_GATEWAY_INPUT_UNSUPPORTED: "AI 网关不支持该输入",
     GATEWAY_REDIRECT_BLOCKED: "AI 网关重定向被安全策略阻止",
     GATEWAY_TIMEOUT: "AI 网关请求超时",
+    AI_GATEWAY_IDLE_TIMEOUT: "AI 网关长时间没有有效响应",
     GATEWAY_CANCELLED: "AI 网关请求已取消",
+    AI_GATEWAY_NETWORK_FAILED: "AI 网关网络连接失败",
+    AI_GATEWAY_UNEXPECTED_EOF: "AI 网关响应意外中断",
     AI_GATEWAY_RATE_LIMITED: "AI 网关额度或频率受限",
     RETRYABLE_GATEWAY: "AI 网关暂时不可用",
     NON_RETRYABLE_AUTH: "AI 网关鉴权失败",
@@ -119,6 +129,30 @@ function gatewayError(code, options = {}) {
   const failureField = clean(options.failureField);
   if (/^(?:\$|\/[A-Za-z0-9_.~\/-]{1,239})$/u.test(failureField)) error.failureField = failureField;
   return error;
+}
+
+function withDeliveryState(error, deliveryState, retryAfterMs = null) {
+  const safe = error instanceof AiGatewayError ? error : gatewayError("RETRYABLE_GATEWAY", { retryable: true });
+  if (!Object.hasOwn(safe, "deliveryState")) {
+    Object.defineProperties(safe, {
+      deliveryState: { value: deliveryState, enumerable: true, writable: false, configurable: false },
+      retryAfterMs: { value: retryAfterMs, enumerable: true, writable: false, configurable: false },
+    });
+  }
+  return safe;
+}
+
+function safeRetryAfter(response) {
+  let raw = "";
+  try { raw = response?.headers?.get?.("retry-after"); } catch { return null; }
+  if (typeof raw !== "string" || raw !== raw.trim() || !raw || raw.length > 128) return null;
+  if (/^\d{1,12}$/u.test(raw)) {
+    const seconds = Number(raw);
+    return Number.isSafeInteger(seconds) ? Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS) : null;
+  }
+  const target = Date.parse(raw);
+  if (!Number.isFinite(target)) return null;
+  return Math.min(Math.max(0, target - Date.now()), MAX_RETRY_AFTER_MS);
 }
 
 function profileField(profile, camel, snake = "") {
@@ -470,21 +504,31 @@ function terminalFailure(event) {
   ].map(safeTerminalStatus).find((value) => value !== null) ?? null;
 
   if (status === 401 || status === 403 || tokens.some((token) => AUTH_TERMINAL_TOKENS.has(token))) {
-    return gatewayError("NON_RETRYABLE_AUTH", { status });
+    return withDeliveryState(gatewayError("NON_RETRYABLE_AUTH", { status }), "NOT_SENT");
   }
   if (status === 429) {
-    return gatewayError("AI_GATEWAY_RATE_LIMITED", { retryable: true, status });
+    return withDeliveryState(gatewayError("AI_GATEWAY_RATE_LIMITED", {
+      retryable: true, status,
+    }), "NOT_SENT");
+  }
+  if (status === 404 || tokens.some((token) => MODEL_NOT_FOUND_TERMINAL_TOKENS.has(token))) {
+    return withDeliveryState(gatewayError("NON_RETRYABLE_GATEWAY", { status: 404 }), "NOT_SENT");
   }
   if (status === 408 || (status !== null && status >= 500)
     || tokens.some((token) => RETRYABLE_TERMINAL_TOKENS.has(token))) {
-    return gatewayError("RETRYABLE_GATEWAY", { retryable: true, status });
+    return withDeliveryState(gatewayError("RETRYABLE_GATEWAY", {
+      retryable: true, status,
+    }), "POSSIBLY_SENT");
   }
   if (event?.type === "response.incomplete") {
-    return gatewayError("RETRYABLE_GATEWAY", { retryable: true, status });
+    return withDeliveryState(gatewayError("RETRYABLE_GATEWAY", {
+      retryable: true, status,
+    }), "POSSIBLY_SENT");
   }
   // Unknown explicit failures are non-retryable to avoid repeating a possibly
   // cost-bearing operation without evidence that a retry is safe.
-  return gatewayError("NON_RETRYABLE_GATEWAY", { status });
+  return withDeliveryState(gatewayError("NON_RETRYABLE_GATEWAY", { status }),
+    status === 404 ? "NOT_SENT" : "POSSIBLY_SENT");
 }
 
 function verifiedReportedModel(expectedModel, candidates) {
@@ -521,54 +565,96 @@ function safeLog(logger, level, event, fields) {
   }
 }
 
-function abortContext(callerSignal, timeoutMs) {
+function createAbortContext({ callerSignal, timeoutMs, idleTimeoutMs, timers }) {
   const hasDeadline = timeoutMs !== undefined;
-  if (hasDeadline && (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000)) {
+  const hasIdleDeadline = idleTimeoutMs !== undefined;
+  if ((hasDeadline && hasIdleDeadline)
+    || (hasDeadline && (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_CALL_TIMEOUT_MS))
+    || (hasIdleDeadline && (!Number.isInteger(idleTimeoutMs)
+      || idleTimeoutMs < 1 || idleTimeoutMs > MAX_CALL_TIMEOUT_MS))) {
     throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
   }
+  const clock = timers || { setTimeout, clearTimeout };
   const controller = new AbortController();
   let timedOut = false;
+  let idleTimedOut = false;
   let callerCancelled = Boolean(callerSignal?.aborted);
+  let timer = null;
+  const clearTimer = () => {
+    if (timer !== null) clock.clearTimeout(timer);
+    timer = null;
+  };
+  const scheduleIdle = () => {
+    if (!hasIdleDeadline || controller.signal.aborted) return;
+    clearTimer();
+    timer = clock.setTimeout(() => {
+      timer = null;
+      idleTimedOut = true;
+      controller.abort(new DOMException("idle timeout", "TimeoutError"));
+    }, idleTimeoutMs);
+    timer?.unref?.();
+  };
   const onCallerAbort = () => {
     callerCancelled = true;
     controller.abort(new DOMException("cancelled", "AbortError"));
   };
   if (callerSignal?.addEventListener) callerSignal.addEventListener("abort", onCallerAbort, { once: true });
   if (callerCancelled) onCallerAbort();
-  const timer = hasDeadline ? setTimeout(() => {
+  timer = hasDeadline ? clock.setTimeout(() => {
     timedOut = true;
     controller.abort(new DOMException("timeout", "TimeoutError"));
   }, timeoutMs) : null;
   timer?.unref?.();
+  scheduleIdle();
   return {
     signal: controller.signal,
-    state: () => ({ timedOut, callerCancelled }),
+    state: () => ({ timedOut, idleTimedOut, callerCancelled }),
+    progress: scheduleIdle,
     cleanup() {
-      if (timer !== null) clearTimeout(timer);
+      clearTimer();
       callerSignal?.removeEventListener?.("abort", onCallerAbort);
     },
   };
 }
 
-function classifyFetchFailure(error, abortState) {
-  if (abortState.callerCancelled) return gatewayError("GATEWAY_CANCELLED", { retryable: false });
-  if (abortState.timedOut) return gatewayError("GATEWAY_TIMEOUT", { retryable: true });
-  if (error instanceof AiGatewayError) return error;
-  return gatewayError("RETRYABLE_GATEWAY", { retryable: true });
+function classifyFetchFailure(error, abortState, { fetchStarted = false } = {}) {
+  const deliveryState = fetchStarted ? "POSSIBLY_SENT" : "NOT_SENT";
+  if (abortState.callerCancelled) {
+    return withDeliveryState(gatewayError("GATEWAY_CANCELLED", { retryable: false }), deliveryState);
+  }
+  if (abortState.idleTimedOut) {
+    return withDeliveryState(gatewayError("AI_GATEWAY_IDLE_TIMEOUT", { retryable: true }), deliveryState);
+  }
+  if (abortState.timedOut) {
+    return withDeliveryState(gatewayError("GATEWAY_TIMEOUT", { retryable: true }), deliveryState);
+  }
+  if (error instanceof AiGatewayError) return withDeliveryState(error, deliveryState);
+  if (fetchStarted && error instanceof TypeError) {
+    return withDeliveryState(gatewayError("AI_GATEWAY_NETWORK_FAILED", { retryable: true }), deliveryState);
+  }
+  return withDeliveryState(gatewayError("RETRYABLE_GATEWAY", { retryable: true }), deliveryState);
 }
 
 function classifyHttp(response) {
   const requestId = safeRequestId(response);
   if (response.status === 401 || response.status === 403) {
-    return gatewayError("NON_RETRYABLE_AUTH", { status: response.status, requestId });
+    return withDeliveryState(gatewayError("NON_RETRYABLE_AUTH", {
+      status: response.status, requestId,
+    }), "NOT_SENT");
   }
   if (response.status === 429) {
-    return gatewayError("AI_GATEWAY_RATE_LIMITED", { retryable: true, status: response.status, requestId });
+    return withDeliveryState(gatewayError("AI_GATEWAY_RATE_LIMITED", {
+      retryable: true, status: response.status, requestId,
+    }), "NOT_SENT", safeRetryAfter(response));
   }
   if (RETRYABLE_HTTP.has(response.status)) {
-    return gatewayError("RETRYABLE_GATEWAY", { retryable: true, status: response.status, requestId });
+    return withDeliveryState(gatewayError("RETRYABLE_GATEWAY", {
+      retryable: true, status: response.status, requestId,
+    }), "POSSIBLY_SENT");
   }
-  return gatewayError("NON_RETRYABLE_GATEWAY", { status: response.status, requestId });
+  return withDeliveryState(gatewayError("NON_RETRYABLE_GATEWAY", {
+    status: response.status, requestId,
+  }), response.status === 404 ? "NOT_SENT" : "POSSIBLY_SENT");
 }
 
 function pinnedLookup(url, addresses) {
@@ -699,7 +785,8 @@ async function abortableResult(promise, signal, abandonLateValue = null) {
 }
 
 async function fetchWithBoundary({
-  fetchImpl, url, init, boundary, authorized, signal, verifyTarget, beforeSend, rejectRedirects = false,
+  fetchImpl, url, init, boundary, authorized, signal, verifyTarget, beforeSend, onFetchStart,
+  rejectRedirects = false,
 }) {
   let target = url;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
@@ -710,6 +797,7 @@ async function fetchWithBoundary({
       if (signal?.aborted) throw signal.reason || new DOMException("aborted", "AbortError");
       await beforeSend?.();
       if (signal?.aborted) throw signal.reason || new DOMException("aborted", "AbortError");
+      onFetchStart?.();
       const pending = Promise.resolve().then(() => fetchImpl(target, {
         ...init, redirect: "manual", signal, lookup,
       }));
@@ -950,42 +1038,43 @@ function parseStructuredResponse(body, validate) {
   throw gatewayError("INVALID_GATEWAY_RESPONSE", { failureField });
 }
 
-function parseSse(raw) {
-  const events = [];
-  for (const block of raw.split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/);
-    const eventLines = lines.filter((line) => line.startsWith("event:"));
-    if (eventLines.length > 1) throw gatewayError("INVALID_GATEWAY_RESPONSE");
-    const eventName = eventLines.length ? eventLines[0].slice(6).trim() : "";
-    if (eventLines.length && !eventName) throw gatewayError("INVALID_GATEWAY_RESPONSE");
-    if (eventName && (eventName.length > 120 || !/^[A-Za-z0-9_.-]+$/.test(eventName))) {
-      throw gatewayError("INVALID_GATEWAY_RESPONSE");
-    }
-    const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
-    if (!data) continue;
-    if (data === "[DONE]") {
-      if (!eventName || eventName === "message") continue;
-      if (FAILURE_EVENTS.has(eventName)) {
-        events.push({ type: eventName });
-        continue;
-      }
-      throw gatewayError("INVALID_GATEWAY_RESPONSE");
-    }
-    try {
-      const parsed = JSON.parse(data);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("event object required");
-      const hasDataType = Object.hasOwn(parsed, "type");
-      if (hasDataType && (typeof parsed.type !== "string" || !parsed.type
-        || parsed.type.length > 120 || !/^[A-Za-z0-9_.-]+$/.test(parsed.type))) {
-        throw new Error("invalid data event type");
-      }
-      if (eventName && hasDataType && parsed.type !== eventName) throw new Error("conflicting event types");
-      if (eventName && !hasDataType) parsed.type = eventName;
-      if (!eventName && !hasDataType) throw new Error("missing event type");
-      events.push(parsed);
-    } catch { throw gatewayError("INVALID_GATEWAY_RESPONSE"); }
+function parseSseFrame(block) {
+  const lines = block.split(/\r?\n/);
+  const eventLines = lines.filter((line) => line.startsWith("event:"));
+  if (eventLines.length > 1) throw gatewayError("INVALID_GATEWAY_RESPONSE");
+  const eventName = eventLines.length ? eventLines[0].slice(6).trim() : "";
+  if (eventLines.length && !eventName) throw gatewayError("INVALID_GATEWAY_RESPONSE");
+  if (eventName && (eventName.length > 120 || !/^[A-Za-z0-9_.-]+$/.test(eventName))) {
+    throw gatewayError("INVALID_GATEWAY_RESPONSE");
   }
-  return events;
+  const data = lines.filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data) return null;
+  if (data === "[DONE]") {
+    if (!eventName || eventName === "message") return null;
+    if (FAILURE_EVENTS.has(eventName)) return { type: eventName };
+    throw gatewayError("INVALID_GATEWAY_RESPONSE");
+  }
+  try {
+    const parsed = JSON.parse(data);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("event object required");
+    const hasDataType = Object.hasOwn(parsed, "type");
+    if (hasDataType && (typeof parsed.type !== "string" || !parsed.type
+      || parsed.type.length > 120 || !/^[A-Za-z0-9_.-]+$/.test(parsed.type))) {
+      throw new Error("invalid data event type");
+    }
+    if (eventName && hasDataType && parsed.type !== eventName) throw new Error("conflicting event types");
+    if (eventName && !hasDataType) parsed.type = eventName;
+    if (!eventName && !hasDataType) throw new Error("missing event type");
+    return parsed;
+  } catch { throw gatewayError("INVALID_GATEWAY_RESPONSE"); }
+}
+
+function sseFrameJsonIsIncomplete(block) {
+  const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data || data === "[DONE]") return false;
+  try { JSON.parse(data); return false; } catch { return true; }
 }
 
 function finalImageFromEvents(events, maxImageBytes) {
@@ -1087,7 +1176,10 @@ async function readBodyLimited(response, { maxBytes, abort }) {
         ? await readerRead(reader, abort.signal)
         : await abortableResult(Promise.resolve().then(() => iterator.next()), abort.signal);
       if (done) { finished = true; break; }
-      const chunk = Buffer.from(value);
+      let chunk;
+      try { chunk = Buffer.from(value); } catch {
+        throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+      }
       total += chunk.length;
       if (total > maxBytes) throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
       chunks.push(chunk);
@@ -1101,14 +1193,120 @@ async function readBodyLimited(response, { maxBytes, abort }) {
   }
 }
 
-async function readJson(response, abort, maxBytes) {
+async function readSseEvents(response, { maxBytes, abort }) {
+  let body;
+  let declared;
   try {
-    const bytes = await readBodyLimited(response, { maxBytes, abort });
-    return JSON.parse(bytes.toString("utf8"));
+    body = response?.body;
+    declared = Number(response?.headers?.get?.("content-length") || 0);
+  } catch {
+    abandonResponse(response);
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+  }
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    abandonResponse(response);
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+  }
+  let reader = null;
+  let iterator = null;
+  try {
+    if (typeof body?.getReader === "function") reader = body.getReader();
+    else if (typeof body?.[Symbol.asyncIterator] === "function") iterator = body[Symbol.asyncIterator]();
+  } catch {
+    abandonResponse(response);
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+  }
+  if ((!reader || typeof reader.read !== "function") && (!iterator || typeof iterator.next !== "function")) {
+    abandonResponse(response, { reader, iterator });
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+  }
+  const decoder = new TextDecoder();
+  const events = [];
+  let buffer = "";
+  let total = 0;
+  let finished = false;
+  try {
+    while (true) {
+      let result;
+      try {
+        result = reader
+          ? await readerRead(reader, abort.signal)
+          : await abortableResult(Promise.resolve().then(() => iterator.next()), abort.signal);
+      } catch (error) {
+        if (abort.signal.aborted) throw error;
+        throw gatewayError("AI_GATEWAY_UNEXPECTED_EOF", {
+          retryable: true, requestId: safeRequestId(response),
+        });
+      }
+      const { done, value } = result;
+      if (done) {
+        finished = true;
+        buffer += decoder.decode();
+        break;
+      }
+      let chunk;
+      try { chunk = Buffer.from(value); } catch {
+        throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+      }
+      total += chunk.length;
+      if (total > maxBytes) throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+      buffer += decoder.decode(chunk, { stream: true });
+      while (true) {
+        const boundary = /\r?\n\r?\n/u.exec(buffer);
+        if (!boundary) break;
+        const block = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        const event = parseSseFrame(block);
+        if (event) {
+          events.push(event);
+          abort.progress();
+        }
+      }
+    }
+    if (/^(?:\s|:[^\r\n]*(?:\r?\n|$))*$/u.test(buffer)) return events;
+    if (/^(?:|[\s\S]*\r?\n)?(?:data|event):/u.test(buffer)) {
+      try {
+        const event = parseSseFrame(buffer);
+        if (event) {
+          events.push(event);
+          abort.progress();
+        }
+        return events;
+      } catch (error) {
+        if (!sseFrameJsonIsIncomplete(buffer)) throw error;
+        throw gatewayError("AI_GATEWAY_UNEXPECTED_EOF", {
+          retryable: true, requestId: safeRequestId(response),
+        });
+      }
+    }
+    return events;
+  } finally {
+    if (!finished) abandonResponse(response, { reader, iterator });
+    else {
+      try { reader?.releaseLock?.(); } catch {}
+    }
+  }
+}
+
+async function readJson(response, abort, maxBytes) {
+  let bytes;
+  try {
+    bytes = await readBodyLimited(response, { maxBytes, abort });
   } catch (error) {
     abandonResponse(response);
     if (error instanceof AiGatewayError) throw error;
-    if (abort.signal.aborted) throw classifyFetchFailure(error, abort.state());
+    if (abort.signal.aborted) {
+      throw classifyFetchFailure(error, abort.state(), { fetchStarted: true });
+    }
+    throw gatewayError("AI_GATEWAY_UNEXPECTED_EOF", {
+      retryable: true, requestId: safeRequestId(response),
+    });
+  }
+  try {
+    const parsed = JSON.parse(bytes.toString("utf8"));
+    abort.progress();
+    return parsed;
+  } catch {
     throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
   }
 }
@@ -1244,6 +1442,7 @@ export function createSub2ApiAdapter({
   allowedSecretEnvNames,
   allowedGatewayBaseUrls,
   allowedGatewayOrigins,
+  timers,
 } = {}) {
   if (typeof fetchImpl !== "function" || typeof readSecret !== "function"
     || (resolveSecret !== undefined && typeof resolveSecret !== "function")
@@ -1253,6 +1452,8 @@ export function createSub2ApiAdapter({
     || (markCapabilitySubcallSending !== undefined && typeof markCapabilitySubcallSending !== "function")
     || (completeCapabilitySubcall !== undefined && typeof completeCapabilitySubcall !== "function")
     || typeof allowLocalGateway !== "boolean"
+    || (timers !== undefined && (typeof timers?.setTimeout !== "function"
+      || typeof timers?.clearTimeout !== "function"))
     || (resolveHostname !== undefined && typeof resolveHostname !== "function")) {
     throw new TypeError("sub2api adapter requires fetch and secret reader");
   }
@@ -1288,7 +1489,7 @@ export function createSub2ApiAdapter({
         ...(resolveHostname === undefined ? {} : { resolveHostname }),
       });
     } catch (error) {
-      if (abort.signal.aborted) throw classifyFetchFailure(error, abort.state());
+      if (abort.signal.aborted) throw error;
       if (error?.code === "SUB2API_GATEWAY_DNS_FAILED") {
         throw gatewayError("RETRYABLE_GATEWAY", { retryable: true });
       }
@@ -1332,8 +1533,14 @@ export function createSub2ApiAdapter({
         throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
       }
     }
-    const abort = abortContext(input.signal, input.timeoutMs);
+    const abort = createAbortContext({
+      callerSignal: input.signal,
+      timeoutMs: input.timeoutMs,
+      idleTimeoutMs: input.idleTimeoutMs,
+      timers,
+    });
     const url = endpointUrl(normalizedProfile, endpoint);
+    let fetchStarted = false;
     let capabilityPrepared = false;
     let capabilitySending = false;
     let capabilitySettled = false;
@@ -1416,6 +1623,7 @@ export function createSub2ApiAdapter({
         authorized: true,
         signal: abort.signal,
         verifyTarget: () => verifyGatewayBoundary(normalizedProfile, abort),
+        onFetchStart: () => { fetchStarted = true; },
         beforeSend: capabilityExecution === null ? undefined : async () => {
           if (capabilitySending) return;
           const sendingIdentity = await Promise.resolve()
@@ -1481,7 +1689,7 @@ export function createSub2ApiAdapter({
       const safe = capabilityExecution !== null
         && (capabilitySettlementUnknown || (capabilitySending && !capabilitySettled))
         ? gatewayError("AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", { retryable: true, status: 409 })
-        : classifyFetchFailure(failure, abort.state());
+        : classifyFetchFailure(failure, abort.state(), { fetchStarted });
       safeLog(logger, "warn", "ai_gateway.request_failed", {
         profileId: normalizedProfile.id,
         profileVersion: normalizedProfile.configVersion,
@@ -1506,8 +1714,9 @@ export function createSub2ApiAdapter({
     const lease = normalizeCatalogSyncLease(input?.catalogSyncLease);
     const correlationId = validateIdentity(input?.correlationId);
     const requestKey = validateIdentity(input?.requestKey);
-    const abort = abortContext(input?.signal, timeoutMs);
+    const abort = createAbortContext({ callerSignal: input?.signal, timeoutMs, timers });
     let normalizedProfile = null;
+    let fetchStarted = false;
     try {
       let rawCredential;
       try {
@@ -1554,6 +1763,7 @@ export function createSub2ApiAdapter({
         authorized: true,
         signal: abort.signal,
         verifyTarget: () => verifyGatewayBoundary(normalizedProfile, abort),
+        onFetchStart: () => { fetchStarted = true; },
         rejectRedirects: true,
       });
       let responseOk;
@@ -1577,7 +1787,7 @@ export function createSub2ApiAdapter({
       });
       return { response, normalizedProfile, abort };
     } catch (error) {
-      const safe = classifyFetchFailure(error, abort.state());
+      const safe = classifyFetchFailure(error, abort.state(), { fetchStarted });
       if (normalizedProfile) {
         safeLog(logger, "warn", "ai_gateway.request_failed", {
           profileId: normalizedProfile.id,
@@ -1645,14 +1855,18 @@ export function createSub2ApiAdapter({
       if (error instanceof AiGatewayError && !error.requestId) {
         error.requestId = safeRequestId(execution.response) || clean(payload?.id);
       }
-      throw error;
+      throw withDeliveryState(error, "POSSIBLY_SENT");
     } finally {
       execution.abort.cleanup();
     }
   }
 
   async function createTextResponse(input = {}) {
-    return createTextResponseInternal(input, { allowDisabled: false });
+    try {
+      return await createTextResponseInternal(input, { allowDisabled: false });
+    } catch (error) {
+      throw withDeliveryState(error, "NOT_SENT");
+    }
   }
 
   async function generateResponsesImage(input, normalizedProfile, { allowDisabled = false } = {}) {
@@ -1683,13 +1897,16 @@ export function createSub2ApiAdapter({
     try {
       const contentType = clean(execution.response.headers.get("content-type")).toLowerCase();
       if (contentType.includes("text/event-stream")) {
-        let raw;
+        let events;
         try {
-          raw = (await readBodyLimited(execution.response, { maxBytes: maxSseBytes, abort: execution.abort })).toString("utf8");
+          events = await readSseEvents(execution.response, {
+            maxBytes: maxSseBytes,
+            abort: execution.abort,
+          });
         } catch (error) {
-          throw classifyFetchFailure(error, execution.abort.state());
+          throw classifyFetchFailure(error, execution.abort.state(), { fetchStarted: true });
         }
-        const final = finalImageFromEvents(parseSse(raw), maxImageBytes);
+        const final = finalImageFromEvents(events, maxImageBytes);
         return normalizedImage(final.bytes, {
           protocol: normalizedProfile.imageProtocol,
           requestedImageModel: normalizedProfile.imageModel,
@@ -1717,6 +1934,8 @@ export function createSub2ApiAdapter({
         requestId: safeRequestId(execution.response) || clean(payload.id),
         usage: payload.usage,
       });
+    } catch (error) {
+      throw withDeliveryState(error, "POSSIBLY_SENT");
     } finally {
       execution.abort.cleanup();
     }
@@ -1764,7 +1983,7 @@ export function createSub2ApiAdapter({
             () => verifyGatewayBoundary(normalizedProfile, execution.abort),
           );
         } catch (error) {
-          throw classifyFetchFailure(error, execution.abort.state());
+          throw classifyFetchFailure(error, execution.abort.state(), { fetchStarted: true });
         }
       } else throw gatewayError("INVALID_GATEWAY_RESPONSE");
       return normalizedImage(bytes, {
@@ -1775,6 +1994,8 @@ export function createSub2ApiAdapter({
         requestId: safeRequestId(execution.response) || clean(payload.id),
         usage: payload.usage,
       });
+    } catch (error) {
+      throw withDeliveryState(error, "POSSIBLY_SENT");
     } finally {
       execution.abort.cleanup();
     }
@@ -1792,12 +2013,18 @@ export function createSub2ApiAdapter({
   }
 
   async function generateImage(input = {}) {
-    return generateImageInternal(input, { allowDisabled: false });
+    try {
+      return await generateImageInternal(input, { allowDisabled: false });
+    } catch (error) {
+      throw withDeliveryState(error, "NOT_SENT");
+    }
   }
 
   async function inspectImage(input = {}) {
     const image = input.image;
-    if (!image?.bytes) throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+    if (!image?.bytes) {
+      throw withDeliveryState(gatewayError("AI_GATEWAY_REQUEST_INVALID"), "NOT_SENT");
+    }
     return createTextResponse({
       ...input,
       sourceImages: [
@@ -1808,22 +2035,25 @@ export function createSub2ApiAdapter({
   }
 
   async function listModels(input = {}) {
-    const execution = input?.catalogSyncLease === undefined
-      ? await executeAuthorized({
-          input,
-          operation: "models",
-          protocol: "SUB2API_MODELS",
-          endpoint: "models",
-          body: undefined,
-          normalizeInput: normalizeCatalogRequest,
-          rejectRedirects: true,
-        })
-      : await executeCatalogSyncAuthorized(input);
+    let execution = null;
     try {
+      execution = input?.catalogSyncLease === undefined
+        ? await executeAuthorized({
+            input,
+            operation: "models",
+            protocol: "SUB2API_MODELS",
+            endpoint: "models",
+            body: undefined,
+            normalizeInput: normalizeCatalogRequest,
+            rejectRedirects: true,
+          })
+        : await executeCatalogSyncAuthorized(input);
       const payload = await readJson(execution.response, execution.abort, maxJsonBytes);
       return normalizeModelCatalog(payload, execution.response);
+    } catch (error) {
+      throw withDeliveryState(error, execution ? "POSSIBLY_SENT" : "NOT_SENT");
     } finally {
-      execution.abort.cleanup();
+      execution?.abort.cleanup();
     }
   }
 
@@ -1853,7 +2083,7 @@ export function createSub2ApiAdapter({
     }
   }
 
-  async function testCapabilities(input = {}) {
+  async function testCapabilitiesInternal(input = {}) {
     if (input.capabilityExecution === undefined || typeof prepareCapabilitySubcall !== "function"
       || typeof resolveCapabilityCredential !== "function"
       || typeof markCapabilitySubcallSending !== "function" || typeof completeCapabilitySubcall !== "function"
@@ -1929,6 +2159,14 @@ export function createSub2ApiAdapter({
       modelEvidence: image.modelEvidence,
       requestIds: { reachability: reachabilityId, text: text.requestId, image: image.requestId },
     };
+  }
+
+  async function testCapabilities(input = {}) {
+    try {
+      return await testCapabilitiesInternal(input);
+    } catch (error) {
+      throw withDeliveryState(error, "NOT_SENT");
+    }
   }
 
   return createAiGatewayPort({ createTextResponse, generateImage, inspectImage, listModels, testCapabilities });

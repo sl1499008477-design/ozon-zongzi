@@ -869,6 +869,7 @@ export async function createContentPlan(input = {}) {
           model: plannerContext.plannerInput.plannerModel,
           correlationId: typeof input.correlationId === "string" && input.correlationId.trim() ? input.correlationId.trim() : `auto-listing:${scope.jobId}:${scope.itemId}`,
           requestKey,
+          idleTimeoutMs: 300_000,
           jsonSchema: fixedSkeleton ? buildContentPlanFillSchema(fixedSkeleton) : CONTENT_PLAN_JSON_SCHEMA,
           prompt: [
             fixedSkeleton

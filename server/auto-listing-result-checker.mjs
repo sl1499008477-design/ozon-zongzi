@@ -696,6 +696,7 @@ export async function checkGeneratedAsset(input = {}) {
       model: checkerModel,
       correlationId: scope.correlationId,
       requestKey: scope.requestKey,
+      idleTimeoutMs: 300_000,
       prompt: `${checkerInstruction}${forbiddenTextInstruction ? `\n${forbiddenTextInstruction}` : ""}${claimEvidenceInstruction ? `\n${claimEvidenceInstruction}` : ""}${roleInstruction ? `\n${roleInstruction}` : ""}${styleInstruction ? `\n${styleInstruction}` : ""}\n${evidenceContext}`,
       image: { bytes: normalized.bytes, contentType: normalized.contentType },
       sourceImages: checkerReferences

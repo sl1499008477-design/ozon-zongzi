@@ -794,6 +794,7 @@ export async function generateRichContent(input = {}) {
       model: input.profile.textModel,
       correlationId: input.correlationId,
       requestKey: reservationInput.requestEvidence.requestKey,
+      idleTimeoutMs: 300_000,
       prompt: hashes.prompt,
       jsonSchema: RICH_CONTENT_JSON_SCHEMA,
     });

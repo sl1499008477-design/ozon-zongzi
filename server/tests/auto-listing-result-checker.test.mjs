@@ -69,6 +69,7 @@ async function input(value, overrides = {}) {
       async inspectImage(request) {
         assert.equal(request.sourceImages.length, 1);
         assert.equal(Object.hasOwn(request, "timeoutMs"), false);
+        assert.equal(request.idleTimeoutMs, 300_000);
         return {
           requestId: "check-1",
           modelEvidence: {

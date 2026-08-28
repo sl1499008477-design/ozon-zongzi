@@ -992,7 +992,7 @@ export async function generateImageSlot(input = {}) {
       let generated;
       try {
         assertLeaseActive(input);
-        generated = await gateway.generateImage({ profile, model: imageModel, correlationId: input.correlationId || `auto-listing:${scope.jobId}:${scope.itemId}`, requestKey: `auto-listing-image-${inputHash}-attempt-${attempt.attemptNo}`, prompt, sourceImages: [...references, ...categoryStyleReferences].map(({ bytes, contentType }) => ({ bytes, contentType })), size: gatewayImageSize(imageModel, ratio, validated.size), quality });
+        generated = await gateway.generateImage({ profile, model: imageModel, correlationId: input.correlationId || `auto-listing:${scope.jobId}:${scope.itemId}`, requestKey: `auto-listing-image-${inputHash}-attempt-${attempt.attemptNo}`, idleTimeoutMs: 300_000, prompt, sourceImages: [...references, ...categoryStyleReferences].map(({ bytes, contentType }) => ({ bytes, contentType })), size: gatewayImageSize(imageModel, ratio, validated.size), quality });
         assertLeaseActive(input);
         gatewayRequestId = requestId(generated?.requestId);
       } catch (cause) {

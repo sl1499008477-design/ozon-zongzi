@@ -98,6 +98,63 @@ function encryptedAdapter(fetchImpl, options = {}) {
   });
 }
 
+function manualTimers() {
+  let now = 0;
+  let nextId = 1;
+  let setCalls = 0;
+  const pending = new Map();
+  return {
+    setTimeout(callback, delay) {
+      setCalls += 1;
+      const handle = { id: nextId += 1, unref() {} };
+      pending.set(handle, { callback, at: now + delay });
+      return handle;
+    },
+    clearTimeout(handle) { pending.delete(handle); },
+    advanceBy(duration) {
+      const target = now + duration;
+      while (true) {
+        const due = [...pending.entries()]
+          .filter(([, task]) => task.at <= target)
+          .sort((left, right) => left[1].at - right[1].at)[0];
+        if (!due) break;
+        const [handle, task] = due;
+        pending.delete(handle);
+        now = task.at;
+        task.callback();
+      }
+      now = target;
+    },
+    activeCount: () => pending.size,
+    setCalls: () => setCalls,
+    delays: () => [...pending.values()].map(({ at }) => at - now).sort((a, b) => a - b),
+  };
+}
+
+async function waitFor(assertion, attempts = 40) {
+  let lastError;
+  for (let index = 0; index < attempts; index += 1) {
+    try { return assertion(); } catch (error) { lastError = error; }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw lastError;
+}
+
+function controlledResponse(contentType) {
+  let controller;
+  let cancelled = false;
+  const response = new Response(new ReadableStream({
+    start(value) { controller = value; },
+    cancel() { cancelled = true; },
+  }), { headers: { "content-type": contentType } });
+  return {
+    response,
+    enqueue(text) { controller.enqueue(new TextEncoder().encode(text)); },
+    close() { controller.close(); },
+    wasCancelled: () => cancelled,
+  };
+}
+
 const textInput = (overrides = {}) => ({
   profile,
   model: "gpt-text",
@@ -1783,6 +1840,196 @@ test("request timeout and caller cancellation abort fetch with distinct stable c
   const pending = gateway.createTextResponse(textInput({ timeoutMs: 5_000, signal: controller.signal }));
   controller.abort();
   await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED" && error?.retryable === false);
+});
+
+test("idle watchdog lets a streamed image run beyond five minutes when complete JSON data frames keep arriving", async () => {
+  const timers = manualTimers();
+  const controller = new AbortController();
+  const stream = controlledResponse("text/event-stream");
+  const gateway = adapter(async () => stream.response, { timers });
+  const pending = gateway.generateImage(imageInput({
+    timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+  }));
+  try {
+    await waitFor(() => assert.deepEqual(timers.delays(), [300_000]));
+    timers.advanceBy(299_999);
+    stream.enqueue([
+      "event: response.image_generation_call.partial_image",
+      `data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"${PNG_1X1}","partial_image_index":0}`,
+      "",
+      "",
+    ].join("\n"));
+    await waitFor(() => assert.equal(timers.setCalls(), 2));
+
+    timers.advanceBy(299_999);
+    stream.enqueue([
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+      "",
+      "data: [DONE]",
+      "",
+      "",
+    ].join("\n"));
+    stream.close();
+
+    const result = await pending;
+    assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
+    assert.equal(timers.activeCount(), 0);
+  } finally {
+    controller.abort();
+    if (timers.activeCount()) timers.advanceBy(300_000);
+    await pending.catch(() => {});
+  }
+});
+
+test("idle watchdog ignores byte noise partial frames and keep-alive comments, then aborts with safe delivery metadata", async () => {
+  const timers = manualTimers();
+  const controller = new AbortController();
+  const stream = controlledResponse("text/event-stream");
+  const gateway = adapter(async () => stream.response, { timers });
+  const pending = gateway.generateImage(imageInput({
+    timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+  }));
+  try {
+    await waitFor(() => assert.deepEqual(timers.delays(), [300_000]));
+    stream.enqueue("garbage bytes\n\n: keep-alive\n\ndata: {\"type\":\"response.completed\"");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(timers.setCalls(), 1);
+
+    timers.advanceBy(300_000);
+    let settled = false;
+    pending.catch(() => { settled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    if (!settled) controller.abort();
+    await assert.rejects(pending, (error) => {
+      assert.equal(error?.code, "AI_GATEWAY_IDLE_TIMEOUT");
+      assert.equal(error?.message, "AI 网关长时间没有有效响应");
+      assert.equal(error?.deliveryState, "POSSIBLY_SENT");
+      assert.equal(error?.retryAfterMs, null);
+      assert.equal(Object.getOwnPropertyDescriptor(error, "deliveryState")?.writable, false);
+      assert.equal(Object.getOwnPropertyDescriptor(error, "retryAfterMs")?.writable, false);
+      return true;
+    });
+    assert.equal(stream.wasCancelled(), true);
+    assert.equal(timers.activeCount(), 0);
+  } finally {
+    controller.abort();
+    await pending.catch(() => {});
+  }
+});
+
+test("a complete valid JSON body ends the idle watchdog and malformed success remains possibly sent", async () => {
+  const timers = manualTimers();
+  const success = adapter(async () => jsonResponse({
+    model: "gpt-text",
+    output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+  }), { timers });
+  assert.equal((await success.createTextResponse(textInput({
+    timeoutMs: undefined, idleTimeoutMs: 300_000,
+  }))).value.ok, true);
+  assert.equal(timers.activeCount(), 0);
+
+  const malformed = adapter(async () => jsonResponse({ output: [] }), { timers });
+  await assert.rejects(malformed.createTextResponse(textInput({
+    timeoutMs: undefined, idleTimeoutMs: 300_000,
+  })), (error) => error?.code === "INVALID_GATEWAY_RESPONSE"
+    && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
+  assert.equal(timers.activeCount(), 0);
+});
+
+test("caller cancellation wins an idle-timeout race and every exit path clears the injected timer", async () => {
+  const timers = manualTimers();
+  const controller = new AbortController();
+  let fetchStarted = false;
+  const gateway = adapter(async () => {
+    fetchStarted = true;
+    return new Promise(() => {});
+  }, { timers });
+  const pending = gateway.createTextResponse(textInput({
+    timeoutMs: undefined,
+    idleTimeoutMs: 300_000,
+    signal: controller.signal,
+  }));
+  try {
+    await waitFor(() => assert.equal(fetchStarted, true));
+    timers.advanceBy(300_000);
+    controller.abort();
+    await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED"
+      && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
+    assert.equal(timers.activeCount(), 0);
+  } finally {
+    controller.abort();
+    await pending.catch(() => {});
+  }
+});
+
+test("timeoutMs and idleTimeoutMs are mutually exclusive while total timeout keeps the admin code", async () => {
+  let fetches = 0;
+  const gateway = adapter(async () => { fetches += 1; return new Promise(() => {}); });
+  await assert.rejects(gateway.createTextResponse(textInput({ idleTimeoutMs: 300_000 })), (error) =>
+    error?.code === "AI_GATEWAY_REQUEST_INVALID" && error?.deliveryState === "NOT_SENT");
+  assert.equal(fetches, 0);
+
+  await assert.rejects(gateway.createTextResponse(textInput({ timeoutMs: 5, idleTimeoutMs: undefined })), (error) =>
+    error?.code === "GATEWAY_TIMEOUT" && error?.deliveryState === "POSSIBLY_SENT");
+});
+
+test("HTTP rejection delivery state and Retry-After stay bounded safe and immutable", async () => {
+  const sensitive = "private-retry-header-and-body";
+  for (const [status, retryAfter, expectedCode, expectedDelivery, expectedRetryAfter] of [
+    [401, undefined, "NON_RETRYABLE_AUTH", "NOT_SENT", null],
+    [403, undefined, "NON_RETRYABLE_AUTH", "NOT_SENT", null],
+    [404, undefined, "NON_RETRYABLE_GATEWAY", "NOT_SENT", null],
+    [429, "120", "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", 120_000],
+    [429, "999999999", "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", 86_400_000],
+    [429, sensitive, "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", null],
+    [500, undefined, "RETRYABLE_GATEWAY", "POSSIBLY_SENT", null],
+  ]) {
+    const gateway = adapter(async () => jsonResponse({ error: { message: sensitive } }, {
+      status,
+      headers: retryAfter === undefined ? {} : { "retry-after": retryAfter, "x-private": sensitive },
+    }));
+    await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+      assert.equal(error?.code, expectedCode, status);
+      assert.equal(error?.deliveryState, expectedDelivery, status);
+      assert.equal(error?.retryAfterMs, expectedRetryAfter, status);
+      assert.equal(Object.getOwnPropertyDescriptor(error, "deliveryState")?.writable, false);
+      assert.equal(Object.getOwnPropertyDescriptor(error, "retryAfterMs")?.writable, false);
+      assert.doesNotMatch(error?.message || "", new RegExp(sensitive));
+      assert.doesNotMatch(JSON.stringify(error), new RegExp(sensitive));
+      return true;
+    });
+  }
+});
+
+test("pre-send validation is NOT_SENT while network and unexpected streamed EOF are POSSIBLY_SENT", async () => {
+  let fetches = 0;
+  const invalid = adapter(async () => { fetches += 1; return jsonResponse({}); });
+  await assert.rejects(invalid.createTextResponse(textInput({ model: "wrong-model" })), (error) =>
+    error?.code === "AI_GATEWAY_MODEL_MISMATCH" && error?.deliveryState === "NOT_SENT");
+  assert.equal(fetches, 0);
+
+  const network = adapter(async () => { throw new TypeError("private socket failure"); });
+  await assert.rejects(network.createTextResponse(textInput()), (error) =>
+    error?.code === "AI_GATEWAY_NETWORK_FAILED" && error?.deliveryState === "POSSIBLY_SENT");
+
+  const eof = adapter(async () => new Response(
+    "event: response.completed\ndata: {\"type\":\"response.completed\"",
+    { headers: { "content-type": "text/event-stream" } },
+  ));
+  await assert.rejects(eof.generateImage(imageInput()), (error) =>
+    error?.code === "AI_GATEWAY_UNEXPECTED_EOF" && error?.deliveryState === "POSSIBLY_SENT");
+});
+
+test("an explicit streamed model rejection is a NOT_SENT 404 revalidation signal", async () => {
+  const gateway = adapter(async () => new Response([
+    "event: response.failed",
+    "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"model_not_found\"}}}",
+    "",
+  ].join("\n"), { headers: { "content-type": "text/event-stream" } }));
+  await assert.rejects(gateway.generateImage(imageInput()), (error) =>
+    error?.code === "NON_RETRYABLE_GATEWAY" && error?.status === 404
+    && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null);
 });
 
 test("cost-bearing requests may wait without an application deadline while caller cancellation remains active", async () => {
