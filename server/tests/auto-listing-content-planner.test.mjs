@@ -204,6 +204,8 @@ function reserved(input, overrides = {}) {
     planningContract: input.planningContract,
     skeletonHash: null,
     plannerStage: "FILLING_COPY",
+    gatewayConnectionId: input.gatewayConnectionId,
+    gatewayConnectionVersion: input.gatewayConnectionVersion,
     ...overrides,
   };
 }
@@ -704,6 +706,42 @@ test("response-loss replay resumes exact recorded evidence without a second gate
   assert.equal(gatewayCalls, 0);
   assert.equal(stageCalls, 0);
   assert.equal(saved, 1);
+});
+
+test("connection B reuses planner response produced by A without rewriting producer provenance", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  let saved;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { plannerStage: "VALIDATING_COPY",
+        gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async advanceContentPlanStage() { throw new Error("must not advance"); },
+    async saveContentPlan(input) { saved = input; return { id: "plan-reused-a", ...input }; },
+    async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome(input) {
+      assert.equal(input.gatewayConnectionId, "connection-a");
+      assert.equal(input.gatewayConnectionVersion, 3);
+      return { response: { id: "response-a", response: structuredClone(output), gatewayRequestId: "gateway-a" }, validation: null };
+    },
+    async recordResponse() { throw new Error("paid planner must not run"); },
+    async recordValidation(input) { return { id: "validation-a", ...input }; },
+  };
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { throw new Error("paid planner must not run"); } },
+    repository,
+  });
+  assert.equal(result.id, "plan-reused-a");
+  assert.equal(saved.gatewayConnectionId, "connection-a");
+  assert.equal(saved.gatewayConnectionVersion, 3);
 });
 
 test("fixed contract builds the configured skeleton, lets AI fill only claims, and persists exact identity", async () => {

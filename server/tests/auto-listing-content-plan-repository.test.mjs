@@ -203,6 +203,8 @@ test("reserve locks the exact account job item and its default lease covers the 
     planningContract: "LEGACY_FULL_PLAN_V3",
     plannerStage: "FILLING_COPY",
     skeletonHash: null,
+    gatewayConnectionId: "connection-a",
+    gatewayConnectionVersion: 3,
   });
   const sql = db.queries.map((entry) => entry.text).join("\n");
   assert.match(sql, /WHERE account_id=\$1 AND job_id=\$2 AND id=\$3[\s\S]*FOR UPDATE/i);
@@ -248,6 +250,7 @@ test("fixed reservation persists and returns the exact deterministic skeleton ha
     status: "RESERVED", attemptId: "attempt-fixed", attemptNo: 1,
     reservationToken: "lease-fixed", inputHash: HASH,
     planningContract: "FIXED_SKELETON_V1", skeletonHash, plannerStage: "BUILDING_SKELETON",
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3,
   });
   const inserted = db.queries.find(({ text }) => /INSERT INTO auto_listing_content_plan_attempts/i.test(text));
   assert.match(inserted.text, /planning_contract,skeleton_hash,planner_stage/i);
@@ -267,14 +270,14 @@ test("an expired exact attempt renews the same evidence owner instead of chargin
       return { rows: [{
         id: "attempt-existing", attempt_no: 1, input_hash: HASH,
         planning_contract: "LEGACY_FULL_PLAN_V3", skeleton_hash: null,
-        planner_stage: "VALIDATING_COPY",
+        planner_stage: "VALIDATING_COPY", gateway_connection_id: "connection-a", gateway_connection_version: 3,
       }], rowCount: 1 };
     }
     if (/SET lease_owner=/i.test(sql) && /RETURNING/i.test(sql)) {
       return { rows: [{
         id: "attempt-existing", attempt_no: 1, input_hash: HASH,
         planning_contract: "LEGACY_FULL_PLAN_V3", skeleton_hash: null,
-        planner_stage: "VALIDATING_COPY",
+        planner_stage: "VALIDATING_COPY", gateway_connection_id: "connection-a", gateway_connection_version: 3,
       }], rowCount: 1 };
     }
     throw new Error(`unexpected SQL: ${sql}`);
@@ -287,12 +290,44 @@ test("an expired exact attempt renews the same evidence owner instead of chargin
     reservationToken: "lease-renewed", inputHash: HASH,
     planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null,
     plannerStage: "VALIDATING_COPY",
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3,
   });
   assert.equal(db.queries.some(({ text }) => /INSERT INTO auto_listing_content_plan_attempts/i.test(text)), false);
   const reclaim = db.queries.find(({ text }) => /SET lease_owner=/i.test(text));
   assert.match(reclaim.text, /gateway_connection_id=.*gateway_connection_version=/is);
   assert.equal(reclaim.values.includes("connection-a"), true);
   assert.equal(reclaim.values.includes(3), true);
+});
+
+test("planner reclaim preserves producer A when connection B reuses A's paid response", async () => {
+  const db = scriptedPool((sql) => {
+    if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };
+    if (/FROM auto_listing_job_items/i.test(sql)) return { rows: [{
+      id: "item-a", snapshot_id: "snapshot-a", status: "PLANNING", status_version: 7,
+      active_content_plan_id: null, planning_contract: "LEGACY_FULL_PLAN_V3",
+    }], rowCount: 1 };
+    if (/lease_expires_at <= NOW\(\)/i.test(sql) && /FOR UPDATE/i.test(sql)) return { rows: [{
+      id: "attempt-existing", attempt_no: 1, input_hash: HASH,
+      planning_contract: "LEGACY_FULL_PLAN_V3", skeleton_hash: null,
+      planner_stage: "VALIDATING_COPY", gateway_connection_id: "connection-a", gateway_connection_version: 3,
+    }], rowCount: 1 };
+    if (/SET lease_owner=/i.test(sql) && /RETURNING/i.test(sql)) return { rows: [{
+      id: "attempt-existing", attempt_no: 1, input_hash: HASH,
+      planning_contract: "LEGACY_FULL_PLAN_V3", skeleton_hash: null,
+      planner_stage: "VALIDATING_COPY", gateway_connection_id: "connection-a", gateway_connection_version: 3,
+    }], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresContentPlanRepository({ pool: db.pool, token: () => "lease-b" });
+  const result = await repository.reserveContentPlan(reservation({
+    gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9,
+  }));
+
+  assert.equal(result.gatewayConnectionId, "connection-a");
+  assert.equal(result.gatewayConnectionVersion, 3);
+  const reclaim = db.queries.find(({ text }) => /SET lease_owner=/i.test(text));
+  assert.match(reclaim.text, /auto_listing_content_plan_responses/iu);
+  assert.match(reclaim.text, /CASE[\s\S]*gateway_connection_id/iu);
 });
 
 test("channel release expires only the exact content-plan attempt without terminalizing its business budget", async () => {

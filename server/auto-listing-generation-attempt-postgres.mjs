@@ -271,15 +271,19 @@ function acceptedRecordValid(record) {
     && safeJson(record.regeneration, { nullable: true });
 }
 
-function reusableStoredRecordValid(record, input, runtime) {
+function reusableProducerEvidenceValid(record, input, runtime) {
   return record?.finalInputBoundAt !== null
-    && record.attemptIdentityHash === input.attemptIdentityHash && record.inputHash === input.inputHash
+    && record.attemptIdentityHash === input.attemptIdentityHash
     && record.generationSize === input.generationSize && record.role === runtime.state.role
     && record.profileId === runtime.state.profile_id && record.profileVersion === runtime.state.profile_version
     && record.modelName === runtime.state.image_model && safeIdentifier(record.gatewayRequestId)
     && safeJson(record.modelEvidence, { nonempty: true }) && validStoredEvidence(record)
     && ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey"]
       .every((key) => record[key] === input[key]);
+}
+
+function reusableStoredRecordValid(record, input, runtime) {
+  return reusableProducerEvidenceValid(record, input, runtime) && record.inputHash === input.inputHash;
 }
 
 function recoverableCheckerRecordValid(record, input, runtime) {
@@ -422,18 +426,20 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       );
       if (reclaimable.rowCount > 1) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CONFLICT");
       if (reclaimable.rowCount === 1) {
+        const reusableProducer = reusableProducerEvidenceValid(fromRow(reclaimable.rows[0]), input, runtime);
         const reclaimed = await client.query(
           `UPDATE ai_generation_assets
            SET status='GENERATING',lease_token=$2::TEXT || ':' || attempt_no::INTEGER::TEXT,
                lease_expires_at=NOW()+($3::INTEGER * INTERVAL '1 millisecond'),
                error_code=NULL,error_retryable=NULL,checker_request_id=NULL,
-               gateway_connection_id=$4,gateway_connection_version=$5,
+               gateway_connection_id=CASE WHEN $6 THEN gateway_connection_id ELSE $4 END,
+               gateway_connection_version=CASE WHEN $6 THEN gateway_connection_version ELSE $5 END,
                checker_connection_id=NULL,checker_connection_version=NULL,updated_at=NOW()
            WHERE id=$1 AND status='GENERATING' AND lease_expires_at <= NOW()
              AND lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED'
-           RETURNING *`,
+          RETURNING *`,
           [reclaimable.rows[0].id, nonce, leaseMs,
-            input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null],
+            input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null, reusableProducer],
         );
         const record = fromRow(reclaimed.rows?.[0]);
         if (reclaimed.rowCount !== 1 || record?.status !== "GENERATING"
@@ -444,6 +450,8 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
         return {
           status: "RESERVED", attemptNo: record.attemptNo, leaseToken: record.leaseToken,
           generationSize: record.generationSize, leaseExpiresAt: dateIso(record.leaseExpiresAt),
+          gatewayConnectionId: record.gatewayConnectionId,
+          gatewayConnectionVersion: record.gatewayConnectionVersion,
         };
       }
       const attempts = await client.query(
@@ -477,6 +485,8 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       return {
         status: "RESERVED", attemptNo: record.attemptNo, leaseToken: record.leaseToken,
         generationSize: record.generationSize, leaseExpiresAt: dateIso(record.leaseExpiresAt),
+        gatewayConnectionId: record.gatewayConnectionId,
+        gatewayConnectionVersion: record.gatewayConnectionVersion,
       };
     });
   }
@@ -523,12 +533,34 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
         }
         return null;
       };
+      const adoptRecoveryProducer = async (recoveryRecord) => {
+        if (!recoveryRecord) return null;
+        const producerId = recoveryRecord.gatewayConnectionId ?? null;
+        const producerVersion = recoveryRecord.gatewayConnectionVersion ?? null;
+        if ((row.gatewayConnectionId ?? null) !== producerId
+          || (row.gatewayConnectionVersion ?? null) !== producerVersion) {
+          const adopted = await client.query(
+            `UPDATE ai_generation_assets
+                SET gateway_connection_id=$2,gateway_connection_version=$3,updated_at=NOW()
+              WHERE id=$1 AND status='GENERATING' AND lease_token=$4 AND lease_expires_at > NOW()
+                AND gateway_connection_id IS NOT DISTINCT FROM $5
+                AND gateway_connection_version IS NOT DISTINCT FROM $6`,
+            [row.id, producerId, producerVersion, input.leaseToken,
+              row.gatewayConnectionId ?? null, row.gatewayConnectionVersion ?? null],
+          );
+          if (adopted.rowCount !== 1) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED");
+        }
+        return recoveryRecord;
+      };
       if (row.finalInputBoundAt !== null) {
         if (row.inputHash !== input.inputHash) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CONFLICT");
-        const recoveryRecord = reusableStoredRecordValid(row, input, runtime)
+        const recoveryRecord = await adoptRecoveryProducer(reusableStoredRecordValid(row, input, runtime)
           ? publicRecord(row)
-          : await findRecoveryRecord();
-        return { status: "BOUND", inputHash: row.inputHash, ...(recoveryRecord ? { recoveryRecord } : {}) };
+          : await findRecoveryRecord());
+        return { status: "BOUND", inputHash: row.inputHash,
+          gatewayConnectionId: recoveryRecord?.gatewayConnectionId ?? row.gatewayConnectionId ?? null,
+          gatewayConnectionVersion: recoveryRecord?.gatewayConnectionVersion ?? row.gatewayConnectionVersion ?? null,
+          ...(recoveryRecord ? { recoveryRecord } : {}) };
       }
       const conflict = await client.query(
         `SELECT * FROM ai_generation_assets
@@ -578,8 +610,11 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       if (bound.rowCount !== 1 || record?.inputHash !== input.inputHash || record.finalInputBoundAt === null) {
         throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED");
       }
-      const recoveryRecord = await findRecoveryRecord();
-      return { status: "BOUND", inputHash: record.inputHash, ...(recoveryRecord ? { recoveryRecord } : {}) };
+      const recoveryRecord = await adoptRecoveryProducer(await findRecoveryRecord());
+      return { status: "BOUND", inputHash: record.inputHash,
+        gatewayConnectionId: recoveryRecord?.gatewayConnectionId ?? record.gatewayConnectionId ?? null,
+        gatewayConnectionVersion: recoveryRecord?.gatewayConnectionVersion ?? record.gatewayConnectionVersion ?? null,
+        ...(recoveryRecord ? { recoveryRecord } : {}) };
     });
   }
 

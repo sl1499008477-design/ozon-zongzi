@@ -20,8 +20,13 @@ test("one preliminary identity owns the lease, binds final bytes, and reuses acc
   assert.deepEqual(await repository.reserveGenerationAttempt({ ...scope, attemptIdentityHash, generationSize, maxAttempts: 3 }), { status: "IN_PROGRESS" });
   timestamp = 111;
   const retry = await repository.reserveGenerationAttempt({ ...scope, attemptIdentityHash, generationSize, maxAttempts: 3 });
-  assert.deepEqual(retry, { status: "RESERVED", attemptNo: 2, leaseToken: "lease-2", generationSize });
-  assert.deepEqual(await repository.bindGenerationAttemptInput({ ...scope, attemptIdentityHash, inputHash, ...retry }), { status: "BOUND", inputHash });
+  assert.deepEqual(retry, {
+    status: "RESERVED", attemptNo: 2, leaseToken: "lease-2", generationSize,
+    gatewayConnectionId: null, gatewayConnectionVersion: null,
+  });
+  assert.deepEqual(await repository.bindGenerationAttemptInput({ ...scope, attemptIdentityHash, inputHash, ...retry }), {
+    status: "BOUND", inputHash, gatewayConnectionId: null, gatewayConnectionVersion: null,
+  });
   const accepted = await repository.completeGenerationAttempt(complete(retry));
   assert.equal(accepted.status, "ACCEPTED");
   const reused = await repository.reserveGenerationAttempt({ ...scope, attemptIdentityHash, generationSize, maxAttempts: 3 });
@@ -314,6 +319,42 @@ test("memory channel reclaim transfers ownership to only the newly reserved exac
   })).status, "FAILED");
 });
 
+test("memory reclaim keeps producer A when connection B reuses A's stored paid image", async () => {
+  let timestamp = 100;
+  let sequence = 0;
+  const repository = createMemoryGenerationAttemptRepository({
+    now: () => timestamp, leaseMs: 20, token: () => `producer-${++sequence}`,
+  });
+  const connectionA = { gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4 };
+  const connectionB = { gatewayConnectionId: "connection-b", gatewayConnectionVersion: 5 };
+  const first = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3, ...connectionA,
+  });
+  const ownerA = { ...scope, attemptIdentityHash, inputHash, generationSize, ...first, ...connectionA };
+  await repository.bindGenerationAttemptInput(ownerA);
+  const stored = complete(ownerA);
+  await repository.recordStoredGenerationAsset(stored);
+  await repository.releaseGenerationLease({
+    ...ownerA, errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED",
+    role: "MAIN", profileId: "profile-a", profileVersion: 1, modelName: "image-a",
+    gatewayRequestId: "gateway-a", checkerRequestId: null,
+    modelEvidence: { requestedImageModel: "image-a" },
+  });
+  timestamp += 1;
+  const reclaimed = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3, ...connectionB,
+  });
+
+  assert.equal(reclaimed.gatewayConnectionId, "connection-a");
+  assert.equal(reclaimed.gatewayConnectionVersion, 4);
+  const rebound = await repository.bindGenerationAttemptInput({
+    ...scope, attemptIdentityHash, inputHash, generationSize, ...reclaimed,
+    gatewayConnectionId: reclaimed.gatewayConnectionId,
+    gatewayConnectionVersion: reclaimed.gatewayConnectionVersion,
+  });
+  assert.equal(rebound.recoveryRecord.gatewayConnectionId, "connection-a");
+});
+
 test("legacy memory attempts retain exact null gateway provenance compatibility", async () => {
   const repository = createMemoryGenerationAttemptRepository({ token: () => "lease-legacy-null" });
   const lease = await repository.reserveGenerationAttempt({
@@ -339,7 +380,9 @@ test("final input binding returns accepted reuse or a stable conflict before dup
   const secondIdentity = "4".repeat(64);
   const first = await repository.reserveGenerationAttempt({ ...scope, attemptIdentityHash: firstIdentity, generationSize, maxAttempts: 3 });
   const second = await repository.reserveGenerationAttempt({ ...scope, attemptIdentityHash: secondIdentity, generationSize, maxAttempts: 3 });
-  assert.deepEqual(await repository.bindGenerationAttemptInput({ ...scope, attemptIdentityHash: firstIdentity, inputHash, ...first }), { status: "BOUND", inputHash });
+  assert.deepEqual(await repository.bindGenerationAttemptInput({ ...scope, attemptIdentityHash: firstIdentity, inputHash, ...first }), {
+    status: "BOUND", inputHash, gatewayConnectionId: null, gatewayConnectionVersion: null,
+  });
   assert.deepEqual(await repository.bindGenerationAttemptInput({ ...scope, attemptIdentityHash: secondIdentity, inputHash, ...second }), { status: "VERSION_CONFLICT" });
   await repository.completeGenerationAttempt(complete(first, firstIdentity));
   const thirdIdentity = "5".repeat(64);

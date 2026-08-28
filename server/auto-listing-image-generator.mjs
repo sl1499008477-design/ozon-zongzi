@@ -909,7 +909,12 @@ export async function generateImageSlot(input = {}) {
   if (reservation?.status !== "RESERVED" || !strictText(reservation.leaseToken) || !Number.isInteger(reservation.attemptNo)
     || reservation.attemptNo < 1 || reservation.attemptNo > maxAttempts
     || reservation.generationSize !== validated.size) throw failure("AUTO_LISTING_IMAGE_RESERVATION_FAILED", true);
-  const attempt = { ...scope, attemptIdentityHash, inputHash: attemptIdentityHash, generationSize: validated.size, attemptNo: reservation.attemptNo, leaseToken: reservation.leaseToken, ...gatewayProvenance };
+  const reservationProvenance = Object.hasOwn(reservation, "gatewayConnectionId")
+    && Object.hasOwn(reservation, "gatewayConnectionVersion")
+    ? { gatewayConnectionId: reservation.gatewayConnectionId, gatewayConnectionVersion: reservation.gatewayConnectionVersion }
+    : gatewayProvenance;
+  const attempt = { ...scope, attemptIdentityHash, inputHash: attemptIdentityHash, generationSize: validated.size,
+    attemptNo: reservation.attemptNo, leaseToken: reservation.leaseToken, ...reservationProvenance };
   let gatewayRequestId = null;
   let checkerRequestId = null;
   let generatedModelEvidence = null;
@@ -939,6 +944,16 @@ export async function generateImageSlot(input = {}) {
     }
     if (binding?.status !== "BOUND" || binding.inputHash !== inputHash) throw repositoryFailure();
     attempt.inputHash = inputHash;
+    const boundProducer = binding.recoveryRecord
+      ? {
+          gatewayConnectionId: binding.recoveryRecord.gatewayConnectionId ?? null,
+          gatewayConnectionVersion: binding.recoveryRecord.gatewayConnectionVersion ?? null,
+        }
+      : Object.hasOwn(binding, "gatewayConnectionId") && Object.hasOwn(binding, "gatewayConnectionVersion")
+        ? { gatewayConnectionId: binding.gatewayConnectionId, gatewayConnectionVersion: binding.gatewayConnectionVersion }
+        : reservationProvenance;
+    attempt.gatewayConnectionId = boundProducer.gatewayConnectionId;
+    attempt.gatewayConnectionVersion = boundProducer.gatewayConnectionVersion;
     const allowedMarketingCopy = Array.isArray(slot.claims) ? slot.claims.map((claim) => claim.text) : [];
     const visualBrief = ROLE_BRIEF_TEMPLATES.has(templateVersion) ? visualBriefFor(
       slot,

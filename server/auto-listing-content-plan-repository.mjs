@@ -445,7 +445,8 @@ export function createPostgresContentPlanRepository({
       }
 
       const resumable = await client.query(
-        `SELECT id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage
+        `SELECT id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage,
+                gateway_connection_id,gateway_connection_version
            FROM auto_listing_content_plan_attempts
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4
             AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
@@ -460,12 +461,22 @@ export function createPostgresContentPlanRepository({
       if (resumable.rowCount > 1) throw evidenceConflict();
       if (resumable.rowCount === 1) {
         const resumed = await client.query(
-          `UPDATE auto_listing_content_plan_attempts
+          `UPDATE auto_listing_content_plan_attempts AS attempt
               SET lease_owner=$2,lease_token=$3,
                   lease_expires_at=NOW() + ($4 * INTERVAL '1 millisecond'),
-                  gateway_connection_id=$5,gateway_connection_version=$6,updated_at=NOW()
-            WHERE account_id=$1 AND id=$7 AND status='PLANNING' AND lease_expires_at <= NOW()
-            RETURNING id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage`,
+                  gateway_connection_id=CASE WHEN EXISTS (
+                    SELECT 1 FROM auto_listing_content_plan_responses AS response
+                     WHERE response.account_id=attempt.account_id AND response.attempt_id=attempt.id
+                  ) THEN attempt.gateway_connection_id ELSE $5 END,
+                  gateway_connection_version=CASE WHEN EXISTS (
+                    SELECT 1 FROM auto_listing_content_plan_responses AS response
+                     WHERE response.account_id=attempt.account_id AND response.attempt_id=attempt.id
+                  ) THEN attempt.gateway_connection_version ELSE $6 END,
+                  updated_at=NOW()
+            WHERE attempt.account_id=$1 AND attempt.id=$7 AND attempt.status='PLANNING'
+              AND attempt.lease_expires_at <= NOW()
+            RETURNING id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage,
+                      gateway_connection_id,gateway_connection_version`,
           [input.accountId, leaseOwner, leaseToken, leaseMs, input.gatewayConnectionId,
             input.gatewayConnectionVersion, resumable.rows[0].id],
         );
@@ -485,6 +496,9 @@ export function createPostgresContentPlanRepository({
           planningContract: row.planning_contract,
           skeletonHash: row.skeleton_hash ?? null,
           plannerStage: row.planner_stage,
+          gatewayConnectionId: row.gateway_connection_id ?? null,
+          gatewayConnectionVersion: row.gateway_connection_version == null
+            ? null : Number(row.gateway_connection_version),
         };
       }
 
@@ -555,6 +569,8 @@ export function createPostgresContentPlanRepository({
         planningContract: input.planningContract,
         skeletonHash: input.skeletonHash,
         plannerStage: input.planningContract === "LEGACY_FULL_PLAN_V3" ? "FILLING_COPY" : "BUILDING_SKELETON",
+        gatewayConnectionId: input.gatewayConnectionId,
+        gatewayConnectionVersion: input.gatewayConnectionVersion,
       };
     } catch (error) {
       await rollback(client);

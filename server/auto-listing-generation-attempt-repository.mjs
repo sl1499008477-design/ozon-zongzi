@@ -92,15 +92,22 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       if (reclaimable.length > 1) throw invalid();
       if (reclaimable.length === 1) {
         const leaseToken = clean(token()); if (!leaseToken) throw invalid();
+        const reusableProducer = reclaimable[0].objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
+          && verifyGeneratedAssetObjectKey(reclaimable[0]) && clean(reclaimable[0].gatewayRequestId)
+          && reclaimable[0].modelEvidence;
         Object.assign(reclaimable[0], {
           leaseToken, leaseExpiresAt: timestamp + leaseMs, checkerRequestId: null,
           errorCode: null, errorRetryable: null,
-          gatewayConnectionId: input.gatewayConnectionId ?? null,
-          gatewayConnectionVersion: input.gatewayConnectionVersion ?? null,
+          gatewayConnectionId: reusableProducer
+            ? reclaimable[0].gatewayConnectionId ?? null : input.gatewayConnectionId ?? null,
+          gatewayConnectionVersion: reusableProducer
+            ? reclaimable[0].gatewayConnectionVersion ?? null : input.gatewayConnectionVersion ?? null,
         });
         return {
           status: "RESERVED", attemptNo: reclaimable[0].attemptNo,
           leaseToken, generationSize: input.generationSize,
+          gatewayConnectionId: reclaimable[0].gatewayConnectionId ?? null,
+          gatewayConnectionVersion: reclaimable[0].gatewayConnectionVersion ?? null,
         };
       }
       const attemptNo = current.reduce((maximum, row) => Math.max(maximum, row.attemptNo), 0) + 1;
@@ -113,7 +120,9 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
         leaseToken, leaseExpiresAt: timestamp + leaseMs,
         gatewayConnectionId: input.gatewayConnectionId ?? null,
         gatewayConnectionVersion: input.gatewayConnectionVersion ?? null });
-      return { status: "RESERVED", attemptNo, leaseToken, generationSize: input.generationSize };
+      return { status: "RESERVED", attemptNo, leaseToken, generationSize: input.generationSize,
+        gatewayConnectionId: input.gatewayConnectionId ?? null,
+        gatewayConnectionVersion: input.gatewayConnectionVersion ?? null };
     },
     async bindGenerationAttemptInput(input) {
       if (!HASH.test(input?.inputHash || "")) throw invalid();
@@ -122,6 +131,8 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
         const reusable = row.objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
           && verifyGeneratedAssetObjectKey(row) && clean(row.gatewayRequestId) && row.modelEvidence;
         return { status: "BOUND", inputHash: row.inputHash,
+          gatewayConnectionId: row.gatewayConnectionId ?? null,
+          gatewayConnectionVersion: row.gatewayConnectionVersion ?? null,
           ...(reusable ? { recoveryRecord: copy(row) } : {}) };
       }
       const conflict = rows.find((candidate) => candidate !== row && keyOf(candidate) === keyOf(input)
@@ -144,7 +155,13 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
         && candidate.errorRetryable === true && candidate.finalInputBoundAt !== null
         && candidate.objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
         && verifyGeneratedAssetObjectKey(candidate) && candidate.modelEvidence);
+      if (recoveryRecord) {
+        row.gatewayConnectionId = recoveryRecord.gatewayConnectionId ?? null;
+        row.gatewayConnectionVersion = recoveryRecord.gatewayConnectionVersion ?? null;
+      }
       return { status: "BOUND", inputHash: input.inputHash,
+        gatewayConnectionId: row.gatewayConnectionId ?? null,
+        gatewayConnectionVersion: row.gatewayConnectionVersion ?? null,
         ...(recoveryRecord ? { recoveryRecord: copy(recoveryRecord) } : {}) };
     },
     async recordStoredGenerationAsset(input) {

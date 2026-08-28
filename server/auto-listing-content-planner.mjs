@@ -829,9 +829,24 @@ export async function createContentPlan(input = {}) {
     || !["BUILDING_SKELETON", "FILLING_COPY", "VALIDATING_COPY"].includes(reservation.plannerStage)
     || (planningContract === "LEGACY_FULL_PLAN_V3" && reservation.plannerStage === "BUILDING_SKELETON")
     || !((planningContract === "LEGACY_FULL_PLAN_V3" && reservation.skeletonHash === null)
-      || (planningContract === "FIXED_SKELETON_V1" && reservation.skeletonHash === skeletonHash))) {
+      || (planningContract === "FIXED_SKELETON_V1" && reservation.skeletonHash === skeletonHash))
+    || !((!Object.hasOwn(reservation, "gatewayConnectionId")
+        && !Object.hasOwn(reservation, "gatewayConnectionVersion"))
+      || (reservation.gatewayConnectionId === null && reservation.gatewayConnectionVersion === null)
+      || (typeof reservation.gatewayConnectionId === "string" && reservation.gatewayConnectionId.trim()
+        && Number.isInteger(reservation.gatewayConnectionVersion) && reservation.gatewayConnectionVersion > 0))) {
     throw plannerError("AUTO_LISTING_CONTENT_PLAN_RESERVATION_FAILED", "图片规划任务暂时无法锁定");
   }
+  const reservationCarriesProvenance = Object.hasOwn(reservation, "gatewayConnectionId")
+    || Object.hasOwn(reservation, "gatewayConnectionVersion");
+  const producerProvenance = {
+    gatewayConnectionId: reservationCarriesProvenance
+      ? reservation.gatewayConnectionId
+      : gatewayProvenance.gatewayConnectionId,
+    gatewayConnectionVersion: reservationCarriesProvenance
+      ? reservation.gatewayConnectionVersion
+      : gatewayProvenance.gatewayConnectionVersion,
+  };
   try {
     if (reservation.plannerStage === "BUILDING_SKELETON") {
       try {
@@ -846,7 +861,7 @@ export async function createContentPlan(input = {}) {
           skeletonHash,
           fromStage: "BUILDING_SKELETON",
           toStage: "FILLING_COPY",
-          ...gatewayProvenance,
+          ...producerProvenance,
         }));
         reservation = { ...reservation, plannerStage: "FILLING_COPY" };
       } catch (cause) {
@@ -864,7 +879,7 @@ export async function createContentPlan(input = {}) {
       skeletonHash,
       profileId: plannerContext.plannerInput.profile.id,
       profileVersion: plannerContext.plannerInput.profile.configVersion,
-      ...gatewayProvenance,
+      ...producerProvenance,
     };
     let outcome;
     try { outcome = await leaseBound(input, () => evidenceRepository.loadOutcome(evidenceScope)); } catch (cause) {
@@ -941,7 +956,7 @@ export async function createContentPlan(input = {}) {
           skeletonHash,
           fromStage: "FILLING_COPY",
           toStage: "VALIDATING_COPY",
-          ...gatewayProvenance,
+          ...producerProvenance,
         }));
       } catch (cause) {
         assertLeaseActive(input);
@@ -1014,7 +1029,7 @@ export async function createContentPlan(input = {}) {
         gatewayRequestId,
         plan,
         planHash,
-        ...gatewayProvenance,
+        ...producerProvenance,
       }));
     } catch (cause) {
       assertLeaseActive(input);
@@ -1039,7 +1054,7 @@ export async function createContentPlan(input = {}) {
         skeletonHash,
         reservationToken: reservation.reservationToken,
         errorCode: CHANNEL_RELEASED,
-        ...gatewayProvenance,
+        ...producerProvenance,
       }));
       throw error;
     }
@@ -1051,7 +1066,7 @@ export async function createContentPlan(input = {}) {
           expectedStatusVersion,
           reservationToken: reservation.reservationToken,
           errorCode: error?.code || "AUTO_LISTING_CONTENT_PLAN_FAILED",
-          ...gatewayProvenance,
+          ...producerProvenance,
         }));
       } catch (cause) {
         assertLeaseActive(input);

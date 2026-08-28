@@ -1631,9 +1631,14 @@ test("a later task attempt reuses an image stored before checker outage without 
   const failed = first.calls.find(([name]) => name === "failed")[1];
 
   const retry = await setup();
+  retry.input.gatewayExecution = {
+    channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
+  };
   retry.input.repository.bindGenerationAttemptInput = async (value) => ({
     status: "BOUND",
     inputHash: value.inputHash,
+    gatewayConnectionId: "connection-a",
+    gatewayConnectionVersion: 4,
     recoveryRecord: {
       ...failed,
       ...failed.storedAsset,
@@ -1644,6 +1649,8 @@ test("a later task attempt reuses an image stored before checker outage without 
       profileId: retry.input.profile.id,
       profileVersion: retry.input.profile.configVersion,
       modelName: retry.input.imageModel,
+      gatewayConnectionId: "connection-a",
+      gatewayConnectionVersion: 4,
     },
   });
   retry.input.gateway.generateImage = async () => { throw new Error("paid image generation must not run"); };
@@ -1654,7 +1661,12 @@ test("a later task attempt reuses an image stored before checker outage without 
   assert.equal(retry.gatewayCalls(), 0);
   assert.equal(retry.calls.filter(([name]) => name === "stored").length, 1);
   assert.equal(retry.calls.filter(([name]) => name === "complete").length, 1);
-  assert.equal(retry.calls.find(([name]) => name === "complete")[1].gatewayRequestId, "generate-1");
+  const completed = retry.calls.find(([name]) => name === "complete")[1];
+  assert.equal(completed.gatewayRequestId, "generate-1");
+  assert.equal(completed.gatewayConnectionId, "connection-a");
+  assert.equal(completed.gatewayConnectionVersion, 4);
+  assert.equal(completed.checkerConnectionId, "connection-b");
+  assert.equal(completed.checkerConnectionVersion, 9);
 });
 
 test("every accepted audit column is fail-closed on a corrupt completion row", async () => {
