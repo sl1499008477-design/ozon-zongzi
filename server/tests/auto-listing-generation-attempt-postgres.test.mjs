@@ -332,7 +332,8 @@ test("channel release keeps stored image evidence while clearing the exact owned
 
   const released = await repository.releaseGenerationLease({
     ...scope, attemptIdentityHash, inputHash, generationSize, attemptNo: 1, leaseToken: "lease-a:1",
-    errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED", gatewayRequestId: "gateway-1",
+    errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED", role: "MAIN",
+    profileId: "profile-a", profileVersion: 1, modelName: "image-a", gatewayRequestId: "gateway-1",
     checkerRequestId: null, modelEvidence: { requestedImageModel: "image-a" },
   });
 
@@ -344,6 +345,34 @@ test("channel release keeps stored image evidence while clearing the exact owned
   assert.match(transition.text, /account_id=\$1.*item_id=\$3.*attempt_no=\$11.*lease_token=\$12/isu);
   assert.match(transition.text, /gateway_request_id=COALESCE/iu);
   assert.match(transition.text, /model_evidence=COALESCE/iu);
+});
+
+test("stored-evidence compensation clears only the exact generating owner before object cleanup", async () => {
+  const objectKey = buildGeneratedAssetObjectKey({
+    ...scope, attemptIdentityHash, inputHash, attemptNo: 1, contentHash,
+  });
+  const clearedRow = reservedRow({
+    input_hash: inputHash, final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    object_key_version: null, object_key: null, content_hash: null, content_type: null,
+    width: null, height: null, size_bytes: null,
+  });
+  const db = fakePool((sql) => {
+    if (/WITH reverted AS/iu.test(sql)) return { rows: [{ disposition: "REVERTED", ...clearedRow }], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+  const result = await repository.revertStoredGenerationAsset({
+    ...scope, attemptIdentityHash, inputHash, generationSize, attemptNo: 1, leaseToken: "lease-a:1",
+    objectKeyVersion: "ATTEMPT_V2", objectKey, contentHash, contentType: "image/png",
+    width: 768, height: 1024, size: 123,
+  });
+
+  assert.deepEqual(result, { disposition: "REVERTED" });
+  const query = db.queries[0];
+  assert.match(query.text, /object_key_version=NULL.*object_key=NULL.*content_hash=NULL/isu);
+  assert.match(query.text, /attempt_no=\$11.*lease_token=\$12.*status='GENERATING'/isu);
+  assert.match(query.text, /object_key_version=\$13.*object_key=\$14.*content_hash=\$15/isu);
+  assert.match(query.text, /item\.status='GENERATING'.*active_content_plan_id=attempt\.plan_id/isu);
 });
 
 test("reservation reclaims a channel-released row at the same attempt with a fresh token", async () => {

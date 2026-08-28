@@ -68,7 +68,7 @@ if (!enabled) {
         [ids.job, ids.account, `idem-${suffix}`, "config-hash", ids.strategy, `corr-${suffix}`],
       );
       await admin.query(
-        "INSERT INTO auto_listing_job_items (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',7)",
+        "INSERT INTO auto_listing_job_items (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',7,1)",
         [ids.item, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouse],
       );
       await admin.query(
@@ -97,6 +97,115 @@ if (!enabled) {
       const claimed = await Promise.all([repository.reserveContentPlan(request), repository.reserveContentPlan(request)]);
       assert.deepEqual(claimed.map((entry) => entry.status).sort(), ["IN_PROGRESS", "RESERVED"]);
       let owner = claimed.find((entry) => entry.status === "RESERVED");
+      const channelRelease = (lease, overrides = {}) => ({
+        ...request,
+        attemptId: lease.attemptId,
+        reservationToken: lease.reservationToken,
+        errorCode: "AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED",
+        ...overrides,
+      });
+      for (const mutation of [
+        { accountId: `foreign-${ids.account}` },
+        { itemId: `foreign-${ids.item}` },
+        { attemptId: `foreign-${owner.attemptId}` },
+        { reservationToken: `stale-${owner.reservationToken}` },
+        { profileVersion: 2 },
+        { requestKey: `auto-listing-plan-${"c".repeat(64)}` },
+      ]) {
+        await assert.rejects(
+          repository.releaseContentPlanChannelReservation(channelRelease(owner, mutation)),
+          (error) => error?.code === "AUTO_LISTING_CONTENT_PLAN_LEASE_CONFLICT",
+        );
+      }
+      assert.deepEqual((await admin.query(
+        `SELECT status,attempt_no,lease_owner,lease_token,error_code,error_retryable
+           FROM auto_listing_content_plan_attempts
+          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND input_hash=$4`,
+        [ids.account, ids.job, ids.item, request.inputHash],
+      )).rows, [{
+        status: "PLANNING", attempt_no: 1, lease_owner: "auto-listing-content-planner",
+        lease_token: owner.reservationToken, error_code: null, error_retryable: null,
+      }]);
+      assert.deepEqual(await repository.releaseContentPlanChannelReservation(channelRelease(owner)), {
+        released: true, attemptId: owner.attemptId, attemptNo: 1,
+      });
+      const reclaimedConcurrently = await Promise.all([
+        repository.reserveContentPlan(request), repository.reserveContentPlan(request),
+      ]);
+      assert.deepEqual(reclaimedConcurrently.map((entry) => entry.status).sort(), ["IN_PROGRESS", "RESERVED"]);
+      owner = reclaimedConcurrently.find((entry) => entry.status === "RESERVED");
+      assert.equal(owner.attemptNo, 1);
+      for (let releaseNo = 1; releaseNo < 4; releaseNo += 1) {
+        assert.equal((await repository.releaseContentPlanChannelReservation(channelRelease(owner))).released, true);
+        const nextOwner = await repository.reserveContentPlan(request);
+        assert.equal(nextOwner.status, "RESERVED");
+        assert.equal(nextOwner.attemptId, owner.attemptId);
+        assert.equal(nextOwner.attemptNo, 1);
+        assert.notEqual(nextOwner.reservationToken, owner.reservationToken);
+        owner = nextOwner;
+      }
+      assert.deepEqual((await admin.query(
+        `SELECT status,attempt_no,lease_owner,lease_token,error_code,error_retryable
+           FROM auto_listing_content_plan_attempts
+          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND input_hash=$4`,
+        [ids.account, ids.job, ids.item, request.inputHash],
+      )).rows, [{
+        status: "PLANNING", attempt_no: 1, lease_owner: "auto-listing-content-planner",
+        lease_token: owner.reservationToken, error_code: null, error_retryable: null,
+      }]);
+      const businessIds = {
+        snapshot: `snapshot-business-${suffix}`,
+        job: `job-business-${suffix}`,
+        item: `item-business-${suffix}`,
+      };
+      await admin.query(
+        "INSERT INTO auto_listing_source_snapshots (id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash) VALUES ($1,$2,'COLLECT_BOX',$3,'1','{}'::JSONB,$4)",
+        [businessIds.snapshot, ids.account, `record-business-${suffix}`, "source-hash-business"],
+      );
+      await admin.query(
+        "INSERT INTO auto_listing_jobs (id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,strategy_version_id,correlation_id) VALUES ($1,$2,'COLLECT_BOX','PLANNING',$3,'{}'::JSONB,$4,$5,$6)",
+        [businessIds.job, ids.account, `idem-business-${suffix}`, "config-hash-business", ids.strategy, `corr-business-${suffix}`],
+      );
+      await admin.query(
+        "INSERT INTO auto_listing_job_items (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',7,1)",
+        [businessIds.item, businessIds.job, ids.account, businessIds.snapshot, ids.store, ids.warehouse],
+      );
+      let businessSequence = 0;
+      const businessRepository = createPostgresContentPlanRepository({
+        pool: scopedPool,
+        token: () => `business-lease-${++businessSequence}-${suffix}`,
+        id: () => `business-attempt-${businessSequence}-${suffix}`,
+      });
+      const businessRequest = {
+        ...request,
+        jobId: businessIds.job,
+        itemId: businessIds.item,
+        sourceSnapshotId: businessIds.snapshot,
+        inputHash: "d".repeat(64),
+        requestKey: `auto-listing-plan-${"e".repeat(64)}`,
+      };
+      for (let attemptNo = 1; attemptNo <= 3; attemptNo += 1) {
+        const businessOwner = await businessRepository.reserveContentPlan(businessRequest);
+        assert.equal(businessOwner.attemptNo, attemptNo);
+        assert.deepEqual(await businessRepository.releaseContentPlanReservation({
+          accountId: ids.account, jobId: businessIds.job, itemId: businessIds.item,
+          inputHash: businessRequest.inputHash, expectedStatusVersion: 7,
+          reservationToken: businessOwner.reservationToken,
+          errorCode: "AUTO_LISTING_CONTENT_PLAN_BUSINESS_FAILED",
+        }), { released: true });
+      }
+      await assert.rejects(
+        businessRepository.reserveContentPlan(businessRequest),
+        (error) => error?.code === "AUTO_LISTING_CONTENT_PLAN_ATTEMPTS_EXHAUSTED",
+      );
+      assert.deepEqual((await admin.query(
+        `SELECT status,attempt_no,error_code FROM auto_listing_content_plan_attempts
+          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 ORDER BY attempt_no`,
+        [ids.account, businessIds.job, businessIds.item],
+      )).rows, [1, 2, 3].map((attemptNo) => ({
+        status: "FAILED", attempt_no: attemptNo,
+        error_code: "AUTO_LISTING_CONTENT_PLAN_BUSINESS_FAILED",
+      })));
       const plan = { version: 1, language: "ru", slots: [] };
       const facts = [{ factId: "fact-a", kind: "IDENTITY_NAME", value: "Товар", sourcePath: "identity.name", visualGroupKeys: [] }];
       const visualGroups = {
@@ -275,9 +384,9 @@ if (!enabled) {
         [fixedIds.job, ids.account, `idem-fixed-${suffix}`, "config-hash-fixed", ids.strategy, `corr-fixed-${suffix}`],
       );
       await admin.query(
-        `INSERT INTO auto_listing_job_items (
-           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,planning_contract
-         ) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',7,'FIXED_SKELETON_V1')`,
+         `INSERT INTO auto_listing_job_items (
+           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,planning_contract,source_order
+         ) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',7,'FIXED_SKELETON_V1',1)`,
         [fixedIds.item, fixedIds.job, ids.account, fixedIds.snapshot, ids.store, ids.warehouse],
       );
       const fixedRepository = createPostgresContentPlanRepository({

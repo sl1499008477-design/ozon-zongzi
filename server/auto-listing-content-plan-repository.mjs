@@ -17,6 +17,10 @@ const SAVE_KEYS = new Set([
 const RELEASE_KEYS = new Set([
   "accountId", "jobId", "itemId", "inputHash", "expectedStatusVersion", "reservationToken", "errorCode",
 ]);
+const CHANNEL_RELEASE_KEYS = new Set([
+  ...RESERVE_KEYS, "attemptId", "reservationToken", "errorCode",
+]);
+const CHANNEL_RELEASED = "AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED";
 const ADVANCE_STAGE_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "attemptId", "inputHash",
   "expectedStatusVersion", "reservationToken", "planningContract", "skeletonHash",
@@ -220,6 +224,14 @@ function validateRelease(input) {
   assertScope(input);
   if (!HASH.test(input.inputHash || "") || !safeIdentifier(input.reservationToken)
     || !ERROR_CODE.test(input.errorCode || "")) throw invalid();
+  return input;
+}
+
+function validateChannelRelease(input) {
+  if (!exactObject(input, CHANNEL_RELEASE_KEYS)) throw invalid();
+  validateReserve(Object.fromEntries([...RESERVE_KEYS].map((key) => [key, input[key]])));
+  if (!safeIdentifier(input.attemptId) || !safeIdentifier(input.reservationToken)
+    || input.errorCode !== CHANNEL_RELEASED) throw invalid();
   return input;
 }
 
@@ -676,6 +688,49 @@ export function createPostgresContentPlanRepository({
     }
   }
 
+  async function releaseContentPlanChannelReservation(rawInput) {
+    const input = validateChannelRelease(rawInput);
+    let client;
+    try {
+      client = await pool.connect();
+      const released = await client.query(
+        `UPDATE auto_listing_content_plan_attempts AS attempt
+            SET lease_owner='AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED',
+                lease_expires_at=NOW(),updated_at=NOW()
+          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+            AND attempt.source_snapshot_id=$4 AND attempt.id=$5
+            AND attempt.profile_id=$6 AND attempt.profile_version=$7
+            AND attempt.input_hash=$8 AND attempt.expected_status_version=$9
+            AND attempt.request_key=$10 AND attempt.lease_token=$11
+            AND attempt.planning_contract=$12 AND attempt.skeleton_hash IS NOT DISTINCT FROM $13
+            AND attempt.status='PLANNING' AND attempt.lease_expires_at > NOW()
+            AND EXISTS (
+              SELECT 1 FROM auto_listing_job_items AS item
+               WHERE item.account_id=attempt.account_id AND item.job_id=attempt.job_id
+                 AND item.id=attempt.item_id AND item.snapshot_id=attempt.source_snapshot_id
+                 AND item.status='PLANNING' AND item.status_version=attempt.expected_status_version
+                 AND item.planning_contract=attempt.planning_contract
+            )
+          RETURNING attempt.id,attempt.attempt_no,attempt.status,attempt.lease_owner,
+                    attempt.lease_token,attempt.error_code,attempt.error_retryable`,
+        [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.attemptId,
+          input.profileId, input.profileVersion, input.inputHash, input.expectedStatusVersion,
+          input.requestKey, input.reservationToken, input.planningContract, input.skeletonHash],
+      );
+      const row = released.rows?.[0];
+      if (released.rowCount !== 1 || row?.id !== input.attemptId || Number(row.attempt_no) < 1
+        || row.status !== "PLANNING" || row.lease_owner !== CHANNEL_RELEASED
+        || row.lease_token !== input.reservationToken || row.error_code !== null
+        || row.error_retryable !== null) throw leaseConflict();
+      return Object.freeze({ released: true, attemptId: row.id, attemptNo: Number(row.attempt_no) });
+    } catch (error) {
+      if (isKnown(error)) throw error;
+      throw unavailable();
+    } finally {
+      release(client);
+    }
+  }
+
   async function advanceContentPlanStage(rawInput) {
     const input = validateAdvanceStage(rawInput);
     let client;
@@ -845,6 +900,7 @@ export function createPostgresContentPlanRepository({
     advanceContentPlanStage,
     saveContentPlan,
     releaseContentPlanReservation,
+    releaseContentPlanChannelReservation,
     loadActiveContentPlan,
     createDerivedMaterializedPlan,
   });

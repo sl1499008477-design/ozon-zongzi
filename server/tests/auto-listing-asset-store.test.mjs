@@ -14,6 +14,7 @@ async function image() { return sharp({ create: { width: 768, height: 1024, chan
 const repository = (overrides = {}) => ({
   async findStoredGenerationAsset() { return null; },
   async recordStoredGenerationAsset(value) { return value; },
+  async revertStoredGenerationAsset() { return { disposition: "REVERTED" }; },
   async recordAssetCleanupRequired(value) { return value; },
   ...overrides,
 });
@@ -242,6 +243,167 @@ test("lease loss records the cleanup obligation when a newly written object cann
   ]);
 });
 
+for (const lossPoint of ["find", "put rejection", "readback rejection"]) {
+  test(`${lossPoint} rejection rechecks the lease before mapping a repository or storage error`, async () => {
+    const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
+    const stale = Object.assign(new Error("stale execution"), {
+      code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+    });
+    let active = true;
+    let removed = 0;
+    const repo = repository({
+      async findStoredGenerationAsset() {
+        if (lossPoint === "find") { active = false; throw new Error("db rejected after lease loss"); }
+        return null;
+      },
+    });
+    const storage = {
+      async putObjectFromBuffer(input) {
+        if (lossPoint === "put rejection") { active = false; throw new Error("put rejected after write"); }
+        return {
+          key: input.key, sha256: normalized.contentHash,
+          contentType: normalized.contentType, size: normalized.bytes.length,
+        };
+      },
+      async getObjectBuffer() {
+        if (lossPoint === "readback rejection") { active = false; throw new Error("readback rejected"); }
+        return normalized.bytes;
+      },
+      async removeObject() { removed += 1; },
+    };
+
+    await assert.rejects(storeGeneratedAsset({
+      scope, normalized, repository: repo, storage,
+      assertLeaseActive() { if (!active) throw stale; },
+    }), (error) => error === stale);
+
+    assert.equal(removed, lossPoint === "find" ? 0 : 1);
+  });
+}
+
+test("lease loss while the stored-evidence record is committing compensates before deleting the object", async () => {
+  const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  let databaseStored = false;
+  let objectExists = true;
+  let beginRecord;
+  let finishRecord;
+  const recordStarted = new Promise((resolve) => { beginRecord = resolve; });
+  const recordGate = new Promise((resolve) => { finishRecord = resolve; });
+  const pending = storeGeneratedAsset({
+    scope,
+    normalized,
+    assertLeaseActive() { if (!active) throw stale; },
+    repository: repository({
+      async recordStoredGenerationAsset(value) {
+        beginRecord();
+        await recordGate;
+        databaseStored = true;
+        return value;
+      },
+      async revertStoredGenerationAsset() {
+        assert.equal(databaseStored, true);
+        databaseStored = false;
+        return { disposition: "REVERTED" };
+      },
+    }),
+    storage: {
+      async putObjectFromBuffer(input) {
+        return { key: input.key, sha256: normalized.contentHash, contentType: normalized.contentType, size: normalized.bytes.length };
+      },
+      async getObjectBuffer() { return normalized.bytes; },
+      async removeObject() { assert.equal(databaseStored, false); objectExists = false; },
+    },
+  });
+  await recordStarted;
+  active = false;
+  finishRecord();
+
+  await assert.rejects(pending, (error) => error === stale);
+  assert.equal(databaseStored, false);
+  assert.equal(objectExists, false);
+});
+
+test("failed stored-evidence compensation retains both the database pointer and object and preserves stale", async () => {
+  const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  let databaseStored = false;
+  let objectExists = true;
+  let removals = 0;
+  await assert.rejects(storeGeneratedAsset({
+    scope,
+    normalized,
+    assertLeaseActive() { if (!active) throw stale; },
+    repository: repository({
+      async recordStoredGenerationAsset(value) {
+        databaseStored = true;
+        active = false;
+        return value;
+      },
+      async revertStoredGenerationAsset() { throw new Error("database unavailable"); },
+    }),
+    storage: {
+      async putObjectFromBuffer(input) {
+        return { key: input.key, sha256: normalized.contentHash, contentType: normalized.contentType, size: normalized.bytes.length };
+      },
+      async getObjectBuffer() { return normalized.bytes; },
+      async removeObject() { removals += 1; objectExists = false; },
+    },
+  }), (error) => error === stale);
+
+  assert.equal(databaseStored, true);
+  assert.equal(objectExists, true);
+  assert.equal(removals, 0);
+});
+
+test("cleanup failure after stored-evidence compensation records an obligation and preserves stale", async () => {
+  const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  let databaseStored = false;
+  let objectExists = true;
+  let cleanupRecorded = false;
+  await assert.rejects(storeGeneratedAsset({
+    scope,
+    normalized,
+    assertLeaseActive() { if (!active) throw stale; },
+    repository: repository({
+      async recordStoredGenerationAsset(value) {
+        databaseStored = true;
+        active = false;
+        return value;
+      },
+      async revertStoredGenerationAsset() {
+        databaseStored = false;
+        return { disposition: "REVERTED" };
+      },
+      async recordAssetCleanupRequired(value) {
+        cleanupRecorded = true;
+        return { ...value, status: "PENDING" };
+      },
+    }),
+    storage: {
+      async putObjectFromBuffer(input) {
+        return { key: input.key, sha256: normalized.contentHash, contentType: normalized.contentType, size: normalized.bytes.length };
+      },
+      async getObjectBuffer() { return normalized.bytes; },
+      async removeObject() { throw new Error("object store unavailable"); },
+    },
+  }), (error) => error === stale);
+
+  assert.equal(databaseStored, false);
+  assert.equal(objectExists, true);
+  assert.equal(cleanupRecorded, true);
+});
+
 test("put and reuse fail closed when bounded object readback differs from normalized bytes", async () => {
   const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
   const objectKey = buildGeneratedAssetObjectKey({ ...scope, contentHash: normalized.contentHash });
@@ -335,6 +497,7 @@ test("all repository ports and attempt audit identity are required before storag
   const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
   for (const mutate of [
     (input) => { delete input.repository.recordStoredGenerationAsset; },
+    (input) => { delete input.repository.revertStoredGenerationAsset; },
     (input) => { delete input.repository.recordAssetCleanupRequired; },
     (input) => { delete input.repository.findStoredGenerationAsset; },
     (input) => { input.scope = { ...input.scope, attemptIdentityHash: "bad" }; },

@@ -286,6 +286,34 @@ test("an expired exact attempt renews the same evidence owner instead of chargin
   assert.equal(db.queries.some(({ text }) => /INSERT INTO auto_listing_content_plan_attempts/i.test(text)), false);
 });
 
+test("channel release expires only the exact content-plan attempt without terminalizing its business budget", async () => {
+  const db = scriptedPool((sql) => {
+    if (/UPDATE auto_listing_content_plan_attempts AS attempt/iu.test(sql)) {
+      return { rows: [{
+        id: "attempt-a", attempt_no: 1, status: "PLANNING",
+        lease_owner: "AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED", lease_token: "lease-a",
+        input_hash: HASH, planning_contract: "LEGACY_FULL_PLAN_V3", skeleton_hash: null,
+        planner_stage: "FILLING_COPY", error_code: null, error_retryable: null,
+      }], rowCount: 1 };
+    }
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresContentPlanRepository({ pool: db.pool });
+  const released = await repository.releaseContentPlanChannelReservation({
+    ...reservation(), attemptId: "attempt-a", reservationToken: "lease-a",
+    errorCode: "AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED",
+  });
+
+  assert.deepEqual(released, { released: true, attemptId: "attempt-a", attemptNo: 1 });
+  const query = db.queries[0];
+  assert.match(query.text, /lease_owner='AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED'/iu);
+  assert.match(query.text, /lease_expires_at=NOW\(\)/iu);
+  assert.match(query.text, /source_snapshot_id=\$4.*id=\$5.*profile_id=\$6.*profile_version=\$7/isu);
+  assert.match(query.text, /input_hash=\$8.*expected_status_version=\$9.*request_key=\$10/isu);
+  assert.match(query.text, /lease_token=\$11.*planning_contract=\$12.*skeleton_hash IS NOT DISTINCT FROM \$13/isu);
+  assert.doesNotMatch(query.text, /status='FAILED'|planner_stage='FAILED'/iu);
+});
+
 test("an explicit active plan wins over any expired planning attempt", async () => {
   const db = scriptedPool((sql) => {
     if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };

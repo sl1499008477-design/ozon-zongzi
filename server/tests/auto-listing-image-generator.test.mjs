@@ -32,6 +32,7 @@ async function setup({ loaderEvidence = "CONTENT_HASH", existing = null } = {}) 
       async reserveGenerationAttempt() { return existing ? { status: "EXISTING_ACCEPTED", record: existing } : reserved(); },
       async bindGenerationAttemptInput(value) { bindCalls.push(value); return { status: "BOUND", inputHash: value.inputHash }; },
       async findStoredGenerationAsset() { return null; }, async recordAssetCleanupRequired(value) { return value; },
+      async revertStoredGenerationAsset() { return { disposition: "REVERTED" }; },
       async recordStoredGenerationAsset(value) { calls.push(["stored", value]); return value; }, async completeGenerationAttempt(value) { calls.push(["complete", value]); return { status: "ACCEPTED", accepted: true, ...value }; }, async rejectGenerationAttempt(value) { calls.push(["rejected", value]); },
       async failGenerationAttempt(value) { calls.push(["failed", value]); }, async releaseGenerationLease(value) { calls.push(["release", value]); },
       async blockItem() {}, async countAcceptedAssets() { return 0; },
@@ -846,7 +847,7 @@ test("direct accepted reuse binds persisted references to the immutable selected
 });
 
 test("required bind port is fenced before reservation or source loading", async () => {
-  for (const method of ["bindGenerationAttemptInput", "findStoredGenerationAsset", "recordStoredGenerationAsset", "recordAssetCleanupRequired", "completeGenerationAttempt", "rejectGenerationAttempt", "failGenerationAttempt"]) {
+  for (const method of ["bindGenerationAttemptInput", "findStoredGenerationAsset", "recordStoredGenerationAsset", "revertStoredGenerationAsset", "recordAssetCleanupRequired", "completeGenerationAttempt", "rejectGenerationAttempt", "failGenerationAttempt", "releaseGenerationLease"]) {
     const fixture = await setup();
     delete fixture.input.repository[method];
     const effects = [];
@@ -1151,7 +1152,7 @@ test("four NOT_SENT image channel failures release and reuse attempt one without
     assert.equal(value.errorCode, "AUTO_LISTING_IMAGE_CHANNEL_RELEASED");
     released = true;
     fixture.calls.push(["release", value]);
-    return { ...value, status: "FAILED", leaseToken: null };
+    return { ...value, status: "GENERATING", leaseToken: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED" };
   };
   fixture.input.repository.failGenerationAttempt = async () => { throw new Error("channel failure consumed business attempt"); };
   const gatewayError = Object.assign(new Error("rate limited"), {
@@ -1196,11 +1197,11 @@ test("checker channel failure releases attempt one and reuses its stored image w
   fixture.input.repository.findStoredGenerationAsset = async () => storedRecord;
   fixture.input.repository.releaseGenerationLease = async (value) => {
     releasedRecord = {
-      ...storedRecord, ...value, status: "FAILED", errorRetryable: true,
-      errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED",
+      ...storedRecord, ...value, status: "GENERATING", errorRetryable: null,
+      errorCode: null,
       finalInputBoundAt: "2026-08-28T00:00:00.000Z", role: "MAIN",
       profileId: "profile-a", profileVersion: 3, modelName: "image-model",
-      leaseToken: null, leaseExpiresAt: null,
+      leaseToken: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED", leaseExpiresAt: "2026-08-28T00:00:00.000Z",
     };
     fixture.calls.push(["release", value]);
     return releasedRecord;

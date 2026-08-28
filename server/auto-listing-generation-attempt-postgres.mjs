@@ -41,7 +41,8 @@ const FAIL_KEYS = new Set([
 const RECOVERABLE_FAIL_KEYS = new Set([...FAIL_KEYS, ...STORED_KEYS, "modelEvidence"]);
 const DIAGNOSTIC_RECOVERABLE_FAIL_KEYS = new Set([...RECOVERABLE_FAIL_KEYS, "checkerEvidence"]);
 const RELEASE_KEYS = new Set([
-  ...OWNER_KEYS, "errorCode", "gatewayRequestId", "checkerRequestId", "modelEvidence",
+  ...OWNER_KEYS, "errorCode", "role", "profileId", "profileVersion", "modelName",
+  "gatewayRequestId", "checkerRequestId", "modelEvidence",
 ]);
 const COUNT_KEYS = new Set(["accountId", "jobId", "itemId", "planId"]);
 const FACTORY_KEYS = new Set(["pool", "leaseMs", "token", "id"]);
@@ -181,6 +182,9 @@ function validateFail(input) {
 function validateRelease(input) {
   validateOwner(input, RELEASE_KEYS);
   if (input.errorCode !== CHANNEL_RELEASED
+    || !ROLES.has(input.role) || !safeIdentifier(input.profileId)
+    || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
+    || !safeIdentifier(input.modelName)
     || !(input.gatewayRequestId === null || safeIdentifier(input.gatewayRequestId))
     || !(input.checkerRequestId === null || safeIdentifier(input.checkerRequestId))
     || !(input.modelEvidence === null || safeJson(input.modelEvidence, { nonempty: true }))) {
@@ -676,21 +680,24 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
     async releaseGenerationLease(rawInput) {
       const input = validateRelease(rawInput);
       const result = await query(
-        `UPDATE ai_generation_assets AS attempt
+         `UPDATE ai_generation_assets AS attempt
          SET lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED',lease_expires_at=NOW(),updated_at=NOW(),
-             gateway_request_id=COALESCE($13::TEXT,attempt.gateway_request_id),
-             checker_request_id=COALESCE($14::TEXT,attempt.checker_request_id),
-             model_evidence=COALESCE($15::JSONB,attempt.model_evidence)
+             gateway_request_id=COALESCE($17::TEXT,attempt.gateway_request_id),
+             checker_request_id=COALESCE($18::TEXT,attempt.checker_request_id),
+             model_evidence=COALESCE($19::JSONB,attempt.model_evidence)
          FROM auto_listing_job_items AS item
          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.plan_id=$4
            AND attempt.visual_group_key=$5 AND attempt.slot_key=$6 AND attempt.expected_status_version=$7
            AND attempt.attempt_identity_hash=$8 AND attempt.input_hash=$9 AND attempt.generation_size=$10
            AND attempt.attempt_no=$11 AND attempt.lease_token=$12 AND attempt.status='GENERATING'
            AND attempt.lease_expires_at > NOW() AND attempt.final_input_bound_at IS NOT NULL
+           AND attempt.role=$13 AND attempt.profile_id=$14 AND attempt.profile_version=$15
+           AND attempt.model_name=$16
            AND item.account_id=attempt.account_id AND item.job_id=attempt.job_id AND item.id=attempt.item_id
            AND item.status='GENERATING' AND item.status_version=attempt.expected_status_version
            AND item.active_content_plan_id=attempt.plan_id
-         RETURNING attempt.*`, [...ownerValues(input), input.gatewayRequestId, input.checkerRequestId,
+         RETURNING attempt.*`, [...ownerValues(input), input.role, input.profileId, input.profileVersion,
+          input.modelName, input.gatewayRequestId, input.checkerRequestId,
           input.modelEvidence === null ? null : JSON.stringify(input.modelEvidence)],
       );
       const record = fromRow(result.rows?.[0]);
@@ -699,6 +706,50 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
         throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED");
       }
       return publicRecord(record);
+    },
+    async revertStoredGenerationAsset(rawInput) {
+      const input = validateStored(rawInput);
+      const values = [...ownerValues(input), ...STORED_KEYS.map((key) => input[key])];
+      const result = await query(
+        `WITH reverted AS (
+           UPDATE ai_generation_assets AS attempt
+              SET object_key_version=NULL,object_key=NULL,content_hash=NULL,content_type=NULL,
+                  width=NULL,height=NULL,size_bytes=NULL,updated_at=NOW()
+             FROM auto_listing_job_items AS item
+            WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.plan_id=$4
+              AND attempt.visual_group_key=$5 AND attempt.slot_key=$6 AND attempt.expected_status_version=$7
+              AND attempt.attempt_identity_hash=$8 AND attempt.input_hash=$9 AND attempt.generation_size=$10
+              AND attempt.attempt_no=$11 AND attempt.lease_token=$12 AND attempt.status='GENERATING'
+              AND attempt.object_key_version=$13 AND attempt.object_key=$14 AND attempt.content_hash=$15
+              AND attempt.content_type=$16 AND attempt.width=$17 AND attempt.height=$18
+              AND attempt.size_bytes=$19
+              AND item.account_id=attempt.account_id AND item.job_id=attempt.job_id AND item.id=attempt.item_id
+              AND item.status='GENERATING' AND item.status_version=attempt.expected_status_version
+              AND item.active_content_plan_id=attempt.plan_id
+           RETURNING attempt.id
+         ), observed AS (
+           SELECT status,lease_token,object_key_version,object_key,content_hash,content_type,width,height,size_bytes
+             FROM ai_generation_assets
+            WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
+              AND visual_group_key=$5 AND slot_key=$6 AND expected_status_version=$7
+              AND attempt_identity_hash=$8 AND input_hash=$9 AND generation_size=$10 AND attempt_no=$11
+         )
+         SELECT CASE
+           WHEN EXISTS (SELECT 1 FROM reverted) THEN 'REVERTED'
+           WHEN observed.status='GENERATING' AND observed.lease_token=$12
+             AND observed.object_key_version IS NULL AND observed.object_key IS NULL
+             AND observed.content_hash IS NULL AND observed.content_type IS NULL
+             AND observed.width IS NULL AND observed.height IS NULL AND observed.size_bytes IS NULL THEN 'ABSENT'
+           ELSE 'RETAINED'
+         END AS disposition
+         FROM observed`,
+        values,
+      );
+      const disposition = result.rows?.[0]?.disposition;
+      if (result.rowCount !== 1 || !["REVERTED", "ABSENT"].includes(disposition)) {
+        throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED");
+      }
+      return Object.freeze({ disposition });
     },
     async findStoredGenerationAsset(rawInput) {
       const input = validateOwner(rawInput, FIND_KEYS);

@@ -46,6 +46,7 @@ const REGENERATION_REASONS = new Set(["USER_REQUESTED", "QUALITY_RETRY", "ADMIN_
 const PROHIBITED_CLAIMS = new Set(["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"]);
 const HASH = /^[a-f0-9]{64}$/;
 const EXECUTION_LEASE_LOST = "AUTO_LISTING_AI_EXECUTION_LEASE_LOST";
+const CHANNEL_RELEASED = "AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED";
 const SAFE_GATEWAY_FAILURE_CODES = new Set([
   "AI_GATEWAY_NETWORK_FAILED", "AI_GATEWAY_RATE_LIMITED", "AI_GATEWAY_IDLE_TIMEOUT",
   "AI_GATEWAY_UNEXPECTED_EOF", "AI_GATEWAY_UNAUTHORIZED", "AI_GATEWAY_MODEL_NOT_FOUND",
@@ -789,6 +790,7 @@ export async function createContentPlan(input = {}) {
     reservation.record, scope, plannerContext, planningContract, skeletonHash,
   );
   if (typeof repository?.advanceContentPlanStage !== "function"
+    || typeof repository?.releaseContentPlanChannelReservation !== "function"
     || typeof evidenceRepository?.loadOutcome !== "function"
     || typeof evidenceRepository?.recordResponse !== "function"
     || typeof evidenceRepository?.recordValidation !== "function") throw plannerError();
@@ -976,6 +978,24 @@ export async function createContentPlan(input = {}) {
     }
     return verifyStoredPlan(stored, scope, plannerContext, planningContract, skeletonHash);
   } catch (error) {
+    if (error?.code === EXECUTION_LEASE_LOST) throw error;
+    if (SAFE_GATEWAY_FAILURE_CODES.has(error?.code)) {
+      await repository.releaseContentPlanChannelReservation({
+        ...scope,
+        sourceSnapshotId,
+        attemptId: reservation.attemptId,
+        profileId: plannerContext.plannerInput.profile.id,
+        profileVersion: plannerContext.plannerInput.profile.configVersion,
+        inputHash: plannerContext.inputHash,
+        expectedStatusVersion,
+        requestKey,
+        planningContract,
+        skeletonHash,
+        reservationToken: reservation.reservationToken,
+        errorCode: CHANNEL_RELEASED,
+      });
+      throw error;
+    }
     if (typeof repository.releaseContentPlanReservation === "function") {
       await repository.releaseContentPlanReservation({
         ...scope,

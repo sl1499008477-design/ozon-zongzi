@@ -150,10 +150,12 @@ function preflight(input) {
     || typeof repository?.bindGenerationAttemptInput !== "function"
     || typeof repository?.findStoredGenerationAsset !== "function"
     || typeof repository?.recordStoredGenerationAsset !== "function"
+    || typeof repository?.revertStoredGenerationAsset !== "function"
     || typeof repository?.recordAssetCleanupRequired !== "function"
     || typeof repository?.completeGenerationAttempt !== "function"
     || typeof repository?.rejectGenerationAttempt !== "function"
     || typeof repository?.failGenerationAttempt !== "function"
+    || typeof repository?.releaseGenerationLease !== "function"
     || typeof sourceAssetLoader?.loadSourceAsset !== "function"
     || typeof gateway?.generateImage !== "function" || typeof gateway?.inspectImage !== "function"
     || typeof storage?.putObjectFromBuffer !== "function" || typeof storage?.getObjectBuffer !== "function") {
@@ -1047,6 +1049,10 @@ export async function generateImageSlot(input = {}) {
       await repositoryCall(repository, "releaseGenerationLease", {
         ...attempt,
         errorCode: CHANNEL_RELEASED,
+        role: slot.role,
+        profileId: profile.id,
+        profileVersion: profile.configVersion,
+        modelName: imageModel,
         gatewayRequestId,
         checkerRequestId,
         modelEvidence: generatedModelEvidence,

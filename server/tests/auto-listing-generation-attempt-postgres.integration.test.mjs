@@ -17,6 +17,8 @@ if (!enabled) {
       staleBeforeAttempt: true,
       channelReclaimed: true,
       storedImageReusable: true,
+      memoryPostgresChannelParity: true,
+      storedEvidenceCompensated: true,
     });
   });
 }

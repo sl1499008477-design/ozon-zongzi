@@ -387,6 +387,7 @@ test("fixed skeleton prompt receives only closed V2 role guidance and keeps all 
       },
       advanceContentPlanStage: advanceStage,
       async releaseContentPlanReservation() {},
+      async releaseContentPlanChannelReservation() { return { released: true }; },
     },
   }), { code: "RETRYABLE_GATEWAY" });
   assert.equal(gatewayCalls, 1);
@@ -541,6 +542,7 @@ test("createContentPlan reserves before one gateway call, persists canonical evi
     advanceContentPlanStage: advanceStage,
     async saveContentPlan(input) { record = { id: "plan-1", ...input }; return record; },
     async releaseContentPlanReservation() { throw new Error("not expected"); },
+    async releaseContentPlanChannelReservation() { throw new Error("not expected"); },
   };
   const gateway = { async createTextResponse(input) {
     gatewayCalls += 1;
@@ -588,6 +590,7 @@ test("planner records the raw response before detailed validation and saves only
       return { id: "plan-a", ...input };
     },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -635,6 +638,7 @@ test("invalid business output keeps rejected evidence and never saves a content 
     async advanceContentPlanStage() { events.push("stage"); },
     async saveContentPlan() { saves += 1; },
     async releaseContentPlanReservation() { events.push("release"); },
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -670,6 +674,7 @@ test("response-loss replay resumes exact recorded evidence without a second gate
     async advanceContentPlanStage() { stageCalls += 1; throw new Error("already validating"); },
     async saveContentPlan(input) { saved += 1; return { id: "plan-replayed", ...input }; },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() {
@@ -722,6 +727,7 @@ test("fixed contract builds the configured skeleton, lets AI fill only claims, a
     },
     async saveContentPlan(input) { events.push("save"); storedInput = input; return { id: "plan-fixed", ...input }; },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -791,6 +797,7 @@ test("fixed contract rejects copy that is not one exact fact-backed candidate", 
     advanceContentPlanStage: advanceStage,
     async saveContentPlan() { saves += 1; },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -825,6 +832,7 @@ test("fixed contract records rejected fill tampering and never saves a plan", as
     async advanceContentPlanStage(input) { events.push(`stage:${input.toStage}`); return advanceStage(input); },
     async saveContentPlan() { saves += 1; },
     async releaseContentPlanReservation() { events.push("release"); },
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -882,7 +890,8 @@ test("fixed contract plans a copy-free product documentary image when dimensions
         skeletonHash: skeleton.skeletonHash,
         plannerStage: "BUILDING_SKELETON",
       });
-    }, advanceContentPlanStage: advanceStage, async releaseContentPlanReservation() {} },
+    }, advanceContentPlanStage: advanceStage, async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; } },
   }), { code: "RETRYABLE_GATEWAY" });
   assert.equal(context.plannerInput.requestedRoleCounts.SPECIFICATION, 1);
   assert.equal(context.plannerInput.requestedRoleCounts.DETAIL, 1);
@@ -914,6 +923,7 @@ test("reused corrupted or cross-scope rows fail closed, and gateway failures per
 
   let saves = 0;
   let releases = 0;
+  let channelReleases = 0;
   await assert.rejects(createContentPlan({
     accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
     ...planningArgs,
@@ -924,14 +934,18 @@ test("reused corrupted or cross-scope rows fail closed, and gateway failures per
       advanceContentPlanStage: advanceStage,
       async saveContentPlan() { saves += 1; },
       async releaseContentPlanReservation() { releases += 1; },
+      async releaseContentPlanChannelReservation() { return { released: true }; },
+      async releaseContentPlanChannelReservation() { channelReleases += 1; return { released: true }; },
     },
   }), (error) => error?.code === "RETRYABLE_GATEWAY");
   assert.equal(saves, 0);
-  assert.equal(releases, 1);
+  assert.equal(releases, 0);
+  assert.equal(channelReleases, 1);
 });
 
 test("planner preserves an adapter 404 for channel revalidation instead of rewriting it", async () => {
   const built = planner();
+  let channelReleases = 0;
   const gatewayError = Object.assign(new Error("model missing"), {
     code: "NON_RETRYABLE_GATEWAY", status: 404, retryable: false,
   });
@@ -939,7 +953,18 @@ test("planner preserves an adapter 404 for channel revalidation instead of rewri
     async reserveContentPlan(input) { return reserved(input); },
     advanceContentPlanStage: advanceStage,
     async saveContentPlan() { throw new Error("must not save"); },
-    async releaseContentPlanReservation() {},
+    async releaseContentPlanReservation() { throw new Error("channel failure must not consume business attempts"); },
+    async releaseContentPlanChannelReservation(input) {
+      channelReleases += 1;
+      assert.deepEqual(Object.keys(input).sort(), [
+        "accountId", "attemptId", "errorCode", "expectedStatusVersion", "inputHash", "itemId", "jobId",
+        "planningContract", "profileId", "profileVersion", "requestKey", "reservationToken", "skeletonHash",
+        "sourceSnapshotId",
+      ]);
+      assert.equal(input.attemptId, "attempt-test");
+      assert.equal(input.errorCode, "AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED");
+      return { released: true };
+    },
   };
 
   await assert.rejects(createContentPlan({
@@ -950,6 +975,7 @@ test("planner preserves an adapter 404 for channel revalidation instead of rewri
     repository,
   }), (error) => error === gatewayError);
   assert.equal(built.inputHash.length, 64);
+  assert.equal(channelReleases, 1);
 });
 
 test("planner lease loss after provider return writes no response, validation, or plan result", async () => {
@@ -960,11 +986,14 @@ test("planner lease loss after provider return writes no response, validation, o
   });
   let active = true;
   const writes = [];
+  let releases = 0;
   const repository = {
     async reserveContentPlan(input) { return reserved(input); },
     advanceContentPlanStage: advanceStage,
     async saveContentPlan() { writes.push("plan"); },
-    async releaseContentPlanReservation() {},
+    async releaseContentPlanReservation() { releases += 1; },
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+    async releaseContentPlanChannelReservation() { releases += 1; return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -984,6 +1013,7 @@ test("planner lease loss after provider return writes no response, validation, o
     repository,
   }), (error) => error === stale);
   assert.deepEqual(writes, []);
+  assert.equal(releases, 0);
 });
 
 test("planner provider rejection rechecks the lease before preserving a channel error", async () => {
@@ -995,6 +1025,7 @@ test("planner provider rejection rechecks the lease before preserving a channel 
   });
   let active = true;
   const writes = [];
+  let releases = 0;
   await assert.rejects(createContentPlan({
     accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
     ...plannerArgs(),
@@ -1005,7 +1036,9 @@ test("planner provider rejection rechecks the lease before preserving a channel 
       async reserveContentPlan(input) { return reserved(input); },
       async advanceContentPlanStage() { writes.push("stage"); },
       async saveContentPlan() { writes.push("plan"); },
-      async releaseContentPlanReservation() {},
+      async releaseContentPlanReservation() { releases += 1; },
+      async releaseContentPlanChannelReservation() { return { released: true }; },
+      async releaseContentPlanChannelReservation() { releases += 1; return { released: true }; },
     },
     evidenceRepository: {
       async loadOutcome() { return null; },
@@ -1014,6 +1047,7 @@ test("planner provider rejection rechecks the lease before preserving a channel 
     },
   }), (error) => error === stale);
   assert.deepEqual(writes, []);
+  assert.equal(releases, 0);
 });
 
 test("planner lease loss between response evidence and later persistence stops every later result write", async () => {
@@ -1029,6 +1063,7 @@ test("planner lease loss between response evidence and later persistence stops e
     async advanceContentPlanStage() { writes.push("stage"); },
     async saveContentPlan() { writes.push("plan"); },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -1119,6 +1154,8 @@ test("canonical URL media remains plannable and persistable only as hash evidenc
       async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease-url-evidence" }); },
       advanceContentPlanStage: advanceStage,
       async saveContentPlan(input) { savedInput = structuredClone(input); return { id: "plan-url-evidence", ...input }; },
+      async releaseContentPlanReservation() {},
+      async releaseContentPlanChannelReservation() { return { released: true }; },
     },
   });
   assert.equal(savedInput.visualGroups.groups[0].referenceImages[0].evidenceKind, "SOURCE_REF_HASH");
@@ -1155,6 +1192,7 @@ test("repository reservation serializes concurrent same-input planning so the ga
       return record;
     },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const gateway = { async createTextResponse() {
     gatewayCalls += 1;
@@ -1191,6 +1229,7 @@ test("production repository port receives frozen snapshot, profile, request, and
     async releaseContentPlanReservation(input) {
       calls.push(["release", input]);
     },
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   await createContentPlan({
     accountId: "account-a", jobId: "job-1", itemId: "item-1",
@@ -1236,6 +1275,7 @@ test("source text that resembles a prompt remains delimited as untrusted data an
       async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease" }); },
       advanceContentPlanStage: advanceStage,
       async releaseContentPlanReservation() {},
+      async releaseContentPlanChannelReservation() { return { released: true }; },
     },
   }), (error) => error?.code === "RETRYABLE_GATEWAY");
   assert.match(capturedPrompt, /<UNTRUSTED_SOURCE_FACTS_JSON>/);
@@ -1504,6 +1544,7 @@ test("claims are field-bound and stored plans retain visual evidence plus a safe
       advanceContentPlanStage: advanceStage,
       async saveContentPlan(row) { stored = { id: "plan", ...row }; return stored; },
       async releaseContentPlanReservation() {},
+      async releaseContentPlanChannelReservation() { return { released: true }; },
     },
   });
   assert.deepEqual(stored.visualGroups, args.visualGroupsCapture);

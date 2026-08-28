@@ -9,6 +9,7 @@ const validGenerationSize = (value) => typeof value === "string" && /^[1-9][0-9]
 const recoverableCheckerFailures = new Set([
   "CHECKER_UNAVAILABLE", "CHECKER_RESPONSE_INVALID", "CHECKER_EVIDENCE_INVALID",
 ]);
+const CHANNEL_RELEASED = "AUTO_LISTING_IMAGE_CHANNEL_RELEASED";
 const copy = (value) => structuredClone(value);
 const keyOf = (input) => [...scopeKeys.map((key) => input[key]), input.expectedStatusVersion ?? "legacy"].join("\u0001");
 function invalid() { const error = new Error("图片生成尝试无效"); error.code = "AUTO_LISTING_IMAGE_ATTEMPT_INVALID"; return error; }
@@ -74,7 +75,22 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       const timestamp = now();
       const active = current.find((row) => row.status === "GENERATING" && row.leaseExpiresAt > timestamp);
       if (active) return { status: "IN_PROGRESS" };
-      for (const row of current) if (row.status === "GENERATING" && row.leaseExpiresAt <= timestamp) { row.status = "FAILED"; row.errorCode = "LEASE_EXPIRED"; row.errorRetryable = true; row.leaseToken = null; row.leaseExpiresAt = null; }
+      for (const row of current) if (row.status === "GENERATING" && row.leaseExpiresAt <= timestamp
+        && row.leaseToken !== CHANNEL_RELEASED) { row.status = "FAILED"; row.errorCode = "LEASE_EXPIRED"; row.errorRetryable = true; row.leaseToken = null; row.leaseExpiresAt = null; }
+      const reclaimable = current.filter((row) => row.status === "GENERATING"
+        && row.leaseExpiresAt <= timestamp && row.leaseToken === CHANNEL_RELEASED);
+      if (reclaimable.length > 1) throw invalid();
+      if (reclaimable.length === 1) {
+        const leaseToken = clean(token()); if (!leaseToken) throw invalid();
+        Object.assign(reclaimable[0], {
+          leaseToken, leaseExpiresAt: timestamp + leaseMs, checkerRequestId: null,
+          errorCode: null, errorRetryable: null,
+        });
+        return {
+          status: "RESERVED", attemptNo: reclaimable[0].attemptNo,
+          leaseToken, generationSize: input.generationSize,
+        };
+      }
       const attemptNo = current.reduce((maximum, row) => Math.max(maximum, row.attemptNo), 0) + 1;
       if (attemptNo > input.maxAttempts) return { status: "ATTEMPTS_EXHAUSTED" };
       const leaseToken = clean(token()); if (!leaseToken) throw invalid();
@@ -88,7 +104,12 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
     async bindGenerationAttemptInput(input) {
       if (!HASH.test(input?.inputHash || "")) throw invalid();
       const row = own(input);
-      if (row.finalInputBoundAt !== null) return { status: "BOUND", inputHash: row.inputHash };
+      if (row.finalInputBoundAt !== null) {
+        const reusable = row.objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
+          && verifyGeneratedAssetObjectKey(row) && clean(row.gatewayRequestId) && row.modelEvidence;
+        return { status: "BOUND", inputHash: row.inputHash,
+          ...(reusable ? { recoveryRecord: copy(row) } : {}) };
+      }
       const conflict = rows.find((candidate) => candidate !== row && keyOf(candidate) === keyOf(input)
         && candidate.inputHash === input.inputHash && ["GENERATING", "ACCEPTED"].includes(candidate.status));
       if (conflict?.status === "ACCEPTED") {
@@ -135,7 +156,41 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       });
       return copy(row);
     },
-    async releaseGenerationLease(input) { const row = own(input); Object.assign(row, { status: "FAILED", errorCode: clean(input.errorCode) || "AUTO_LISTING_IMAGE_FAILED", errorRetryable: true, leaseToken: null, leaseExpiresAt: null }); return copy(row); },
+    async releaseGenerationLease(input) {
+      if (input?.errorCode !== CHANNEL_RELEASED || !clean(input.role) || !clean(input.profileId)
+        || !Number.isInteger(input.profileVersion) || input.profileVersion < 1 || !clean(input.modelName)
+        || !(input.gatewayRequestId === null || clean(input.gatewayRequestId))
+        || !(input.checkerRequestId === null || clean(input.checkerRequestId))
+        || !(input.modelEvidence === null || (input.modelEvidence && typeof input.modelEvidence === "object"
+          && !Array.isArray(input.modelEvidence) && Object.keys(input.modelEvidence).length > 0))) throw invalid();
+      const row = own(input);
+      if (row.finalInputBoundAt === null) throw invalid();
+      Object.assign(row, copy({
+        role: input.role, profileId: input.profileId, profileVersion: input.profileVersion,
+        modelName: input.modelName, gatewayRequestId: input.gatewayRequestId,
+        ...(input.checkerRequestId === null ? {} : { checkerRequestId: input.checkerRequestId }),
+        modelEvidence: input.modelEvidence,
+      }), {
+        status: "GENERATING", errorCode: null, errorRetryable: null,
+        leaseToken: CHANNEL_RELEASED, leaseExpiresAt: now(),
+      });
+      return copy(row);
+    },
+    async revertStoredGenerationAsset(input) {
+      const row = rows.find((candidate) => candidate.attemptNo === input?.attemptNo
+        && keyOf(candidate) === keyOf(input)
+        && candidate.attemptIdentityHash === input.attemptIdentityHash
+        && candidate.inputHash === input.inputHash && candidate.generationSize === input.generationSize);
+      if (!row || row.status !== "GENERATING" || row.leaseToken !== input.leaseToken) throw invalid();
+      const storedKeys = ["objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height", "size"];
+      const absent = storedKeys.every((key) => row[key] == null);
+      if (absent) return { disposition: "ABSENT" };
+      if (input.objectKeyVersion !== GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
+        || !verifyGeneratedAssetObjectKey(input)
+        || storedKeys.some((key) => row[key] !== input[key])) throw invalid();
+      for (const key of storedKeys) row[key] = null;
+      return { disposition: "REVERTED" };
+    },
     async findStoredGenerationAsset(input) {
       fence(input, "inputHash");
       if (!Number.isInteger(input.attemptNo) || input.attemptNo < 1 || input.attemptNo > 3) throw invalid();

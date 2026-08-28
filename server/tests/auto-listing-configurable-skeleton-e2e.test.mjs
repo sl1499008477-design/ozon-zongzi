@@ -153,6 +153,7 @@ async function planFixed(roleCounts, counters, mutateFill = (value) => value) {
     async advanceContentPlanStage(input) { return { plannerStage: input.toStage }; },
     async saveContentPlan(input) { counters.savedPlans += 1; return { id: `plan-${counters.savedPlans}`, ...input }; },
     async releaseContentPlanReservation() { counters.releases += 1; },
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return evidence.response ? evidence : null; },
