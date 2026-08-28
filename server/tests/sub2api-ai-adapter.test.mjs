@@ -2637,7 +2637,8 @@ test("capability test rejects independent request identity before DNS or network
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
     correlationId: "caller-controlled-correlation", requestKey: "caller-controlled-key",
     timeoutMs: 500, capabilityExecution,
-  }), { code: "AI_GATEWAY_REQUEST_INVALID" });
+  }), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID"
+    && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null);
   assert.deepEqual({ preparations, resolutions, fetches }, { preparations: 0, resolutions: 0, fetches: 0 });
 });
 
@@ -2774,7 +2775,9 @@ test("abort before SENDING terminals PREPARED while abort after SENDING stays re
     await assert.rejects(gateway.testCapabilities({
       profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
       timeoutMs: 500, signal: controller.signal, capabilityExecution,
-    }), { code: expectedCode });
+    }), (error) => error?.code === expectedCode
+      && (abortPoint !== "before-sending" || (error?.deliveryState === "NOT_SENT"
+        && error?.retryAfterMs === null)));
     assert.equal(fetches, 0);
     if (abortPoint === "before-sending") {
       assert.deepEqual({ marks, completed }, {
@@ -2812,7 +2815,9 @@ test("a PREPARED terminal-write failure stays unknown and reclaimable instead of
   await assert.rejects(gateway.testCapabilities({
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
     timeoutMs: 500, capabilityExecution,
-  }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+  }), (error) => error?.code === "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN"
+    && error?.retryable === true && error?.deliveryState === "NOT_SENT"
+    && error?.retryAfterMs === null);
   assert.deepEqual({ terminalWrites, fetches }, { terminalWrites: 1, fetches: 0 });
 });
 
@@ -2892,7 +2897,9 @@ test("provider 2xx plus completion persistence ambiguity never rewrites the stag
   await assert.rejects(gateway.testCapabilities({
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
     timeoutMs: 500, capabilityExecution,
-  }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+  }), (error) => error?.code === "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN"
+    && error?.retryable === true && error?.deliveryState === "POSSIBLY_SENT"
+    && error?.retryAfterMs === null);
   assert.equal(fetches, 1);
   assert.deepEqual(settlements, [["REACHABILITY", "SUCCEEDED", "PROVIDER_ACCEPTED"]]);
 });
@@ -2908,6 +2915,35 @@ test("capability test has no generic secret or network fallback without persiste
     correlationId: "corr-capability-no-authority", requestKey: "capability-no-authority", timeoutMs: 500,
   }), { code: "AI_GATEWAY_REQUEST_INVALID" });
   assert.deepEqual({ reads, fetches }, { reads: 0, fetches: 0 });
+});
+
+test("capability test treats a later explicit provider rejection as overall POSSIBLY_SENT", async () => {
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => {
+    fetches += 1;
+    if (fetches === 1) return jsonResponse({ object: "list", data: [] });
+    return jsonResponse({}, { status: 401 });
+  }, {
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async resolveCapabilityCredential(execution) {
+      return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
+        connectionId: "connection-a", connectionVersion: 3,
+        ...capabilityProviderIdentities[execution.probe], secret };
+    },
+    async markCapabilitySubcallSending(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async completeCapabilitySubcall() { return { terminal: true }; },
+  });
+
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 500, capabilityExecution,
+  }), (error) => error?.code === "NON_RETRYABLE_AUTH" && error?.status === 401
+    && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
+  assert.equal(fetches, 2);
 });
 
 test("capability execution fence changes stop every later paid probe before network", async () => {
@@ -2940,7 +2976,8 @@ test("capability execution fence changes stop every later paid probe before netw
   await assert.rejects(gateway.testCapabilities({
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
     timeoutMs: 500, capabilityExecution,
-  }), { code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT" });
+  }), (error) => error?.code === "AI_GATEWAY_PROFILE_VERSION_CONFLICT"
+    && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
   assert.deepEqual({ resolutions, fetches }, { resolutions: 2, fetches: 1 });
 });
 
@@ -2970,6 +3007,41 @@ test("capability test rejects image bytes that only mimic a supported header but
       timeoutMs: 500,
       capabilityExecution: legacyCapabilityExecution,
     }),
-    (error) => error?.code === "INVALID_GATEWAY_RESPONSE",
+    (error) => error?.code === "INVALID_GATEWAY_RESPONSE"
+      && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null,
   );
+});
+
+test("capability test preserves POSSIBLY_SENT from image model-evidence failure", async () => {
+  let fetches = 0;
+  const gateway = adapter(async () => {
+    fetches += 1;
+    if (fetches === 1) return jsonResponse({ object: "list", data: [] });
+    if (fetches === 2) {
+      return jsonResponse({
+        output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+      });
+    }
+    return jsonResponse({ model: "different-image-model", data: [{ b64_json: PNG_1X1 }] });
+  }, {
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async resolveCapabilityCredential(execution) {
+      return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
+        connectionId: null, connectionVersion: null,
+        ...capabilityProviderIdentities[execution.probe], secret };
+    },
+    async markCapabilitySubcallSending(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async completeCapabilitySubcall() { return { terminal: true }; },
+  });
+
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 500, capabilityExecution: legacyCapabilityExecution,
+  }), (error) => error?.code === "AI_GATEWAY_MODEL_MISMATCH"
+    && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
+  assert.equal(fetches, 3);
 });

@@ -73,3 +73,17 @@
 - 只有 429 terminal 把解析值附加到 immutable metadata：整数 `120` 为 `120_000`，缺失/非法为 `60_000`，超长合法秒数 cap 为 `86_400_000`。非 429 terminal 即使携带恶意 header，`retryAfterMs` 仍为 `null`，错误 message/JSON 不包含 header 内容。
 - 200 SSE terminal 仍在完整 JSON frame 后立即 settle、cancel never-closing reader、清 timer，并保持明确拒绝的 `NOT_SENT`；没有新增重试或外部副作用。
 - 聚焦终审探针：`6/6` 通过；adapter/gateway boundary：`136/136` 通过；brief 四文件组合：`191/191` 通过；四 caller：`256/256` 通过；Task 6 orchestrator/worker：`55/55` 通过。Task 8 的 11 个 `.mjs` 逐一通过 `node --check`，`git diff --check` 退出码为 `0`。
+
+## 第三轮终审修复
+
+### 终审 RED
+
+- 在 `ba736f669f4c7a4b7ab89726bdd20753cd289c21` 上扩展公开 `testCapabilities` 探针，覆盖 2xx 后 completion persistence ambiguity、2xx image decode、本地 model evidence、完全 prefetch invalid、首子调用成功后次子调用明确 401/fence，以及 caller abort。
+- 聚焦运行 `8` 项：完全 prefetch、caller abort、既有 model-evidence POSSIBLY guard 和 fetch 前 terminal-write 用例通过；2xx completion ambiguity、后续明确 401、后续 prefetch fence、2xx image decode 四项失败（`4` 通过、`4` 失败），均被 public catch 错误默认成 `NOT_SENT`。
+
+### 终审 GREEN
+
+- compound capability call 使用不可由 public caller 注入的内部 symbol tracker；每个子调用先记录是否已有先前 fetch，每个实际 fetch 只在首次 `onFetchStart` 处把调用级 `anyStarted` 线性化为真。
+- public catch 对无精确 metadata 的错误按 `anyStarted` 选择 `NOT_SENT/POSSIBLY_SENT`；已有 `POSSIBLY_SENT` 原样保留；已有 `NOT_SENT` 仅在当前子调用之前已经发生过 fetch 时，以相同安全 code/status/requestId/retryAfter 重新构造为整体 `POSSIBLY_SENT`。
+- 因此完全 prefetch invalid 和 fetch 前 caller abort 仍为 `NOT_SENT` 且保留原错误码；首子请求即明确拒绝仍可精确 `NOT_SENT`；但任一先前 probe 已发送后，后续本地错误或明确拒绝都不会宣称整个 compound 操作可安全整体重试。
+- 聚焦终审探针：`8/8` 通过；adapter/gateway boundary：`138/138` 通过；brief 四文件组合：`193/193` 通过；四 caller：`256/256` 通过；Task 6 orchestrator/worker：`55/55` 通过。Task 8 的 11 个 `.mjs` 逐一通过 `node --check`，`git diff --check` 退出码为 `0`。

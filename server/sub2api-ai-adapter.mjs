@@ -36,6 +36,7 @@ const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_RETRY_AFTER_MS = 60_000;
 const CATALOG_SYNC_DATABASE_MARGIN_MS = 15_000;
 const ENCRYPTED_SECRET_REFERENCE = "SUB2API_ENCRYPTED_KEY";
+const CAPABILITY_SEND_TRACKER = Symbol("capabilitySendTracker");
 const SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const CATALOG_SYNC_LEASE_KEYS = new Set([
   "accountId", "leaseToken", "leaseVersion", "taskId", "workerId",
@@ -141,6 +142,36 @@ function withDeliveryState(error, deliveryState, retryAfterMs = null) {
     });
   }
   return safe;
+}
+
+function ownErrorData(error, key) {
+  try {
+    const descriptor = error && (typeof error === "object" || typeof error === "function")
+      ? Object.getOwnPropertyDescriptor(error, key) : null;
+    return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function reframeDeliveryState(error, deliveryState) {
+  if (!(error instanceof AiGatewayError)) return withDeliveryState(error, deliveryState);
+  const retryAfterMs = ownErrorData(error, "retryAfterMs");
+  return withDeliveryState(gatewayError(error.code, {
+    retryable: error.retryable,
+    status: error.status,
+    requestId: error.requestId,
+    failureField: error.failureField,
+  }), deliveryState, Number.isInteger(retryAfterMs) ? retryAfterMs : null);
+}
+
+function compoundCapabilityFailure(error, tracker) {
+  const deliveryState = ownErrorData(error, "deliveryState");
+  if (deliveryState === "POSSIBLY_SENT") return error;
+  if (deliveryState === "NOT_SENT") {
+    return tracker.hadPriorSend ? reframeDeliveryState(error, "POSSIBLY_SENT") : error;
+  }
+  return reframeDeliveryState(error, tracker.anyStarted ? "POSSIBLY_SENT" : "NOT_SENT");
 }
 
 function safeRetryAfter(response) {
@@ -1515,6 +1546,7 @@ export function createSub2ApiAdapter({
     normalizeInput,
     rejectRedirects = false,
   }) {
+    const capabilitySendTracker = input[CAPABILITY_SEND_TRACKER] || null;
     let capabilityExecution = null;
     let expectedProviderIdentity = null;
     if (input.capabilityExecution !== undefined) {
@@ -1630,7 +1662,12 @@ export function createSub2ApiAdapter({
         authorized: true,
         signal: abort.signal,
         verifyTarget: () => verifyGatewayBoundary(normalizedProfile, abort),
-        onFetchStart: () => { fetchStarted = true; },
+        onFetchStart: () => {
+          if (!fetchStarted && capabilitySendTracker) {
+            capabilitySendTracker.anyStarted = true;
+          }
+          fetchStarted = true;
+        },
         beforeSend: capabilityExecution === null ? undefined : async () => {
           if (capabilitySending) return;
           const sendingIdentity = await Promise.resolve()
@@ -2092,7 +2129,7 @@ export function createSub2ApiAdapter({
     }
   }
 
-  async function testCapabilitiesInternal(input = {}) {
+  async function testCapabilitiesInternal(input = {}, sendTracker) {
     if (input.capabilityExecution === undefined || typeof prepareCapabilitySubcall !== "function"
       || typeof resolveCapabilityCredential !== "function"
       || typeof markCapabilitySubcallSending !== "function" || typeof completeCapabilitySubcall !== "function"
@@ -2105,17 +2142,23 @@ export function createSub2ApiAdapter({
       profile: input.profile,
       timeoutMs: input.timeoutMs || 120_000,
       signal: input.signal,
+      [CAPABILITY_SEND_TRACKER]: sendTracker,
+    };
+    const beginSubcall = () => {
+      sendTracker.hadPriorSend = sendTracker.anyStarted;
     };
     const textExecution = capabilityExecutionForProbe(input.capabilityExecution, "TEXT");
     const textIdentity = capabilityProviderIdentity(textExecution);
     const imageExecution = capabilityExecutionForProbe(input.capabilityExecution, "IMAGE");
     const imageIdentity = capabilityProviderIdentity(imageExecution);
+    beginSubcall();
     const reachabilityId = await probeReachability({
       ...base,
       capabilityExecution: input.capabilityExecution,
       capabilityProbe: "REACHABILITY",
       profile: { ...input.profile, textModel: normalizedProfile.textModel },
     }, { allowDisabled: true });
+    beginSubcall();
     const text = await createTextResponseInternal({
       ...base,
       capabilityExecution: input.capabilityExecution,
@@ -2132,6 +2175,7 @@ export function createSub2ApiAdapter({
       },
     }, { allowDisabled: true });
     if (text.value?.ok !== true) throw gatewayError("INVALID_GATEWAY_RESPONSE");
+    beginSubcall();
     const image = await generateImageInternal({
       ...base,
       capabilityExecution: input.capabilityExecution,
@@ -2171,10 +2215,11 @@ export function createSub2ApiAdapter({
   }
 
   async function testCapabilities(input = {}) {
+    const sendTracker = { anyStarted: false, hadPriorSend: false };
     try {
-      return await testCapabilitiesInternal(input);
+      return await testCapabilitiesInternal(input, sendTracker);
     } catch (error) {
-      throw withDeliveryState(error, "NOT_SENT");
+      throw compoundCapabilityFailure(error, sendTracker);
     }
   }
 
