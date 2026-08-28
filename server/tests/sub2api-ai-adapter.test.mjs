@@ -1237,7 +1237,7 @@ test("SSE event names and data types must agree while either field may be omitte
   }
 });
 
-test("named failure DONE markers invalidate prior images while only bare or message DONE may end normally", async () => {
+test("DONE markers never override complete JSON terminal evidence or synthesize missing terminal evidence", async () => {
   const completedPrefix = [
     `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}`,
     "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
@@ -1245,10 +1245,8 @@ test("named failure DONE markers invalidate prior images while only bare or mess
   for (const eventName of ["response.failed", "error", "response.cancelled"]) {
     const sse = [...completedPrefix, `event: ${eventName}\ndata: [DONE]`, ""].join("\n\n");
     const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
-    await assert.rejects(
-      gateway.generateImage(imageInput()),
-      (error) => error?.code === "NON_RETRYABLE_GATEWAY" && error?.retryable === false,
-    );
+    const result = await gateway.generateImage(imageInput());
+    assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
   }
 
   const incomplete = adapter(async () => new Response(
@@ -1257,7 +1255,7 @@ test("named failure DONE markers invalidate prior images while only bare or mess
   ));
   await assert.rejects(
     incomplete.generateImage(imageInput()),
-    (error) => error?.code === "RETRYABLE_GATEWAY" && error?.retryable === true,
+    (error) => error?.code === "INVALID_GATEWAY_RESPONSE",
   );
 
   for (const doneBlock of ["data: [DONE]", "event: message\ndata: [DONE]"]) {
@@ -1982,7 +1980,7 @@ test("HTTP rejection delivery state and Retry-After stay bounded safe and immuta
     [404, undefined, "NON_RETRYABLE_GATEWAY", "NOT_SENT", null],
     [429, "120", "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", 120_000],
     [429, "999999999", "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", 86_400_000],
-    [429, sensitive, "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", null],
+    [429, sensitive, "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", 60_000],
     [500, undefined, "RETRYABLE_GATEWAY", "POSSIBLY_SENT", null],
   ]) {
     const gateway = adapter(async () => jsonResponse({ error: { message: sensitive } }, {
@@ -2030,6 +2028,128 @@ test("an explicit streamed model rejection is a NOT_SENT 404 revalidation signal
   await assert.rejects(gateway.generateImage(imageInput()), (error) =>
     error?.code === "NON_RETRYABLE_GATEWAY" && error?.status === 404
     && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null);
+});
+
+test("complete SSE terminal frames settle and cancel a connection that never reaches physical EOF", async (t) => {
+  await t.test("successful image completion returns immediately", async () => {
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const stream = controlledResponse("text/event-stream");
+    const gateway = adapter(async () => stream.response, { timers });
+    const pending = gateway.generateImage(imageInput({
+      timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+    }));
+    let settled;
+    pending.then((value) => { settled = { value }; }, (error) => { settled = { error }; });
+    try {
+      stream.enqueue([
+        "event: response.output_item.done",
+        `data: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}`,
+        "",
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"));
+      await waitFor(() => assert.ok(settled, "terminal success must not wait for TCP EOF"));
+      assert.equal(settled.error, undefined);
+      assert.deepEqual(Buffer.from(settled.value.bytes), Buffer.from(PNG_1X1, "base64"));
+      assert.equal(stream.wasCancelled(), true);
+      assert.equal(timers.activeCount(), 0);
+    } finally {
+      controller.abort();
+      await pending.catch(() => {});
+    }
+  });
+
+  for (const [name, event, expectedCode, expectedStatus] of [
+    ["model_not_found", { type: "response.failed", response: { status: "failed", error: { code: "model_not_found" } } }, "NON_RETRYABLE_GATEWAY", 404],
+    ["401", { type: "response.failed", response: { status: "failed", error: { status: 401 } } }, "NON_RETRYABLE_AUTH", 401],
+    ["403", { type: "response.failed", response: { status: "failed", error: { status: 403 } } }, "NON_RETRYABLE_AUTH", 403],
+    ["404", { type: "response.failed", response: { status: "failed", error: { status: 404 } } }, "NON_RETRYABLE_GATEWAY", 404],
+    ["429", { type: "response.failed", response: { status: "failed", error: { status: 429 } } }, "AI_GATEWAY_RATE_LIMITED", 429],
+  ]) {
+    await t.test(`${name} rejection returns immediately as NOT_SENT`, async () => {
+      const timers = manualTimers();
+      const controller = new AbortController();
+      const stream = controlledResponse("text/event-stream");
+      const gateway = adapter(async () => stream.response, { timers });
+      const pending = gateway.generateImage(imageInput({
+        timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+      }));
+      let settled;
+      pending.then((value) => { settled = { value }; }, (error) => { settled = { error }; });
+      try {
+        stream.enqueue(`event: response.failed\ndata: ${JSON.stringify(event)}\n\n`);
+        await waitFor(() => assert.ok(settled, "terminal rejection must not wait for TCP EOF"));
+        assert.equal(settled.value, undefined);
+        assert.equal(settled.error?.code, expectedCode);
+        assert.equal(settled.error?.status, expectedStatus);
+        assert.equal(settled.error?.deliveryState, "NOT_SENT");
+        assert.equal(stream.wasCancelled(), true);
+        assert.equal(timers.activeCount(), 0);
+      } finally {
+        controller.abort();
+        await pending.catch(() => {});
+      }
+    });
+  }
+});
+
+test("repeated named DONE markers never count as JSON progress", async () => {
+  const timers = manualTimers();
+  const controller = new AbortController();
+  const stream = controlledResponse("text/event-stream");
+  const gateway = adapter(async () => stream.response, { timers });
+  const pending = gateway.generateImage(imageInput({
+    timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+  }));
+  try {
+    await waitFor(() => assert.deepEqual(timers.delays(), [300_000]));
+    for (let index = 0; index < 2; index += 1) {
+      timers.advanceBy(100_000);
+      stream.enqueue("event: response.failed\ndata: [DONE]\n\n");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(timers.setCalls(), 1, "named DONE must not renew the idle timer");
+    timers.advanceBy(100_000);
+    await assert.rejects(pending, (error) => error?.code === "AI_GATEWAY_IDLE_TIMEOUT");
+    assert.equal(timers.activeCount(), 0);
+  } finally {
+    controller.abort();
+    await pending.catch(() => {});
+  }
+});
+
+test("429 Retry-After accepts only strict seconds or IMF-fixdate and otherwise exposes the 60 second default", async () => {
+  const future = new Date(Date.now() + 48 * 60 * 60 * 1_000).toUTCString();
+  for (const [header, expected] of [
+    [undefined, 60_000],
+    ["-1", 60_000],
+    ["1.5", 60_000],
+    ["+1", 60_000],
+    ["private garbage", 60_000],
+    ["999999999999999999999", 60_000],
+    ["2026-08-28", 60_000],
+    ["Sunday, 06-Nov-94 08:49:37 GMT", 60_000],
+    ["Mon, 06 Nov 1994 08:49:37 GMT", 60_000],
+    ["Sun, 32 Nov 1994 08:49:37 GMT", 60_000],
+    ["120", 120_000],
+    [future, 86_400_000],
+    ["Sun, 06 Nov 1994 08:49:37 GMT", 0],
+  ]) {
+    const gateway = adapter(async () => jsonResponse({}, {
+      status: 429,
+      headers: header === undefined ? {} : { "retry-after": header },
+    }));
+    await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+      assert.equal(error?.code, "AI_GATEWAY_RATE_LIMITED", header);
+      assert.equal(error?.deliveryState, "NOT_SENT", header);
+      assert.equal(error?.retryAfterMs, expected, header);
+      return true;
+    });
+  }
 });
 
 test("cost-bearing requests may wait without an application deadline while caller cancellation remains active", async () => {

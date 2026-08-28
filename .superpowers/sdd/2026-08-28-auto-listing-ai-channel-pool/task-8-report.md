@@ -45,3 +45,17 @@
 - 未运行无边界的全仓测试；回归范围按 Task 8 brief、四个直接 caller 和 Task 6 closed classifier/worker/orchestrator 边界确定。
 - 主要回归风险在第三方 SSE 的非标准分帧：实现保留无尾随空行但完整、可解析 final frame 的兼容行为；不完整 JSON 明确按 unexpected EOF 处理。
 - 回滚无需数据库恢复。停止新的自动上架 worker intake 后，revert 本 Task 8 独立提交即可恢复旧超时/解析行为；已在途的外部请求应先等待结束或由 caller 取消。
+
+## 独立审查修复
+
+### 审查 RED
+
+- 在 `fe287dc3c93298dad06fa19f83f488de713f2203` 上新增 never-closing SSE、重复 named `[DONE]` 和严格 Retry-After 公开 adapter 探针。
+- 聚焦运行共 `9` 项：`0` 通过、`9` 失败。完整成功及 model-not-found/401/403/404/429 JSON 终态全部仍等待物理 EOF；两个 named `[DONE]` 将 idle timer 的设置次数从 `1` 增到 `3`；缺失 Retry-After 暴露 `null` 而非默认 `60_000`。
+
+### 审查 GREEN
+
+- SSE 每解析一个完整 JSON data frame 后立即检查终态。完整 `response.completed` 立即返回，完整 failure event 立即按既有安全 classifier 抛错；两条路径均取消未结束 reader，并由外层清除 timer/listener，不再等待 TCP EOF。
+- 所有 `data: [DONE]` 无论 event name 都只作为非 JSON 控制标记忽略，绝不调用 `progress()`，也不会合成成功或失败业务事件。
+- Retry-After 只接受非负十进制安全整数秒或严格、规范化的 IMF-fixdate；不再让宽松 `Date.parse` 解释其他文本。缺失、负数、小数、带符号、垃圾、非规范日期及溢出值均安全回退到 `60_000`，合法值仍限制在 24 小时，合法过去日期为 `0`。
+- 聚焦修复探针：`9/9` 通过；adapter/gateway boundary：`130/130` 通过；brief 四文件组合：`185/185` 通过；四 caller：`256/256` 通过；Task 6 orchestrator/worker：`55/55` 通过。Task 8 的 11 个 `.mjs` 再次逐一通过 `node --check`，`git diff --check` 退出码为 `0`。

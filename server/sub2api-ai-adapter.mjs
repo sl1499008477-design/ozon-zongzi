@@ -33,6 +33,7 @@ const MAX_MODELS = 2_000;
 const MAX_CATALOG_SYNC_TIMEOUT_MS = 60_000;
 const MAX_CALL_TIMEOUT_MS = 600_000;
 const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_RETRY_AFTER_MS = 60_000;
 const CATALOG_SYNC_DATABASE_MARGIN_MS = 15_000;
 const ENCRYPTED_SECRET_REFERENCE = "SUB2API_ENCRYPTED_KEY";
 const SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
@@ -144,14 +145,22 @@ function withDeliveryState(error, deliveryState, retryAfterMs = null) {
 
 function safeRetryAfter(response) {
   let raw = "";
-  try { raw = response?.headers?.get?.("retry-after"); } catch { return null; }
-  if (typeof raw !== "string" || raw !== raw.trim() || !raw || raw.length > 128) return null;
-  if (/^\d{1,12}$/u.test(raw)) {
-    const seconds = Number(raw);
-    return Number.isSafeInteger(seconds) ? Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS) : null;
+  try { raw = response?.headers?.get?.("retry-after"); } catch { return DEFAULT_RETRY_AFTER_MS; }
+  if (typeof raw !== "string" || raw !== raw.trim() || !raw || raw.length > 128) {
+    return DEFAULT_RETRY_AFTER_MS;
   }
-  const target = Date.parse(raw);
-  if (!Number.isFinite(target)) return null;
+  if (/^\d+$/u.test(raw)) {
+    const seconds = Number(raw);
+    return Number.isSafeInteger(seconds) && seconds <= Number.MAX_SAFE_INTEGER / 1_000
+      ? Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS) : DEFAULT_RETRY_AFTER_MS;
+  }
+  const date = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (\d{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/u.exec(raw);
+  if (!date) return DEFAULT_RETRY_AFTER_MS;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const [, day, month, year, hour, minute, second] = date;
+  if (Number(year) < 1601) return DEFAULT_RETRY_AFTER_MS;
+  const target = Date.UTC(Number(year), months.indexOf(month), Number(day), Number(hour), Number(minute), Number(second));
+  if (!Number.isFinite(target) || new Date(target).toUTCString() !== raw) return DEFAULT_RETRY_AFTER_MS;
   return Math.min(Math.max(0, target - Date.now()), MAX_RETRY_AFTER_MS);
 }
 
@@ -1050,11 +1059,7 @@ function parseSseFrame(block) {
   const data = lines.filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trimStart()).join("\n");
   if (!data) return null;
-  if (data === "[DONE]") {
-    if (!eventName || eventName === "message") return null;
-    if (FAILURE_EVENTS.has(eventName)) return { type: eventName };
-    throw gatewayError("INVALID_GATEWAY_RESPONSE");
-  }
+  if (data === "[DONE]") return null;
   try {
     const parsed = JSON.parse(data);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("event object required");
@@ -1260,6 +1265,8 @@ async function readSseEvents(response, { maxBytes, abort }) {
         if (event) {
           events.push(event);
           abort.progress();
+          if (FAILURE_EVENTS.has(event.type)) throw terminalFailure(event);
+          if (event.type === "response.completed") return events;
         }
       }
     }
