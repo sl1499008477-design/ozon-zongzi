@@ -9,7 +9,9 @@ commit `b8867fc27a9a4480cf0501e6ea66c58016cefbb5`
 remediation commit `94363872782a9269d458680bf6944fffc69e2b7e`
 (`fix: preserve paid producer provenance across channel reclaim`), and validated-evidence
 remediation commit `b7b95c7fb5c260bcb2dfccb4ea2028b7e8ca1cd2`
-(`fix: validate paid evidence before preserving producer`). The original report was
+(`fix: validate paid evidence before preserving producer`), and PostgreSQL
+acceptance-fixture remediation commit `11e67d78dd1ecd57c53e2a0c845041bddfb431ae`
+(`test: repair task 7 PostgreSQL acceptance fixtures`). The original report was
 recorded in commit `100aeef8f3cf119a8720f51231a0fdbe1a998d8d`.
 
 Paid auto-listing phases now keep the job-frozen profile models and protocols while resolving only the exact adopted channel connection/version. No selector, arbitrary connection, current-profile, or default-connection fallback was added. Planner, image generator/checker, and rich-content attempts persist their leased connection provenance, and repository writes fence the account/item/status-version attempt owner and connection version.
@@ -44,6 +46,16 @@ image A is preserved only after frozen model/input evidence plus actual stored
 bytes, hash, content type, dimensions, and size all pass. Invalid A evidence is
 exact-fenced before B performs one paid call. Memory and PostgreSQL-capable
 ports now retain the same producer/checker meanings.
+
+The fourth fresh cumulative review failed with 0 Critical, 2 Important, and
+0 Minor findings, both confined to real-PostgreSQL acceptance setup rather than
+production behavior. The phase-context fixture omitted the required
+deterministic `source_order`; the generation fixture inserted connection
+versions directly as `ACTIVE`/`VALIDATED`, which migration 053 correctly
+rejects because new versions must begin `PENDING`. The fixture remediation adds
+the current required job-item fields and creates both connections as PENDING,
+then transitions both through PENDING → VALIDATED with capability evidence and
+A through VALIDATED → ACTIVE with exact status-version increments.
 
 ## TDD evidence
 
@@ -97,6 +109,18 @@ The third review remediation also followed strict RED/GREEN:
   exact-fenced replaces it before one B paid call;
 - race tests prove a stale replacement makes no B gateway/storage/evidence
   call and no partial repository mutation.
+
+Fourth-review RED was reproduced against a disposable PostgreSQL 16 container:
+
+- phase-context integration failed with PostgreSQL `23502`, null
+  `auto_listing_job_items.source_order`;
+- generation integration failed with trigger `23514`, "AI gateway connection
+  versions must be inserted as PENDING";
+- after those blockers were removed, the same live tests exposed three additional
+  stale fixture inputs before their intended assertions: the phase factory's
+  required real reference projector, the generation job item's `source_order`,
+  and the memory release producer pair. These were corrected only in the two
+  authorized test fixtures; no production file changed.
 
 ### GREEN
 
@@ -218,6 +242,32 @@ tests 207
 pass 207
 fail 0
 skipped 0
+```
+
+Final fourth-review PostgreSQL 16 acceptance run with both gates enabled:
+
+```text
+tests 70
+pass 70
+fail 0
+skipped 0
+```
+
+This single run included the exact six-file Task 7 routing suite,
+`auto-listing-generation-attempt-postgres.integration.test.mjs`, and
+`auto-listing-ai-workflow-postgres.integration.test.mjs`. An initial combined
+run reached 69/70 but PostgreSQL's default lock budget failed one concurrent
+migration-heavy schema with `53200`; the disposable container was recreated
+with `max_locks_per_transaction=512`, after which the unchanged suite passed
+70/70. The container was stopped, its `--rm` removal was verified with
+`docker ps -a`, and no Task 7 container remains.
+
+Normal fourth-review regressions after the fixture changes remained:
+
+```text
+Task 7 expanded direct: 414 tests, 412 pass, 0 fail, 2 gated skips
+Task 6 memory parity:    139 tests, 138 pass, 0 fail, 1 gated skip
+Task 8 idle/delivery:    207 tests, 207 pass, 0 fail, 0 skips
 ```
 
 The final skips are PostgreSQL integration gates requiring explicit
@@ -355,6 +405,11 @@ scope and these direct or gated fixture tests:
 - `server/tests/auto-listing-generation-attempt-repository.test.mjs`
 - `server/tests/auto-listing-image-generator.test.mjs`
 
+The fourth review remediation changed test fixtures only:
+
+- `server/tests/auto-listing-ai-phase-context-postgres.integration.test.mjs`
+- `server/tests/auto-listing-generation-attempt-postgres-fixture.mjs`
+
 `server/auto-listing-ai-credential-resolver.mjs` did not require a production change: its existing exact-version resolver already met Task 7 and its direct regression remained green.
 
 ## Task 6 and Task 8 compatibility
@@ -369,13 +424,10 @@ scope and these direct or gated fixture tests:
 
 ## Risks, unverified scope, and rollback
 
-- The real PostgreSQL integration tests were not executed because
-  `AUTO_LISTING_POSTGRES_TESTS=1` and `SONLI_MIGRATION_TEST_DATABASE_URL` were
-  both unavailable. Their fixtures were updated for the exact status version,
-  `GENERATING` item, active plan, and current additive columns; unit tests prove
-  the row-locking SQL shape, exact parameters, stale row-count rejection, and
-  no attempt write before a failed reserve boundary. A gated PostgreSQL run
-  remains the recommended next verification.
+- The exact gated Task 7 routing, generation provenance, reclaim/clear-switch,
+  checker provenance, and workflow integration assertions were executed on a
+  disposable local PostgreSQL 16 container and passed 70/70 with zero skips.
+  This was not a production database and the container was removed afterward.
 - No real independent second key was configured, so real dual-channel paid concurrency is not claimed.
 - No real gateway or Ozon call was made, by design.
 - The legacy v2 path intentionally supports only null connection provenance; connection-backed work must use adopted v3 execution evidence.
@@ -393,6 +445,7 @@ scope and these direct or gated fixture tests:
 Rollback the implementation with:
 
 ```bash
+git revert 11e67d78dd1ecd57c53e2a0c845041bddfb431ae
 git revert b7b95c7fb5c260bcb2dfccb4ea2028b7e8ca1cd2
 git revert 94363872782a9269d458680bf6944fffc69e2b7e
 git revert b8867fc27a9a4480cf0501e6ea66c58016cefbb5
