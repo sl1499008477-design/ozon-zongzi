@@ -1132,7 +1132,102 @@ test("a malformed gateway response keeps its channel code for worker requeue cla
     generateImageSlot(fixture.input),
     (error) => error === gatewayError,
   );
-  assert.equal(fixture.calls.find(([name]) => name === "failed")[1].code, "INVALID_GATEWAY_RESPONSE");
+  assert.equal(fixture.calls.find(([name]) => name === "release")[1].errorCode, "AUTO_LISTING_IMAGE_CHANNEL_RELEASED");
+  assert.equal(fixture.calls.some(([name]) => name === "failed"), false);
+});
+
+test("four NOT_SENT image channel failures release and reuse attempt one without exhaustion", async () => {
+  const fixture = await setup();
+  let leaseNo = 0;
+  let released = true;
+  fixture.input.repository.reserveGenerationAttempt = async () => {
+    assert.equal(released, true, "the previous channel lease must be released before requeue");
+    released = false;
+    return { status: "RESERVED", attemptNo: 1, leaseToken: `channel-lease-${++leaseNo}`, generationSize: fixture.input.size };
+  };
+  fixture.input.repository.releaseGenerationLease = async (value) => {
+    assert.equal(value.attemptNo, 1);
+    assert.equal(value.leaseToken, `channel-lease-${leaseNo}`);
+    assert.equal(value.errorCode, "AUTO_LISTING_IMAGE_CHANNEL_RELEASED");
+    released = true;
+    fixture.calls.push(["release", value]);
+    return { ...value, status: "FAILED", leaseToken: null };
+  };
+  fixture.input.repository.failGenerationAttempt = async () => { throw new Error("channel failure consumed business attempt"); };
+  const gatewayError = Object.assign(new Error("rate limited"), {
+    code: "AI_GATEWAY_RATE_LIMITED", status: 429, retryable: true,
+  });
+  fixture.input.gateway.generateImage = async () => { throw gatewayError; };
+
+  for (let index = 0; index < 4; index += 1) {
+    await assert.rejects(generateImageSlot(fixture.input), (error) => error === gatewayError);
+  }
+  assert.equal(leaseNo, 4);
+  assert.equal(fixture.calls.filter(([name]) => name === "release").length, 4);
+  assert.equal(fixture.calls.some(([name]) => name === "failed"), false);
+});
+
+test("checker channel failure releases attempt one and reuses its stored image without another image call", async () => {
+  const fixture = await setup();
+  let leaseNo = 0;
+  let storedRecord = null;
+  let releasedRecord = null;
+  let imageCalls = 0;
+  let checkerCalls = 0;
+  let objectPuts = 0;
+  const inspect = fixture.input.gateway.inspectImage;
+  const generate = fixture.input.gateway.generateImage;
+  fixture.input.repository.reserveGenerationAttempt = async () => ({
+    status: "RESERVED", attemptNo: 1,
+    leaseToken: `checker-channel-${++leaseNo}`, generationSize: fixture.input.size,
+  });
+  fixture.input.repository.bindGenerationAttemptInput = async (value) => ({
+    status: "BOUND", inputHash: value.inputHash,
+    ...(releasedRecord ? { recoveryRecord: {
+      ...releasedRecord, status: "GENERATING", errorCode: null, errorRetryable: null,
+      leaseToken: value.leaseToken,
+    } } : {}),
+  });
+  fixture.input.repository.recordStoredGenerationAsset = async (value) => {
+    storedRecord = { ...value };
+    fixture.calls.push(["stored", value]);
+    return value;
+  };
+  fixture.input.repository.findStoredGenerationAsset = async () => storedRecord;
+  fixture.input.repository.releaseGenerationLease = async (value) => {
+    releasedRecord = {
+      ...storedRecord, ...value, status: "FAILED", errorRetryable: true,
+      errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED",
+      finalInputBoundAt: "2026-08-28T00:00:00.000Z", role: "MAIN",
+      profileId: "profile-a", profileVersion: 3, modelName: "image-model",
+      leaseToken: null, leaseExpiresAt: null,
+    };
+    fixture.calls.push(["release", value]);
+    return releasedRecord;
+  };
+  fixture.input.repository.failGenerationAttempt = async () => { throw new Error("checker channel failure consumed business attempt"); };
+  fixture.input.gateway.generateImage = async (request) => { imageCalls += 1; return generate(request); };
+  fixture.input.gateway.inspectImage = async (request) => {
+    checkerCalls += 1;
+    if (checkerCalls === 1) {
+      throw Object.assign(new Error("checker auth rejected"), {
+        code: "NON_RETRYABLE_AUTH", status: 401, retryable: false,
+      });
+    }
+    return inspect(request);
+  };
+  const put = fixture.input.storage.putObjectFromBuffer;
+  fixture.input.storage.putObjectFromBuffer = async (value) => { objectPuts += 1; return put(value); };
+
+  await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "NON_RETRYABLE_AUTH");
+  const accepted = await generateImageSlot(fixture.input);
+
+  assert.equal(accepted.status, "ACCEPTED");
+  assert.equal(imageCalls, 1);
+  assert.equal(checkerCalls, 2);
+  assert.equal(objectPuts, 1);
+  assert.equal(fixture.calls.filter(([name]) => name === "release").length, 1);
+  assert.equal(fixture.calls.some(([name]) => name === "failed"), false);
 });
 
 test("image lease loss after provider return persists no generated result and starts no checker call", async () => {
@@ -1157,6 +1252,25 @@ test("image lease loss after provider return persists no generated result and st
 
   await assert.rejects(generateImageSlot(fixture.input), (error) => error === stale);
   assert.equal(checkerCalls, 0);
+  assert.deepEqual(fixture.calls, []);
+});
+
+test("image provider rejection rechecks the lease before recording any failure", async () => {
+  const fixture = await setup();
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  const providerFailure = Object.assign(new Error("provider rejected"), {
+    code: "NON_RETRYABLE_AUTH", status: 401, retryable: false,
+  });
+  let active = true;
+  fixture.input.assertLeaseActive = () => { if (!active) throw stale; };
+  fixture.input.gateway.generateImage = async () => {
+    active = false;
+    throw providerFailure;
+  };
+
+  await assert.rejects(generateImageSlot(fixture.input), (error) => error === stale);
   assert.deepEqual(fixture.calls, []);
 });
 
@@ -1440,9 +1554,12 @@ test("structured checker gateway failure keeps the generated image and channel e
 
   assert.equal(fixture.gatewayCalls(), 1);
   assert.equal(checkerCalls, 1);
-  const failed = fixture.calls.find(([name]) => name === "failed")[1];
-  assert.equal(failed.code, "INVALID_GATEWAY_RESPONSE");
-  assert.equal(failed.checkerRequestId, "checker-invalid-1");
+  const released = fixture.calls.find(([name]) => name === "release")[1];
+  assert.equal(released.errorCode, "AUTO_LISTING_IMAGE_CHANNEL_RELEASED");
+  assert.equal(released.checkerRequestId, "checker-invalid-1");
+  assert.equal(released.gatewayRequestId, "generate-1");
+  assert.equal(released.modelEvidence.requestedImageModel, "image-model");
+  assert.equal(fixture.calls.some(([name]) => name === "failed"), false);
 });
 
 test("a later task attempt reuses an image stored before checker outage without another paid generation", async () => {

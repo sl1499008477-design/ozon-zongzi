@@ -998,6 +998,7 @@ function repository({ reserve = { status: "RESERVED", leaseToken: "lease-1" }, e
     async completeRichContent(value) { calls.push(["complete", value]); return { id: "rich-1", status: "ACCEPTED", ...value, acceptedAt: "2026-08-04T00:00:00.000Z", leaseOwner: null, leaseToken: null, leaseExpiresAt: null, errorCode: null, errorRetryable: null }; },
     async rejectRichContent(value) { calls.push(["reject", value]); return value; },
     async failRichContent(value) { calls.push(["fail", value]); return value; },
+    async releaseRichContent(value) { calls.push(["release", value]); return value; },
   };
 }
 function generationInput(repositoryPort, gateway = null, overrides = {}) {
@@ -1328,8 +1329,30 @@ test("explicit channel failures bypass deterministic fallback and remain untouch
     await assert.rejects(generateRichContent(generationInput(repo, {
       async createTextResponse() { throw gatewayError; },
     })), (error) => error === gatewayError, `${code}:${status}`);
-    assert.deepEqual(repo.calls.map(([name]) => name), ["reserve"], `${code}:${status}`);
+    assert.deepEqual(repo.calls.map(([name]) => name), ["reserve", "release"], `${code}:${status}`);
   }
+});
+
+test("repeated rich channel failures reclaim one attempt immediately without becoming in progress", async () => {
+  const { generateRichContent } = await richModule();
+  const { createMemoryRichContentRepository } = await import("../auto-listing-rich-content-repository.mjs");
+  let tokenNo = 0;
+  const repo = createMemoryRichContentRepository({ token: () => `channel-lease-${++tokenNo}` });
+  const gatewayError = Object.assign(new Error("rate limited"), {
+    code: "AI_GATEWAY_RATE_LIMITED", status: 429, retryable: true,
+  });
+  let gatewayCalls = 0;
+  const input = generationInput(repo, {
+    async createTextResponse() { gatewayCalls += 1; throw gatewayError; },
+  });
+
+  for (let index = 0; index < 4; index += 1) {
+    await assert.rejects(generateRichContent(input), (error) => error === gatewayError);
+    assert.equal(repo.snapshot().length, 1);
+    assert.equal(repo.snapshot()[0].attemptNo, 1);
+    assert.equal(repo.snapshot()[0].status, "GENERATING");
+  }
+  assert.equal(gatewayCalls, 4);
 });
 
 test("rich-content lease loss after provider return persists neither completion nor failure", async () => {
@@ -1350,6 +1373,24 @@ test("rich-content lease loss after provider return persists neither completion 
         },
       };
     },
+  }, {
+    assertLeaseActive() { if (!active) throw stale; },
+  })), (error) => error === stale);
+  assert.deepEqual(repo.calls.map(([name]) => name), ["reserve"]);
+});
+
+test("rich provider rejection rechecks the lease before channel release", async () => {
+  const { generateRichContent } = await richModule();
+  const repo = repository();
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  const providerFailure = Object.assign(new Error("provider rejected"), {
+    code: "NON_RETRYABLE_AUTH", status: 401, retryable: false,
+  });
+  let active = true;
+  await assert.rejects(generateRichContent(generationInput(repo, {
+    async createTextResponse() { active = false; throw providerFailure; },
   }, {
     assertLeaseActive() { if (!active) throw stale; },
   })), (error) => error === stale);

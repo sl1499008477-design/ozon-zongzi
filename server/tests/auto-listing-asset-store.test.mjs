@@ -164,6 +164,84 @@ test("reuses a byte-identical scoped object and never records acceptance after s
   assert.equal(recorded, 0);
 });
 
+for (const lossPoint of ["put", "readback"]) {
+  test(`lease loss after object ${lossPoint} cleans the object and never records it`, async () => {
+    const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
+    const stale = Object.assign(new Error("stale execution"), {
+      code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+    });
+    let active = true;
+    let recorded = 0;
+    const calls = [];
+    await assert.rejects(storeGeneratedAsset({
+      scope,
+      normalized,
+      assertLeaseActive() { if (!active) throw stale; },
+      repository: repository({
+        async recordStoredGenerationAsset() { recorded += 1; },
+      }),
+      storage: {
+        async putObjectFromBuffer(input) {
+          calls.push("put");
+          if (lossPoint === "put") active = false;
+          return {
+            key: input.key, sha256: normalized.contentHash,
+            contentType: normalized.contentType, size: normalized.bytes.length,
+          };
+        },
+        async getObjectBuffer() {
+          calls.push("readback");
+          if (lossPoint === "readback") active = false;
+          return normalized.bytes;
+        },
+        async removeObject() { calls.push("remove"); },
+      },
+    }), (error) => error === stale);
+
+    assert.equal(recorded, 0);
+    assert.deepEqual(calls, lossPoint === "put"
+      ? ["put", "remove"]
+      : ["put", "readback", "remove"]);
+  });
+}
+
+test("lease loss records the cleanup obligation when a newly written object cannot be removed", async () => {
+  const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  const calls = [];
+  await assert.rejects(storeGeneratedAsset({
+    scope,
+    normalized,
+    assertLeaseActive() { if (!active) throw stale; },
+    repository: repository({
+      async recordStoredGenerationAsset() { throw new Error("must not record stored"); },
+      async recordAssetCleanupRequired(value) {
+        calls.push(["cleanup", value.reason, value.originalErrorCode]);
+        return { ...value, status: "PENDING" };
+      },
+    }),
+    storage: {
+      async putObjectFromBuffer(input) {
+        active = false;
+        return {
+          key: input.key, sha256: normalized.contentHash,
+          contentType: normalized.contentType, size: normalized.bytes.length,
+        };
+      },
+      async getObjectBuffer() { throw new Error("must not read"); },
+      async removeObject() { calls.push(["remove"]); throw new Error("offline"); },
+    },
+  }), (error) => error === stale);
+
+  assert.deepEqual(calls, [
+    ["remove"],
+    ["cleanup", "EXECUTION_LEASE_LOST", "AUTO_LISTING_AI_EXECUTION_LEASE_LOST"],
+  ]);
+});
+
 test("put and reuse fail closed when bounded object readback differs from normalized bytes", async () => {
   const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });
   const objectKey = buildGeneratedAssetObjectKey({ ...scope, contentHash: normalized.contentHash });

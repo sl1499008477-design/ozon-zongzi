@@ -6,6 +6,7 @@ import { buildRichContentEvidenceIdentity, validateRichContentDocument } from ".
 import { isCompatibleAiModelIdentity } from "./auto-listing-ai-model-identity.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
+const CHANNEL_RELEASED = "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED";
 const SCOPE_KEYS = ["accountId", "jobId", "itemId", "planId"];
 const VERSION = "AUTO_LISTING_RICH_CONTENT_V1";
 const ASSET_ROLES = new Set(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
@@ -355,12 +356,30 @@ export function createMemoryRichContentRepository({
       const active = related.find((row) => row.status === "GENERATING" && row.leaseExpiresAt > timestamp);
       if (active) return { status: "IN_PROGRESS" };
       for (const row of related) {
-        if (row.status === "GENERATING" && row.leaseExpiresAt <= timestamp) {
+        if (row.status === "GENERATING" && row.leaseExpiresAt <= timestamp
+          && row.leaseOwner !== CHANNEL_RELEASED) {
           Object.assign(row, {
             status: "FAILED", errorCode: "LEASE_EXPIRED", errorRetryable: true,
             leaseOwner: null, leaseToken: null, leaseExpiresAt: null, updatedAt: timestamp,
           });
         }
+      }
+      const reclaimable = related.filter((row) => row.status === "GENERATING"
+        && row.leaseExpiresAt <= timestamp
+        && row.leaseOwner === CHANNEL_RELEASED);
+      if (reclaimable.length > 1) throw attemptError();
+      if (reclaimable.length === 1) {
+        const leaseToken = token();
+        if (!clean(leaseToken)) throw attemptError();
+        const leaseOwner = clean(input.leaseOwner) ? input.leaseOwner : "rich-content-generator";
+        Object.assign(reclaimable[0], {
+          status: "GENERATING", errorCode: null, errorRetryable: null,
+          leaseOwner, leaseToken, leaseExpiresAt: timestamp + leaseMs, updatedAt: timestamp,
+        });
+        return {
+          status: "RESERVED", attemptNo: reclaimable[0].attemptNo, leaseToken,
+          inputHash: input.inputHash, promptHash: input.promptHash,
+        };
       }
       const attemptNo = related.reduce((highest, row) => Math.max(highest, row.attemptNo), 0) + 1;
       if (attemptNo > input.maxAttempts) return { status: "ATTEMPTS_EXHAUSTED" };
@@ -392,12 +411,23 @@ export function createMemoryRichContentRepository({
       if (!clean(input?.errorCode) || typeof input.errorRetryable !== "boolean") throw attemptError();
       return terminalize(input, "FAILED");
     },
+    async releaseRichContentAttempt(input) {
+      if (input?.errorCode !== CHANNEL_RELEASED) throw attemptError();
+      validateReservation(input);
+      const row = owned(input);
+      Object.assign(row, {
+        leaseOwner: CHANNEL_RELEASED, errorCode: null, errorRetryable: null,
+        leaseExpiresAt: now(), updatedAt: now(),
+      });
+      return clone(row);
+    },
     snapshot() { return clone(rows); },
   };
   repository.reserveRichContent = repository.reserveRichContentAttempt;
   repository.completeRichContent = repository.completeRichContentAttempt;
   repository.rejectRichContent = repository.rejectRichContentAttempt;
   repository.failRichContent = repository.failRichContentAttempt;
+  repository.releaseRichContent = repository.releaseRichContentAttempt;
   return Object.freeze(repository);
 }
 
@@ -433,7 +463,8 @@ export function createPostgresRichContentRepository({
          SET status='FAILED',error_code='LEASE_EXPIRED',error_retryable=TRUE,
              lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
-           AND status='GENERATING' AND lease_expires_at <= NOW()`,
+           AND status='GENERATING' AND lease_expires_at <= NOW()
+           AND lease_owner <> 'AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED'`,
         [...values, input.inputHash],
       );
       const accepted = await client.query(
@@ -465,6 +496,35 @@ export function createPostgresRichContentRepository({
       if (active.rows[0]) {
         await client.query("COMMIT");
         return { status: "IN_PROGRESS" };
+      }
+      const reclaimable = await client.query(
+        `SELECT * FROM ai_rich_content_results
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
+           AND status='GENERATING' AND lease_expires_at <= NOW()
+           AND lease_owner='AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED'
+         FOR UPDATE`,
+        [...values, input.inputHash],
+      );
+      if (reclaimable.rowCount > 1) throw attemptError();
+      if (reclaimable.rowCount === 1) {
+        const reclaimed = await client.query(
+          `UPDATE ai_rich_content_results
+           SET status='GENERATING',error_code=NULL,error_retryable=NULL,
+               lease_owner=$2,lease_token=$3,lease_expires_at=NOW()+($4 * INTERVAL '1 millisecond'),updated_at=NOW()
+           WHERE id=$1 AND status='GENERATING' AND lease_expires_at <= NOW()
+             AND lease_owner='AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED'
+           RETURNING *`,
+          [reclaimable.rows[0].id, leaseOwner, leaseToken, leaseMs],
+        );
+        const record = mapRow(reclaimed.rows[0]);
+        if (reclaimed.rowCount !== 1 || record?.status !== "GENERATING"
+          || record.inputHash !== input.inputHash || record.attemptNo !== reclaimable.rows[0].attempt_no
+          || record.leaseToken !== leaseToken) throw attemptError();
+        await client.query("COMMIT");
+        return {
+          status: "RESERVED", attemptNo: record.attemptNo, leaseToken,
+          inputHash: input.inputHash, promptHash: input.promptHash,
+        };
       }
       const attempts = await client.query(
         `SELECT COALESCE(MAX(attempt_no),0)::INTEGER AS attempt_no FROM ai_rich_content_results
@@ -543,16 +603,49 @@ export function createPostgresRichContentRepository({
     return record;
   }
 
+  async function releaseRichContentAttempt(input) {
+    validateReservation(input);
+    if (input?.errorCode !== CHANNEL_RELEASED || !Number.isInteger(input.attemptNo)
+      || input.attemptNo < 1 || !clean(input.leaseToken)) throw attemptError();
+    let result;
+    try {
+      result = await pool.query(
+        `UPDATE ai_rich_content_results SET
+           lease_owner='AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED',
+           lease_expires_at=NOW(),updated_at=NOW()
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
+           AND attempt_no=$6 AND status='GENERATING' AND lease_token=$7 AND lease_expires_at > NOW()
+           AND plan_hash=$8 AND source_hash=$9 AND fact_registry_hash=$10 AND asset_hash=$11 AND prompt_hash=$12
+           AND profile_id=$13 AND profile_version=$14 AND model_name=$15 AND prompt_template_version=$16
+           AND source_fact_evidence=$17::JSONB AND asset_evidence=$18::JSONB AND request_evidence=$19::JSONB
+         RETURNING *`,
+        [...SCOPE_KEYS.map((key) => input[key]), input.inputHash, input.attemptNo, input.leaseToken,
+          input.planHash, input.sourceHash, input.factRegistryHash, input.assetHash, input.promptHash,
+          input.profileId, input.profileVersion, input.modelName, input.promptTemplateVersion,
+          JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence)],
+      );
+    } catch {
+      throw repositoryError();
+    }
+    const record = mapRow(result.rows?.[0]);
+    if (result.rowCount !== 1 || record?.status !== "GENERATING"
+      || record.leaseOwner !== CHANNEL_RELEASED || record.errorCode !== null || record.errorRetryable !== null
+      || record.attemptNo !== input.attemptNo || record.leaseToken !== input.leaseToken) throw attemptError();
+    return record;
+  }
+
   const repository = {
     reserveRichContentAttempt,
     completeRichContentAttempt: (input) => transition(input, "ACCEPTED"),
     rejectRichContentAttempt: (input) => transition(input, "REJECTED"),
     failRichContentAttempt: (input) => transition(input, "FAILED"),
+    releaseRichContentAttempt,
   };
   repository.reserveRichContent = repository.reserveRichContentAttempt;
   repository.completeRichContent = repository.completeRichContentAttempt;
   repository.rejectRichContent = repository.rejectRichContentAttempt;
   repository.failRichContent = repository.failRichContentAttempt;
+  repository.releaseRichContent = repository.releaseRichContentAttempt;
   return Object.freeze(repository);
 }
 

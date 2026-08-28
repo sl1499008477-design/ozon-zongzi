@@ -182,16 +182,111 @@ export async function runGenerationAttemptPostgresFixture({ connectionString } =
       && firstAba.leaseToken !== secondAba.leaseToken && staleTokenRejected)) {
       throw new Error(`ABA diagnostic (${firstAba.status}:${firstAba.attemptNo}:${secondAba.status}:${secondAba.attemptNo}:${firstAba.leaseToken !== secondAba.leaseToken}:${staleTokenRejected}:${staleTokenErrorCode || "NONE"}:${lastDatabaseError?.code || "NONE"})`);
     }
+
+    const channelIdentity = hash("2");
+    const channelInputHash = hash("3");
+    const channelLease = await repository.reserveGenerationAttempt({
+      ...scope, attemptIdentityHash: channelIdentity, generationSize, maxAttempts: 3,
+    });
+    await repository.bindGenerationAttemptInput({
+      ...scope, attemptIdentityHash: channelIdentity, inputHash: channelInputHash,
+      generationSize, attemptNo: channelLease.attemptNo, leaseToken: channelLease.leaseToken,
+    });
+    const channelStored = {
+      objectKeyVersion: "ATTEMPT_V2", contentHash: hash("4"), contentType: "image/png",
+      width: 768, height: 1024, size: 512,
+    };
+    channelStored.objectKey = buildGeneratedAssetObjectKey({
+      ...scope, attemptIdentityHash: channelIdentity, inputHash: channelInputHash,
+      attemptNo: 1, contentHash: channelStored.contentHash,
+    });
+    const channelOwner = {
+      ...scope, attemptIdentityHash: channelIdentity, inputHash: channelInputHash,
+      generationSize, attemptNo: 1, leaseToken: channelLease.leaseToken,
+    };
+    await repository.recordStoredGenerationAsset({ ...channelOwner, ...channelStored });
+    await repository.releaseGenerationLease({
+      ...channelOwner, errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED",
+      gatewayRequestId: `channel-gateway-${suffix}`, checkerRequestId: `channel-checker-${suffix}`,
+      modelEvidence: { requestedImageModel: "image-a" },
+    });
+    for (const mutation of [
+      { accountId: `other-${accountId}` },
+      { itemId: `other-${itemId}` },
+      { attemptNo: 2 },
+      { leaseToken: `stale-${channelLease.leaseToken}` },
+    ]) {
+      await assertReleaseRejected(repository, {
+        ...channelOwner, ...mutation, errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED",
+        gatewayRequestId: `other-gateway-${suffix}`, checkerRequestId: null,
+        modelEvidence: { requestedImageModel: "image-a" },
+      });
+    }
+    const releasedBeforeReclaim = (await client.query(
+      `SELECT attempt_no,status,lease_token,error_code,gateway_request_id,object_key
+       FROM ai_generation_assets WHERE account_id=$1 AND attempt_identity_hash=$2`,
+      [accountId, channelIdentity],
+    )).rows;
+    const concurrentRepository = createPostgresGenerationAttemptRepository({
+      pool: {
+        async connect() {
+          const connection = await pool.connect();
+          await connection.query(`SET search_path TO ${quote(schema)}, public`);
+          return connection;
+        },
+      },
+      token: () => `channel-lease-${++tokenSequence}-${suffix}`,
+      id: () => `channel-generation-${++idSequence}-${suffix}`,
+    });
+    const concurrent = await Promise.all([
+      concurrentRepository.reserveGenerationAttempt({ ...scope, attemptIdentityHash: channelIdentity, generationSize, maxAttempts: 3 }),
+      concurrentRepository.reserveGenerationAttempt({ ...scope, attemptIdentityHash: channelIdentity, generationSize, maxAttempts: 3 }),
+    ]);
+    const reclaimed = concurrent.find(({ status }) => status === "RESERVED");
+    const occupied = concurrent.find(({ status }) => status === "IN_PROGRESS");
+    const rebound = await repository.bindGenerationAttemptInput({
+      ...scope, attemptIdentityHash: channelIdentity, inputHash: channelInputHash,
+      generationSize, attemptNo: reclaimed?.attemptNo, leaseToken: reclaimed?.leaseToken,
+    });
+    const channelRows = (await client.query(
+      `SELECT attempt_no,status,lease_token,error_code FROM ai_generation_assets
+       WHERE account_id=$1 AND attempt_identity_hash=$2`,
+      [accountId, channelIdentity],
+    )).rows;
     return {
       acceptedReplay: lease.status === "RESERVED" && bound.status === "BOUND"
         && accepted.status === "ACCEPTED" && replay.status === "EXISTING_ACCEPTED"
         && replay.record.id === accepted.id,
       abaFenced: true,
       staleBeforeAttempt: staleBeforeAttempt.status === "STALE" && inactivePlan.status === "STALE" && staleCount === 0,
+      channelReclaimed: releasedBeforeReclaim.length === 1
+        && releasedBeforeReclaim[0].attempt_no === 1
+        && releasedBeforeReclaim[0].status === "GENERATING"
+        && releasedBeforeReclaim[0].lease_token === "AUTO_LISTING_IMAGE_CHANNEL_RELEASED"
+        && releasedBeforeReclaim[0].error_code === null
+        && releasedBeforeReclaim[0].gateway_request_id === `channel-gateway-${suffix}`
+        && releasedBeforeReclaim[0].object_key === channelStored.objectKey
+        && reclaimed?.attemptNo === 1 && reclaimed.leaseToken !== channelLease.leaseToken
+        && occupied?.status === "IN_PROGRESS" && channelRows.length === 1
+        && channelRows[0].attempt_no === 1 && channelRows[0].status === "GENERATING"
+        && channelRows[0].lease_token === reclaimed.leaseToken && channelRows[0].error_code === null,
+      storedImageReusable: rebound.status === "BOUND"
+        && rebound.recoveryRecord?.objectKey === channelStored.objectKey
+        && rebound.recoveryRecord?.gatewayRequestId === `channel-gateway-${suffix}`,
     };
   } finally {
     try { await client.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`); } catch {}
     client.release();
     await pool.end();
   }
+}
+
+async function assertReleaseRejected(repository, input) {
+  try {
+    await repository.releaseGenerationLease(input);
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED") return;
+    throw error;
+  }
+  throw new Error("stale channel release unexpectedly succeeded");
 }

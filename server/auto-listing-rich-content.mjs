@@ -603,6 +603,7 @@ function repositoryPort(repository) {
     complete: choose("completeRichContentAttempt", "completeRichContent"),
     reject: choose("rejectRichContentAttempt", "rejectRichContent"),
     fail: choose("failRichContentAttempt", "failRichContent"),
+    release: choose("releaseRichContentAttempt", "releaseRichContent"),
   };
   if (Object.values(port).some((method) => typeof method !== "function" || method.length < 1)) {
     throw richError("AUTO_LISTING_RICH_CONTENT_REPOSITORY_FAILED", "Хранилище недоступно", true);
@@ -786,7 +787,15 @@ export async function generateRichContent(input = {}) {
     });
     assertLeaseActive(input);
   } catch (cause) {
-    if (cause?.code === EXECUTION_LEASE_LOST || SAFE_GATEWAY_FAILURE_CODES.has(cause?.code)) throw cause;
+    assertLeaseActive(input);
+    if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
+    if (SAFE_GATEWAY_FAILURE_CODES.has(cause?.code)) {
+      await port.release({
+        ...reservationInput, ...lease,
+        errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+      });
+      throw cause;
+    }
     completion = fallback("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED");
     if (!completion) {
       const gatewayFailure = richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED", "Шлюз генерации недоступен", cause?.retryable !== false);

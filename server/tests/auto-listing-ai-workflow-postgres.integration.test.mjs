@@ -518,11 +518,37 @@ if (!enabled) {
         },
         maxAttempts: 3,
       };
+      let richLeaseSequence = 0;
       const richRepository = createPostgresRichContentRepository({
-        pool, token: () => `rich-lease-${suffix}`, id: () => `rich-result-${suffix}`,
+        pool, token: () => `rich-lease-${++richLeaseSequence}-${suffix}`,
+        id: () => `rich-result-${suffix}`,
       });
-      const richLease = await richRepository.reserveRichContentAttempt(richReservation);
-      assert.equal(richLease.status, "RESERVED");
+      const originalRichLease = await richRepository.reserveRichContentAttempt(richReservation);
+      assert.equal(originalRichLease.status, "RESERVED");
+      assert.equal((await richRepository.releaseRichContentAttempt({
+        ...richReservation, ...originalRichLease,
+        errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+      })).status, "GENERATING");
+      await assert.rejects(richRepository.releaseRichContentAttempt({
+        ...richReservation, ...originalRichLease,
+        errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+      }), (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID");
+      const concurrentRich = await Promise.all([
+        richRepository.reserveRichContentAttempt(richReservation),
+        richRepository.reserveRichContentAttempt(richReservation),
+      ]);
+      const richLease = concurrentRich.find(({ status }) => status === "RESERVED");
+      assert.ok(richLease);
+      assert.equal(richLease.attemptNo, 1);
+      assert.notEqual(richLease.leaseToken, originalRichLease.leaseToken);
+      assert.equal(concurrentRich.filter(({ status }) => status === "IN_PROGRESS").length, 1);
+      assert.deepEqual((await admin.query(
+        `SELECT attempt_no,status,lease_token,error_code FROM ai_rich_content_results
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND input_hash=$4`,
+        [ids.account, ids.job, journeyItem, richIdentity.inputHash],
+      )).rows, [{
+        attempt_no: 1, status: "GENERATING", lease_token: richLease.leaseToken, error_code: null,
+      }]);
       const richContent = {
         version: "AUTO_LISTING_RICH_CONTENT_V1", language: "ru",
         blocks: [

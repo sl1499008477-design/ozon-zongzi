@@ -15,6 +15,8 @@ if (!enabled) {
       acceptedReplay: true,
       abaFenced: true,
       staleBeforeAttempt: true,
+      channelReclaimed: true,
+      storedImageReusable: true,
     });
   });
 }

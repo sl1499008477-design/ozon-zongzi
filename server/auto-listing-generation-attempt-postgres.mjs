@@ -11,6 +11,7 @@ const ROLES = new Set(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATIO
 const RECOVERABLE_CHECKER_FAILURES = new Set([
   "CHECKER_UNAVAILABLE", "CHECKER_RESPONSE_INVALID", "CHECKER_EVIDENCE_INVALID",
 ]);
+const CHANNEL_RELEASED = "AUTO_LISTING_IMAGE_CHANNEL_RELEASED";
 const SCOPE_KEYS = Object.freeze([
   "accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "expectedStatusVersion",
 ]);
@@ -39,7 +40,9 @@ const FAIL_KEYS = new Set([
 ]);
 const RECOVERABLE_FAIL_KEYS = new Set([...FAIL_KEYS, ...STORED_KEYS, "modelEvidence"]);
 const DIAGNOSTIC_RECOVERABLE_FAIL_KEYS = new Set([...RECOVERABLE_FAIL_KEYS, "checkerEvidence"]);
-const RELEASE_KEYS = new Set([...OWNER_KEYS, "errorCode"]);
+const RELEASE_KEYS = new Set([
+  ...OWNER_KEYS, "errorCode", "gatewayRequestId", "checkerRequestId", "modelEvidence",
+]);
 const COUNT_KEYS = new Set(["accountId", "jobId", "itemId", "planId"]);
 const FACTORY_KEYS = new Set(["pool", "leaseMs", "token", "id"]);
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
@@ -175,6 +178,17 @@ function validateFail(input) {
   return input;
 }
 
+function validateRelease(input) {
+  validateOwner(input, RELEASE_KEYS);
+  if (input.errorCode !== CHANNEL_RELEASED
+    || !(input.gatewayRequestId === null || safeIdentifier(input.gatewayRequestId))
+    || !(input.checkerRequestId === null || safeIdentifier(input.checkerRequestId))
+    || !(input.modelEvidence === null || safeJson(input.modelEvidence, { nonempty: true }))) {
+    throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
+  }
+  return input;
+}
+
 function fromRow(row) {
   if (!row) return null;
   return {
@@ -219,17 +233,21 @@ function acceptedRecordValid(record) {
     && safeJson(record.regeneration, { nullable: true });
 }
 
-function recoverableCheckerRecordValid(record, input, runtime) {
-  return record?.status === "FAILED" && RECOVERABLE_CHECKER_FAILURES.has(record.errorCode)
-    && record.errorRetryable === true && record.finalInputBoundAt !== null
+function reusableStoredRecordValid(record, input, runtime) {
+  return record?.finalInputBoundAt !== null
     && record.attemptIdentityHash === input.attemptIdentityHash && record.inputHash === input.inputHash
     && record.generationSize === input.generationSize && record.role === runtime.state.role
     && record.profileId === runtime.state.profile_id && record.profileVersion === runtime.state.profile_version
     && record.modelName === runtime.state.image_model && safeIdentifier(record.gatewayRequestId)
     && safeJson(record.modelEvidence, { nonempty: true }) && validStoredEvidence(record)
-    && (record.errorCode === "CHECKER_UNAVAILABLE" || safeJson(record.checkerEvidence, { nonempty: true }))
     && ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey"]
       .every((key) => record[key] === input[key]);
+}
+
+function recoverableCheckerRecordValid(record, input, runtime) {
+  return record?.status === "FAILED" && RECOVERABLE_CHECKER_FAILURES.has(record.errorCode)
+    && record.errorRetryable === true && reusableStoredRecordValid(record, input, runtime)
+    && (record.errorCode === "CHECKER_UNAVAILABLE" || safeJson(record.checkerEvidence, { nonempty: true }));
 }
 
 function scopeValues(input) {
@@ -352,8 +370,41 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
            AND visual_group_key=$5 AND slot_key=$6 AND expected_status_version=$7
            AND attempt_identity_hash=ANY($9::TEXT[]) AND generation_size=$8
-           AND status='GENERATING' AND lease_expires_at <= NOW()`, lookupValues,
+           AND status='GENERATING' AND lease_expires_at <= NOW()
+           AND lease_token <> 'AUTO_LISTING_IMAGE_CHANNEL_RELEASED'`, lookupValues,
       );
+      const reclaimable = await client.query(
+        `SELECT * FROM ai_generation_assets
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
+           AND visual_group_key=$5 AND slot_key=$6 AND expected_status_version=$7
+           AND attempt_identity_hash=ANY($9::TEXT[]) AND generation_size=$8
+           AND status='GENERATING' AND lease_expires_at <= NOW()
+           AND lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED'
+         FOR UPDATE`, lookupValues,
+      );
+      if (reclaimable.rowCount > 1) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CONFLICT");
+      if (reclaimable.rowCount === 1) {
+        const reclaimed = await client.query(
+          `UPDATE ai_generation_assets
+           SET status='GENERATING',lease_token=$2::TEXT || ':' || attempt_no::INTEGER::TEXT,
+               lease_expires_at=NOW()+($3::INTEGER * INTERVAL '1 millisecond'),
+               error_code=NULL,error_retryable=NULL,checker_request_id=NULL,updated_at=NOW()
+           WHERE id=$1 AND status='GENERATING' AND lease_expires_at <= NOW()
+             AND lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED'
+           RETURNING *`,
+          [reclaimable.rows[0].id, nonce, leaseMs],
+        );
+        const record = fromRow(reclaimed.rows?.[0]);
+        if (reclaimed.rowCount !== 1 || record?.status !== "GENERATING"
+          || record.attemptIdentityHash !== input.attemptIdentityHash
+          || record.generationSize !== input.generationSize) {
+          throw failure("AUTO_LISTING_IMAGE_ATTEMPT_REPOSITORY_FAILED");
+        }
+        return {
+          status: "RESERVED", attemptNo: record.attemptNo, leaseToken: record.leaseToken,
+          generationSize: record.generationSize, leaseExpiresAt: dateIso(record.leaseExpiresAt),
+        };
+      }
       const attempts = await client.query(
         `SELECT COALESCE(MAX(attempt_no),0)::INTEGER AS attempt_no
          FROM ai_generation_assets
@@ -429,7 +480,9 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       };
       if (row.finalInputBoundAt !== null) {
         if (row.inputHash !== input.inputHash) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CONFLICT");
-        const recoveryRecord = await findRecoveryRecord();
+        const recoveryRecord = reusableStoredRecordValid(row, input, runtime)
+          ? publicRecord(row)
+          : await findRecoveryRecord();
         return { status: "BOUND", inputHash: row.inputHash, ...(recoveryRecord ? { recoveryRecord } : {}) };
       }
       const conflict = await client.query(
@@ -621,25 +674,28 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
     rejectGenerationAttempt: (input) => transition(input, "REJECT"),
     failGenerationAttempt: (input) => transition(input, "FAIL"),
     async releaseGenerationLease(rawInput) {
-      const input = validateOwner(rawInput, RELEASE_KEYS);
-      if (!ERROR_CODE.test(input.errorCode || "")) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
+      const input = validateRelease(rawInput);
       const result = await query(
         `UPDATE ai_generation_assets AS attempt
-         SET status='FAILED',lease_token=NULL,lease_expires_at=NULL,updated_at=NOW(),
-             error_code=$13,error_retryable=TRUE
+         SET lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED',lease_expires_at=NOW(),updated_at=NOW(),
+             gateway_request_id=COALESCE($13::TEXT,attempt.gateway_request_id),
+             checker_request_id=COALESCE($14::TEXT,attempt.checker_request_id),
+             model_evidence=COALESCE($15::JSONB,attempt.model_evidence)
          FROM auto_listing_job_items AS item
          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.plan_id=$4
            AND attempt.visual_group_key=$5 AND attempt.slot_key=$6 AND attempt.expected_status_version=$7
            AND attempt.attempt_identity_hash=$8 AND attempt.input_hash=$9 AND attempt.generation_size=$10
            AND attempt.attempt_no=$11 AND attempt.lease_token=$12 AND attempt.status='GENERATING'
-           AND attempt.lease_expires_at > NOW()
+           AND attempt.lease_expires_at > NOW() AND attempt.final_input_bound_at IS NOT NULL
            AND item.account_id=attempt.account_id AND item.job_id=attempt.job_id AND item.id=attempt.item_id
            AND item.status='GENERATING' AND item.status_version=attempt.expected_status_version
            AND item.active_content_plan_id=attempt.plan_id
-         RETURNING attempt.*`, [...ownerValues(input), input.errorCode],
+         RETURNING attempt.*`, [...ownerValues(input), input.gatewayRequestId, input.checkerRequestId,
+          input.modelEvidence === null ? null : JSON.stringify(input.modelEvidence)],
       );
       const record = fromRow(result.rows?.[0]);
-      if (result.rowCount !== 1 || record?.status !== "FAILED") {
+      if (result.rowCount !== 1 || record?.status !== "GENERATING" || record.leaseToken !== CHANNEL_RELEASED
+        || record.errorCode !== null || record.errorRetryable !== null || record.attemptNo !== input.attemptNo) {
         throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED");
       }
       return publicRecord(record);

@@ -29,6 +29,13 @@ const RECOVERABLE_CHECKER_FAILURES = new Set([
   "CHECKER_UNAVAILABLE", "CHECKER_RESPONSE_INVALID", "CHECKER_EVIDENCE_INVALID",
 ]);
 const EXECUTION_LEASE_LOST = "AUTO_LISTING_AI_EXECUTION_LEASE_LOST";
+const CHANNEL_RELEASED = "AUTO_LISTING_IMAGE_CHANNEL_RELEASED";
+const CHANNEL_FAILURE_CODES = new Set([
+  "AI_GATEWAY_NETWORK_FAILED", "AI_GATEWAY_RATE_LIMITED", "AI_GATEWAY_IDLE_TIMEOUT",
+  "AI_GATEWAY_UNEXPECTED_EOF", "AI_GATEWAY_UNAUTHORIZED", "AI_GATEWAY_MODEL_NOT_FOUND",
+  "AI_GATEWAY_CAPABILITY_INVALID", "INVALID_GATEWAY_RESPONSE", "RETRYABLE_GATEWAY",
+  "GATEWAY_TIMEOUT", "NON_RETRYABLE_AUTH",
+]);
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 const text = (value) => typeof value === "string" && value.trim() ? value.trim() : "";
@@ -50,6 +57,10 @@ const slotTextRequired = (slot, templateVersion) => slot.textDensity !== "NONE" 
 function failure(code, retryable = false) { const error = new Error("自动上架图片生成失败"); error.code = code; error.retryable = retryable; return error; }
 function assertLeaseActive(input) {
   if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
+}
+function isChannelFailure(error) {
+  return CHANNEL_FAILURE_CODES.has(error?.code)
+    || (error?.code === "NON_RETRYABLE_GATEWAY" && error?.status === 404);
 }
 
 function generationSize(value, ratio, resolution) {
@@ -509,8 +520,10 @@ async function verifyAcceptedObject(record, storage) {
 
 async function readRecoverableGeneratedObject(record, storage, expected) {
   try {
-    if (!record || record.status !== "FAILED" || !RECOVERABLE_CHECKER_FAILURES.has(record.errorCode)
-      || record.errorRetryable !== true || record.finalInputBoundAt == null
+    const reusableChannelRecord = record?.status === "GENERATING" && record.errorCode == null;
+    const reusableCheckerRecord = record?.status === "FAILED"
+      && RECOVERABLE_CHECKER_FAILURES.has(record.errorCode) && record.errorRetryable === true;
+    if (!record || (!reusableChannelRecord && !reusableCheckerRecord) || record.finalInputBoundAt == null
       || record.attemptIdentityHash !== expected.attemptIdentityHash
       || record.inputHash !== expected.inputHash || record.generationSize !== expected.generationSize
       || record.role !== expected.role || record.profileId !== expected.profileId
@@ -966,6 +979,7 @@ export async function generateImageSlot(input = {}) {
         assertLeaseActive(input);
         gatewayRequestId = requestId(generated?.requestId);
       } catch (cause) {
+        assertLeaseActive(input);
         gatewayRequestId = requestId(cause?.requestId);
         throw cause;
       }
@@ -977,7 +991,10 @@ export async function generateImageSlot(input = {}) {
     }
     if (normalized.bytes.length > MAX_NORMALIZED_BYTES || referenceBytes + normalized.bytes.length > MAX_AGGREGATE_BYTES) throw failure("AUTO_LISTING_ASSET_TOO_LARGE");
     assertLeaseActive(input);
-    storedAsset = await storeGeneratedAsset({ scope: attempt, normalized, storage, repository, logger });
+    storedAsset = await storeGeneratedAsset({
+      scope: attempt, normalized, storage, repository, logger,
+      ...(typeof input.assertLeaseActive === "function" ? { assertLeaseActive: input.assertLeaseActive } : {}),
+    });
     assertLeaseActive(input);
     let checked;
     try {
@@ -1025,6 +1042,18 @@ export async function generateImageSlot(input = {}) {
       : completed;
   } catch (error) {
     if (error?.code === EXECUTION_LEASE_LOST) throw error;
+    if (!terminalized && isChannelFailure(error)) {
+      assertLeaseActive(input);
+      await repositoryCall(repository, "releaseGenerationLease", {
+        ...attempt,
+        errorCode: CHANNEL_RELEASED,
+        gatewayRequestId,
+        checkerRequestId,
+        modelEvidence: generatedModelEvidence,
+      });
+      terminalized = true;
+      throw error;
+    }
     if (!terminalized) {
       const retryable = error?.retryable === true && attempt.attemptNo < maxAttempts;
       await repositoryCall(repository, "failGenerationAttempt", {

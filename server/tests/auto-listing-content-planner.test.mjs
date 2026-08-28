@@ -986,6 +986,36 @@ test("planner lease loss after provider return writes no response, validation, o
   assert.deepEqual(writes, []);
 });
 
+test("planner provider rejection rechecks the lease before preserving a channel error", async () => {
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  const providerFailure = Object.assign(new Error("provider rejected"), {
+    code: "NON_RETRYABLE_GATEWAY", status: 404, retryable: false,
+  });
+  let active = true;
+  const writes = [];
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(),
+    assertLeaseActive() { if (!active) throw stale; },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { active = false; throw providerFailure; } },
+    repository: {
+      async reserveContentPlan(input) { return reserved(input); },
+      async advanceContentPlanStage() { writes.push("stage"); },
+      async saveContentPlan() { writes.push("plan"); },
+      async releaseContentPlanReservation() {},
+    },
+    evidenceRepository: {
+      async loadOutcome() { return null; },
+      async recordResponse() { writes.push("response"); },
+      async recordValidation() { writes.push("validation"); },
+    },
+  }), (error) => error === stale);
+  assert.deepEqual(writes, []);
+});
+
 test("planner lease loss between response evidence and later persistence stops every later result write", async () => {
   const built = planner();
   const output = validPlan(built);

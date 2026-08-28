@@ -1229,3 +1229,21 @@ test("checker lease loss after provider return prevents evidence handling and a 
   await assert.rejects(checkGeneratedAsset(request), (error) => error === stale);
   assert.equal(calls, 1);
 });
+
+test("checker provider rejection rechecks the lease before classifying the failure", async () => {
+  const request = await input(checkerValue());
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  const providerFailure = Object.assign(new Error("provider rejected"), {
+    code: "NON_RETRYABLE_AUTH", status: 403, retryable: false,
+  });
+  let active = true;
+  request.assertLeaseActive = () => { if (!active) throw stale; };
+  request.gateway.inspectImage = async () => {
+    active = false;
+    throw providerFailure;
+  };
+
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === stale);
+});

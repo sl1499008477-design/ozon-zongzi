@@ -607,6 +607,34 @@ test("same active full-scope input is concurrent-idempotent and lease expiry cre
   assert.equal(repository.snapshot()[0].errorRetryable, true);
 });
 
+test("channel release reclaims the same rich attempt with a fresh exact lease and no retry budget", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  let sequence = 0;
+  const repository = createMemoryRichContentRepository({ token: () => `channel-lease-${++sequence}` });
+  const input = reservationInput();
+  const first = await repository.reserveRichContentAttempt(input);
+  const released = await repository.releaseRichContentAttempt({
+    ...input, ...first, errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+  });
+  assert.equal(released.status, "GENERATING");
+  assert.equal(released.attemptNo, 1);
+  assert.equal(released.leaseToken, first.leaseToken);
+  assert.equal(released.leaseOwner, "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED");
+
+  const reclaimed = await repository.reserveRichContentAttempt(input);
+  assert.equal(reclaimed.status, "RESERVED");
+  assert.equal(reclaimed.attemptNo, 1);
+  assert.notEqual(reclaimed.leaseToken, first.leaseToken);
+  assert.deepEqual(await repository.reserveRichContentAttempt(input), { status: "IN_PROGRESS" });
+
+  await assert.rejects(repository.releaseRichContentAttempt({
+    ...input, ...first, errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+  }), (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID");
+  const current = repository.snapshot()[0];
+  assert.equal(current.status, "GENERATING");
+  assert.equal(current.leaseToken, reclaimed.leaseToken);
+});
+
 test("accepted completion clears its lease and exact replay returns immutable evidence", async () => {
   const { createMemoryRichContentRepository } = await repositoryModule();
   const repository = createMemoryRichContentRepository({ token: () => "lease-accepted" });
@@ -902,6 +930,47 @@ test("PostgreSQL default rich-content lease outlives the bounded two-minute mode
 
   assert.equal((await repository.reserveRichContentAttempt(reservationInput())).status, "RESERVED");
   assert.equal(insertValues?.at(-1), 300_000);
+});
+
+test("PostgreSQL rich channel release uses the full scope evidence attempt and token fence", async () => {
+  const { createPostgresRichContentRepository } = await repositoryModule();
+  const input = reservationInput();
+  let transition = null;
+  const pool = {
+    async query(sql, values) {
+      transition = { sql, values };
+      return {
+        rowCount: 1,
+        rows: [{
+          id: "rich-channel-1", account_id: scope.accountId, job_id: scope.jobId,
+          item_id: scope.itemId, plan_id: scope.planId, input_hash: input.inputHash,
+          attempt_no: 1, status: "GENERATING", lease_owner: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+          lease_token: "rich-channel-token", lease_expires_at: new Date(),
+          error_code: null, error_retryable: null,
+          accepted_at: null, plan_hash: input.planHash, source_hash: input.sourceHash,
+          fact_registry_hash: input.factRegistryHash, asset_hash: input.assetHash,
+          prompt_hash: input.promptHash, profile_id: input.profileId,
+          profile_version: input.profileVersion, model_name: input.modelName,
+          prompt_template_version: input.promptTemplateVersion,
+          source_fact_evidence: input.sourceFactEvidence, asset_evidence: input.assetEvidence,
+          request_evidence: input.requestEvidence,
+        }],
+      };
+    },
+  };
+  const repository = createPostgresRichContentRepository({ pool });
+  const released = await repository.releaseRichContentAttempt({
+    ...input, attemptNo: 1, leaseToken: "rich-channel-token",
+    errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+  });
+
+  assert.equal(released.status, "GENERATING");
+  assert.equal(released.attemptNo, 1);
+  assert.equal(released.leaseOwner, "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED");
+  assert.match(transition.sql, /account_id=\$1.*item_id=\$3.*input_hash=\$5.*attempt_no=\$6/isu);
+  assert.match(transition.sql, /lease_token=\$7/isu);
+  assert.match(transition.sql, /plan_hash=.*source_hash=.*fact_registry_hash=.*asset_hash=.*prompt_hash=/isu);
+  assert.equal(transition.values[6], "rich-channel-token");
 });
 
 test("PostgreSQL repository maps connection acquisition failures without leaking raw messages", async () => {

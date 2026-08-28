@@ -181,6 +181,25 @@ async function cleanupOrRecord({ storage, repository, scope, stored, reason, ori
   }
 }
 
+function assertLeaseActive(input) {
+  if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
+}
+
+async function cleanupAfterLeaseLoss({ input, scope, stored, cause }) {
+  try {
+    await cleanupOrRecord({
+      storage: input.storage,
+      repository: input.repository,
+      scope,
+      stored,
+      reason: "EXECUTION_LEASE_LOST",
+      originalErrorCode: cause?.code || "AUTO_LISTING_AI_EXECUTION_LEASE_LOST",
+      logger: input.logger ?? null,
+    });
+  } catch {}
+  throw cause;
+}
+
 export async function storeGeneratedAsset(input = {}) {
   const { scope, normalized, storage, repository, logger = null } = input;
   if (!scope || !normalized || !Buffer.isBuffer(normalized.bytes) || !normalized.bytes.length
@@ -200,9 +219,11 @@ export async function storeGeneratedAsset(input = {}) {
   {
     let existing;
     try { existing = await repository.findStoredGenerationAsset({ ...scope, contentHash: normalized.contentHash }); } catch { throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "图片记录暂时无法读取", true); }
+    assertLeaseActive(input);
     if (existing != null) {
       if (["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "attemptNo", "inputHash"].some((field) => existing[field] !== scope[field]) || existing.objectKeyVersion !== stored.objectKeyVersion || existing.objectKey !== stored.objectKey || existing.contentHash !== stored.contentHash || existing.contentType !== stored.contentType || existing.width !== stored.width || existing.height !== stored.height || existing.size !== stored.size) throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "已保存图片记录不一致", true);
       await readObject(storage, stored.objectKey, normalized);
+      assertLeaseActive(input);
       return Object.freeze(stored);
     }
   }
@@ -210,6 +231,9 @@ export async function storeGeneratedAsset(input = {}) {
   try {
     put = await storage.putObjectFromBuffer({ key, name: `${scope.slotKey}.png`, contentType: normalized.contentType, buffer: normalized.bytes, maxBytes: MAX_STORAGE_INPUT_BYTES });
   } catch { throw error("AUTO_LISTING_ASSET_STORAGE_UNAVAILABLE", "图片存储暂时不可用", true); }
+  try { assertLeaseActive(input); } catch (cause) {
+    await cleanupAfterLeaseLoss({ input, scope, stored, cause });
+  }
   if (!put || put.key !== key || put.sha256 !== normalized.contentHash || put.contentType !== normalized.contentType || put.size !== normalized.bytes.length) {
     await cleanupOrRecord({ storage, repository, scope, stored, reason: "PUT_REPLY_UNVERIFIED", originalErrorCode: "AUTO_LISTING_ASSET_STORAGE_UNVERIFIED", logger });
     throw error("AUTO_LISTING_ASSET_STORAGE_UNVERIFIED", "图片存储返回无效", true);
@@ -220,6 +244,10 @@ export async function storeGeneratedAsset(input = {}) {
     await cleanupOrRecord({ storage, repository, scope, stored, reason: "READBACK_FAILED", originalErrorCode: cause.code || "AUTO_LISTING_ASSET_STORAGE_UNVERIFIED", logger });
     throw cause;
   }
+  try { assertLeaseActive(input); } catch (cause) {
+    await cleanupAfterLeaseLoss({ input, scope, stored, cause });
+  }
+  assertLeaseActive(input);
   try {
     const expected = { ...scope, ...stored };
     const recorded = await repository.recordStoredGenerationAsset(expected);

@@ -867,6 +867,7 @@ export async function createContentPlan(input = {}) {
         });
         assertLeaseActive(input);
       } catch (error) {
+        assertLeaseActive(input);
         if (error?.code === EXECUTION_LEASE_LOST || SAFE_GATEWAY_FAILURE_CODES.has(error?.code)) throw error;
         throw plannerError("AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED", "AI 图片规划暂时失败");
       }

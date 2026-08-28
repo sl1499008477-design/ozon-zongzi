@@ -723,6 +723,7 @@ export async function checkGeneratedAsset(input = {}) {
     try {
       response = await gateway.inspectImage(request);
     } catch (cause) {
+      assertLeaseActive(input);
       if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
       if (SAFE_GATEWAY_FAILURE_CODES.has(cause?.code)) throw cause;
       const unavailable = checkerError("CHECKER_UNAVAILABLE", true);
