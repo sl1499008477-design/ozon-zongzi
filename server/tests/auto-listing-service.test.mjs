@@ -1825,6 +1825,60 @@ test("job DTO exposes only the closed durable workflow progress projection", asy
   assert.doesNotMatch(JSON.stringify(result), /lease|prompt|raw|lastError/iu);
 });
 
+test("job DTO exposes only the four closed AI queue projection fields", async () => {
+  const repository = fakeRepository({ existing: {
+    id: "job-ai-queue", items: [{
+      id: "item-ai-queue", status: "GENERATING",
+      aiQueueState: "SWITCHING_AI_CHANNEL",
+      aiChannelDisplayName: "备用通道",
+      aiChannelSwitching: true,
+      aiChannelWaitStartedAt: new Date("2026-08-28T01:02:03.000Z"),
+      channelId: "channel-secret",
+      connectionId: "connection-secret",
+      connectionVersion: 99,
+      executionLeaseToken: "lease-secret",
+      rawGatewayError: "Authorization: Bearer secret",
+      workflowProgress: {
+        phase: "GENERATE_IMAGE_SLOT", state: "QUEUED", attemptCount: 3,
+        updatedAt: new Date("2026-08-28T01:02:03.000Z"), nextRetryAt: null,
+      },
+    }, {
+      id: "item-non-ai", status: "READY_FOR_REVIEW",
+      aiQueueState: "CALLING_AI", aiChannelDisplayName: "不得泄漏",
+      aiChannelSwitching: true, aiChannelWaitStartedAt: new Date("2026-08-28T01:02:03.000Z"),
+    }],
+  } });
+
+  const result = await createAutoListingService({ repository }).getAutoListingJob({ actor, jobId: "job-ai-queue" });
+
+  assert.deepEqual({
+    aiQueueState: result.items[0].aiQueueState,
+    aiChannelDisplayName: result.items[0].aiChannelDisplayName,
+    aiChannelSwitching: result.items[0].aiChannelSwitching,
+    aiChannelWaitStartedAt: result.items[0].aiChannelWaitStartedAt,
+    workflowProgress: result.items[0].workflowProgress,
+  }, {
+    aiQueueState: "SWITCHING_AI_CHANNEL",
+    aiChannelDisplayName: "备用通道",
+    aiChannelSwitching: true,
+    aiChannelWaitStartedAt: "2026-08-28T01:02:03.000Z",
+    workflowProgress: {
+      phase: "GENERATE_IMAGE_SLOT", state: "QUEUED", attemptCount: 3,
+      updatedAt: "2026-08-28T01:02:03.000Z", nextRetryAt: null,
+    },
+  });
+  assert.deepEqual({
+    aiQueueState: result.items[1].aiQueueState,
+    aiChannelDisplayName: result.items[1].aiChannelDisplayName,
+    aiChannelSwitching: result.items[1].aiChannelSwitching,
+    aiChannelWaitStartedAt: result.items[1].aiChannelWaitStartedAt,
+  }, {
+    aiQueueState: null, aiChannelDisplayName: null,
+    aiChannelSwitching: false, aiChannelWaitStartedAt: null,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /channel-secret|connection-secret|lease-secret|Bearer secret|connectionVersion/u);
+});
+
 test("bounds list requests and keeps cross-account same-key replays independent", async () => {
   const repository = fakeRepository();
   const service = createAutoListingService({ repository });

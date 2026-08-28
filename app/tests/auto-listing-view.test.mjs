@@ -234,6 +234,78 @@ test("presents durable queue progress with attempts and safe canonical timestamp
   });
 });
 
+test("projects safe AI queue copy while waiting preserves the last completed percentage", () => {
+  const actionState = { review: false, approve: false, retry: false, regenerate: false, cancel: true };
+  const queueItem = ({ itemId, status, phase, aiQueueState, aiChannelDisplayName, aiChannelSwitching, aiChannelWaitStartedAt }) => ({
+    itemId, status, actions: { ...actionState },
+    aiQueueState, aiChannelDisplayName, aiChannelSwitching, aiChannelWaitStartedAt,
+    workflowProgress: {
+      phase, state: aiQueueState === "CALLING_AI" ? "RUNNING" : "QUEUED", attemptCount: 1,
+      updatedAt: "2026-08-28T01:02:03.000Z", nextRetryAt: null,
+    },
+  });
+  const rows = autoListingTaskRows([{
+    jobId: "job-ai-queue", createdAt: "2026-08-28T01:00:00.000Z", items: [
+      queueItem({
+        itemId: "waiting", status: "PLANNING", phase: "PLAN_CONTENT",
+        aiQueueState: "WAITING_FOR_AI_CHANNEL", aiChannelDisplayName: null,
+        aiChannelSwitching: false, aiChannelWaitStartedAt: "2026-08-28T01:01:00.000Z",
+      }),
+      queueItem({
+        itemId: "calling", status: "GENERATING", phase: "GENERATE_IMAGE_SLOT",
+        aiQueueState: "CALLING_AI", aiChannelDisplayName: "主通道",
+        aiChannelSwitching: false, aiChannelWaitStartedAt: null,
+      }),
+      queueItem({
+        itemId: "switching", status: "GENERATING", phase: "GENERATE_IMAGE_SLOT",
+        aiQueueState: "SWITCHING_AI_CHANNEL", aiChannelDisplayName: "故障通道",
+        aiChannelSwitching: true, aiChannelWaitStartedAt: "2026-08-28T01:02:00.000Z",
+      }),
+    ],
+  }]);
+
+  assert.deepEqual(rows.map((row) => ({
+    state: row.aiQueueState,
+    name: row.aiChannelDisplayName,
+    switching: row.aiChannelSwitching,
+    waitStartedAt: row.aiChannelWaitStartedAt,
+  })), [
+    { state: "WAITING_FOR_AI_CHANNEL", name: null, switching: false, waitStartedAt: "2026-08-28T01:01:00.000Z" },
+    { state: "CALLING_AI", name: "主通道", switching: false, waitStartedAt: null },
+    { state: "SWITCHING_AI_CHANNEL", name: "故障通道", switching: true, waitStartedAt: "2026-08-28T01:02:00.000Z" },
+  ]);
+  assert.deepEqual(rows.map((row) => autoListingItemPresentation(row).aiQueueLabel), [
+    "等待可用 AI 通道",
+    "正在使用「主通道」生成",
+    "原通道暂不可用，正在等待其他通道",
+  ]);
+  assert.deepEqual(rows.map((row) => autoListingTaskProgress(row).percent), [15, 60, 30]);
+  assert.equal(autoListingItemPresentation(rows[0]).workflowProgress.detail, "图片内容规划 · 已尝试 1 次");
+});
+
+test("AI queue projection rejects inconsistent values and never passes channel internals", () => {
+  const base = {
+    itemId: "item-ai-queue", status: "PLANNING",
+    aiQueueState: "WAITING_FOR_AI_CHANNEL", aiChannelDisplayName: null,
+    aiChannelSwitching: false, aiChannelWaitStartedAt: "2026-08-28T01:02:03.000Z",
+    channelId: "channel-secret", connectionId: "connection-secret", connectionVersion: 9,
+    executionLeaseToken: "lease-secret", rawGatewayError: "Authorization: Bearer secret",
+  };
+  const rows = autoListingTaskRows([{
+    jobId: "job-ai-queue", createdAt: "2026-08-28T01:00:00.000Z", items: [base],
+  }]);
+  assert.equal(rows.length, 1);
+  assert.doesNotMatch(JSON.stringify(rows), /channel-secret|connection-secret|lease-secret|Bearer secret|connectionVersion/u);
+  for (const item of [
+    { ...base, aiQueueState: "UNKNOWN" },
+    { ...base, aiChannelSwitching: true },
+    { ...base, aiChannelWaitStartedAt: "not-a-time" },
+    { ...base, aiQueueState: "CALLING_AI", aiChannelDisplayName: null, aiChannelWaitStartedAt: null },
+  ]) assert.deepEqual(autoListingTaskRows([{
+    jobId: "job-ai-queue", createdAt: "2026-08-28T01:00:00.000Z", items: [item],
+  }]), []);
+});
+
 test("task rows reject hostile carriers and nested authority without executing accessors", () => {
   const baseItem = {
     itemId: "item-a", status: "SOURCE_READY", sourceRecordId: "collect-a",

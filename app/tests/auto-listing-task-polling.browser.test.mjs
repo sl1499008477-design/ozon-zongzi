@@ -58,6 +58,21 @@ function job(status) {
       status,
       statusVersion: status === "PLANNING" ? 2 : 3,
       failureCode: status === "BLOCKED" ? "AUTO_LISTING_CONTENT_PLAN_FAILED" : "",
+      ...(status === "PLANNING" ? {
+        aiQueueState: "WAITING_FOR_AI_CHANNEL",
+        aiChannelDisplayName: null,
+        aiChannelSwitching: false,
+        aiChannelWaitStartedAt: "2026-08-18T08:08:40.000Z",
+        workflowProgress: {
+          phase: "PLAN_CONTENT", state: "QUEUED", attemptCount: 0,
+          updatedAt: "2026-08-18T08:08:40.000Z", nextRetryAt: null,
+        },
+      } : {
+        aiQueueState: null,
+        aiChannelDisplayName: null,
+        aiChannelSwitching: false,
+        aiChannelWaitStartedAt: null,
+      }),
       actions: {
         review: false, approve: false, retry: false, regenerate: false, cancel: status === "PLANNING",
       },
@@ -65,7 +80,7 @@ function job(status) {
   }];
 }
 
-test("an active automatic-listing task refreshes to its terminal backend state without manual reload", async () => {
+test("a task waiting for an AI channel preserves progress and refreshes without manual reload", async () => {
   let vite;
   let browser;
   let jobReads = 0;
@@ -126,14 +141,17 @@ test("an active automatic-listing task refreshes to its terminal backend state w
     await brandSwitch.waitFor();
     assert.equal(await brandSwitch.getAttribute("aria-checked"), "false");
     await page.getByRole("tab", { name: "任务中心" }).click();
-    await page.getByText("正在规划图片内容", { exact: true }).waitFor();
+    await page.getByText("等待可用 AI 通道", { exact: true }).waitFor({ timeout: 2_000 });
+    const waitingRow = page.getByRole("row").filter({ hasText: "轮询商品" });
+    assert.equal(await waitingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "15");
+    assert.equal(await page.getByText("正在规划图片内容", { exact: true }).count(), 0);
     const initialJobReads = jobReads;
     terminalStatus = true;
     await page.evaluate(() => window.__runIntervalsForTest(3_000));
     await page.getByText("需要处理问题", { exact: true }).waitFor();
 
     assert.equal(jobReads, initialJobReads + 1);
-    assert.equal(await page.getByText("正在规划图片内容", { exact: true }).count(), 0);
+    assert.equal(await page.getByText("等待可用 AI 通道", { exact: true }).count(), 0);
     assert.deepEqual(pageErrors, []);
     await context.close();
   } finally {

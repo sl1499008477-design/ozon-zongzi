@@ -440,6 +440,45 @@ function itemWorkflowProgress(item) {
   };
 }
 
+const EMPTY_AI_QUEUE_PROJECTION = Object.freeze({
+  aiQueueState: null,
+  aiChannelDisplayName: null,
+  aiChannelSwitching: false,
+  aiChannelWaitStartedAt: null,
+});
+
+function itemAiQueueProjection(item) {
+  if (!["PLANNING", "GENERATING"].includes(item.status)) return EMPTY_AI_QUEUE_PROJECTION;
+  const state = item.ai_queue_state;
+  if (state === undefined || state === null) return EMPTY_AI_QUEUE_PROJECTION;
+  if (!["WAITING_FOR_AI_CHANNEL", "CALLING_AI", "SWITCHING_AI_CHANNEL"].includes(state)) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  const displayName = item.ai_channel_display_name === null
+    ? null : typeof item.ai_channel_display_name === "string"
+      && item.ai_channel_display_name.trim().length > 0
+      && item.ai_channel_display_name.length <= 200
+      && !/[\u0000-\u001f\u007f]/u.test(item.ai_channel_display_name)
+      ? item.ai_channel_display_name : undefined;
+  const switching = item.ai_channel_switching === true;
+  const waitStartedAt = item.ai_channel_wait_started_at ?? null;
+  const validWaitStartedAt = waitStartedAt instanceof Date
+    ? Number.isFinite(waitStartedAt.getTime())
+    : typeof waitStartedAt === "string" && Number.isFinite(Date.parse(waitStartedAt));
+  if (displayName === undefined
+    || switching !== (state === "SWITCHING_AI_CHANNEL")
+    || (state === "CALLING_AI" && (displayName === null || waitStartedAt !== null))
+    || (state !== "CALLING_AI" && !validWaitStartedAt)) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return Object.freeze({
+    aiQueueState: state,
+    aiChannelDisplayName: displayName,
+    aiChannelSwitching: switching,
+    aiChannelWaitStartedAt: state === "CALLING_AI" ? null : waitStartedAt,
+  });
+}
+
 function mapJob(row, items, events) {
   const validatedEvents = events.map((event) => {
     if (event.event_type !== "SOURCE_CAPTURED") return event;
@@ -473,6 +512,7 @@ function mapJob(row, items, events) {
       const audit = (eventsByItem.get(item.id) || [])
         .find((event) => ["SOURCE_CAPTURED", "BLOCK"].includes(event.event_type))?.details || {};
       const workflowProgress = itemWorkflowProgress(item);
+      const aiQueueProjection = itemAiQueueProjection(item);
       return {
         id: item.id,
         status: item.status,
@@ -501,6 +541,7 @@ function mapJob(row, items, events) {
         ...(audit.price ? { price: audit.price } : {}),
         ...(item.failure_code ? { failureCode: item.failure_code } : {}),
         ...(workflowProgress ? { workflowProgress } : {}),
+        ...aiQueueProjection,
       };
     }),
     events: validatedEvents.map((event) => ({
@@ -541,7 +582,11 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
             COALESCE(s.snapshot#>>'{identity,primarySku}','') AS source_sku,
             progress.phase AS progress_phase,progress.state AS progress_state,
             progress.attempts AS progress_attempts,progress.updated_at AS progress_updated_at,
-            progress.next_retry_at AS progress_next_retry_at
+            progress.next_retry_at AS progress_next_retry_at,
+            ai_projection.queue_state AS ai_queue_state,
+            ai_projection.channel_display_name AS ai_channel_display_name,
+            COALESCE(ai_projection.channel_switching,FALSE) AS ai_channel_switching,
+            ai_projection.wait_started_at AS ai_channel_wait_started_at
        FROM auto_listing_job_items i
        JOIN auto_listing_source_snapshots s ON s.id=i.snapshot_id AND s.account_id=$2
        LEFT JOIN LATERAL (
@@ -559,6 +604,108 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
           ORDER BY progress.created_at DESC,progress.id DESC
           LIMIT 1
        ) progress ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT CASE
+                  WHEN assigned_channel.execution_lease_expires_at > NOW()
+                    AND ai_queue.state='PROCESSING' AND ai_queue.lease_expires_at > NOW()
+                    AND assigned_channel.execution_lease_owner=ai_queue.lease_owner
+                    AND assigned_channel.execution_lease_token=ai_queue.lease_token
+                    AND assigned_channel.execution_lease_expires_at=ai_queue.lease_expires_at
+                    THEN 'CALLING_AI'
+                  WHEN assigned_channel.channel_id IS NOT NULL THEN 'WAITING_FOR_AI_CHANNEL'
+                  WHEN ai_queue.state='PENDING' AND ai_queue.last_error_code IN (
+                    'AI_GATEWAY_NETWORK_FAILED','AI_GATEWAY_RATE_LIMITED','AI_GATEWAY_IDLE_TIMEOUT',
+                    'AI_GATEWAY_UNEXPECTED_EOF','INVALID_GATEWAY_RESPONSE','RETRYABLE_GATEWAY',
+                    'GATEWAY_TIMEOUT','AI_GATEWAY_UNAUTHORIZED','AI_GATEWAY_MODEL_NOT_FOUND',
+                    'AI_GATEWAY_CAPABILITY_INVALID','NON_RETRYABLE_AUTH'
+                  ) THEN 'SWITCHING_AI_CHANNEL'
+                  WHEN available_channel.channel_id IS NULL THEN 'WAITING_FOR_AI_CHANNEL'
+                  ELSE NULL
+                END AS queue_state,
+                CASE
+                  WHEN assigned_channel.channel_id IS NOT NULL THEN assigned_channel.display_name
+                  WHEN ai_queue.state='PENDING' AND ai_queue.last_error_code IN (
+                    'AI_GATEWAY_NETWORK_FAILED','AI_GATEWAY_RATE_LIMITED','AI_GATEWAY_IDLE_TIMEOUT',
+                    'AI_GATEWAY_UNEXPECTED_EOF','INVALID_GATEWAY_RESPONSE','RETRYABLE_GATEWAY',
+                    'GATEWAY_TIMEOUT','AI_GATEWAY_UNAUTHORIZED','AI_GATEWAY_MODEL_NOT_FOUND',
+                    'AI_GATEWAY_CAPABILITY_INVALID','NON_RETRYABLE_AUTH'
+                  ) THEN failed_channel.display_name
+                  ELSE NULL
+                END AS channel_display_name,
+                (assigned_channel.channel_id IS NULL AND ai_queue.state='PENDING'
+                  AND ai_queue.last_error_code IN (
+                    'AI_GATEWAY_NETWORK_FAILED','AI_GATEWAY_RATE_LIMITED','AI_GATEWAY_IDLE_TIMEOUT',
+                    'AI_GATEWAY_UNEXPECTED_EOF','INVALID_GATEWAY_RESPONSE','RETRYABLE_GATEWAY',
+                    'GATEWAY_TIMEOUT','AI_GATEWAY_UNAUTHORIZED','AI_GATEWAY_MODEL_NOT_FOUND',
+                    'AI_GATEWAY_CAPABILITY_INVALID','NON_RETRYABLE_AUTH'
+                  )) AS channel_switching,
+                CASE
+                  WHEN assigned_channel.execution_lease_expires_at > NOW()
+                    AND ai_queue.state='PROCESSING' AND ai_queue.lease_expires_at > NOW()
+                    AND assigned_channel.execution_lease_owner=ai_queue.lease_owner
+                    AND assigned_channel.execution_lease_token=ai_queue.lease_token
+                    AND assigned_channel.execution_lease_expires_at=ai_queue.lease_expires_at
+                    THEN NULL
+                  ELSE COALESCE(ai_queue.next_retry_at,ai_queue.available_at)
+                END AS wait_started_at
+           FROM auto_listing_ai_outbox AS ai_queue
+           JOIN auto_listing_jobs AS ai_job
+             ON ai_job.account_id=ai_queue.account_id AND ai_job.id=ai_queue.job_id
+           LEFT JOIN LATERAL (
+             SELECT assigned_channel.channel_id,assigned_channel.display_name,
+                    assigned_channel.execution_lease_owner,assigned_channel.execution_lease_token,
+                    assigned_channel.execution_lease_expires_at
+               FROM auto_listing_ai_profile_channels AS assigned_channel
+              WHERE assigned_channel.account_id=ai_queue.account_id
+                AND assigned_channel.profile_id=ai_job.ai_profile_id
+                AND assigned_channel.profile_version=ai_job.ai_profile_version
+                AND assigned_channel.assigned_job_id=ai_queue.job_id
+                AND assigned_channel.assigned_item_id=ai_queue.item_id
+                AND assigned_channel.assigned_status_version=i.status_version
+              ORDER BY assigned_channel.channel_order,assigned_channel.channel_id
+              LIMIT 1
+           ) assigned_channel ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT available_channel.channel_id
+               FROM auto_listing_ai_profile_channels AS available_channel
+              WHERE available_channel.account_id=ai_queue.account_id
+                AND available_channel.profile_id=ai_job.ai_profile_id
+                AND available_channel.profile_version=ai_job.ai_profile_version
+                AND available_channel.enabled IS TRUE
+                AND available_channel.requires_revalidation IS FALSE
+                AND (available_channel.cooldown_until IS NULL OR available_channel.cooldown_until<=NOW())
+                AND available_channel.assigned_job_id IS NULL
+              ORDER BY available_channel.channel_order,available_channel.channel_id
+              LIMIT 1
+           ) available_channel ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT failed_channel.display_name
+               FROM auto_listing_ai_profile_channels AS failed_channel
+              WHERE failed_channel.account_id=ai_queue.account_id
+                AND failed_channel.profile_id=ai_job.ai_profile_id
+                AND failed_channel.profile_version=ai_job.ai_profile_version
+                AND failed_channel.connection_id=i.last_ai_connection_id
+                AND failed_channel.connection_version=i.last_ai_connection_version
+              ORDER BY failed_channel.channel_order,failed_channel.channel_id
+              LIMIT 1
+           ) failed_channel ON TRUE
+          WHERE ai_queue.account_id=$2 AND ai_queue.job_id=$1 AND ai_queue.item_id=i.id
+            AND ai_queue.expected_status_version=i.status_version
+            AND ai_queue.contract_version='V1'
+            AND ai_queue.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN',
+                                   'GENERATE_IMAGE_SLOT','GENERATE_RICH_CONTENT')
+            AND i.status IN ('PLANNING','GENERATING')
+            AND ((ai_queue.state='PENDING' AND COALESCE(ai_queue.next_retry_at,ai_queue.available_at)<=NOW())
+              OR ai_queue.state='PROCESSING')
+            AND EXISTS (
+              SELECT 1 FROM auto_listing_ai_profile_channels AS profile_channel
+               WHERE profile_channel.account_id=ai_queue.account_id
+                 AND profile_channel.profile_id=ai_job.ai_profile_id
+                 AND profile_channel.profile_version=ai_job.ai_profile_version
+            )
+          ORDER BY ai_queue.created_at DESC,ai_queue.id DESC
+          LIMIT 1
+       ) ai_projection ON TRUE
       WHERE i.job_id=$1 AND i.account_id=$2
         ${selection ? "AND i.id=ANY($3::text[])" : ""}
       ORDER BY i.source_order ASC,i.id ASC`,

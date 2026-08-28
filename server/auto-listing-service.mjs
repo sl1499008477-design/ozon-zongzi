@@ -438,9 +438,43 @@ function failureStageFor(source) {
   return "PREPARATION";
 }
 
+const EMPTY_AI_QUEUE_PROJECTION = Object.freeze({
+  aiQueueState: null,
+  aiChannelDisplayName: null,
+  aiChannelSwitching: false,
+  aiChannelWaitStartedAt: null,
+});
+
+function safeAiQueueProjection(source) {
+  if (!["PLANNING", "GENERATING"].includes(safeString(source.status))) return EMPTY_AI_QUEUE_PROJECTION;
+  const state = safeString(source.aiQueueState);
+  if (!["WAITING_FOR_AI_CHANNEL", "CALLING_AI", "SWITCHING_AI_CHANNEL"].includes(state)) {
+    return EMPTY_AI_QUEUE_PROJECTION;
+  }
+  const rawDisplayName = safeString(source.aiChannelDisplayName, 200);
+  const displayName = rawDisplayName && rawDisplayName.trim()
+    && !/[\u0000-\u001f\u007f]/u.test(rawDisplayName) ? rawDisplayName : null;
+  const switching = source.aiChannelSwitching === true;
+  const waitStartedAt = source.aiChannelWaitStartedAt === null
+    ? null : safeTimestamp(source.aiChannelWaitStartedAt);
+  const waitDate = waitStartedAt === null ? null : new Date(waitStartedAt);
+  const canonicalWaitStartedAt = waitDate && Number.isFinite(waitDate.getTime())
+    ? waitDate.toISOString() : null;
+  if (switching !== (state === "SWITCHING_AI_CHANNEL")
+    || (state === "CALLING_AI" && (!displayName || source.aiChannelWaitStartedAt !== null))
+    || (state !== "CALLING_AI" && !canonicalWaitStartedAt)) return EMPTY_AI_QUEUE_PROJECTION;
+  return Object.freeze({
+    aiQueueState: state,
+    aiChannelDisplayName: displayName,
+    aiChannelSwitching: switching,
+    aiChannelWaitStartedAt: state === "CALLING_AI" ? null : canonicalWaitStartedAt,
+  });
+}
+
 function safeItem(item = {}, jobCreatedAt = null) {
   const source = item.source || item;
   const workflowProgress = safeWorkflowProgress(source.workflowProgress);
+  const aiQueueProjection = safeAiQueueProjection(source);
   return {
     itemId: safeString(source.id) || safeString(source.itemId),
     status: safeString(source.status),
@@ -465,6 +499,7 @@ function safeItem(item = {}, jobCreatedAt = null) {
     ...(safePrice(source.price) ? { price: safePrice(source.price) } : {}),
     ...(safeString(source.failureCode) || safeString(source.failure_code) ? { failureCode: safeString(source.failureCode) || safeString(source.failure_code) } : {}),
     ...(workflowProgress ? { workflowProgress } : {}),
+    ...aiQueueProjection,
     actions: safeItemActions(source),
   };
 }

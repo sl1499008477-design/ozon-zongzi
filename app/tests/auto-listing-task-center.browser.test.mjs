@@ -47,7 +47,7 @@ function localState() {
 
 const actions = Object.freeze({ review: false, approve: false, retry: false, regenerate: false, cancel: false });
 
-function item({ id, title, status, order, failureStage = null }) {
+function item({ id, title, status, order, failureStage = null, aiQueue = null, workflowProgress = null }) {
   return {
     itemId: `item-${id}`,
     sourceRecordId: `collect-${id}`,
@@ -62,6 +62,13 @@ function item({ id, title, status, order, failureStage = null }) {
     createdAt: "2026-08-25T00:00:00.000Z",
     updatedAt: "2026-08-25T00:02:03.000Z",
     failureStage,
+    ...(aiQueue ? {
+      aiQueueState: aiQueue.state,
+      aiChannelDisplayName: aiQueue.displayName,
+      aiChannelSwitching: aiQueue.switching,
+      aiChannelWaitStartedAt: aiQueue.waitStartedAt,
+    } : {}),
+    ...(workflowProgress ? { workflowProgress } : {}),
     price: {
       currency: "CNY",
       branch: "BLACK_GTE_80",
@@ -89,6 +96,26 @@ function jobs(processingStatus = "GENERATING") {
       item({ id: "upload", title: "上传失败商品", status: "BLOCKED", order: 5, failureStage: "UPLOAD" }),
       item({ id: "succeeded", title: "上架成功商品", status: "SUCCEEDED", order: 6 }),
       item({ id: "cancelled", title: "已取消商品", status: "CANCELLED", order: 7 }),
+      item({
+        id: "calling", title: "调用中商品", status: "GENERATING", order: 8,
+        aiQueue: { state: "CALLING_AI", displayName: "主通道", switching: false, waitStartedAt: null },
+        workflowProgress: { phase: "GENERATE_IMAGE_SLOT", state: "RUNNING", attemptCount: 1,
+          updatedAt: "2026-08-25T00:02:03.000Z", nextRetryAt: null },
+      }),
+      item({
+        id: "waiting", title: "等待通道商品", status: "PLANNING", order: 9,
+        aiQueue: { state: "WAITING_FOR_AI_CHANNEL", displayName: null, switching: false,
+          waitStartedAt: "2026-08-25T00:01:00.000Z" },
+        workflowProgress: { phase: "PLAN_CONTENT", state: "QUEUED", attemptCount: 0,
+          updatedAt: "2026-08-25T00:01:00.000Z", nextRetryAt: null },
+      }),
+      item({
+        id: "switching", title: "切换通道商品", status: "GENERATING", order: 10,
+        aiQueue: { state: "SWITCHING_AI_CHANNEL", displayName: "故障通道", switching: true,
+          waitStartedAt: "2026-08-25T00:01:30.000Z" },
+        workflowProgress: { phase: "GENERATE_IMAGE_SLOT", state: "QUEUED", attemptCount: 1,
+          updatedAt: "2026-08-25T00:01:30.000Z", nextRetryAt: null },
+      }),
     ],
   }];
 }
@@ -191,6 +218,13 @@ test("ordered collection creation switches to the task center with exact multipl
     assert.equal(new URL(page.url()).search, "?source=collect&ids=collect-b,collect-a");
     await page.getByRole("columnheader", { name: "任务用时" }).waitFor();
     assert.ok(await page.getByRole("progressbar").count() >= 1);
+    await page.getByText("正在使用「主通道」生成", { exact: true }).waitFor({ timeout: 2_000 });
+    await page.getByText("等待可用 AI 通道", { exact: true }).waitFor({ timeout: 2_000 });
+    await page.getByText("原通道暂不可用，正在等待其他通道", { exact: true }).waitFor({ timeout: 2_000 });
+    const waitingRow = page.getByRole("row").filter({ hasText: "等待通道商品" });
+    const switchingRow = page.getByRole("row").filter({ hasText: "切换通道商品" });
+    assert.equal(await waitingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "15");
+    assert.equal(await switchingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "30");
     await page.getByText("总用时 2分3秒", { exact: true }).waitFor();
     assert.ok(await page.evaluate(() => window.__intervalCountForTest(1_000)) >= 1);
     await page.getByRole("tab", { name: "创建任务" }).click();

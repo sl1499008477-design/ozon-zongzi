@@ -344,6 +344,94 @@ test("ordinary list ranks item rows before limit and filters unselected siblings
   assert.deepEqual(full.events.map((event) => event.id), ["event-job", "event-a", "event-sibling"]);
 });
 
+test("job reads project durable AI queue state in the existing item query", async () => {
+  const calls = [];
+  const createdAt = new Date("2026-08-28T01:00:00.000Z");
+  const queueRows = [
+    {
+      id: "item-calling", status: "GENERATING", status_version: 4,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-calling", source_version: "1", snapshot_hash: "hash-calling",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "CALLING_AI", ai_channel_display_name: "主通道",
+      ai_channel_switching: false, ai_channel_wait_started_at: null,
+    },
+    {
+      id: "item-takeover", status: "PLANNING", status_version: 2,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-takeover", source_version: "1", snapshot_hash: "hash-takeover",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "WAITING_FOR_AI_CHANNEL", ai_channel_display_name: "备用通道",
+      ai_channel_switching: false, ai_channel_wait_started_at: new Date("2026-08-28T01:01:00.000Z"),
+    },
+    {
+      id: "item-switching", status: "GENERATING", status_version: 5,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-switching", source_version: "1", snapshot_hash: "hash-switching",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "SWITCHING_AI_CHANNEL", ai_channel_display_name: "故障通道",
+      ai_channel_switching: true, ai_channel_wait_started_at: new Date("2026-08-28T01:02:00.000Z"),
+    },
+    {
+      id: "item-waiting", status: "PLANNING", status_version: 3,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-waiting", source_version: "1", snapshot_hash: "hash-waiting",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "WAITING_FOR_AI_CHANNEL", ai_channel_display_name: null,
+      ai_channel_switching: false, ai_channel_wait_started_at: new Date("2026-08-28T01:03:00.000Z"),
+    },
+    {
+      id: "item-complete", status: "READY_FOR_REVIEW", status_version: 6,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-complete", source_version: "1", snapshot_hash: "hash-complete",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "CALLING_AI", ai_channel_display_name: "不得泄漏",
+      ai_channel_switching: true, ai_channel_wait_started_at: createdAt,
+    },
+  ];
+  const pool = {
+    async connect() { return pool; },
+    release() {},
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/SELECT id,account_id,source_type,status,strategy_version_id/.test(sql)) return { rows: [{
+        id: "job-queue", account_id: "account-a", source_type: "COLLECT_BOX", status: "CREATED",
+        strategy_version_id: "strategy-a", correlation_id: "corr-queue",
+        created_at: createdAt, updated_at: createdAt,
+      }] };
+      if (/FROM auto_listing_job_items i/.test(sql)) return { rows: queueRows };
+      if (/FROM auto_listing_events/.test(sql)) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  };
+
+  const job = await createAutoListingRepository({ pool }).getJob({ accountId: "account-a", jobId: "job-queue" });
+
+  assert.deepEqual(job.items.map((item) => ({
+    id: item.id,
+    aiQueueState: item.aiQueueState,
+    aiChannelDisplayName: item.aiChannelDisplayName,
+    aiChannelSwitching: item.aiChannelSwitching,
+    aiChannelWaitStartedAt: item.aiChannelWaitStartedAt,
+  })), [
+    { id: "item-calling", aiQueueState: "CALLING_AI", aiChannelDisplayName: "主通道", aiChannelSwitching: false, aiChannelWaitStartedAt: null },
+    { id: "item-takeover", aiQueueState: "WAITING_FOR_AI_CHANNEL", aiChannelDisplayName: "备用通道", aiChannelSwitching: false, aiChannelWaitStartedAt: new Date("2026-08-28T01:01:00.000Z") },
+    { id: "item-switching", aiQueueState: "SWITCHING_AI_CHANNEL", aiChannelDisplayName: "故障通道", aiChannelSwitching: true, aiChannelWaitStartedAt: new Date("2026-08-28T01:02:00.000Z") },
+    { id: "item-waiting", aiQueueState: "WAITING_FOR_AI_CHANNEL", aiChannelDisplayName: null, aiChannelSwitching: false, aiChannelWaitStartedAt: new Date("2026-08-28T01:03:00.000Z") },
+    { id: "item-complete", aiQueueState: null, aiChannelDisplayName: null, aiChannelSwitching: false, aiChannelWaitStartedAt: null },
+  ]);
+  const itemReads = calls.filter(({ sql }) => /FROM auto_listing_job_items i/.test(sql));
+  assert.equal(itemReads.length, 1);
+  assert.match(itemReads[0].sql, /LEFT JOIN LATERAL[\s\S]*auto_listing_ai_outbox AS ai_queue/u);
+  assert.match(itemReads[0].sql, /auto_listing_ai_profile_channels AS assigned_channel/u);
+  assert.match(itemReads[0].sql, /auto_listing_ai_profile_channels AS available_channel/u);
+  assert.match(itemReads[0].sql, /ai_queue\.expected_status_version=i\.status_version/u);
+  assert.match(itemReads[0].sql, /execution_lease_expires_at > NOW\(\)[\s\S]*'CALLING_AI'/u);
+  assert.match(itemReads[0].sql, /last_error_code IN \([\s\S]*'SWITCHING_AI_CHANNEL'/u);
+  assert.match(itemReads[0].sql, /available_channel\.channel_id IS NULL[\s\S]*'WAITING_FOR_AI_CHANNEL'/u);
+  assert.match(itemReads[0].sql, /ORDER BY ai_queue\.created_at DESC,ai_queue\.id DESC[\s\S]*LIMIT 1/u);
+});
+
 function warehouseGraph({ itemCount = 1, priceMultiplierMicros, useCategoryStrategy } = {}) {
   const { config, configHash } = normalizeAndHashAutoListingConfig({
     targetStoreId: "store-a",

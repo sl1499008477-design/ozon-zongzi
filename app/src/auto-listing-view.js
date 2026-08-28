@@ -103,6 +103,9 @@ const WORKFLOW_PHASES = Object.freeze({
   GENERATE_RICH_CONTENT: "生成富文本",
 });
 const WORKFLOW_STATES = new Set(["QUEUED", "RUNNING", "RETRY_WAIT", "COMPLETED", "FAILED"]);
+const AI_QUEUE_STATES = new Set([
+  "WAITING_FOR_AI_CHANNEL", "CALLING_AI", "SWITCHING_AI_CHANNEL",
+]);
 const STATUS_PERCENT = Object.freeze({
   CREATED: 5,
   SOURCE_READY: 15,
@@ -236,6 +239,39 @@ function projectWorkflowProgress(value) {
   return Object.freeze({ phase, state, attemptCount, updatedAt, nextRetryAt });
 }
 
+function projectAiQueue(descriptors, status) {
+  const keys = ["aiQueueState", "aiChannelDisplayName", "aiChannelSwitching", "aiChannelWaitStartedAt"];
+  const present = keys.filter((key) => descriptors[key]);
+  if (present.length === 0) return undefined;
+  if (present.length !== keys.length || present.some((key) => !descriptors[key].enumerable
+    || !Object.hasOwn(descriptors[key], "value"))) return null;
+  const state = descriptors.aiQueueState.value;
+  const rawDisplayName = descriptors.aiChannelDisplayName.value;
+  const displayName = rawDisplayName === null ? null
+    : typeof rawDisplayName === "string" && rawDisplayName.trim()
+      && rawDisplayName.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(rawDisplayName)
+      ? rawDisplayName : undefined;
+  const switching = descriptors.aiChannelSwitching.value;
+  const rawWaitStartedAt = descriptors.aiChannelWaitStartedAt.value;
+  const waitStartedAt = rawWaitStartedAt === null ? null : canonicalTimestamp(rawWaitStartedAt);
+  if (state === null) {
+    return displayName === null && switching === false && rawWaitStartedAt === null
+      ? Object.freeze({ aiQueueState: null, aiChannelDisplayName: null,
+        aiChannelSwitching: false, aiChannelWaitStartedAt: null }) : null;
+  }
+  if (!AI_QUEUE_STATES.has(state) || !["PLANNING", "GENERATING"].includes(status)
+    || displayName === undefined || typeof switching !== "boolean"
+    || switching !== (state === "SWITCHING_AI_CHANNEL")
+    || (state === "CALLING_AI" && (!displayName || rawWaitStartedAt !== null))
+    || (state !== "CALLING_AI" && !waitStartedAt)) return null;
+  return Object.freeze({
+    aiQueueState: state,
+    aiChannelDisplayName: displayName,
+    aiChannelSwitching: switching,
+    aiChannelWaitStartedAt: state === "CALLING_AI" ? null : waitStartedAt,
+  });
+}
+
 function projectItem(value, { allowJobFields = true } = {}) {
   const descriptors = safeDataRoot(value);
   if (!descriptors) return null;
@@ -284,6 +320,9 @@ function projectItem(value, { allowJobFields = true } = {}) {
     if (!workflowProgress) return null;
     output.workflowProgress = workflowProgress;
   }
+  const aiQueue = projectAiQueue(descriptors, status);
+  if (aiQueue === null) return null;
+  if (aiQueue) Object.assign(output, aiQueue);
   if (allowJobFields) {
     if (descriptors.jobId) {
       const jobId = boundedString(field("jobId"), { required: true });
@@ -329,6 +368,9 @@ export function autoListingItemPresentation(item = {}) {
   const attemptLabel = progress?.state === "RUNNING"
     ? `第 ${Math.max(1, progress.attemptCount)} 次`
     : progress?.attemptCount > 0 ? `已尝试 ${progress.attemptCount} 次` : "尚未尝试";
+  const aiQueueLabel = safe.aiQueueState === "WAITING_FOR_AI_CHANNEL" ? "等待可用 AI 通道"
+    : safe.aiQueueState === "CALLING_AI" ? `正在使用「${safe.aiChannelDisplayName}」生成`
+      : safe.aiQueueState === "SWITCHING_AI_CHANNEL" ? "原通道暂不可用，正在等待其他通道" : "";
   return Object.freeze({
     itemId,
     status,
@@ -337,6 +379,7 @@ export function autoListingItemPresentation(item = {}) {
     failureLabel: failureCode
       ? (FAILURE[failureCode] || "商品暂时无法继续处理，请检查资料或联系管理员")
       : "",
+    ...(aiQueueLabel ? { aiQueueLabel } : {}),
     ...(progress ? { workflowProgress: Object.freeze({
       label: progressLabels[progress.state],
       detail: `${WORKFLOW_PHASES[progress.phase]} · ${attemptLabel}`,
@@ -521,7 +564,11 @@ function failurePercent(row) {
 
 export function autoListingTaskProgress(row = {}) {
   const status = typeof row?.status === "string" ? row.status : "";
-  const percent = Object.hasOwn(STATUS_PERCENT, status) ? STATUS_PERCENT[status]
+  const waitingForChannel = ["WAITING_FOR_AI_CHANNEL", "SWITCHING_AI_CHANNEL"].includes(row?.aiQueueState);
+  const completedPercent = row?.workflowProgress?.phase === "PLAN_CONTENT"
+    ? STATUS_PERCENT.SOURCE_READY : STATUS_PERCENT.PLANNING;
+  const percent = waitingForChannel ? completedPercent
+    : Object.hasOwn(STATUS_PERCENT, status) ? STATUS_PERCENT[status]
     : ["RETRYABLE_ERROR", "BLOCKED", "CANCELLED"].includes(status) ? failurePercent(row) : 0;
   return Object.freeze({ percent: Math.min(percent, 99) === percent ? percent : 100 });
 }

@@ -816,10 +816,10 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       };
       return <Space direction="vertical" size={2}>
         <Progress percent={progress.percent} status={progress.status} size="small" />
-        <Tag>{item.workflowProgress?.label || item.statusLabel}</Tag>
-        {item.workflowProgress ? <span>{item.workflowProgress.detail}</span> : null}
-        {item.workflowProgress ? <span>{item.workflowProgress.updatedLabel}</span> : null}
-        {item.workflowProgress?.retryLabel ? <span>{item.workflowProgress.retryLabel}</span> : null}
+        <Tag>{item.aiQueueLabel || item.workflowProgress?.label || item.statusLabel}</Tag>
+        {!item.aiQueueLabel && item.workflowProgress ? <span>{item.workflowProgress.detail}</span> : null}
+        {!item.aiQueueLabel && item.workflowProgress ? <span>{item.workflowProgress.updatedLabel}</span> : null}
+        {!item.aiQueueLabel && item.workflowProgress?.retryLabel ? <span>{item.workflowProgress.retryLabel}</span> : null}
         {item.failureLabel ? <span>{item.failureLabel}</span> : null}
       </Space>;
     } },
