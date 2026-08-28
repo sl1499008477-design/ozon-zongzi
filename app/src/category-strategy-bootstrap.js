@@ -28,7 +28,9 @@ export async function loadCategoryStrategyBootstrap({ client, intents, extension
   routeDraftId = "", autoStartSampling = false, onDraftReady = () => {} }) {
   let draftId = routeDraftId || resume?.required?.draftId || "";
   if (!draftId && resume?.required?.canManage) {
-    const source = resume.sourceVersions[0];
+    const source = resume.sourceVersions.find((entry) =>
+      entry.collectItemId === resume.required.sourceCollectItemId);
+    if (!source) throw new Error("来源版本不可用，请刷新采集箱后重试");
     const fingerprint = {
       scope: resume.required.scope,
       sourceCollectItemId: source.collectItemId,

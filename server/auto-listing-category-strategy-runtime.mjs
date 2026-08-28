@@ -374,7 +374,7 @@ export function createCategoryStrategyReadModel({ pool }) {
   return Object.freeze({
     async listStrategies({ accountId }) {
       const result = await pool.query(`${select}
-        WHERE draft.account_id=$1
+        WHERE draft.account_id=$1 AND draft.removed_at IS NULL
         ORDER BY draft.updated_at DESC,draft.id DESC LIMIT 1000`, [accountId]);
       return result.rows.map(row);
     },

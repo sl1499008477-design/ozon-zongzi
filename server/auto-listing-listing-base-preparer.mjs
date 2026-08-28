@@ -12,6 +12,7 @@ import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 
 const HASH = /^[a-f0-9]{64}$/u;
 const BRAND_ATTRIBUTE_ID = 85;
+const TYPE_ATTRIBUTE_ID = 8229;
 const OZON_NO_BRAND_VALUE = "Нет бренда";
 const OZON_NO_BRAND_VALUE_ID_HINT = 126745801;
 const RICH_CONTENT_ATTRIBUTE_ID = 11254;
@@ -302,6 +303,27 @@ function injectNoBrandSourceEvidence(sourceEvidenceAttributes, indexes, option, 
     : attributes);
 }
 
+function targetTypeDictionaryOption(metadata, typeId) {
+  const attribute = metadata.attributes.find((candidate) => candidate.id === TYPE_ATTRIBUTE_ID
+    && candidate.complexId === 0 && candidate.dictionaryId);
+  if (!attribute) return null;
+  const matches = attribute.dictionaryValues.filter((option) => option.id === typeId);
+  if (matches.length !== 1) throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+  return matches[0];
+}
+
+function injectTargetTypeSourceEvidence(sourceEvidenceAttributes, option) {
+  return sourceEvidenceAttributes.map((attributes) => [
+    ...attributes.filter((attribute) => !(positiveId(attribute?.id) === TYPE_ATTRIBUTE_ID
+      && (positiveId(attribute?.complex_id) || 0) === 0)),
+    {
+      complex_id: 0,
+      id: TYPE_ATTRIBUTE_ID,
+      values: [{ value: option.value, dictionary_value_id: option.id }],
+    },
+  ]);
+}
+
 function inputAttributeKeys(items) {
   const keys = new Set();
   const include = (attribute) => {
@@ -551,8 +573,13 @@ export function createAutoListingListingBasePreparer({
       let dictionaryItems;
       const resolvesMissingBrand = attributeIdValue === BRAND_ATTRIBUTE_ID
         && noBrandVariantIndexes.length > 0;
+      const resolvesTargetType = attributeIdValue === TYPE_ATTRIBUTE_ID
+        && preliminaryMetadata.attributes.some((attribute) => attribute.id === TYPE_ATTRIBUTE_ID
+          && attribute.complexId === 0 && attribute.dictionaryId);
       try {
-        const sourceCandidates = dictionaryMatchCandidates(sourceEvidenceAttributes, attributeIdValue);
+        const sourceCandidates = resolvesTargetType
+          ? [{ id: sourceCategory.typeId }]
+          : dictionaryMatchCandidates(sourceEvidenceAttributes, attributeIdValue);
         const matchCandidates = resolvesMissingBrand
           ? withNoBrandCandidate(sourceCandidates) : sourceCandidates;
         const dictionaryResult = await categoryService.getCategoryAttributeValues({
@@ -595,6 +622,17 @@ export function createAutoListingListingBasePreparer({
       );
     }
     const currentCategoryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
+    const targetTypeKey = dictionaryKey(
+      sourceCategory.descriptionCategoryId,
+      sourceCategory.typeId,
+      TYPE_ATTRIBUTE_ID,
+    );
+    const targetTypeOption = categoryDictionaryValues.has(targetTypeKey)
+      ? targetTypeDictionaryOption(currentCategoryMetadata, sourceCategory.typeId)
+      : null;
+    if (targetTypeOption) {
+      sourceEvidenceAttributes = injectTargetTypeSourceEvidence(sourceEvidenceAttributes, targetTypeOption);
+    }
     sourceEvidenceAttributes = hydrateSourceDictionaryAttributes(sourceEvidenceAttributes, currentCategoryMetadata);
     rawItems = rawItems.map((item, index) => ({
       ...item,

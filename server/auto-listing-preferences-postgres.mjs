@@ -26,7 +26,7 @@ function fromRow(row) {
   if (!row) return null;
   const storedImage = row.image_config && typeof row.image_config === "object" && !Array.isArray(row.image_config)
     ? row.image_config : {};
-  const { brandMode, defaultsVersion, ...image } = storedImage;
+  const { brandMode, useCategoryStrategy, defaultsVersion, ...image } = storedImage;
   return Object.freeze({
     accountId: row.account_id,
     targetStoreId: row.target_store_id,
@@ -38,6 +38,7 @@ function fromRow(row) {
     imageDefaultsVersion: Number.isInteger(defaultsVersion) && defaultsVersion > 0
       ? defaultsVersion : null,
     ...(BRAND_MODES.has(brandMode) ? { brandMode } : {}),
+    ...(typeof useCategoryStrategy === "boolean" ? { useCategoryStrategy } : {}),
     configVersion: Number(row.config_version),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -210,6 +211,8 @@ export function createPostgresAutoListingPreferencesRepository({ pool } = {}) {
         const storedImage = JSON.stringify({
           ...input.config.image,
           ...(input.config.brandMode ? { brandMode: input.config.brandMode } : {}),
+          ...(typeof input.config.useCategoryStrategy === "boolean"
+            ? { useCategoryStrategy: input.config.useCategoryStrategy } : {}),
           defaultsVersion: CURRENT_IMAGE_DEFAULTS_VERSION,
         });
         const savedResult = current ? await client.query(

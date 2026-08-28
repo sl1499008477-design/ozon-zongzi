@@ -388,6 +388,7 @@ test("missing exact category strategy returns only the closed configuration deta
         status: 500,
         details: {
           scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 123, typeId: 456 },
+          sourceCollectItemId: "collect-second",
           status: "SAMPLES_READY",
           canManage: true,
           draftId: "same-account-draft",
@@ -412,6 +413,7 @@ test("missing exact category strategy returns only the closed configuration deta
       correlationId: "corr_1",
       details: {
         scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 123, typeId: 456 },
+        sourceCollectItemId: "collect-second",
         status: "SAMPLES_READY",
         canManage: true,
         draftId: "same-account-draft",
@@ -440,7 +442,8 @@ test("an atomic category-strategy race returns a fixed safe retry response", asy
 test("strategy-required route projection never executes hostile details accessors or proxy traps", async () => {
   for (const [label, details, counter] of [
     ["accessor", (() => {
-      const value = { scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 123, typeId: 456 }, status: "COLLECTING", canManage: false };
+      const value = { scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 123, typeId: 456 },
+        sourceCollectItemId: "collect-a", status: "COLLECTING", canManage: false };
       const counter = { reads: 0 };
       Object.defineProperty(value, "draftId", { enumerable: true, get() { counter.reads += 1; return "secret-draft"; } });
       return [value, counter];

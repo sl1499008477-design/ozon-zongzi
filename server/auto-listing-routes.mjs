@@ -257,10 +257,10 @@ function safeCategoryStrategyDetails(value) {
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const keys = Reflect.ownKeys(descriptors);
     if (!keys.every((key) => typeof key === "string"
-      && ["scope", "status", "canManage", "draftId"].includes(key)
+      && ["scope", "sourceCollectItemId", "status", "canManage", "draftId"].includes(key)
       && descriptors[key]?.enumerable === true && Object.hasOwn(descriptors[key], "value"))) return undefined;
-    if (![3, 4].includes(keys.length)) return undefined;
-    for (const key of ["scope", "status", "canManage"]) {
+    if (![4, 5].includes(keys.length)) return undefined;
+    for (const key of ["scope", "sourceCollectItemId", "status", "canManage"]) {
       if (!Object.hasOwn(descriptors, key)) return undefined;
     }
     const rawScope = descriptors.scope.value;
@@ -277,11 +277,14 @@ function safeCategoryStrategyDetails(value) {
       || !Number.isSafeInteger(scope.typeId) || scope.typeId < 1
       || !CATEGORY_STRATEGY_STATUSES.has(descriptors.status.value)
       || typeof descriptors.canManage.value !== "boolean") return undefined;
+    const sourceCollectItemId = text(descriptors.sourceCollectItemId.value);
+    if (!sourceCollectItemId) return undefined;
     const canManage = descriptors.canManage.value;
     const draftId = Object.hasOwn(descriptors, "draftId") ? text(descriptors.draftId.value) : "";
     if ((!canManage && Object.hasOwn(descriptors, "draftId"))
       || (Object.hasOwn(descriptors, "draftId") && !draftId)) return undefined;
-    return { scope, status: descriptors.status.value, canManage, ...(draftId ? { draftId } : {}) };
+    return { scope, sourceCollectItemId, status: descriptors.status.value,
+      canManage, ...(draftId ? { draftId } : {}) };
   } catch {
     return undefined;
   }

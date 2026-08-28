@@ -90,6 +90,24 @@ test("the brand toggle freezes only the two approved upload modes", () => {
   });
 });
 
+test("the category-strategy switch defaults on and freezes only a boolean choice", () => {
+  const base = {
+    targetStoreId: "store-a",
+    targetWarehouseId: "warehouse-a",
+    stock: 5,
+  };
+  const enabled = deriveAutoListingConfig(base);
+  const disabled = deriveAutoListingConfig({ ...base, useCategoryStrategy: false });
+
+  assert.equal(enabled.useCategoryStrategy, true);
+  assert.equal(disabled.useCategoryStrategy, false);
+  assert.deepEqual(normalizeAutoListingConfig(enabled), enabled);
+  assert.deepEqual(normalizeAutoListingConfig(disabled), disabled);
+  assert.throws(() => deriveAutoListingConfig({ ...base, useCategoryStrategy: "false" }), {
+    code: "AUTO_LISTING_CONFIG_INVALID",
+  });
+});
+
 test("removes the product-size image when reliable product dimensions are unavailable", () => {
   const config = deriveAutoListingConfig({
     targetStoreId: "store-a",

@@ -123,12 +123,13 @@ function guidanceFromForm(values) {
   };
 }
 
-export default function CategoryStrategyPage({ account = null, localData = {}, locationSearch = "",
+export default function CategoryStrategyPage({ account = null, binding = null, localData = {}, locationSearch = "",
   navigate = () => {} } = {}) {
   const [form] = Form.useForm();
   const client = useMemo(() => createCategoryStrategyClient(), []);
   const extensionBridge = useMemo(() => createCategoryStrategyExtensionBridge(), []);
   const accountId = String(account?.id || "").trim();
+  const categoryStoreId = String(localData?.currentStoreId || binding?.id || localData?.stores?.[0]?.id || "").trim();
   const [resumeRevision, setResumeRevision] = useState(0);
   const resume = useMemo(() => readStrategyResumeDraft(globalThis.sessionStorage, accountId, {
     sourceVersionOf: (collectItemId) => currentCollectSourceVersion(localData, collectItemId),
@@ -139,6 +140,7 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
   const routeDraftId = useMemo(() => queryDraftId(locationSearch), [locationSearch]);
   const autoStartSampling = useMemo(() => queryAutoStartSampling(locationSearch), [locationSearch]);
   const [strategies, setStrategies] = useState([]);
+  const [categoryNames, setCategoryNames] = useState({});
   const [detail, setDetail] = useState(null);
   const [samples, setSamples] = useState([]);
   const [session, setSession] = useState(null);
@@ -243,6 +245,15 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     setStateAccountId(accountId);
   }, [accountId, clearBundle]);
   useEffect(() => { load(routeDraftId); }, [load, routeDraftId]);
+  useEffect(() => {
+    let active = true;
+    setCategoryNames({});
+    if (!categoryStoreId) return () => { active = false; };
+    client.loadChineseCategoryNames(categoryStoreId).then((next) => {
+      if (active) setCategoryNames(next);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [accountId, categoryStoreId, client]);
   useEffect(() => {
     if (!session) return undefined;
     const timer = window.setInterval(() => setNow(new Date().toISOString()), 1_000);
@@ -397,6 +408,27 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     }),
   });
 
+  const confirmArchive = (row) => Modal.confirm({
+    title: "确认删除这条类目策略",
+    content: row.status === "PUBLISHED"
+      ? "系统会停用这条精确类目规则，并生成不包含该规则的新账号策略版本。样本、分析和发布记录仍保留用于审计。"
+      : "系统会结束该草稿并从列表隐藏。已有样本、分析和操作记录仍保留用于审计。",
+    okText: "确认删除",
+    okButtonProps: { danger: true },
+    cancelText: "取消",
+    onOk: () => runAction(`archive:${row.draftId}`, async (context) => {
+      const fingerprint = { draftId: row.draftId, expectedDraftVersion: row.draftVersion };
+      const identity = await intentIdentity("category-archive", fingerprint);
+      await client.archiveDraft(row.draftId, {
+        expectedDraftVersion: row.draftVersion,
+        ...identity,
+      });
+      await settleIntent("category-archive", fingerprint);
+      if (!isCurrentAction(context)) return;
+      setStrategies((current) => current.filter((entry) => entry.draftId !== row.draftId));
+    }),
+  });
+
   const returnToStrategyList = () => {
     if (!clearStrategyResumeDraft(globalThis.sessionStorage, accountId)) {
       setError("无法清除自动恢复状态，请刷新页面后重试。");
@@ -423,11 +455,30 @@ export default function CategoryStrategyPage({ account = null, localData = {}, l
     role="status">正在切换账号数据</span></Spin>;
 
   const columns = [
-    { title: "精确类目", render: (_value, row) => `${row.scope.descriptionCategoryId} / 类型 ${row.scope.typeId}` },
+    { title: "精确类目", render: (_value, row) => {
+      const exactNames = categoryNames[`${row.scope.descriptionCategoryId}:${row.scope.typeId}`];
+      const names = exactNames || categoryNames[`type:${row.scope.typeId}`];
+      return names ? <div>
+        <div>{exactNames ? "" : "当前字典："}{names.categoryName} / {names.typeName}</div>
+        <div style={{ color: "#8c8c8c", fontSize: 12 }}>
+          {exactNames ? "" : "原记录："}
+          {row.scope.descriptionCategoryId} / 类型 {row.scope.typeId}
+        </div>
+      </div> : <div>
+        <div>当前中文类目不可用</div>
+        <div style={{ color: "#8c8c8c", fontSize: 12 }}>
+          {row.scope.descriptionCategoryId} / 类型 {row.scope.typeId}
+        </div>
+      </div>;
+    } },
     { title: "当前状态", dataIndex: "status", render: (value) => <Tag>{STATUS_LABELS[value] || value}</Tag> },
     { title: "样本数", dataIndex: "sampleCount" },
-    { title: "操作", render: (_value, row) => <Button icon={<EyeOutlined />}
-      onClick={() => navigate(`/ozon/tools/category-strategies?draftId=${encodeURIComponent(row.draftId)}`)}>查看</Button> },
+    { title: "操作", render: (_value, row) => <Space>
+      <Button icon={<EyeOutlined />}
+        onClick={() => navigate(`/ozon/tools/category-strategies?draftId=${encodeURIComponent(row.draftId)}`)}>查看</Button>
+      <Button danger icon={<DeleteOutlined />} loading={action === `archive:${row.draftId}`}
+        onClick={() => confirmArchive(row)}>删除</Button>
+    </Space> },
   ];
 
   return <div className="category-strategy-page">

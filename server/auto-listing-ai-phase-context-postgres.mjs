@@ -466,7 +466,7 @@ function mapRule(row) {
   };
 }
 
-function strategyCapture(row, ruleRows, capture) {
+function strategyCapture(row, ruleRows, capture, useCategoryStrategy = true) {
   if (!isSafeAutoListingAiIdentifier(row.strategy_version_id)
     || !isSafeAutoListingAiIdentifier(row.strategy_key)) throw evidenceInvalid();
   let strategySnapshot;
@@ -474,7 +474,7 @@ function strategyCapture(row, ruleRows, capture) {
     const source = capture.snapshot;
     strategySnapshot = resolveAiContentStrategy({
       strategyVersion: { strategyId: row.strategy_key, strategyVersionId: row.strategy_version_id },
-      rules: ruleRows.map(mapRule),
+      rules: useCategoryStrategy ? ruleRows.map(mapRule) : [],
       product: {
         taxonomyScope: source.targetCategory?.taxonomyScope,
         descriptionCategoryId: source.targetCategory?.descriptionCategoryId,
@@ -676,12 +676,14 @@ async function loadPlanInput(options, message, boundary) {
     throw evidenceInvalid();
   }
   const capture = sourceCapture(bundle);
-  const rulesResult = await safeQuery(options.pool,
+  const frozenConfig = configCapture(bundle);
+  const useCategoryStrategy = frozenConfig.configSnapshot.useCategoryStrategy !== false;
+  const rulesResult = useCategoryStrategy ? await safeQuery(options.pool,
     `SELECT id,rule_order,rule_kind,category_id,ancestor_category_id,product_style,rule
        FROM ai_content_strategy_rules
       WHERE account_id=$1 AND strategy_version_id=$2
       ORDER BY rule_order ASC,id ASC`,
-    [boundary.accountId, bundle.strategy_version_id]);
+    [boundary.accountId, bundle.strategy_version_id]) : { rows: [] };
   if (!rulesResult || !Array.isArray(rulesResult.rows)) throw evidenceInvalid();
   let visualGroupsCapture;
   try { visualGroupsCapture = buildVisualGroups({ sourceCapture: capture }); } catch { throw evidenceInvalid(); }
@@ -697,8 +699,8 @@ async function loadPlanInput(options, message, boundary) {
     repository: options.contentPlanRepository,
     evidenceRepository: options.contentPlanEvidenceRepository,
     sourceCapture: capture,
-    strategyCapture: strategyCapture(bundle, rulesResult.rows, capture),
-    configCapture: configCapture(bundle),
+    strategyCapture: strategyCapture(bundle, rulesResult.rows, capture, useCategoryStrategy),
+    configCapture: frozenConfig,
     visualGroupsCapture,
     promptTemplateVersion: options.planPromptTemplateVersion,
     prohibitedClaims: [...options.prohibitedClaims].sort(),
@@ -818,7 +820,10 @@ async function loadCategoryStyleReferences(options, plan, slot, snapshot) {
   }));
 }
 
-async function loadCategoryStyle(options, row, plan, slot) {
+async function loadCategoryStyle(options, row, plan, slot, useCategoryStrategy = true) {
+  if (!useCategoryStrategy) {
+    return { categoryStyle: null, categoryStyleReferences: Object.freeze([]) };
+  }
   const rulesResult = await safeQuery(options.pool,
     `SELECT id,rule_order,rule_kind,category_id,ancestor_category_id,product_style,rule
        FROM ai_content_strategy_rules
@@ -933,7 +938,9 @@ async function loadImageInput(options, message, boundary) {
   if (!plainObject(projected) || !plainObject(projected.plan) || !plainObject(projected.slot)
     || !Array.isArray(projected.references)) throw evidenceInvalid();
   const { plan, slot } = projected;
-  const { categoryStyle, categoryStyleReferences } = await loadCategoryStyle(options, row, plan, slot);
+  const { categoryStyle, categoryStyleReferences } = await loadCategoryStyle(
+    options, row, plan, slot, config.useCategoryStrategy !== false,
+  );
   const ratio = config.image?.ratio;
   const resolution = config.image?.resolution;
   return {

@@ -242,7 +242,11 @@ if (!enabled) {
       const service = createAutoListingCategoryStrategyService({ repository: repositoryShape(), readModel,
         sampleStore: { persistSampleImages: async () => {} }, exactProductFacts: { verify: async () => {} },
         extensionSessionChannel: { assertReady: async () => {}, putSession: async () => {} },
-        publicationService: { publishCategoryStrategyDraft: async () => {}, rollbackCategoryStrategyVersion: async () => {} },
+        publicationService: {
+          publishCategoryStrategyDraft: async () => {},
+          archiveCategoryStrategyDraft: async () => {},
+          rollbackCategoryStrategyVersion: async () => {},
+        },
         analyzer: { analyze: async () => {}, editGuidance: async () => {} },
         objectStorage: { readObjectExpected: async (input) => { objectRead = input; return thumbnailBytes; } },
         now: () => new Date().toISOString(), deriveSessionIdentity: async () => ({ sessionId: "unused", sessionSecret: "x".repeat(32) }) });

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   CATEGORY_STRATEGY_ROLES,
+  categoryStrategyChineseNameIndex,
   categoryStrategyCountdown,
   categoryStrategyPageModel,
   clearStrategyResumeDraft,
@@ -184,10 +185,20 @@ test("strategy-required and resume projections preserve only the exact safe crea
     code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED",
     message: "raw server wording must be ignored",
     correlationId: "server-correlation-a",
-    details: { scope: SCOPE, status: "NOT_CONFIGURED", canManage: true, draftId: "draft-a" },
+    details: {
+      scope: SCOPE,
+      sourceCollectItemId: "collect-a",
+      status: "NOT_CONFIGURED",
+      canManage: true,
+      draftId: "draft-a",
+    },
   });
   assert.deepEqual(required, {
-    scope: SCOPE, status: "NOT_CONFIGURED", canManage: true, draftId: "draft-a",
+    scope: SCOPE,
+    sourceCollectItemId: "collect-a",
+    status: "NOT_CONFIGURED",
+    canManage: true,
+    draftId: "draft-a",
   });
   assert.equal(JSON.stringify(required).includes("raw server"), false);
 
@@ -202,7 +213,7 @@ test("strategy-required and resume projections preserve only the exact safe crea
     form: {
       targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
       priceAdjustmentAmount: "0", priceMultiplier: "1.25", ratio: "3:4", resolution: "1K", quality: "Medium",
-      language: "ru", useCollectedBrand: false,
+      language: "ru", useCollectedBrand: false, useCategoryStrategy: true,
       roles: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 },
     },
     currency: "CNY",
@@ -211,6 +222,7 @@ test("strategy-required and resume projections preserve only the exact safe crea
   });
   assert.equal(resume.form.roles.sellingPoint, 3);
   assert.equal(resume.form.useCollectedBrand, false);
+  assert.equal(resume.form.useCategoryStrategy, true);
   assert.equal(resume.form.priceMultiplier, "1.25");
   assert.equal(resume.currency, "CNY");
   assert.equal(Object.isFrozen(resume.form.roles), true);
@@ -224,12 +236,18 @@ test("strategy-required and resume projections preserve only the exact safe crea
     ...resume,
     form: { ...resume.form, useCollectedBrand: "false" },
   }), { code: "CATEGORY_STRATEGY_UI_DATA_INVALID" });
+  assert.throws(() => projectStrategyResumeDraft({
+    ...resume,
+    form: { ...resume.form, useCategoryStrategy: "false" },
+  }), { code: "CATEGORY_STRATEGY_UI_DATA_INVALID" });
 
   const legacy = projectStrategyResumeDraft({
     ...resume,
-    form: Object.fromEntries(Object.entries(resume.form).filter(([key]) => key !== "priceMultiplier")),
+    form: Object.fromEntries(Object.entries(resume.form)
+      .filter(([key]) => !["priceMultiplier", "useCategoryStrategy"].includes(key))),
   });
   assert.equal(legacy.form.priceMultiplier, "1");
+  assert.equal(legacy.form.useCategoryStrategy, true);
 });
 
 test("resume drafts expire and fail closed when a current collect source version differs", () => {
@@ -247,7 +265,13 @@ test("resume drafts expire and fail closed when a current collect source version
       roles: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 },
     },
     currency: "CNY",
-    required: { scope: SCOPE, status: "NOT_CONFIGURED", canManage: true, draftId: "draft-a" },
+    required: {
+      scope: SCOPE,
+      sourceCollectItemId: "collect-a",
+      status: "NOT_CONFIGURED",
+      canManage: true,
+      draftId: "draft-a",
+    },
     state: "CONFIGURING",
   };
   writeStrategyResumeDraft(storage, raw);
@@ -404,7 +428,7 @@ test("client messages and write bodies are fixed, closed and versioned", () => {
   for (const [error, expected] of [
     [{ status: 403, code: "PERMISSION_FORBIDDEN", message: "raw" }, "没有类目策略管理权限，请联系账号管理员。"],
     [{ status: 404, code: "AUTO_LISTING_CATEGORY_STRATEGY_DRAFT_NOT_FOUND", message: "raw" }, "类目策略记录不存在或你无权查看。"],
-    [{ status: 404, code: "AUTO_LISTING_CATEGORY_STRATEGY_SOURCE_NOT_FOUND", message: "raw" }, "商品类目信息已变化，请返回自动上架页刷新后重试。"],
+    [{ status: 404, code: "AUTO_LISTING_CATEGORY_STRATEGY_SOURCE_NOT_FOUND", message: "raw" }, "当前商品暂时没有可用的类目依据，请返回自动上架页刷新后重试。"],
     [{ status: 409, code: "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY", message: "raw" }, "浏览器扩展尚未连接，请先安装或刷新扩展后重试。"],
     [{ status: 409, code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT", message: "raw" }, "来源资料已变化，请返回自动上架页刷新后重试。"],
     [{ status: 409, code: "AUTO_LISTING_CATEGORY_STRATEGY_VERSION_CONFLICT", message: "raw" }, "类目策略已被其他管理员更新，请刷新后再操作。"],
@@ -422,6 +446,41 @@ test("client messages and write bodies are fixed, closed and versioned", () => {
   assert.throws(() => categoryStrategyRequestBody("analysis", {
     costConfirmed: true, idempotencyKey: "analysis-a", correlationId: "correlation-a", accountId: "account-b",
   }), { code: "CATEGORY_STRATEGY_CLIENT_REQUEST_INVALID" });
+  assert.deepEqual(categoryStrategyRequestBody("archive", {
+    expectedDraftVersion: 3, idempotencyKey: "archive-a", correlationId: "correlation-a",
+  }), {
+    expectedDraftVersion: 3, idempotencyKey: "archive-a", correlationId: "correlation-a",
+  });
+});
+
+test("Chinese Ozon category tree is reduced to exact category/type labels without blocking on unrelated nodes", () => {
+  const labels = categoryStrategyChineseNameIndex([{
+    description_category_id: 17028922,
+    category_name: "工具配件",
+    children: [{ type_id: 91542, type_name: "软启动模块", children: [] }],
+  }, {
+    description_category_id: 17000000,
+    category_name: "其他",
+    children: [{ type_id: 1, type_name: "无关类型", children: [] }],
+  }]);
+  assert.deepEqual(labels["17028922:91542"], {
+    categoryName: "工具配件",
+    typeName: "软启动模块",
+  });
+  assert.deepEqual(labels["type:91542"], {
+    categoryName: "工具配件",
+    typeName: "软启动模块",
+    descriptionCategoryId: 17028922,
+  });
+  assert.equal(Object.isFrozen(labels), true);
+  assert.equal(categoryStrategyChineseNameIndex([{ children: [{ type_id: -1, type_name: "坏数据" }] }])["0:-1"], undefined);
+  assert.equal(categoryStrategyChineseNameIndex([{
+    description_category_id: 1, category_name: "类目一",
+    children: [{ type_id: 99, type_name: "重复类型" }],
+  }, {
+    description_category_id: 2, category_name: "类目二",
+    children: [{ type_id: 99, type_name: "重复类型" }],
+  }])["type:99"], undefined);
 });
 
 test("create client accepts the closed five-field created-draft response before detail reload", async () => {
@@ -436,4 +495,41 @@ test("create client accepts the closed five-field created-draft response before 
     draftId: "draft-new", scope: SCOPE, draftVersion: 1, status: "COLLECTING", duplicate: false,
   });
   assert.equal(calls[0].path, "/admin/auto-listing/category-strategies/drafts");
+});
+
+test("category client loads Chinese labels for the current store and archives one exact draft", async () => {
+  const calls = [];
+  const client = createCategoryStrategyClient({ request: async (path, options) => {
+    calls.push({ path, options });
+    if (path.startsWith("/ozon/categories/tree")) return {
+      items: [{ description_category_id: 17028922, category_name: "工具配件",
+        children: [{ type_id: 91542, type_name: "软启动模块", children: [] }] }],
+    };
+    return { ok: true, data: {
+      draftId: "draft-a", removed: true, draftVersion: 4,
+      activeStrategyChanged: true, strategyVersionId: "strategy-v9", strategyVersion: 9,
+      duplicate: false,
+    } };
+  } });
+
+  const labels = await client.loadChineseCategoryNames("store-a");
+  assert.equal(labels["17028922:91542"].typeName, "软启动模块");
+  assert.deepEqual(calls[0], {
+    path: "/ozon/categories/tree?language=ZH_HANS",
+    options: { headers: { "x-ozon-store-id": "store-a" } },
+  });
+
+  assert.deepEqual(await client.archiveDraft("draft-a", {
+    expectedDraftVersion: 3, idempotencyKey: "archive-a", correlationId: "correlation-a",
+  }), {
+    draftId: "draft-a", removed: true, draftVersion: 4,
+    activeStrategyChanged: true, strategyVersionId: "strategy-v9", strategyVersion: 9,
+    duplicate: false,
+  });
+  assert.deepEqual(calls[1], {
+    path: "/admin/auto-listing/category-strategies/draft-a",
+    options: { method: "DELETE", body: {
+      expectedDraftVersion: 3, idempotencyKey: "archive-a", correlationId: "correlation-a",
+    } },
+  });
 });

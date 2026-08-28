@@ -5,7 +5,9 @@ import {
   normalizeAutoListingAiMessage,
 } from "./auto-listing-ai-message.mjs";
 
-export const AUTO_LISTING_AI_QUEUE = "auto-listing-ai-v1";
+// V2 fences jobs that carry the category-strategy switch from workers which
+// loaded the older frozen-config contract before that field existed.
+export const AUTO_LISTING_AI_QUEUE = "auto-listing-ai-v2";
 
 export const AUTO_LISTING_AI_QUEUE_OPTIONS = Object.freeze({
   retryLimit: 5,

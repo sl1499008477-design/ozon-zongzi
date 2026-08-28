@@ -8,7 +8,7 @@ import {
 } from "../src/category-strategy-bootstrap.js";
 
 const RESUME = Object.freeze({
-  required: Object.freeze({ canManage: true, scope: Object.freeze({
+  required: Object.freeze({ canManage: true, sourceCollectItemId: "collect-a", scope: Object.freeze({
     accountId: "account-a",
     taxonomyScope: "OZON:DEFAULT",
     descriptionCategoryId: 88_265_327,
@@ -82,6 +82,37 @@ test("automatic-listing handoff creates a draft and starts its Ozon sampling ses
   assert.equal(result.session, SESSION);
   assert.equal(result.browserUrl, SESSION.browserUrl);
   assert.deepEqual(calls, ["extension-ready", "start-session", "extension-open", "intent-settle"]);
+});
+
+test("automatic-listing handoff creates the draft from the source item named by the required scope", async () => {
+  let createInput = null;
+  const resume = {
+    required: {
+      ...RESUME.required,
+      sourceCollectItemId: "collect-b",
+    },
+    sourceVersions: [
+      { collectItemId: "collect-a", expectedSourceVersion: "draft:3" },
+      { collectItemId: "collect-b", expectedSourceVersion: "draft:8" },
+    ],
+  };
+  const client = {
+    async createDraft(input) { createInput = input; return DRAFT; },
+    async getDraft() { return { draft: DRAFT, session: null }; },
+    async startSession() { throw new Error("sampling must stay inactive"); },
+  };
+
+  await loadCategoryStrategyBootstrap({
+    client,
+    intents: intentStore(),
+    extensionBridge: extensionBridge(),
+    resume,
+    routeDraftId: "",
+    autoStartSampling: false,
+  });
+
+  assert.equal(createInput.sourceCollectItemId, "collect-b");
+  assert.equal(createInput.expectedSourceVersion, "draft:8");
 });
 
 test("normal strategy navigation creates or loads the draft without starting sampling", async () => {

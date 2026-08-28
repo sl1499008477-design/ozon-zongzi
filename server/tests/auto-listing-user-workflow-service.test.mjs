@@ -53,6 +53,7 @@ test("preference overview migrates only the unversioned legacy eight-image defau
     main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1,
   });
   assert.equal(migrated.preference.image.total, 6);
+  assert.equal(migrated.preference.useCategoryStrategy, true);
 
   const current = await harness({
     preference: { ...legacy, imageDefaultsVersion: 2 },
@@ -69,6 +70,11 @@ test("preference overview migrates only the unversioned legacy eight-image defau
     },
   }).service.getOverview({ actor, importLimit: 50 });
   assert.equal(custom.preference.image.total, 8);
+
+  const disabled = await harness({
+    preference: { ...legacy, useCategoryStrategy: false, imageDefaultsVersion: 2 },
+  }).service.getOverview({ actor, importLimit: 50 });
+  assert.equal(disabled.preference.useCategoryStrategy, false);
 });
 
 test("ordinary users read only their preferences and safe import progress", async () => {

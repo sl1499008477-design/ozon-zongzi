@@ -118,6 +118,63 @@ export function projectCategoryStrategyList(raw) {
   return deepFreeze(array(raw, 0, 1_000).map(summary));
 }
 
+function categoryTreeField(node, key) {
+  try {
+    if (!node || typeof node !== "object" || Array.isArray(node)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(node))) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(node, key);
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value")
+      ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function categoryTreeText(value) {
+  const result = typeof value === "string" ? value.trim() : "";
+  return result && result.length <= 500 && !/[\u0000-\u001f\u007f]/u.test(result) ? result : "";
+}
+
+function categoryTreeId(value) {
+  const result = Number(value);
+  return Number.isSafeInteger(result) && result > 0 ? result : 0;
+}
+
+export function categoryStrategyChineseNameIndex(raw) {
+  let roots;
+  try { roots = array(raw, 0, 10_000); } catch { return Object.freeze({}); }
+  const labels = {};
+  const typeLabels = new Map();
+  let visited = 0;
+  const visit = (node, inheritedCategoryId = 0, inheritedCategoryName = "", depth = 0) => {
+    if (depth > 32 || visited >= 20_000) return;
+    visited += 1;
+    const categoryId = categoryTreeId(categoryTreeField(node, "description_category_id"))
+      || inheritedCategoryId;
+    const categoryName = categoryTreeText(categoryTreeField(node, "category_name"))
+      || inheritedCategoryName;
+    const typeId = categoryTreeId(categoryTreeField(node, "type_id"));
+    const typeName = categoryTreeText(categoryTreeField(node, "type_name"));
+    if (categoryId && categoryName && typeId && typeName) {
+      labels[`${categoryId}:${typeId}`] = Object.freeze({ categoryName, typeName });
+      const candidate = Object.freeze({ categoryName, typeName, descriptionCategoryId: categoryId });
+      const previous = typeLabels.get(typeId);
+      if (previous === undefined) typeLabels.set(typeId, candidate);
+      else if (previous && (previous.descriptionCategoryId !== categoryId
+        || previous.categoryName !== categoryName || previous.typeName !== typeName)) typeLabels.set(typeId, null);
+    }
+    const rawChildren = categoryTreeField(node, "children");
+    let children;
+    try { children = array(rawChildren ?? [], 0, 10_000); } catch { children = []; }
+    for (const child of children) visit(child, categoryId, categoryName, depth + 1);
+  };
+  for (const root of roots) visit(root);
+  for (const [typeId, label] of typeLabels) {
+    if (label) labels[`type:${typeId}`] = label;
+  }
+  return Object.freeze(labels);
+}
+
 export function projectCategoryStrategyDetail(raw) {
   const value = closed(raw, new Set([
     "draftId", "scope", "draftVersion", "status", "sampleCount",
@@ -344,12 +401,14 @@ export function projectStrategyRequired(raw) {
   if (value.ok !== false || value.code !== "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED") throw uiError();
   text(value.message, 500);
   id(value.correlationId);
-  const details = closed(value.details, new Set(["scope", "status", "canManage", "draftId"]),
-    new Set(["scope", "status", "canManage"]));
+  const details = closed(value.details,
+    new Set(["scope", "sourceCollectItemId", "status", "canManage", "draftId"]),
+    new Set(["scope", "sourceCollectItemId", "status", "canManage"]));
   if (!DRAFT_STATUSES.has(details.status) || typeof details.canManage !== "boolean"
     || (!details.canManage && details.draftId !== undefined)) throw uiError();
   return Object.freeze({
-    scope: scope(details.scope), status: details.status, canManage: details.canManage,
+    scope: scope(details.scope), sourceCollectItemId: id(details.sourceCollectItemId),
+    status: details.status, canManage: details.canManage,
     ...(details.draftId === undefined ? {} : { draftId: id(details.draftId) }),
   });
 }
@@ -370,14 +429,17 @@ function resumeForm(raw) {
     "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentAmount", "ratio", "resolution", "quality",
     "language", "roles",
   ]);
-  const value = closed(raw, new Set([...required, "useCollectedBrand", "priceMultiplier"]), required);
+  const value = closed(raw,
+    new Set([...required, "useCollectedBrand", "useCategoryStrategy", "priceMultiplier"]), required);
   if (value.language !== "ru"
-    || (value.useCollectedBrand !== undefined && typeof value.useCollectedBrand !== "boolean")) throw uiError();
+    || (value.useCollectedBrand !== undefined && typeof value.useCollectedBrand !== "boolean")
+    || (value.useCategoryStrategy !== undefined && typeof value.useCategoryStrategy !== "boolean")) throw uiError();
   return deepFreeze({
     targetStoreId: id(value.targetStoreId), targetWarehouseId: id(value.targetWarehouseId),
     stock: positive(value.stock), priceAdjustmentAmount: text(value.priceAdjustmentAmount, 80),
     priceMultiplier: value.priceMultiplier === undefined ? "1" : text(value.priceMultiplier, 80),
     useCollectedBrand: value.useCollectedBrand === true,
+    useCategoryStrategy: value.useCategoryStrategy !== false,
     ratio: text(value.ratio, 20), resolution: text(value.resolution, 20), quality: text(value.quality, 20),
     language: value.language, roles: formRoles(value.roles),
   });
@@ -408,10 +470,14 @@ export function projectStrategyResumeDraft(raw) {
     schemaVersion: 1, createdAt, expiresAt, accountId: id(value.accountId), source: value.source, collectIds, sourceVersions,
     form: resumeForm(value.form), currency, required: (() => {
       const details = value.required;
-      const safe = closed(details, new Set(["scope", "status", "canManage", "draftId"]),
-        new Set(["scope", "status", "canManage"]));
+      const safe = closed(details,
+        new Set(["scope", "sourceCollectItemId", "status", "canManage", "draftId"]),
+        new Set(["scope", "sourceCollectItemId", "status", "canManage"]));
       if (!DRAFT_STATUSES.has(safe.status) || typeof safe.canManage !== "boolean") throw uiError();
-      return Object.freeze({ scope: scope(safe.scope), status: safe.status, canManage: safe.canManage,
+      const sourceCollectItemId = id(safe.sourceCollectItemId);
+      if (!sourceVersions.some((entry) => entry.collectItemId === sourceCollectItemId)) throw uiError();
+      return Object.freeze({ scope: scope(safe.scope), sourceCollectItemId,
+        status: safe.status, canManage: safe.canManage,
         ...(safe.draftId === undefined ? {} : { draftId: id(safe.draftId) }) });
     })(), state: value.state,
   });

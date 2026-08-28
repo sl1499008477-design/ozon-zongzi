@@ -73,6 +73,14 @@ const { config: configSnapshot, configHash: CONFIG_HASH } = normalizeAndHashAuto
     roles: { main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1 },
   },
 });
+const { config: genericConfigSnapshot, configHash: GENERIC_CONFIG_HASH } = normalizeAndHashAutoListingConfig({
+  targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
+  priceAdjustmentKopecks: "0", useCategoryStrategy: false,
+  image: {
+    ratio: "3:4", resolution: "1K", quality: "Medium", language: "ru",
+    roles: { main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1 },
+  },
+});
 
 function basePlanRow(overrides = {}) {
   const slots = [
@@ -394,6 +402,30 @@ test("PLAN_CONTENT hydrates the exact published V2 rule from the job-frozen vers
   assert.doesNotMatch(pool.calls[2].sql, /status='PUBLISHED'|ORDER\s+BY.*published|LIMIT\s+1/iu);
 });
 
+test("PLAN_CONTENT keeps the frozen generic strategy when category strategy is OFF", async () => {
+  const pool = scriptedPool([
+    [boundary()],
+    [planBundle(undefined, {
+      id: undefined, account_id: undefined, job_id: undefined, item_id: undefined,
+      config_snapshot: structuredClone(genericConfigSnapshot),
+      config_hash_from_job: GENERIC_CONFIG_HASH,
+      strategy_version_id: "strategy-frozen-v2",
+    })],
+    [{
+      id: "category-rule-row-a", rule_order: 7, rule_kind: "EXACT_CATEGORY",
+      category_id: "170", ancestor_category_id: null, product_style: null,
+      rule: publishedV2Rule(),
+    }],
+  ]);
+
+  const context = await createPostgresAutoListingAiPhaseContextLoader(dependencies(pool))(message("PLAN_CONTENT"));
+
+  assert.equal(context.phaseInput.configCapture.configSnapshot.useCategoryStrategy, false);
+  assert.equal(context.phaseInput.strategyCapture.strategySnapshot.matchedBy, "DEFAULT");
+  assert.equal(context.phaseInput.strategyCapture.strategySnapshot.ruleId, null);
+  assert.equal(pool.calls.some(({ sql }) => /FROM ai_content_strategy_rules/.test(sql)), false);
+});
+
 test("PLAN_CONTENT rejects an unknown persisted planning contract before strategy reads", async () => {
   const pool = scriptedPool([
     [boundary()],
@@ -529,6 +561,31 @@ test("GENERATE_IMAGE_SLOT uses the active derived plan, exact slot and frozen im
   assert.deepEqual(pool.calls[1].values, ["account-a", "job-a", "item-a", "plan-derived", "snapshot-a"]);
   assert.deepEqual(pool.calls[2].values, ["account-a", "strategy-frozen-v2"]);
   assert.doesNotMatch(pool.calls[1].sql, /latest|ORDER\s+BY|LIMIT\s+1/iu);
+});
+
+test("GENERATE_IMAGE_SLOT does not restore category style when category strategy is OFF", async () => {
+  const plan = derivedPlanRow();
+  plan.strategy_version_id = "strategy-frozen-v2";
+  const pool = scriptedPool([
+    [boundary({ status: "GENERATING", active_content_plan_id: "plan-derived" })],
+    [planBundle(plan, {
+      config_snapshot: structuredClone(genericConfigSnapshot),
+      config_hash_from_job: GENERIC_CONFIG_HASH,
+    })],
+    [{
+      id: "category-rule-row-a", rule_order: 7, rule_kind: "EXACT_CATEGORY",
+      category_id: "170", ancestor_category_id: null, product_style: null,
+      rule: publishedV2Rule(),
+    }],
+  ]);
+
+  const context = await createPostgresAutoListingAiPhaseContextLoader(dependencies(pool))(
+    message("GENERATE_IMAGE_SLOT"),
+  );
+
+  assert.equal(context.phaseInput.categoryStyle, null);
+  assert.deepEqual(context.phaseInput.categoryStyleReferences, []);
+  assert.equal(pool.calls.some(({ sql }) => /FROM ai_content_strategy_rules/.test(sql)), false);
 });
 
 test("V6 main image may raise copy density without discarding the frozen category style", async () => {

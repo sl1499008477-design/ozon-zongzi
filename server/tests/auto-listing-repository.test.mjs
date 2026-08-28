@@ -344,13 +344,14 @@ test("ordinary list ranks item rows before limit and filters unselected siblings
   assert.deepEqual(full.events.map((event) => event.id), ["event-job", "event-a", "event-sibling"]);
 });
 
-function warehouseGraph({ itemCount = 1, priceMultiplierMicros } = {}) {
+function warehouseGraph({ itemCount = 1, priceMultiplierMicros, useCategoryStrategy } = {}) {
   const { config, configHash } = normalizeAndHashAutoListingConfig({
     targetStoreId: "store-a",
     targetWarehouseId: "warehouse-a",
     stock: 1,
     priceAdjustmentKopecks: "0",
     ...(priceMultiplierMicros ? { priceMultiplierMicros } : {}),
+    ...(useCategoryStrategy === undefined ? {} : { useCategoryStrategy }),
   });
   const items = Array.from({ length: itemCount }, (_, sourceIndex) => {
     const sourceOrder = sourceIndex + 1;
@@ -1131,7 +1132,11 @@ function mixedCreationGraph() {
   return graph;
 }
 
-function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "profile-a", config_version: 3 }] } = {}) {
+function successfulCreationFixture({
+  stageBehavior = null,
+  profiles = [{ id: "profile-a", config_version: 3 }],
+  rules = [],
+} = {}) {
   const calls = [];
   const stageCalls = [];
   const snapshots = new Map();
@@ -1165,7 +1170,7 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
       if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
       if (/FROM ai_gateway_profiles/.test(sql)) return { rows: profiles };
-      if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
+      if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: rules };
       if (/FROM collect_ozon_category_current_sources current_category/.test(sql)) return { rows: [{ id: "shared-123-456" }] };
       if (/FROM collect_items c/.test(sql)) return { rows: [{
         draft_id: `draft-${params[0]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
@@ -1261,6 +1266,22 @@ test("successful creation without the AI workflow keeps ready statuses and stage
   assert.equal(stageCalls.length, 0);
   const jobInsert = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
   assert.deepEqual(jobInsert.params.slice(7, 10), ["upload-policy-review-a", null, null]);
+});
+
+test("category strategy OFF persists the frozen generic selection even when a published rule matches", async () => {
+  const { repository, calls } = successfulCreationFixture({
+    rules: [{
+      id: "matching-rule", rule_order: 1, rule_kind: "EXACT_CATEGORY",
+      category_id: "123", ancestor_category_id: null, product_style: null,
+      rule: { style: "VISUAL_FIRST", textDensityByRole: {} },
+    }],
+  });
+
+  const created = await repository.createJobGraph(warehouseGraph({ useCategoryStrategy: false }));
+
+  assert.equal(created.items[0].style, "BALANCED_DEFAULT");
+  assert.equal(created.items[0].matchedBy, "DEFAULT");
+  assert.equal(calls.some(({ sql }) => /FROM ai_content_strategy_rules/.test(sql)), false);
 });
 
 test("job graph persists and returns each server-selected planning contract", async () => {

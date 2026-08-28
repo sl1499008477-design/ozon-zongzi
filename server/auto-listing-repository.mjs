@@ -1795,13 +1795,12 @@ export function createAutoListingRepository({
             }
           }
         }
-        const rules = await client.query(
+        const currentRules = graph.configSnapshot.useCategoryStrategy === false ? [] : publishedRules((await client.query(
           `SELECT id,rule_order,rule_kind,category_id,ancestor_category_id,product_style,rule
              FROM ai_content_strategy_rules WHERE account_id=$1 AND strategy_version_id=$2
              ORDER BY rule_order ASC,id ASC`,
           [graph.accountId, graph.strategyVersionId],
-        );
-        const currentRules = publishedRules(rules.rows);
+        )).rows);
         assertCurrentCategoryStrategyGate(graph, categoryStrategySetting.rows[0], currentRules, strategy.rows[0]);
         for (const item of graph.items) {
           const source = graph.sourceType === "EXCEL_SKU" && item.status === "SOURCE_READY"

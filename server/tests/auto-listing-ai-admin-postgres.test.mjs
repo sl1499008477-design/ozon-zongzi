@@ -80,7 +80,7 @@ function scriptedPool(steps) {
 test("admin PostgreSQL repository factory is closed and requires a real pool", () => {
   const pool = { async connect() {}, async query() {} };
   assert.deepEqual(Object.keys(createAutoListingAiAdminPostgres({ pool })).sort(), [
-    "beginCapabilityTest", "completeCapabilitySubcall", "completeCapabilityTest", "createProfile", "createStrategyVersion",
+    "archiveCategoryStrategyDraft", "beginCapabilityTest", "completeCapabilitySubcall", "completeCapabilityTest", "createProfile", "createStrategyVersion",
     "listProfiles", "listStrategyVersions", "loadCapabilityExecutionForSecretResolution",
     "loadConnectionForCapabilitySecretResolution",
     "markCapabilitySubcallSending",
@@ -88,6 +88,7 @@ test("admin PostgreSQL repository factory is closed and requires a real pool", (
     "rollbackCategoryStrategyVersion", "rollbackProfile",
   ]);
   assert.equal(typeof createAutoListingAiAdminPostgres({ pool }).publishCategoryStrategyDraft, "function");
+  assert.equal(typeof createAutoListingAiAdminPostgres({ pool }).archiveCategoryStrategyDraft, "function");
   assert.equal(typeof createAutoListingAiAdminPostgres({ pool }).rollbackCategoryStrategyVersion, "function");
   assert.throws(() => createAutoListingAiAdminPostgres({ pool, apiKey: "raw" }), {
     code: "AUTO_LISTING_AI_ADMIN_REPOSITORY_INVALID",
@@ -111,6 +112,12 @@ test("category publish and rollback reject hidden fields, accessors, custom prot
     input: {
       accountId: "account-a", actorId: "account-a", draftId: "draft-a", expectedDraftVersion: 4,
       expectedPublishedStrategyVersionId: "strategy-a", idempotencyKey: "publish-a", correlationId: "corr-a",
+    },
+  }, {
+    method: "archiveCategoryStrategyDraft",
+    input: {
+      accountId: "account-a", actorId: "account-a", draftId: "draft-a", expectedDraftVersion: 4,
+      idempotencyKey: "archive-a", correlationId: "corr-a",
     },
   }, {
     method: "rollbackCategoryStrategyVersion",
@@ -158,6 +165,39 @@ test("category publish and rollback reject hidden fields, accessors, custom prot
   assert.equal(getterRuns, 0);
   assert.equal(proxyTrapRuns, 0);
   assert.equal(poolCalls, 0);
+});
+
+test("category publish accepts the authoritative manual-confirmation source before checking analysis", async () => {
+  const draft = {
+    id: "category-draft-manual", account_id: "account-a", draft_version: 4, status: "DRAFT_READY",
+    source_collect_item_id: "collect-manual", source_product_draft_id: "product-draft-manual",
+    source_product_draft_version: 2, expected_source_version: "draft:2",
+    taxonomy_scope: "OZON:DEFAULT", description_category_id: "17027923", type_id: "94891",
+  };
+  const { pool, calls } = scriptedPool([
+    { rows: [] },
+    { rows: [{ id: "account-a" }] },
+    { rows: [] },
+    { rows: [] },
+    { rows: [] },
+    { rows: [{ mode: "REQUIRE_EXACT_STRATEGY" }] },
+    { rows: [draft] },
+    (sql) => {
+      const rejectsManual = /pointer\.source_kind='PRODUCT_DRAFT'/u.test(sql)
+        || /pointer\.source_version IN \(product_draft\.version::TEXT,'draft:' \|\| product_draft\.version::TEXT\)/u.test(sql);
+      return { rows: rejectsManual ? [] : [{ id: draft.source_collect_item_id }] };
+    },
+    { rows: [] },
+    { rows: [] },
+  ]);
+
+  await assert.rejects(createAutoListingAiAdminPostgres({ pool }).publishCategoryStrategyDraft({
+    accountId: "account-a", actorId: "account-a", draftId: draft.id, expectedDraftVersion: 4,
+    expectedPublishedStrategyVersionId: "strategy-current", idempotencyKey: "publish-manual",
+    correlationId: "publish-manual-correlation",
+  }), { code: "AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", status: 409 });
+
+  assert.equal(calls.at(-2).sql, "ROLLBACK");
 });
 
 test("profile creation serializes by account, persists only an env reference, and writes idempotent audit evidence", async () => {

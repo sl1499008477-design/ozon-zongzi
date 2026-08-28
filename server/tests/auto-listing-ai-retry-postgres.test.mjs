@@ -28,7 +28,7 @@ function harness({ recoveryPoint = "PLANNING", acceptedSlots = [], skippedSlots 
         return { rows: skippedSlots.map((slot_key) => ({ slot_key })), rowCount: skippedSlots.length };
       }
       if (/UPDATE auto_listing_job_items/u.test(sql)) return {
-        rows: [{ status: recoveryPoint === "PLANNING" ? "PLANNING" : "GENERATING", status_version: statusVersion + 1 }], rowCount: 1,
+        rows: [{ status: values[4], status_version: statusVersion + 1 }], rowCount: 1,
       };
       if (/INSERT INTO auto_listing_events/u.test(sql)) return { rows: [{ id: "retry-event" }], rowCount: 1 };
       if (/INSERT INTO auto_listing_ai_outbox/u.test(sql)) return { rows: [{ id: "outbox" }], rowCount: 1 };
@@ -126,6 +126,18 @@ test("a main-image coverage block reuses the generation retry path without repea
   const outbox = calls.find(({ sql }) => /INSERT INTO auto_listing_ai_outbox/u.test(sql));
   assert.match(JSON.stringify(outbox.values), /main/iu);
   assert.doesNotMatch(JSON.stringify(outbox.values), /detail/iu);
+});
+
+test("a pre-generation planning block can be retried manually after the planner boundary is repaired", async () => {
+  const { repository, calls } = harness({
+    status: "BLOCKED", failureCode: "AUTO_LISTING_CONTENT_PLAN_FAILED", recoveryPoint: null,
+  });
+  assert.deepEqual(await repository.retryAutoListingAiItem(command), {
+    status: "PLANNING", statusVersion: 5, recoveryPoint: "PLANNING", enqueued: 1, duplicate: false,
+  });
+  assert.equal(calls.some(({ sql }) => /SELECT p\.plan/u.test(sql)), false);
+  const outbox = calls.find(({ sql }) => /INSERT INTO auto_listing_ai_outbox/u.test(sql));
+  assert.match(JSON.stringify(outbox.values), /PLAN_CONTENT/iu);
 });
 
 test("an incomplete configured image set can retry every skipped role without repeating accepted slots", async () => {

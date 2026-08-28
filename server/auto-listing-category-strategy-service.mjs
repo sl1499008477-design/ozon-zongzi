@@ -602,6 +602,28 @@ function publicationDto(raw) {
   }
 }
 
+function archivedDraftDto(raw, expectedDraftId) {
+  return dependencyDto(() => {
+    const value = closed(raw, new Set([
+      "draftId", "removed", "draftVersion", "activeStrategyChanged",
+      "strategyVersionId", "strategyVersion", "duplicate",
+    ]));
+    const strategyVersionId = value.strategyVersionId === null
+      ? null : identifier(value.strategyVersionId);
+    const strategyVersion = value.strategyVersion === null ? null : positive(value.strategyVersion);
+    if (identifier(value.draftId) !== expectedDraftId || value.removed !== true
+      || typeof value.activeStrategyChanged !== "boolean"
+      || typeof value.duplicate !== "boolean"
+      || (strategyVersionId === null) !== (strategyVersion === null)
+      || value.activeStrategyChanged !== (strategyVersionId !== null)) throw invalid();
+    return Object.freeze({
+      draftId: expectedDraftId, removed: true, draftVersion: positive(value.draftVersion),
+      activeStrategyChanged: value.activeStrategyChanged,
+      strategyVersionId, strategyVersion, duplicate: value.duplicate,
+    });
+  });
+}
+
 function analysisDto(raw, accountId) {
   return dependencyDto(() => {
     const value = closed(raw, new Set([
@@ -661,6 +683,7 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
     || typeof extensionSessionChannel?.assertReady !== "function"
     || typeof extensionSessionChannel?.putSession !== "function"
     || typeof publicationService?.publishCategoryStrategyDraft !== "function"
+    || typeof publicationService?.archiveCategoryStrategyDraft !== "function"
     || typeof publicationService?.rollbackCategoryStrategyVersion !== "function"
     || typeof objectStorage?.readObjectExpected !== "function"
     || typeof analysisPort?.analyze !== "function" || typeof analysisPort?.editGuidance !== "function"
@@ -1167,6 +1190,25 @@ export function createAutoListingCategoryStrategyService(rawOptions = {}) {
       } catch (error) {
         await observe({ metric: "category_strategy_publish_total", accountId, draftId,
           scope: draft.scope, correlationId, outcome: Number(error?.status) === 409 ? "conflict" : "failed", startedAt });
+        publicationDependencyError(error);
+      }
+    },
+
+    async archiveDraft(raw = {}) {
+      const input = closed(raw, new Set([
+        "actor", "draftId", "expectedDraftVersion", "idempotencyKey", "correlationId",
+      ]));
+      const accountId = actorAccount(input.actor);
+      const draftId = identifier(input.draftId);
+      try {
+        return archivedDraftDto(await publicationService.archiveCategoryStrategyDraft({
+          actor: { id: accountId, role: "admin" },
+          draftId,
+          expectedDraftVersion: positive(input.expectedDraftVersion),
+          idempotencyKey: identifier(input.idempotencyKey),
+          correlationId: identifier(input.correlationId),
+        }), draftId);
+      } catch (error) {
         publicationDependencyError(error);
       }
     },

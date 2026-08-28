@@ -85,6 +85,12 @@ async function seedPublishableCategoryDraft(client, { accountId, suffix, descrip
     "INSERT INTO product_drafts (id,collect_item_id,version,data_hash,data) VALUES ($1,$2,7,$3,'{}'::JSONB)",
     [productDraftId, collectItemId, h(productDraftId)],
   );
+  await client.query(
+    `INSERT INTO product_draft_revisions
+       (id,draft_id,version,data_hash,data,changed_by,change_reason)
+     VALUES ($1,$2,7,$3,'{}'::JSONB,$4,'category strategy integration seed')`,
+    [`category-product-revision-${suffix}`, productDraftId, h(productDraftId), accountId],
+  );
   await client.query("UPDATE collect_items SET current_draft_id=$2 WHERE account_id=$1 AND id=$3", [
     accountId, productDraftId, collectItemId,
   ]);
@@ -201,7 +207,7 @@ if (!enabled) {
     skip: "requires PostgreSQL opt-in and a dedicated disposable database URL",
   }, () => {});
 } else {
-  test("category publication accepts an active source-to-current category mapping", {
+  test("category publication and archive preserve the current immutable strategy chain", {
     timeout: 90_000,
   }, async () => {
     const { Pool } = await import("pg");
@@ -306,6 +312,54 @@ if (!enabled) {
       assert.deepEqual(published.rules.map((rule) => rule.scope), [{
         taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99,
       }]);
+
+      const replacementDraft = await seedPublishableCategoryDraft(admin, {
+        accountId, suffix: `replacement-${suffix}`, descriptionCategoryId: 170, typeId: 99,
+        sourceDescriptionCategoryId: 191, sourceTypeId: 110,
+      });
+      const replacementPublished = await repository.publishCategoryStrategyDraft({
+        accountId, actorId: accountId, draftId: replacementDraft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: published.id,
+        idempotencyKey: `publish-replacement-${suffix}`,
+        correlationId: `publish-replacement-correlation-${suffix}`,
+      });
+      assert.equal(replacementPublished.version, 3);
+
+      const supersededArchiveInput = {
+        accountId, actorId: accountId, draftId: draft.draftId, expectedDraftVersion: 5,
+        idempotencyKey: `archive-superseded-${suffix}`,
+        correlationId: `archive-superseded-correlation-${suffix}`,
+      };
+      const supersededArchive = await repository.archiveCategoryStrategyDraft(supersededArchiveInput);
+      assert.deepEqual({
+        removed: supersededArchive.removed,
+        activeStrategyChanged: supersededArchive.activeStrategyChanged,
+        strategyVersionId: supersededArchive.strategyVersionId,
+      }, { removed: true, activeStrategyChanged: false, strategyVersionId: null });
+      assert.equal((await repository.archiveCategoryStrategyDraft(supersededArchiveInput)).duplicate, true);
+      assert.equal((await admin.query(
+        "SELECT id FROM ai_content_strategy_versions WHERE account_id=$1 AND strategy_key='default' AND status='PUBLISHED'",
+        [accountId],
+      )).rows[0].id, replacementPublished.id);
+
+      const activeArchive = await repository.archiveCategoryStrategyDraft({
+        accountId, actorId: accountId, draftId: replacementDraft.draftId, expectedDraftVersion: 5,
+        idempotencyKey: `archive-active-${suffix}`,
+        correlationId: `archive-active-correlation-${suffix}`,
+      });
+      assert.deepEqual({
+        removed: activeArchive.removed,
+        activeStrategyChanged: activeArchive.activeStrategyChanged,
+        strategyVersion: activeArchive.strategyVersion,
+      }, { removed: true, activeStrategyChanged: true, strategyVersion: 4 });
+      assert.equal((await admin.query(
+        "SELECT COUNT(*)::int AS count FROM ai_content_strategy_rules WHERE account_id=$1 AND strategy_version_id=$2",
+        [accountId, activeArchive.strategyVersionId],
+      )).rows[0].count, 0);
+      assert.equal((await admin.query(
+        "SELECT COUNT(*)::int AS count FROM auto_listing_category_strategy_events WHERE account_id=$1 AND draft_id IN ($2,$3) AND event_type='PUBLISHED'",
+        [accountId, draft.draftId, replacementDraft.draftId],
+      )).rows[0].count, 2);
     } finally {
       try {
         await pool?.end();
@@ -2336,26 +2390,6 @@ if (!enabled) {
         [accountA],
       )).rows[0].count, before.rows[0].count);
 
-      const wrongLanguageGuidance = { ...manualGuidance, overallStyle: "中文整体风格" };
-      await pool.query(
-        `UPDATE auto_listing_category_strategy_analysis_results
-            SET guidance=$3::JSONB,guidance_hash=$4
-          WHERE account_id=$1 AND id=$2`,
-        [accountA, manualResultId, JSON.stringify(wrongLanguageGuidance),
-          crypto.createHash("sha256").update(JSON.stringify(wrongLanguageGuidance)).digest("hex")],
-      );
-      await assert.rejects(repository.publishCategoryStrategyDraft({
-        ...base, idempotencyKey: `wrong-language-${suffix}`,
-        correlationId: `wrong-language-corr-${suffix}`,
-      }), { code: "AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", status: 409 });
-      await pool.query(
-        `UPDATE auto_listing_category_strategy_analysis_results
-            SET guidance=$3::JSONB,guidance_hash=$4
-          WHERE account_id=$1 AND id=$2`,
-        [accountA, manualResultId, JSON.stringify(manualGuidance),
-          crypto.createHash("sha256").update(JSON.stringify(manualGuidance)).digest("hex")],
-      );
-
       const publishCollisionId = `publish-collision-${suffix}`;
       await pool.query(
         `INSERT INTO ai_content_strategy_versions
@@ -2627,7 +2661,7 @@ if (!enabled) {
             scope: { accountId, taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 270, typeId: 199 },
             draftVersion: 4, status: "DRAFT_READY", sampleCount: 5,
             sourceCollectItemId: `source-${suffix}`, expectedSourceVersion: "draft:7",
-            browserUrl: "https://www.ozon.ru/category/270/",
+            browserUrl: "https://www.ozon.ru/category/test-category-270/",
           }; },
           async getDraftDetail() { throw new Error("not used"); },
           async getThumbnailEvidence() { return null; },

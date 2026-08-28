@@ -6,6 +6,7 @@ import {
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
 import {
   isSafeAutoListingBlockedCancellationFailure,
+  isSafeAutoListingPlanningRetryFailure,
   isSafeAutoListingPreOzonRetryFailure,
 } from "./auto-listing-state-machine.mjs";
 import { AUTO_LISTING_PLANNING_CONTRACTS } from "./auto-listing-planning-contract.mjs";
@@ -232,11 +233,12 @@ function resolveForExactScope(published, scope) {
   }
 }
 
-function strategyRequired({ scope, control, actor }) {
+function strategyRequired({ scope, sourceCollectItemId, control, actor }) {
   const canManage = hasPermission(actor, PERMISSIONS.AI_CONTENT_MANAGE);
   const draft = control.drafts.find((candidate) => scopeKey(candidate.scope) === scopeKey(scope));
   const details = {
     scope,
+    sourceCollectItemId,
     status: draft?.status || "NOT_CONFIGURED",
     canManage,
     ...(canManage && draft ? { draftId: draft.draftId } : {}),
@@ -279,10 +281,10 @@ function categoryAncestors(ids) {
     .filter((entry) => entry.categoryId);
 }
 
-function strategyFor(snapshot, source, published) {
+function strategyFor(snapshot, source, published, useCategoryStrategy = true) {
   return resolveAiContentStrategy({
     strategyVersion: published.strategyVersion,
-    rules: published.rules,
+    rules: useCategoryStrategy ? published.rules : [],
     product: {
       taxonomyScope: snapshot.targetCategory.taxonomyScope,
       descriptionCategoryId: snapshot.targetCategory.descriptionCategoryId,
@@ -352,7 +354,7 @@ function buildJobItems({
         configSnapshot: config, configHash, sourceCapture: captured,
       }),
     };
-    const strategy = strategyFor(captured.snapshot, source, published);
+    const strategy = strategyFor(captured.snapshot, source, published, config.useCategoryStrategy !== false);
     try {
       return {
         ...base, strategyId: strategy.strategyId, strategyVersionId: strategy.strategyVersionId,
@@ -409,12 +411,15 @@ function safeItemActions(source) {
   ].includes(failureCode);
   const uploadPolicyPreflightBlocked = status === "BLOCKED"
     && isSafeAutoListingPreOzonRetryFailure(failureCode);
+  const recoverableBlockedPlanningFailure = status === "BLOCKED"
+    && isSafeAutoListingPlanningRetryFailure(failureCode);
   const cancellable = ["CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "READY_FOR_REVIEW", "UPLOAD_QUEUED", "RETRYABLE_ERROR"].includes(status)
     || (status === "BLOCKED" && isSafeAutoListingBlockedCancellationFailure(failureCode));
   return Object.freeze({
     review: hasReview && ["READY_FOR_REVIEW", "SUCCEEDED"].includes(status),
     approve: hasReview && (status === "READY_FOR_REVIEW" || uploadPolicyPreflightBlocked),
-    retry: (status === "RETRYABLE_ERROR" && ["PLANNING", "GENERATION"].includes(recoveryPoint)) || recoverableBlockedFailure,
+    retry: (status === "RETRYABLE_ERROR" && ["PLANNING", "GENERATION"].includes(recoveryPoint))
+      || recoverableBlockedFailure || recoverableBlockedPlanningFailure,
     regenerate: hasReview && status === "READY_FOR_REVIEW",
     cancel: cancellable,
   });
@@ -630,7 +635,7 @@ export function createAutoListingService({
       strategyVersionId: observation.strategyVersionId, scope: observation.scope,
       correlationId, outcome, startedAt });
   }
-  async function evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources,
+  async function evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources, useCategoryStrategy = true,
     correlationId = "category-strategy-required", startedAt = observationStartedAt() }) {
     let projectedSources;
     try {
@@ -642,9 +647,26 @@ export function createAutoListingService({
     if (projectedSources.length < 1) {
       throw error("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
     }
-    const uniqueScopes = [...new Map(projectedSources.map(({ scope }) => {
-      return [scopeKey(scope), scope];
+    const uniqueScopeSources = [...new Map(projectedSources.map(({ scope, authorization }) => {
+      return [scopeKey(scope), Object.freeze({ scope, sourceCollectItemId: authorization.collectItemId })];
     })).values()];
+    const uniqueScopes = uniqueScopeSources.map(({ scope }) => scope);
+    if (!useCategoryStrategy) {
+      let rawPublished;
+      try {
+        rawPublished = await storage.loadPublishedStrategy({ accountId });
+      } catch {
+        throw error("AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", 500);
+      }
+      const published = projectPublishedBundle(rawPublished);
+      if (!published) throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
+      return Object.freeze({
+        published,
+        sources: Object.freeze(projectedSources.map(({ source }) => source)),
+        authorizations: Object.freeze(projectedSources.map(({ authorization }) => authorization)),
+        graph: undefined,
+      });
+    }
     let rawControl;
     let rawPublished;
     try {
@@ -671,10 +693,10 @@ export function createAutoListingService({
         sessionId: null, attemptId: null, strategyVersionId: null, scope: uniqueScopes[0],
         correlationId, outcome: "blocked",
         startedAt });
-      throw strategyRequired({ scope: uniqueScopes[0], control, actor });
+      throw strategyRequired({ ...uniqueScopeSources[0], control, actor });
     }
     const selectedScopes = [];
-    for (const scope of uniqueScopes) {
+    for (const { scope, sourceCollectItemId } of uniqueScopeSources) {
       const resolved = resolveForExactScope(published, scope);
       const rawRule = findPublishedRule(published, resolved.ruleId);
       const accepted = resolved.matchedBy === "EXACT_CATEGORY_TYPE_V2"
@@ -684,7 +706,7 @@ export function createAutoListingService({
           sessionId: null, attemptId: null, strategyVersionId: null, scope,
           correlationId, outcome: "blocked",
           startedAt });
-        throw strategyRequired({ scope, control, actor });
+        throw strategyRequired({ scope, sourceCollectItemId, control, actor });
       }
       selectedScopes.push(Object.freeze({ ...scope, ruleId: resolved.ruleId }));
     }
@@ -705,6 +727,7 @@ export function createAutoListingService({
   }) {
     const categoryStrategyGate = suppliedCategoryStrategyGate
       || await evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources,
+        useCategoryStrategy: config.useCategoryStrategy !== false,
         correlationId, startedAt: observationStartedAt() });
     sources = categoryStrategyGate.sources;
     const store = suppliedStore || await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
@@ -888,6 +911,7 @@ export function createAutoListingService({
       let sources = await storage.loadCollectSources({ accountId, collectItemIds });
       let categoryStrategyGate = await evaluateCategoryStrategyGate({
         accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources, correlationId,
+        useCategoryStrategy: config.useCategoryStrategy !== false,
         startedAt: requestStartedAt,
       });
       sources = categoryStrategyGate.sources;
@@ -905,6 +929,7 @@ export function createAutoListingService({
         sources = await storage.loadCollectSources({ accountId, collectItemIds });
         categoryStrategyGate = await evaluateCategoryStrategyGate({
           accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources, correlationId,
+          useCategoryStrategy: config.useCategoryStrategy !== false,
           startedAt: requestStartedAt,
         });
         sources = categoryStrategyGate.sources;
@@ -981,7 +1006,8 @@ export function createAutoListingService({
         throw error("AUTO_LISTING_IMPORT_NOT_FINALIZABLE", 409);
       }
       const categoryStrategyGate = await evaluateCategoryStrategyGate({ accountId, actor: input.actor,
-        sourceType: "EXCEL_SKU", sources, correlationId: file.correlationId, startedAt: requestStartedAt });
+        sourceType: "EXCEL_SKU", sources, useCategoryStrategy: frozen.config.useCategoryStrategy !== false,
+        correlationId: file.correlationId, startedAt: requestStartedAt });
       const strict = strictObservation(categoryStrategyGate);
       try {
         const created = await createFromSources({

@@ -72,6 +72,9 @@ function safePreference(row, accountId, { migrateLegacyDefaults = false } = {}) 
     || (row.accountId !== undefined && row.accountId !== accountId)) {
     throw workflowError("AUTO_LISTING_USER_DATA_BOUNDARY");
   }
+  if (row.useCategoryStrategy !== undefined && typeof row.useCategoryStrategy !== "boolean") {
+    throw workflowError("AUTO_LISTING_USER_DATA_BOUNDARY");
+  }
   let config = normalizeAutoListingConfig({
     targetStoreId: row.targetStoreId,
     targetWarehouseId: row.targetWarehouseId,
@@ -79,6 +82,7 @@ function safePreference(row, accountId, { migrateLegacyDefaults = false } = {}) 
     priceAdjustmentKopecks: row.priceAdjustmentKopecks,
     priceMultiplierMicros: row.priceMultiplierMicros,
     ...(row.brandMode !== undefined ? { brandMode: row.brandMode } : {}),
+    useCategoryStrategy: row.useCategoryStrategy !== false,
     image: row.image,
   });
   if (migrateLegacyDefaults) {

@@ -79,7 +79,7 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
   observability = null,
   now = new Date("2026-08-15T00:00:00.000Z") } = {}) {
   const calls = { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
-    handoff: 0, publish: 0, rollback: 0 };
+    handoff: 0, publish: 0, archive: 0, rollback: 0 };
   const records = { session: [], handoff: [], persist: [], commit: [], identity: [], cancel: [], revision: [] };
   records.analysis = [];
   records.edit = [];
@@ -216,6 +216,12 @@ function harness({ currentDraft = draft(), verify = factFor, persistFailure = nu
       id: "strategy-v3", strategyKey: "default", version: 3, status: "PUBLISHED", duplicate: false,
       content: { schemaVersion: "V2" }, rules: [],
       ...publicationOverrides,
+      ...(publicationExtra ? { vendorSecret: "must-not-leak" } : {}),
+    }; },
+    async archiveCategoryStrategyDraft(input) { calls.archive += 1; if (publicationFailure) throw publicationFailure; return {
+      draftId: input.draftId, removed: true, draftVersion: input.expectedDraftVersion + 1,
+      activeStrategyChanged: true, strategyVersionId: "strategy-v4", strategyVersion: 4,
+      duplicate: false,
       ...(publicationExtra ? { vendorSecret: "must-not-leak" } : {}),
     }; },
   };
@@ -609,11 +615,11 @@ test("sample confirmation revalidates every SKU before persistence and atomicall
     sampleCount: 5, draftVersion: 2, status: "SAMPLES_READY", duplicate: false,
   });
   assert.deepEqual(h.calls, { read: 1, verify: 5, persist: 5, commit: 1, policy: 0,
-    handoff: 0, publish: 0, rollback: 0 });
+    handoff: 0, publish: 0, archive: 0, rollback: 0 });
 
   assert.deepEqual(await h.service.confirmSampleSet(input), result);
   assert.deepEqual(h.calls, { read: 1, verify: 5, persist: 5, commit: 1, policy: 0,
-    handoff: 0, publish: 0, rollback: 0 });
+    handoff: 0, publish: 0, archive: 0, rollback: 0 });
 });
 
 test("prepares at most eight samples concurrently and commits selected SKU order", async () => {
@@ -658,7 +664,7 @@ test("durable repository replays bypass browser facts, object storage, and curre
     sampleCount: 5, draftVersion: 2, status: "SAMPLES_READY", duplicate: true,
   });
   assert.deepEqual(h.calls, { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
-    handoff: 0, publish: 0, rollback: 0 });
+    handoff: 0, publish: 0, archive: 0, rollback: 0 });
 });
 
 test("durable sample replay rejects accessors without executing user code", async () => {
@@ -874,7 +880,7 @@ test("analysis/manual edit work and sample revision requires a full immutable re
     expectedDraftVersion: 2, idempotencyKey: "remove-b", correlationId: "correlation-b",
   }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_SAMPLE_NOT_FOUND", status: 404 });
   assert.deepEqual(h.calls, { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
-    handoff: 0, publish: 0, rollback: 0 });
+    handoff: 0, publish: 0, archive: 0, rollback: 0 });
 });
 
 test("durable sampling cancellation is idempotent and a cancelled start replay cannot hand off again", async () => {
@@ -945,6 +951,8 @@ test("every service write rejects an ordinary user before repository, storage, v
       patch: {}, idempotencyKey: "e", correlationId: "c" }],
     ["publishDraft", { actor: user, draftId: "draft-a", expectedDraftVersion: 1,
       expectedPublishedStrategyVersionId: "v1", idempotencyKey: "pub", correlationId: "c" }],
+    ["archiveDraft", { actor: user, draftId: "draft-a", expectedDraftVersion: 1,
+      idempotencyKey: "archive", correlationId: "c" }],
     ["rollbackDraft", { actor: user, draftId: "draft-a", targetStrategyVersionId: "v1",
       expectedPublishedStrategyVersionId: "v2", idempotencyKey: "rb", correlationId: "c" }],
   ];
@@ -952,7 +960,7 @@ test("every service write rejects an ordinary user before repository, storage, v
     await assert.rejects(h.service[method](input), { code: "PERMISSION_FORBIDDEN", status: 403 });
   }
   assert.deepEqual(h.calls, { read: 0, verify: 0, persist: 0, commit: 0, policy: 0,
-    handoff: 0, publish: 0, rollback: 0 });
+    handoff: 0, publish: 0, archive: 0, rollback: 0 });
 });
 
 test("publication and rollback expose only the closed immutable strategy summary", async () => {
@@ -1008,6 +1016,19 @@ test("publication and rollback expose only the closed immutable strategy summary
     }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", status: 500 });
   }
   assert.deepEqual({ traps, reads }, { traps: 0, reads: 0 });
+});
+
+test("archive closes one draft and reports whether its exact active strategy was replaced", async () => {
+  const h = harness();
+  assert.deepEqual(await h.service.archiveDraft({
+    actor: ACTOR, draftId: "draft-a", expectedDraftVersion: 1,
+    idempotencyKey: "archive-a", correlationId: "archive-correlation-a",
+  }), {
+    draftId: "draft-a", removed: true, draftVersion: 2,
+    activeStrategyChanged: true, strategyVersionId: "strategy-v4", strategyVersion: 4,
+    duplicate: false,
+  });
+  assert.equal(h.calls.archive, 1);
 });
 
 test("publication translates the AI-admin current-version race into a stable category conflict", async () => {

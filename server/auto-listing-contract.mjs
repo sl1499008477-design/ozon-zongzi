@@ -72,7 +72,7 @@ const FORBIDDEN_CLIENT_FIELDS = new Set([
   "hasReliableProductDimensions",
 ]);
 
-const CONFIG_KEYS = new Set(["targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplierMicros", "brandMode", "image"]);
+const CONFIG_KEYS = new Set(["targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplierMicros", "brandMode", "useCategoryStrategy", "image"]);
 const IMAGE_KEYS = new Set(["ratio", "resolution", "quality", "language", "roles", "total"]);
 
 const POSTGRES_BIGINT_MIN = -9_223_372_036_854_775_808n;
@@ -212,6 +212,10 @@ export function normalizeAutoListingConfig(rawConfig = {}) {
   if (rawConfig.brandMode !== undefined) {
     if (!BRAND_MODES.has(rawConfig.brandMode)) throw contractError("AUTO_LISTING_CONFIG_INVALID");
     config.brandMode = rawConfig.brandMode;
+  }
+  if (rawConfig.useCategoryStrategy !== undefined) {
+    if (typeof rawConfig.useCategoryStrategy !== "boolean") throw contractError("AUTO_LISTING_CONFIG_INVALID");
+    config.useCategoryStrategy = rawConfig.useCategoryStrategy;
   }
   if (rawConfig.priceMultiplierMicros !== undefined) {
     config.priceMultiplierMicros = positiveIntegerString(rawConfig.priceMultiplierMicros);

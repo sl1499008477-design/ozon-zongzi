@@ -747,7 +747,7 @@ test("does not activate no-brand fallback for an optional brand attribute", asyn
     item.attributes.every(({ id }) => id !== 85)), true);
 });
 
-test("resolves legacy source category dictionary text by an exact current Ozon option", async () => {
+test("rebases a stale source type attribute to the current target Ozon type", async () => {
   const itemSource = source();
   itemSource.collectItem.listingDraft.sourceCategory = {
     attributes: [
@@ -769,7 +769,7 @@ test("resolves legacy source category dictionary text by an exact current Ozon o
       },
       async getCategoryAttributeValues(input) {
         reads.push({ attributeId: input.attributeId, matchCandidates: input.matchCandidates });
-        if (input.attributeId === 8229) return { items: [{ id: 94453, value: "Target type" }] };
+        if (input.attributeId === 8229) return { items: [{ id: 999, value: "Target type" }] };
         if (input.attributeId === 85) return { items: [{ id: 972053798, value: "MQOUO" }] };
         return { items: [] };
       },
@@ -785,7 +785,12 @@ test("resolves legacy source category dictionary text by an exact current Ozon o
   });
   assert.deepEqual(reads, [
     { attributeId: 85, matchCandidates: [{ value: "MQOUO" }] },
-    { attributeId: 8229, matchCandidates: [{ id: 94453, value: "Source type" }] },
+    { attributeId: 8229, matchCandidates: [{ id: 999 }] },
+  ]);
+  assert.deepEqual(result.variants.map((variant) =>
+    variant.item.attributes.find((attribute) => attribute.id === 8229)?.values), [
+    [{ value: "Target type", dictionary_value_id: 999 }],
+    [{ value: "Target type", dictionary_value_id: 999 }],
   ]);
   assert.deepEqual(result.variants.map((variant) =>
     variant.item.attributes.find((attribute) => attribute.id === 85)?.values), [

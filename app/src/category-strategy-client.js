@@ -1,5 +1,6 @@
 import { apiRequest, localApiAssetUrl } from "./client-transport.js";
 import {
+  categoryStrategyChineseNameIndex,
   projectCategoryStrategyAnalysis,
   projectCategoryStrategyDetailBundle,
   projectCategoryStrategyList,
@@ -19,6 +20,7 @@ const REQUEST_KEYS = Object.freeze({
   create: new Set(["scope", "sourceCollectItemId", "expectedSourceVersion", "idempotencyKey", "correlationId"]),
   session: new Set(["expectedDraftVersion", "idempotencyKey", "correlationId"]),
   remove: new Set(["expectedDraftVersion", "idempotencyKey", "correlationId"]),
+  archive: new Set(["expectedDraftVersion", "idempotencyKey", "correlationId"]),
   analysis: new Set(["costConfirmed", "idempotencyKey", "correlationId"]),
   edit: new Set(["expectedDraftVersion", "patch", "idempotencyKey", "correlationId"]),
   publish: new Set(["expectedDraftVersion", "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId"]),
@@ -71,7 +73,7 @@ export function categoryStrategyErrorMessage(error) {
   const code = typeof errorField(error, "code") === "string" ? errorField(error, "code") : "";
   if (status === 403 || code === "PERMISSION_FORBIDDEN") return "没有类目策略管理权限，请联系账号管理员。";
   if (code === "AUTO_LISTING_CATEGORY_STRATEGY_SOURCE_NOT_FOUND") {
-    return "商品类目信息已变化，请返回自动上架页刷新后重试。";
+    return "当前商品暂时没有可用的类目依据，请返回自动上架页刷新后重试。";
   }
   if (code === "AUTO_LISTING_CATEGORY_STRATEGY_SESSION_HANDOFF_NOT_READY") {
     return "浏览器扩展尚未连接，请先安装或刷新扩展后重试。";
@@ -268,11 +270,31 @@ function createdDraft(raw) {
     draftVersion: projected.draftVersion, status: projected.status, duplicate: value.duplicate });
 }
 
+function archivedDraft(raw, expectedDraftId) {
+  const value = closed(raw, new Set([
+    "draftId", "removed", "draftVersion", "activeStrategyChanged",
+    "strategyVersionId", "strategyVersion", "duplicate",
+  ]));
+  if (identifier(value.draftId) !== expectedDraftId || value.removed !== true
+    || !Number.isSafeInteger(value.draftVersion) || value.draftVersion < 1
+    || typeof value.activeStrategyChanged !== "boolean" || typeof value.duplicate !== "boolean"
+    || !((value.strategyVersionId === null && value.strategyVersion === null && !value.activeStrategyChanged)
+      || (identifier(value.strategyVersionId) && Number.isSafeInteger(value.strategyVersion)
+        && value.strategyVersion > 0 && value.activeStrategyChanged))) throw clientError();
+  return Object.freeze({ ...value });
+}
+
 export function createCategoryStrategyClient({ request = apiRequest } = {}) {
   if (typeof request !== "function") throw clientError();
   return Object.freeze({
     async list() {
       return projectCategoryStrategyList(envelope(await request(BASE)));
+    },
+    async loadChineseCategoryNames(storeId) {
+      const response = await request("/ozon/categories/tree?language=ZH_HANS", {
+        headers: { "x-ozon-store-id": identifier(storeId) },
+      });
+      return categoryStrategyChineseNameIndex(response?.items);
     },
     async getDraft(draftId) {
       return projectCategoryStrategyDetailBundle(envelope(await request(`${BASE}/${encodeURIComponent(identifier(draftId))}`)));
@@ -304,6 +326,12 @@ export function createCategoryStrategyClient({ request = apiRequest } = {}) {
         idempotencyKey: identifier(samplingIdentity.idempotencyKey),
         correlationId: identifier(samplingIdentity.correlationId),
       }) });
+    },
+    async archiveDraft(draftId, input) {
+      const safeDraftId = identifier(draftId);
+      return archivedDraft(envelope(await request(`${BASE}/${encodeURIComponent(safeDraftId)}`, {
+        method: "DELETE", body: categoryStrategyRequestBody("archive", input),
+      })), safeDraftId);
     },
     async analyze(draftId, input) {
       return projectCategoryStrategyAnalysis(envelope(await request(

@@ -31,7 +31,7 @@ test("AI queue starts only its dedicated queue and publishes one closed V1 messa
   const result = await queue.publish(message);
   await queue.stop();
 
-  assert.equal(AUTO_LISTING_AI_QUEUE, "auto-listing-ai-v1");
+  assert.equal(AUTO_LISTING_AI_QUEUE, "auto-listing-ai-v2");
   assert.equal(Object.isFrozen(AUTO_LISTING_AI_QUEUE_OPTIONS), true);
   assert.deepEqual(AUTO_LISTING_AI_QUEUE_OPTIONS, {
     retryLimit: 5,
@@ -46,14 +46,14 @@ test("AI queue starts only its dedicated queue and publishes one closed V1 messa
   assert.equal(factories, 1);
   assert.deepEqual(calls[0], ["start"]);
   assert.equal(calls[1][0], "createQueue");
-  assert.equal(calls[1][1], "auto-listing-ai-v1");
+  assert.equal(calls[1][1], "auto-listing-ai-v2");
   assert.deepEqual(calls[1][2], AUTO_LISTING_AI_QUEUE_OPTIONS);
-  assert.deepEqual(calls[2], ["send", "auto-listing-ai-v1", message, {
-    id: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+  assert.deepEqual(calls[2], ["send", "auto-listing-ai-v2", message, {
+    id: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
     singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
   }]);
   assert.deepEqual(result, {
-    publicationId: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+    publicationId: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
     singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
     duplicate: false,
   });
@@ -83,7 +83,7 @@ test("pg-boss singleton conflicts are idempotent publish success and feature-dis
       },
     });
     assert.deepEqual(await queue.publish(message), {
-      publicationId: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+      publicationId: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
       singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
       duplicate: true,
     });
@@ -128,10 +128,10 @@ test("publisher claims a bounded account batch, publishes the closed message and
   assert.equal(stored.status, "COMPLETED");
   assert.equal(stored.completedAt, 1_100);
   assert.deepEqual(sent, [{
-    name: "auto-listing-ai-v1",
+    name: "auto-listing-ai-v2",
     payload: message,
     options: {
-      id: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+      id: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
       singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
     },
   }]);
@@ -634,7 +634,7 @@ test("publisher leaves the lease replayable when a queue adapter returns forged 
     queueAdapter: {
       async publish() {
         const forged = {
-          publicationId: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+          publicationId: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
           singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
           duplicate: false,
         };

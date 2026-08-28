@@ -73,7 +73,7 @@ const SAFE_PRE_OZON_RETRY_FAILURES = new Set([
   "AUTO_LISTING_UPLOAD_EVIDENCE_INVALID",
 ]);
 
-const SAFE_PRE_OZON_BLOCKED_CANCELLATION_FAILURES = new Set([
+const SAFE_PRE_OZON_PLANNING_FAILURES = new Set([
   "AUTO_LISTING_CONTENT_PLAN_FAILED",
   "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID",
   "AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED",
@@ -88,7 +88,11 @@ export function isSafeAutoListingPreOzonRetryFailure(failureCode) {
 }
 
 export function isSafeAutoListingBlockedCancellationFailure(failureCode) {
-  return typeof failureCode === "string" && SAFE_PRE_OZON_BLOCKED_CANCELLATION_FAILURES.has(failureCode);
+  return isSafeAutoListingPlanningRetryFailure(failureCode);
+}
+
+export function isSafeAutoListingPlanningRetryFailure(failureCode) {
+  return typeof failureCode === "string" && SAFE_PRE_OZON_PLANNING_FAILURES.has(failureCode);
 }
 
 const transitionError = () => {

@@ -82,6 +82,19 @@ function fixture({
         }],
       };
     },
+    async archiveCategoryStrategyDraft(input) {
+      calls.push(["archiveCategoryStrategyDraft", input]);
+      return {
+        draftId: input.draftId,
+        accountId: input.accountId,
+        removed: true,
+        draftVersion: input.expectedDraftVersion + 1,
+        activeStrategyChanged: true,
+        strategyVersionId: "strategy-category-v9",
+        strategyVersion: 9,
+        duplicate: false,
+      };
+    },
     async rollbackCategoryStrategyVersion(input) {
       calls.push(["rollbackCategoryStrategyVersion", input]);
       return { id: "strategy-category-rollback", accountId: input.accountId, strategyKey: "default",
@@ -152,6 +165,8 @@ test("every admin operation rejects ordinary users before repository or capabili
     () => service.publishCategoryStrategyDraft({ actor: ordinary, draftId: "category-draft-a",
       expectedDraftVersion: 4, expectedPublishedStrategyVersionId: "strategy-version-a",
       idempotencyKey: "idem-a", correlationId: "corr-a" }),
+    () => service.archiveCategoryStrategyDraft({ actor: ordinary, draftId: "category-draft-a",
+      expectedDraftVersion: 4, idempotencyKey: "idem-a", correlationId: "corr-a" }),
     () => service.rollbackCategoryStrategyVersion({ actor: ordinary,
       targetStrategyVersionId: "strategy-version-old", expectedPublishedStrategyVersionId: "strategy-version-a",
       idempotencyKey: "idem-a", correlationId: "corr-a" }),
@@ -448,4 +463,31 @@ test("category rollback is a closed copy-on-write account version command", asyn
   assert.deepEqual({ id: rolledBack.id, version: rolledBack.version }, {
     id: "strategy-category-rollback", version: 9,
   });
+});
+
+test("category archive is account scoped and exposes only the auditable removal result", async () => {
+  const { service, calls } = fixture();
+  assert.deepEqual(await service.archiveCategoryStrategyDraft({
+    actor: admin,
+    draftId: "category-draft-a",
+    expectedDraftVersion: 4,
+    idempotencyKey: "archive-category",
+    correlationId: "archive-category-corr",
+  }), {
+    draftId: "category-draft-a",
+    removed: true,
+    draftVersion: 5,
+    activeStrategyChanged: true,
+    strategyVersionId: "strategy-category-v9",
+    strategyVersion: 9,
+    duplicate: false,
+  });
+  assert.deepEqual(calls[0], ["archiveCategoryStrategyDraft", {
+    accountId: "account-admin",
+    actorId: "account-admin",
+    draftId: "category-draft-a",
+    expectedDraftVersion: 4,
+    idempotencyKey: "archive-category",
+    correlationId: "archive-category-corr",
+  }]);
 });

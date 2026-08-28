@@ -1232,6 +1232,7 @@ test("strict account mode rejects a missing exact category strategy before every
       assert.equal(caught?.status, 409);
       assert.deepEqual(caught?.details, {
         scope: exactScope,
+        sourceCollectItemId: "collect-1",
         status: "SAMPLES_READY",
         canManage: true,
         draftId: "same-account-draft",
@@ -1250,6 +1251,35 @@ test("strict account mode rejects a missing exact category strategy before every
   assert.deepEqual(repository.calls.map(([name]) => name), [
     "getJobByIdempotencyKey", "loadCollectSources", "loadCategoryStrategyControl", "loadPublishedStrategy",
   ]);
+});
+
+test("a task with category strategy disabled uses the generic plan without the strict account gate", async () => {
+  const repository = fakeRepository({
+    categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 9, drafts: [] },
+  });
+  repository.loadPublishedStrategy = async (input) => {
+    repository.calls.push(["loadPublishedStrategy", input]);
+    return {
+      strategyVersion: { strategyId: "default", strategyVersionId: "published-generic" },
+      rules: [exactV2Rule({
+        scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 789, typeId: 987 },
+      })],
+    };
+  };
+
+  await createAutoListingService({ repository }).createAutoListingJob({
+    actor,
+    collectItemIds: ["collect-1"],
+    idempotencyKey: "category-strategy-disabled",
+    correlationId: "corr-category-strategy-disabled",
+    config: { ...config, useCategoryStrategy: false },
+  });
+
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.items[0].matchedBy, "DEFAULT");
+  assert.equal(graph.items[0].style, "BALANCED_DEFAULT");
+  assert.equal(graph.categoryStrategyGate, undefined);
+  assert.equal(repository.calls.some(([name]) => name === "loadCategoryStrategyControl"), false);
 });
 
 test("strict create emits required and continue-create observations without exposing source facts", async () => {
@@ -1438,6 +1468,7 @@ test("strict missing-strategy details hide same-account draft identity from ordi
     (caught) => {
       assert.deepEqual(caught?.details, {
         scope: exactScope,
+        sourceCollectItemId: "collect-1",
         status: "COLLECTING",
         canManage: false,
       });
@@ -1446,6 +1477,60 @@ test("strict missing-strategy details hide same-account draft identity from ordi
     },
   );
   assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
+});
+
+test("strict missing-strategy details identify the source item for the unmatched scope", async () => {
+  const unmatchedScope = Object.freeze({
+    taxonomyScope: "OZON:DEFAULT",
+    descriptionCategoryId: 789,
+    typeId: 987,
+  });
+  const unmatched = source("collect-2");
+  unmatched.categoryEvidence = {
+    ...unmatched.categoryEvidence,
+    id: "evidence-collect-2-unmatched",
+    sourceDescriptionCategoryId: unmatchedScope.descriptionCategoryId,
+    sourceTypeId: unmatchedScope.typeId,
+  };
+  unmatched.sharedCategory = {
+    ...unmatched.sharedCategory,
+    id: "shared-789-987",
+    evidenceId: unmatched.categoryEvidence.id,
+    sourceDescriptionCategoryId: unmatchedScope.descriptionCategoryId,
+    sourceTypeId: unmatchedScope.typeId,
+    currentDescriptionCategoryId: unmatchedScope.descriptionCategoryId,
+    currentTypeId: unmatchedScope.typeId,
+  };
+  const repository = fakeRepository({
+    sources: [source("collect-1"), unmatched],
+    categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 2, drafts: [] },
+  });
+  repository.loadPublishedStrategy = async (input) => {
+    repository.calls.push(["loadPublishedStrategy", input]);
+    return {
+      strategyVersion: { strategyId: "default", strategyVersionId: "published-first-only" },
+      rules: [exactV2Rule()],
+    };
+  };
+
+  await assert.rejects(
+    createAutoListingService({ repository }).createAutoListingJob({
+      actor,
+      collectItemIds: ["collect-1", "collect-2"],
+      idempotencyKey: "missing-second-scope",
+      correlationId: "corr-missing-second-scope",
+      config,
+    }),
+    (caught) => {
+      assert.deepEqual(caught?.details, {
+        scope: unmatchedScope,
+        sourceCollectItemId: "collect-2",
+        status: "NOT_CONFIGURED",
+        canManage: false,
+      });
+      return caught?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED";
+    },
+  );
 });
 
 test("strict mode accepts only exact V2 or V1 rules with a complete exact type identity", async () => {
@@ -1815,7 +1900,7 @@ test("job DTO exposes only server-authorized item actions and hides recovery evi
     { itemId: "retry", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: true } },
     { itemId: "upload", actions: { review: false, approve: false, retry: false, regenerate: false, cancel: false } },
     { itemId: "blocked", actions: { review: false, approve: false, retry: false, regenerate: false, cancel: false } },
-    { itemId: "blocked-plan", actions: { review: false, approve: false, retry: false, regenerate: false, cancel: true } },
+    { itemId: "blocked-plan", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: true } },
     { itemId: "blocked-main", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: false } },
     { itemId: "blocked-images", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: false } },
     { itemId: "blocked-rich", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: false } },

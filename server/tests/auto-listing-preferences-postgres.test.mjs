@@ -10,7 +10,7 @@ const frozen = normalizeAndHashAutoListingConfig({
 });
 const brandedFrozen = normalizeAndHashAutoListingConfig({
   targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
-  priceAdjustmentKopecks: "100", brandMode: "PREFER_SOURCE",
+  priceAdjustmentKopecks: "100", brandMode: "PREFER_SOURCE", useCategoryStrategy: false,
 });
 
 function preferenceRow(overrides = {}) {
@@ -38,7 +38,12 @@ test("preference save validates owned active FBS inventory scope and records one
         has_active_product_association: true,
       }] };
       if (sql.includes("INSERT INTO auto_listing_preferences")) return { rows: [preferenceRow({
-        image_config: { ...brandedFrozen.config.image, brandMode: "PREFER_SOURCE", defaultsVersion: 2 },
+        image_config: {
+          ...brandedFrozen.config.image,
+          brandMode: "PREFER_SOURCE",
+          useCategoryStrategy: false,
+          defaultsVersion: 2,
+        },
       })] };
       if (sql.includes("INSERT INTO audit_events")) return { rows: [{ event_id: params[0] }], rowCount: 1 };
       return { rows: [] };
@@ -56,10 +61,12 @@ test("preference save validates owned active FBS inventory scope and records one
   assert.equal(result.configVersion, 1);
   assert.equal(result.accountId, "account-a");
   assert.equal(result.brandMode, "PREFER_SOURCE");
+  assert.equal(result.useCategoryStrategy, false);
   assert.equal(result.imageDefaultsVersion, 2);
   assert.deepEqual(result.image, brandedFrozen.config.image);
   const preferenceInsert = calls.find(([sql]) => sql.includes("INSERT INTO auto_listing_preferences"));
   assert.equal(JSON.parse(preferenceInsert[1][6]).brandMode, "PREFER_SOURCE");
+  assert.equal(JSON.parse(preferenceInsert[1][6]).useCategoryStrategy, false);
   assert.equal(JSON.parse(preferenceInsert[1][6]).defaultsVersion, 2);
   assert.ok(calls.some(([sql]) => sql.includes("has_active_product_association")));
   assert.ok(calls.some(([sql]) => sql.includes("INSERT INTO audit_events")));

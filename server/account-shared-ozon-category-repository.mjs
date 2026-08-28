@@ -698,12 +698,7 @@ function confirmManualInState(working, input, { idFactory }) {
     ?? pointedEvidence?.provenance?.triggerProductDraftId
     ?? (pointer?.sourceKind === "PRODUCT_DRAFT" ? pointer.sourceRecordId : null);
   if (!item || !pointer || !draftId || !Number.isSafeInteger(draftVersion) || draftVersion <= 0
-    || input.expectedSourceVersion !== `draft:${draftVersion}`
-    || (pointer.sourceKind === "PRODUCT_DRAFT"
-      && (pointer.sourceRecordId !== String(draftId)
-        || ![String(draftVersion), `draft:${draftVersion}`].includes(pointer.sourceVersion)))
-    || (pointedEvidence?.provenance?.triggerProductDraftVersion
-      && pointedEvidence.provenance.triggerProductDraftVersion !== draftVersion)) {
+    || input.expectedSourceVersion !== `draft:${draftVersion}`) {
     throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
   }
   const evidence = manualEvidence(input, String(draftId), draftVersion);
@@ -1190,24 +1185,11 @@ async function confirmManualPostgres(client, input, { idFactory }) {
     throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
   }
   const current = (await client.query(
-    `SELECT pointer.*,evidence.provenance
+    `SELECT pointer.*
        FROM collect_ozon_category_current_sources AS pointer
-       JOIN collect_ozon_category_source_evidence AS evidence
-         ON evidence.account_id=pointer.account_id AND evidence.id=pointer.source_evidence_id
       WHERE pointer.account_id=$1 AND pointer.collect_item_id=$2 FOR UPDATE OF pointer`,
     [input.accountId, input.collectItemId],
   )).rows[0] ?? null;
-  if (current) {
-    const triggerDraftId = current.source_kind === "PRODUCT_DRAFT"
-      ? current.source_record_id
-      : current.provenance?.categoryEvidence?.provenance?.triggerProductDraftId;
-    const triggerDraftVersion = current.source_kind === "PRODUCT_DRAFT"
-      ? Number(String(current.source_version).replace(/^draft:/u, ""))
-      : Number(current.provenance?.categoryEvidence?.provenance?.triggerProductDraftVersion);
-    if (triggerDraftId !== basis.current_draft_id || triggerDraftVersion !== draftVersion) {
-      throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
-    }
-  }
   const evidence = manualEvidence(input, basis.current_draft_id, draftVersion);
   const evidenceId = text(idFactory());
   const evidenceRow = (await client.query(

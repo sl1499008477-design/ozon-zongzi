@@ -116,6 +116,7 @@ const DEFAULT_FORM = Object.freeze({
   priceAdjustmentAmount: "0",
   priceMultiplier: "1",
   useCollectedBrand: false,
+  useCategoryStrategy: true,
   ratio: AUTO_LISTING_IMAGE_DEFAULTS.ratio,
   resolution: AUTO_LISTING_IMAGE_DEFAULTS.resolution,
   quality: AUTO_LISTING_IMAGE_DEFAULTS.quality,
@@ -344,6 +345,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
           targetWarehouseId: preference.targetWarehouseId || "",
           stock: preference.stock || DEFAULT_FORM.stock,
           useCollectedBrand: preference.brandMode === "PREFER_SOURCE",
+          useCategoryStrategy: preference.useCategoryStrategy !== false,
           priceAdjustmentAmount: kopecksToRubles(preference.priceAdjustmentKopecks || "0"),
           priceMultiplier: microsToMultiplier(preference.priceMultiplierMicros || "1000000"),
           ratio: preference.image?.ratio || DEFAULT_FORM.ratio,
@@ -505,6 +507,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     priceAdjustmentKopecks: amountToMinorUnits(values.priceAdjustmentAmount),
     priceMultiplier: values.priceMultiplier,
     brandMode: values.useCollectedBrand ? "PREFER_SOURCE" : "FORCE_NO_BRAND",
+    useCategoryStrategy: values.useCategoryStrategy !== false,
     image: {
       ratio: values.ratio,
       resolution: values.resolution,
@@ -916,6 +919,10 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
                 onChange={(checked) => (checked ? confirmDirectUpload() : changeUploadPolicy("REVIEW"))}
               />
             </Form.Item> : null}
+            <Form.Item name="useCategoryStrategy" label="类目策略" valuePropName="checked"
+              extra="开启：使用精确类目策略；关闭：使用通用图片和内容规划">
+              <Switch aria-label="使用类目策略" checkedChildren="使用策略" unCheckedChildren="通用规划" />
+            </Form.Item>
           </div>
           {selectedStoreId && !currencyPresentation
             ? <Alert type="error" showIcon title="店铺币种尚未同步，请先同步店铺资料。" /> : null}

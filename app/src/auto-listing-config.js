@@ -139,8 +139,10 @@ export function deriveAutoListingConfig(input = {}, {
   hasReliableProductDimensions = true,
 } = {}) {
   if (!onlyKeys(input, new Set([
-    "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplier", "brandMode", "image",
+    "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplier", "brandMode",
+    "useCategoryStrategy", "image",
   ])) || !Number.isInteger(input.stock) || input.stock <= 0) throw configError();
+  if (input.useCategoryStrategy !== undefined && typeof input.useCategoryStrategy !== "boolean") throw configError();
   const imageInput = input.image ?? {};
   if (!onlyKeys(imageInput, new Set(["ratio", "resolution", "quality", "language", "roles"]))) {
     throw configError();
@@ -155,6 +157,7 @@ export function deriveAutoListingConfig(input = {}, {
     priceAdjustmentKopecks: signedInteger(input.priceAdjustmentKopecks),
     priceMultiplierMicros: multiplierToMicros(input.priceMultiplier ?? "1"),
     brandMode: option(input.brandMode, "FORCE_NO_BRAND", BRAND_MODES),
+    useCategoryStrategy: input.useCategoryStrategy !== false,
     image: Object.freeze({
       ratio: option(imageInput.ratio, AUTO_LISTING_IMAGE_DEFAULTS.ratio, RATIOS),
       resolution: option(imageInput.resolution, AUTO_LISTING_IMAGE_DEFAULTS.resolution, RESOLUTIONS),

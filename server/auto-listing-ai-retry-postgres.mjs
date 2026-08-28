@@ -6,6 +6,7 @@ import {
   isSafeAutoListingAiIdentifier,
   normalizeAutoListingAiMessage,
 } from "./auto-listing-ai-message.mjs";
+import { isSafeAutoListingPlanningRetryFailure } from "./auto-listing-state-machine.mjs";
 
 const INPUT_KEYS = new Set(["accountId", "jobId", "itemId", "expectedStatusVersion", "idempotencyKey"]);
 const FACTORY_KEYS = new Set(["pool"]);
@@ -269,6 +270,8 @@ export function createPostgresAutoListingAiRetryRepository(rawOptions = {}) {
         const sourceStatus = row.status;
         const recoveryPoint = sourceStatus === "RETRYABLE_ERROR"
           ? row.recovery_point
+          : sourceStatus === "BLOCKED" && isSafeAutoListingPlanningRetryFailure(row.failure_code)
+            ? "PLANNING"
           : sourceStatus === "BLOCKED" && RECOVERABLE_BLOCKED_FAILURES.has(row.failure_code)
             ? "GENERATION" : null;
         if (sourceStatus !== "RETRYABLE_ERROR" && sourceStatus !== "BLOCKED") throw conflict();

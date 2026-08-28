@@ -5,6 +5,9 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { createAutoListingAiAdminPostgres } from "../auto-listing-ai-admin-postgres.mjs";
+import { createCategoryStrategyReadModel } from "../auto-listing-category-strategy-runtime.mjs";
+
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const postgresEnabled = process.env.AUTO_LISTING_CATEGORY_STRATEGY_POSTGRES_TESTS === "1" && Boolean(databaseUrl);
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
@@ -12,6 +15,10 @@ const migrationPath = path.join(migrationsDir, "075_auto_listing_category_strate
 const sourceRevisionMigrationPath = path.join(
   migrationsDir,
   "093_category_strategy_source_product_revision.sql",
+);
+const archiveMigrationPath = path.join(
+  migrationsDir,
+  "097_category_strategy_auditable_archive.sql",
 );
 const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const H = (digit) => digit.repeat(64);
@@ -32,6 +39,14 @@ test("093 keeps category-strategy source evidence immutable without locking the 
   assert.match(sql, /FOREIGN KEY \(source_product_draft_id,source_product_draft_version\)[\s\S]*REFERENCES product_draft_revisions\(draft_id,version\)/iu);
 });
 
+test("097 archives drafts without deleting immutable evidence and removes repeated source validation from updates", async () => {
+  const sql = await readFile(archiveMigrationPath, "utf8");
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ/iu);
+  assert.match(sql, /removed_at IS NULL/iu);
+  assert.match(sql, /TG_OP='INSERT'/iu);
+  assert.doesNotMatch(sql, /\b(?:DELETE FROM|DROP TABLE|TRUNCATE)\b/iu);
+});
+
 async function databaseSampleSetHash(client, accountId, sampleSetId) {
   const result = await client.query(
     "SELECT auto_listing_category_strategy_canonical_sample_set_hash($1,$2) AS hash",
@@ -47,7 +62,7 @@ async function expectCode(promise, code = "23514") {
 async function applyMigrations(client) {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
+  assert.equal(migrations.at(-1), "097_category_strategy_auditable_archive.sql");
   for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
 }
 
@@ -61,6 +76,12 @@ async function createSource(client, { accountId, suffix, label }) {
   await client.query(
     "INSERT INTO product_drafts (id,collect_item_id,version,data_hash,data) VALUES ($1,$2,7,$3,'{}'::JSONB)",
     [productDraftId, collectItemId, H("a")],
+  );
+  await client.query(
+    `INSERT INTO product_draft_revisions
+       (id,draft_id,version,data_hash,data,changed_by,change_reason)
+     VALUES ($1,$2,7,$3,'{}'::JSONB,$4,'category strategy migration test seed')`,
+    [`product-draft-revision-${label}-${suffix}`, productDraftId, H("a"), accountId],
   );
   await client.query("UPDATE collect_items SET current_draft_id=$2 WHERE id=$1", [collectItemId, productDraftId]);
   return { collectItemId, productDraftId, productDraftVersion: 7, expectedSourceVersion: "draft:7" };
@@ -604,6 +625,36 @@ if (!postgresEnabled) {
          VALUES ($1,$2,$3,'OZON:DEFAULT',170,99,'PUBLISHED',$4,$5,$6,$7,$8,$2)`,
         [publishedEvent, accountA, draftA, result, strategy, `published-event-key-${suffix}`, `published-event-correlation-${suffix}`, H("f")],
       );
+
+      const archiveEnableKey = `settings-archive-enable-${suffix}`;
+      await client.query(
+        `UPDATE auto_listing_category_strategy_account_settings
+            SET mode='REQUIRE_EXACT_STRATEGY',version=4,idempotency_key=$2,correlation_id=$3,
+                request_hash=$4,actor_account_id=$1
+          WHERE account_id=$1`,
+        [accountA, archiveEnableKey, `${archiveEnableKey}-correlation`, sha(archiveEnableKey)],
+      );
+
+      const scopedPool = {
+        async connect() { return { query: client.query.bind(client), release() {} }; },
+        query: client.query.bind(client),
+      };
+      const archived = await createAutoListingAiAdminPostgres({ pool: scopedPool })
+        .archiveCategoryStrategyDraft({
+          accountId: accountA, actorId: accountA, draftId: draftA, expectedDraftVersion: 1,
+          idempotencyKey: `archive-draft-key-${suffix}`,
+          correlationId: `archive-draft-correlation-${suffix}`,
+        });
+      assert.deepEqual({ removed: archived.removed, draftVersion: archived.draftVersion,
+        activeStrategyChanged: archived.activeStrategyChanged }, {
+        removed: true, draftVersion: 2, activeStrategyChanged: false,
+      });
+      assert.equal((await client.query(
+        "SELECT removed_at IS NOT NULL AS removed FROM auto_listing_category_strategy_drafts WHERE id=$1",
+        [draftA],
+      )).rows[0].removed, true);
+      assert.equal((await createCategoryStrategyReadModel({ pool: scopedPool })
+        .listStrategies({ accountId: accountA })).some((entry) => entry.draftId === draftA), false);
 
       const draftWrongScope = `draft-wrong-scope-${suffix}`;
       await insertDraft(client, {

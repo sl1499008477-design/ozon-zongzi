@@ -145,6 +145,8 @@ test("missing category strategy opens its configuration dialog while preserving 
   let vite;
   let browser;
   let context;
+  let creationRequests = 0;
+  const submittedConfigs = [];
   try {
     vite = await createServer({
       root: appRoot,
@@ -192,6 +194,12 @@ test("missing category strategy opens its configuration dialog while preserving 
         return;
       }
       if (url.pathname === "/api/auto-listing/jobs/from-collect-box" && request.method() === "POST") {
+        creationRequests += 1;
+        submittedConfigs.push(request.postDataJSON().config);
+        if (creationRequests > 1) {
+          await route.fulfill({ status: 200, json: { ok: true, data: { jobId: "job-created" } } });
+          return;
+        }
         await route.fulfill({ status: 409, json: {
           ok: false,
           code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED",
@@ -199,6 +207,7 @@ test("missing category strategy opens its configuration dialog while preserving 
           correlationId: "correlation-required",
           details: {
             scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 88265327, typeId: 95402 },
+            sourceCollectItemId: "collect-poll",
             status: "NOT_CONFIGURED",
             canManage: true,
             draftId: "draft-required",
@@ -213,6 +222,12 @@ test("missing category strategy opens its configuration dialog while preserving 
     const brandSwitch = page.getByRole("switch", { name: "使用采集品牌" });
     await brandSwitch.waitFor();
     assert.equal(await brandSwitch.getAttribute("aria-checked"), "false");
+    const uploadSwitch = page.getByRole("switch", { name: "自动上传到 Ozon" });
+    const strategySwitch = page.getByRole("switch", { name: "使用类目策略" });
+    assert.equal(await strategySwitch.count(), 1);
+    assert.equal(await strategySwitch.getAttribute("aria-checked"), "true");
+    const [uploadBox, strategyBox] = await Promise.all([uploadSwitch.boundingBox(), strategySwitch.boundingBox()]);
+    assert.ok(uploadBox && strategyBox && strategyBox.x > uploadBox.x);
     await page.getByRole("button", { name: "创建生成任务" }).click();
     await page.getByText("需要先配置类目图片策略", { exact: true }).waitFor();
 
@@ -220,8 +235,17 @@ test("missing category strategy opens its configuration dialog while preserving 
       "zongzi:auto-listing:category-strategy-resume:v1:account-poll",
     )));
     assert.equal(resume.form.useCollectedBrand, false);
+    assert.equal(resume.form.useCategoryStrategy, true);
     assert.equal(resume.form.priceMultiplier, "1");
     assert.equal(await page.getByText("类目策略配置资料无效，请刷新后重试", { exact: true }).count(), 0);
+    await page.getByRole("button", { name: "暂不处理" }).click();
+    await strategySwitch.click();
+    assert.equal(await strategySwitch.getAttribute("aria-checked"), "false");
+    await page.getByRole("button", { name: "创建生成任务" }).click();
+    await page.getByText("任务已创建", { exact: true }).waitFor();
+    assert.equal(creationRequests, 2);
+    assert.equal(submittedConfigs[0].useCategoryStrategy, true);
+    assert.equal(submittedConfigs[1].useCategoryStrategy, false);
     assert.deepEqual(pageErrors, []);
   } finally {
     await context?.close();

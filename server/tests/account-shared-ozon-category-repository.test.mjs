@@ -675,6 +675,38 @@ test("manual confirmation appends provenance and CASes the current draft pointer
     "MANUAL_CATEGORY_CONFIRMED");
 });
 
+test("manual confirmation can replace older category evidence after the same draft is edited", async () => {
+  const state = { caches: { collectBox: [{
+    id: "collect-a", accountId: "account-a", currentDraftId: "draft-a", draftVersion: 1,
+  }] } };
+  const { repository } = createJson({ state });
+  await repository.recordSourceEvidence(sourceEvidence({
+    sourceVersion: "draft:1", productDraftVersion: 1,
+  }));
+  state.caches.collectBox[0].draftVersion = 2;
+
+  const updated = await repository.confirmManualCategory({
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    expectedSourceVersion: "draft:2",
+    currentDescriptionCategoryId: 17028654,
+    currentTypeId: 971445831,
+    taxonomyFingerprint: TAXONOMY_HASH,
+    validatedAt: VALIDATED_AT,
+    actorId: "account-a",
+    correlationId: "manual-after-edit-correlation",
+    idempotencyKey: "manual-after-edit-idempotency",
+    requestHash: HASH_B,
+  });
+
+  assert.equal(updated.source, "MANUAL");
+  assert.equal(updated.currentDescriptionCategoryId, 17028654);
+  assert.equal(updated.currentTypeId, 971445831);
+  assert.equal(state.collectOzonCategoryCurrentSources[0].sourceKind, "MANUAL_CONFIRMATION");
+  assert.match(state.collectOzonCategoryCurrentSources[0].sourceVersion, /^manual-confirmation:v1:/u);
+  assert.equal(state.collectOzonCategoryManualConfirmationEvidence[0].triggerProductDraftVersion, 2);
+});
+
 test("all transitions enforce optimistic versions and atomically append safe events", async () => {
   let failNextPersist = false;
   const { state, repository } = createJson({ persist: async () => {
