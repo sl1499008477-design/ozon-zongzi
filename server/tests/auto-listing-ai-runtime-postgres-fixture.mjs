@@ -2,13 +2,21 @@ import crypto from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createPostgresAiOutboxRepository } from "../auto-listing-ai-outbox-postgres.mjs";
-import { buildSourceAssetObjectKey } from "../auto-listing-source-asset-store.mjs";
-import { createPostgresSourceMaterializationRepository } from "../auto-listing-source-materialization-repository.mjs";
 
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
 const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const hash = (character) => character.repeat(64);
+
+export async function applyAutoListingAiChannelPoolBaseMigrations(client) {
+  const migrations = (await readdir(migrationsDir))
+    .filter((file) => /^\d{3}_.+\.sql$/.test(file) && file < "098_")
+    .sort();
+  for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+}
+
+export async function applyAutoListingAiChannelPoolMigration(client) {
+  await client.query(await readFile(path.join(migrationsDir, "098_auto_listing_ai_channel_pool.sql"), "utf8"));
+}
 
 async function rejectedCode(operation, code = "23514") {
   try { await operation(); } catch (error) { return error?.code === code; }
@@ -19,6 +27,9 @@ export async function runAutoListingAiRuntimePostgresFixture({ connectionString 
   if (typeof connectionString !== "string" || !connectionString.trim()) {
     throw new Error("A dedicated PostgreSQL connection string is required");
   }
+  const { createPostgresAiOutboxRepository } = await import("../auto-listing-ai-outbox-postgres.mjs");
+  const { buildSourceAssetObjectKey } = await import("../auto-listing-source-asset-store.mjs");
+  const { createPostgresSourceMaterializationRepository } = await import("../auto-listing-source-materialization-repository.mjs");
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString });
   const clientA = await pool.connect();
