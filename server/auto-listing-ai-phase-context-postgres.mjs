@@ -6,10 +6,15 @@ import {
   isSafeAutoListingAiIdentifier,
   normalizeAutoListingAiMessage,
 } from "./auto-listing-ai-message.mjs";
+import {
+  AUTO_LISTING_AI_WORK_CONTRACT_VERSION,
+  normalizeAutoListingAiWorkMessage,
+} from "./auto-listing-ai-work-message.mjs";
 import { buildVisualGroups } from "./auto-listing-visual-groups.mjs";
 
 const HASH = /^[a-f0-9]{64}$/u;
 const MAX_VERSION = 2_147_483_647;
+const LOAD_CONTEXT_KEYS = new Set(["message", "execution"]);
 const PHASE_STATUS = Object.freeze({
   PLAN_CONTENT: "PLANNING",
   MATERIALIZE_SOURCE_ASSET: "PLANNING",
@@ -86,6 +91,23 @@ function plainObject(value) {
 function exactObject(value, keys) {
   return plainObject(value) && Object.keys(value).length === keys.size
     && Object.keys(value).every((key) => keys.has(key));
+}
+
+function normalizeContextRequest(raw) {
+  if (!exactObject(raw, LOAD_CONTEXT_KEYS)) throw invalid();
+  let message;
+  try { message = normalizeAutoListingAiMessage(raw.message); } catch { throw invalid(); }
+  if (raw.execution === null) return Object.freeze({ message, execution: null });
+  try {
+    const work = normalizeAutoListingAiWorkMessage({
+      workContractVersion: AUTO_LISTING_AI_WORK_CONTRACT_VERSION,
+      message,
+      execution: raw.execution,
+    });
+    return Object.freeze({ message: work.message, execution: work.execution });
+  } catch {
+    throw invalid();
+  }
 }
 
 function cloneReferenceData(value, active = new Set(), depth = 0, state = { nodes: 0 }) {
@@ -416,20 +438,23 @@ function configCapture(row) {
   return capture;
 }
 
-function gatewayProfile(row) {
+function gatewayProfile(row, execution) {
+  const exactExecution = execution && execution !== null;
   const profile = {
     id: row.profile_id,
     accountId: row.profile_account_id,
     configVersion: row.profile_config_version,
-    baseUrl: row.profile_base_url,
+    baseUrl: exactExecution ? row.execution_connection_base_url : row.profile_base_url,
     apiKeyEnvName: row.profile_api_key_env_name,
     textProtocol: row.profile_text_protocol,
     imageProtocol: row.profile_image_protocol,
     textModel: row.profile_text_model,
     imageModel: row.profile_image_model,
-    connectionId: row.profile_connection_id ?? null,
-    connectionVersion: row.profile_connection_version === null || row.profile_connection_version === undefined
-      ? null : Number(row.profile_connection_version),
+    connectionId: exactExecution ? row.execution_connection_id : row.profile_connection_id ?? null,
+    connectionVersion: exactExecution
+      ? Number(row.execution_connection_version)
+      : row.profile_connection_version === null || row.profile_connection_version === undefined
+        ? null : Number(row.profile_connection_version),
     // The job already froze this exact profile version while it was enabled. A later publication
     // may disable the profile row, but must not silently switch or invalidate in-flight jobs.
     enabled: true,
@@ -443,8 +468,63 @@ function gatewayProfile(row) {
     || !validText(profile.imageModel)
     || (hasConnection && (!isSafeAutoListingAiIdentifier(profile.connectionId)
       || !validVersion(profile.connectionVersion)))
-    || encryptedReference !== hasConnection) throw evidenceInvalid();
+    || encryptedReference !== hasConnection
+    || (exactExecution && (row.execution_channel_id !== execution.channelId
+      || profile.connectionId !== execution.connectionId
+      || profile.connectionVersion !== execution.connectionVersion))) throw evidenceInvalid();
   return Object.freeze(profile);
+}
+
+function projectedGatewayExecution(execution) {
+  if (execution === undefined) return undefined;
+  if (execution === null) return null;
+  return Object.freeze({
+    channelId: execution.channelId,
+    connectionId: execution.connectionId,
+    connectionVersion: execution.connectionVersion,
+    idleTimeoutMs: 300_000,
+  });
+}
+
+function gatewayRouteSql({ profileAlias, itemAlias, execution, firstParameter }) {
+  if (execution === undefined) return { projection: "", joins: "", predicate: "", values: [] };
+  if (execution === null) {
+    return {
+      projection: "",
+      joins: "",
+      predicate: `AND ${profileAlias}.connection_id IS NULL AND ${profileAlias}.connection_version IS NULL`,
+      values: [],
+    };
+  }
+  const p = Array.from({ length: 5 }, (_, index) => `$${firstParameter + index}`);
+  return {
+    projection: `,
+            channel.channel_id AS execution_channel_id,
+            connection.id AS execution_connection_id,
+            connection.version AS execution_connection_version,
+            connection.base_url AS execution_connection_base_url`,
+    joins: `
+       JOIN auto_listing_ai_profile_channels AS channel
+         ON channel.account_id=${profileAlias}.account_id
+        AND channel.profile_id=${profileAlias}.id
+        AND channel.profile_version=${profileAlias}.config_version
+        AND channel.channel_id=${p[0]}
+        AND channel.connection_id=${p[1]}
+        AND channel.connection_version=${p[2]}
+        AND channel.assigned_job_id=${itemAlias}.job_id
+        AND channel.assigned_item_id=${itemAlias}.id
+        AND channel.assigned_status_version=${itemAlias}.status_version
+        AND channel.execution_lease_owner=${p[3]}
+        AND channel.execution_lease_token=${p[4]}
+        AND channel.execution_lease_expires_at > NOW()
+       JOIN ai_gateway_connection_versions AS connection
+         ON connection.account_id=channel.account_id
+        AND connection.id=channel.connection_id
+        AND connection.version=channel.connection_version`,
+    predicate: "",
+    values: [execution.channelId, execution.connectionId, execution.connectionVersion,
+      execution.leaseOwner, execution.leaseToken],
+  };
 }
 
 function mapRule(row) {
@@ -649,7 +729,8 @@ async function loadBoundary(pool, message) {
   return row ? normalizeBoundary(row, message) : null;
 }
 
-async function loadPlanInput(options, message, boundary) {
+async function loadPlanInput(options, message, boundary, execution) {
+  const route = gatewayRouteSql({ profileAlias: "p", itemAlias: "i", execution, firstParameter: 5 });
   const bundle = exactSingleRow(await safeQuery(options.pool,
     `SELECT i.planning_contract,s.snapshot,s.snapshot_hash,s.raw_response_ref,
             j.config_snapshot,j.config_hash AS config_hash_from_job,j.strategy_version_id,
@@ -660,18 +741,21 @@ async function loadPlanInput(options, message, boundary) {
             p.text_protocol AS profile_text_protocol,p.image_protocol AS profile_image_protocol,
             p.text_model AS profile_text_model,p.image_model AS profile_image_model,p.enabled AS profile_enabled,
             p.connection_id AS profile_connection_id,p.connection_version AS profile_connection_version
+            ${route.projection}
        FROM auto_listing_job_items i
        JOIN auto_listing_jobs j ON j.account_id=i.account_id AND j.id=i.job_id
        JOIN auto_listing_source_snapshots s ON s.account_id=i.account_id AND s.id=i.snapshot_id
        JOIN ai_content_strategy_versions v ON v.account_id=j.account_id AND v.id=j.strategy_version_id
        JOIN ai_gateway_profiles p ON p.account_id=j.account_id AND p.id=j.ai_profile_id
                                  AND p.config_version=j.ai_profile_version
+       ${route.joins}
        LEFT JOIN auto_listing_user_commands AS command
          ON command.account_id=i.account_id AND command.job_id=i.job_id AND command.item_id=i.id
         AND command.action='REGENERATE' AND command.result_status='PLANNING'
         AND command.result_status_version=i.status_version
-      WHERE i.account_id=$1 AND i.job_id=$2 AND i.id=$3 AND i.snapshot_id=$4`,
-    [boundary.accountId, boundary.jobId, boundary.itemId, boundarySnapshot(boundary)]));
+      WHERE i.account_id=$1 AND i.job_id=$2 AND i.id=$3 AND i.snapshot_id=$4
+        ${route.predicate}`,
+    [boundary.accountId, boundary.jobId, boundary.itemId, boundarySnapshot(boundary), ...route.values]));
   if (!["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(bundle.planning_contract)) {
     throw evidenceInvalid();
   }
@@ -694,7 +778,8 @@ async function loadPlanInput(options, message, boundary) {
   return {
     sourceSnapshotId: boundarySnapshot(boundary),
     planningContract: bundle.planning_contract,
-    gatewayProfile: gatewayProfile(bundle),
+    gatewayProfile: gatewayProfile(bundle, execution),
+    ...(execution === undefined ? {} : { gatewayExecution: projectedGatewayExecution(execution) }),
     gateway: options.gateway,
     repository: options.contentPlanRepository,
     evidenceRepository: options.contentPlanEvidenceRepository,
@@ -712,15 +797,16 @@ async function loadPlanInput(options, message, boundary) {
 }
 
 export async function loadFrozenAutoListingPlanningInput(options, boundary) {
-  return loadPlanInput(options, null, boundary);
+  return loadPlanInput(options, null, boundary, undefined);
 }
 
 function boundarySnapshot(boundary) {
   return boundary.snapshotId;
 }
 
-async function loadActiveBundle(options, boundary) {
+async function loadActiveBundle(options, boundary, execution) {
   if (!isSafeAutoListingAiIdentifier(boundary.activeContentPlanId)) throw evidenceInvalid();
+  const route = gatewayRouteSql({ profileAlias: "gp", itemAlias: "i", execution, firstParameter: 6 });
   return exactSingleRow(await safeQuery(options.pool,
     `SELECT ${PLAN_COLUMNS},
             s.snapshot,s.snapshot_hash,s.raw_response_ref,
@@ -731,6 +817,7 @@ async function loadActiveBundle(options, boundary) {
             gp.text_protocol AS profile_text_protocol,gp.image_protocol AS profile_image_protocol,
             gp.text_model AS profile_text_model,gp.image_model AS profile_image_model,gp.enabled AS profile_enabled,
             gp.connection_id AS profile_connection_id,gp.connection_version AS profile_connection_version
+            ${route.projection}
        FROM auto_listing_job_items i
        JOIN auto_listing_jobs j ON j.account_id=i.account_id AND j.id=i.job_id
        JOIN ai_content_plans p ON p.account_id=i.account_id AND p.job_id=i.job_id
@@ -741,10 +828,12 @@ async function loadActiveBundle(options, boundary) {
        JOIN ai_content_strategy_versions v ON v.account_id=p.account_id AND v.id=p.strategy_version_id
        JOIN ai_gateway_profiles gp ON gp.account_id=p.account_id AND gp.id=p.profile_id
                                   AND gp.config_version=p.profile_version
+       ${route.joins}
       WHERE i.account_id=$1 AND i.job_id=$2 AND i.id=$3
-        AND i.active_content_plan_id=$4 AND i.snapshot_id=$5`,
+        AND i.active_content_plan_id=$4 AND i.snapshot_id=$5
+        ${route.predicate}`,
     [boundary.accountId, boundary.jobId, boundary.itemId, boundary.activeContentPlanId,
-      boundarySnapshot(boundary)]));
+      boundarySnapshot(boundary), ...route.values]));
 }
 
 const CATEGORY_STYLE_REFERENCE_LIMIT = 1;
@@ -873,8 +962,8 @@ function assertSourceAssetInPlan(plan, sourceAssetId) {
   if (references.filter((entry) => entry?.assetId === sourceAssetId).length !== 1) throw evidenceInvalid();
 }
 
-async function loadMaterializeInput(options, message, boundary) {
-  const row = await loadActiveBundle(options, boundary);
+async function loadMaterializeInput(options, message, boundary, execution) {
+  const row = await loadActiveBundle(options, boundary, execution);
   const parentPlan = mapPlan(row);
   assertPlanScope(parentPlan, boundary);
   assertSourceAssetInPlan(parentPlan, message.sourceAssetId);
@@ -895,8 +984,8 @@ async function loadMaterializeInput(options, message, boundary) {
   };
 }
 
-async function loadFinalizeInput(options, boundary) {
-  const parentPlan = mapPlan(await loadActiveBundle(options, boundary));
+async function loadFinalizeInput(options, boundary, execution) {
+  const parentPlan = mapPlan(await loadActiveBundle(options, boundary, execution));
   assertPlanScope(parentPlan, boundary);
   return {
     parentPlan,
@@ -920,13 +1009,13 @@ function assertDerivedPlan(plan) {
   }
 }
 
-async function loadImageInput(options, message, boundary) {
-  const row = await loadActiveBundle(options, boundary);
+async function loadImageInput(options, message, boundary, execution) {
+  const row = await loadActiveBundle(options, boundary, execution);
   const persistedPlan = mapPlan(row);
   assertPlanScope(persistedPlan, boundary);
   assertDerivedPlan(persistedPlan);
   const config = configCapture(row).configSnapshot;
-  const profile = gatewayProfile(row);
+  const profile = gatewayProfile(row, execution);
   const projected = options.referenceProjector({
     accountId: boundary.accountId,
     jobId: boundary.jobId,
@@ -962,6 +1051,7 @@ async function loadImageInput(options, message, boundary) {
     storage: options.storage,
     logger: options.logger,
     maxAttempts: slot.role === "MAIN" ? options.maxAttempts : Math.min(options.maxAttempts, 2),
+    gatewayExecution: projectedGatewayExecution(execution),
   };
 }
 
@@ -1005,8 +1095,8 @@ async function loadAcceptedAssets(options, boundary) {
   return assets;
 }
 
-async function loadRichInput(options, boundary) {
-  const row = await loadActiveBundle(options, boundary);
+async function loadRichInput(options, boundary, execution) {
+  const row = await loadActiveBundle(options, boundary, execution);
   const plan = mapPlan(row, { rich: true });
   assertPlanScope(plan, boundary);
   assertDerivedPlan(plan);
@@ -1026,7 +1116,7 @@ async function loadRichInput(options, boundary) {
     || assets.filter((asset) => asset.role === "MAIN").length !== 1)) throw evidenceInvalid();
   return {
     plan,
-    profile: gatewayProfile(row),
+    profile: gatewayProfile(row, execution),
     gateway: options.gateway,
     repository: options.richContentRepository,
     factRegistry: plan.factRegistry,
@@ -1036,14 +1126,14 @@ async function loadRichInput(options, boundary) {
     promptTemplateVersion: plan.promptTemplateVersion,
     maxAttempts: options.richContentMaxAttempts,
     leaseOwner: options.richContentLeaseOwner,
+    gatewayExecution: projectedGatewayExecution(execution),
   };
 }
 
 export function createPostgresAutoListingAiPhaseContextLoader(options = {}) {
   validateOptions(options);
-  return async function loadContext(rawMessage) {
-    let message;
-    try { message = normalizeAutoListingAiMessage(rawMessage); } catch { throw invalid(); }
+  return async function loadContext(rawRequest) {
+    const { message, execution } = normalizeContextRequest(rawRequest);
     let client;
     let transactionOpen = false;
     try {
@@ -1062,11 +1152,11 @@ export function createPostgresAutoListingAiPhaseContextLoader(options = {}) {
         || boundary.status !== PHASE_STATUS[message.phase]) result = closedContext(boundary);
       else {
         let phaseInput;
-        if (message.phase === "PLAN_CONTENT") phaseInput = await loadPlanInput(runtimeOptions, message, boundary);
-        else if (message.phase === "MATERIALIZE_SOURCE_ASSET") phaseInput = await loadMaterializeInput(runtimeOptions, message, boundary);
-        else if (message.phase === "FINALIZE_MATERIALIZED_PLAN") phaseInput = await loadFinalizeInput(runtimeOptions, boundary);
-        else if (message.phase === "GENERATE_IMAGE_SLOT") phaseInput = await loadImageInput(runtimeOptions, message, boundary);
-        else phaseInput = await loadRichInput(runtimeOptions, boundary);
+        if (message.phase === "PLAN_CONTENT") phaseInput = await loadPlanInput(runtimeOptions, message, boundary, execution);
+        else if (message.phase === "MATERIALIZE_SOURCE_ASSET") phaseInput = await loadMaterializeInput(runtimeOptions, message, boundary, execution);
+        else if (message.phase === "FINALIZE_MATERIALIZED_PLAN") phaseInput = await loadFinalizeInput(runtimeOptions, boundary, execution);
+        else if (message.phase === "GENERATE_IMAGE_SLOT") phaseInput = await loadImageInput(runtimeOptions, message, boundary, execution);
+        else phaseInput = await loadRichInput(runtimeOptions, boundary, execution);
         result = closedContext(boundary, phaseInput);
       }
       await client.query("COMMIT");

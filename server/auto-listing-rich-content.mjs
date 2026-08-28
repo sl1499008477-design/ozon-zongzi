@@ -14,6 +14,7 @@ const SAFE_GATEWAY_FAILURE_CODES = new Set([
   "GATEWAY_TIMEOUT", "NON_RETRYABLE_AUTH", "NON_RETRYABLE_GATEWAY",
 ]);
 const SCOPE_KEYS = ["accountId", "jobId", "itemId", "planId"];
+const GATEWAY_EXECUTION_KEYS = new Set(["channelId", "connectionId", "connectionVersion", "idleTimeoutMs"]);
 const FACT_EVIDENCE_KEYS = new Set(["factId", "field", "kind", "value", "numericValue", "unit", "sourcePath"]);
 const ASSET_EVIDENCE_KEYS = new Set([
   "assetId", "status", "accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "role",
@@ -733,6 +734,13 @@ function assertExistingAccepted(record, input, hashes) {
 
 export async function generateRichContent(input = {}) {
   const scope = assertGenerationInput(input);
+  const gatewayExecution = input.gatewayExecution ?? null;
+  if (!(gatewayExecution === null || (exactObject(gatewayExecution, GATEWAY_EXECUTION_KEYS)
+    && clean(gatewayExecution.channelId, 240) && clean(gatewayExecution.connectionId, 240)
+    && Number.isInteger(gatewayExecution.connectionVersion) && gatewayExecution.connectionVersion >= 1
+    && gatewayExecution.idleTimeoutMs === 300_000))) {
+    throw richError("AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
+  }
   assertLeaseActive(input);
   const port = repositoryPort(input.repository);
   const hashes = buildRichContentPrompt(input);
@@ -751,6 +759,8 @@ export async function generateRichContent(input = {}) {
     requestEvidence: { requestKey: `auto-listing-rich-${hashes.inputHash}`, schemaVersion: VERSION },
     maxAttempts: input.maxAttempts ?? 5,
     leaseOwner: input.leaseOwner ?? "rich-content-generator",
+    gatewayConnectionId: gatewayExecution?.connectionId ?? null,
+    gatewayConnectionVersion: gatewayExecution?.connectionVersion ?? null,
   };
   const reservation = await port.reserve(reservationInput);
   if (reservation?.status === "EXISTING_ACCEPTED") return assertExistingAccepted(reservation.record, input, hashes);
@@ -794,7 +804,7 @@ export async function generateRichContent(input = {}) {
       model: input.profile.textModel,
       correlationId: input.correlationId,
       requestKey: reservationInput.requestEvidence.requestKey,
-      idleTimeoutMs: 300_000,
+      idleTimeoutMs: gatewayExecution?.idleTimeoutMs ?? 300_000,
       prompt: hashes.prompt,
       jsonSchema: RICH_CONTENT_JSON_SCHEMA,
     });

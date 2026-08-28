@@ -31,6 +31,7 @@ const V2_STRATEGY_KEYS = new Set([
 const V2_SCOPE_KEYS = new Set(["taxonomyScope", "descriptionCategoryId", "typeId"]);
 const V2_GUIDANCE_KEYS = new Set(["composition", "background", "textDensity", "layout"]);
 const PROFILE_KEYS = new Set(["id", "configVersion", "textModel"]);
+const GATEWAY_EXECUTION_KEYS = new Set(["channelId", "connectionId", "connectionVersion", "idleTimeoutMs"]);
 const REGENERATION_KEYS = new Set(["requestId", "reason"]);
 const ROLE_ORDER = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
 const ROLE_LOWER = {
@@ -108,6 +109,15 @@ const exactObject = (value, keys) => isPlainObject(value)
 function requiredText(value, max = 2048) {
   if (typeof value !== "string" || !value.trim() || value.length > max) throw plannerError();
   return value.trim();
+}
+
+function normalizeGatewayExecution(value) {
+  if (value === undefined || value === null) return null;
+  if (!exactObject(value, GATEWAY_EXECUTION_KEYS)
+    || !requiredText(value.channelId, 240) || !requiredText(value.connectionId, 240)
+    || !Number.isInteger(value.connectionVersion) || value.connectionVersion < 1
+    || value.idleTimeoutMs !== 300_000) throw plannerError();
+  return value;
 }
 
 function canonical(value) {
@@ -755,6 +765,11 @@ export async function createContentPlan(input = {}) {
   const sourceSnapshotId = requiredText(input.sourceSnapshotId, 240);
   const planningContract = input.planningContract;
   const expectedStatusVersion = input.expectedStatusVersion;
+  const gatewayExecution = normalizeGatewayExecution(input.gatewayExecution);
+  const gatewayProvenance = {
+    gatewayConnectionId: gatewayExecution?.connectionId ?? null,
+    gatewayConnectionVersion: gatewayExecution?.connectionVersion ?? null,
+  };
   if (!isPlainObject(gatewayProfile) || gatewayProfile.accountId !== scope.accountId
     || !Number.isInteger(gatewayProfile.configVersion) || gatewayProfile.configVersion < 1
     || typeof gatewayProfile.id !== "string" || !gatewayProfile.id.trim()
@@ -794,6 +809,7 @@ export async function createContentPlan(input = {}) {
       expectedStatusVersion,
       requestKey,
       skeletonHash,
+      ...gatewayProvenance,
     });
   } catch {
     throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划记录暂时无法读取");
@@ -830,6 +846,7 @@ export async function createContentPlan(input = {}) {
           skeletonHash,
           fromStage: "BUILDING_SKELETON",
           toStage: "FILLING_COPY",
+          ...gatewayProvenance,
         }));
         reservation = { ...reservation, plannerStage: "FILLING_COPY" };
       } catch (cause) {
@@ -847,6 +864,7 @@ export async function createContentPlan(input = {}) {
       skeletonHash,
       profileId: plannerContext.plannerInput.profile.id,
       profileVersion: plannerContext.plannerInput.profile.configVersion,
+      ...gatewayProvenance,
     };
     let outcome;
     try { outcome = await leaseBound(input, () => evidenceRepository.loadOutcome(evidenceScope)); } catch (cause) {
@@ -869,7 +887,7 @@ export async function createContentPlan(input = {}) {
           model: plannerContext.plannerInput.plannerModel,
           correlationId: typeof input.correlationId === "string" && input.correlationId.trim() ? input.correlationId.trim() : `auto-listing:${scope.jobId}:${scope.itemId}`,
           requestKey,
-          idleTimeoutMs: 300_000,
+          idleTimeoutMs: gatewayExecution?.idleTimeoutMs ?? 300_000,
           jsonSchema: fixedSkeleton ? buildContentPlanFillSchema(fixedSkeleton) : CONTENT_PLAN_JSON_SCHEMA,
           prompt: [
             fixedSkeleton
@@ -923,6 +941,7 @@ export async function createContentPlan(input = {}) {
           skeletonHash,
           fromStage: "FILLING_COPY",
           toStage: "VALIDATING_COPY",
+          ...gatewayProvenance,
         }));
       } catch (cause) {
         assertLeaseActive(input);
@@ -995,6 +1014,7 @@ export async function createContentPlan(input = {}) {
         gatewayRequestId,
         plan,
         planHash,
+        ...gatewayProvenance,
       }));
     } catch (cause) {
       assertLeaseActive(input);
@@ -1019,6 +1039,7 @@ export async function createContentPlan(input = {}) {
         skeletonHash,
         reservationToken: reservation.reservationToken,
         errorCode: CHANNEL_RELEASED,
+        ...gatewayProvenance,
       }));
       throw error;
     }
@@ -1030,6 +1051,7 @@ export async function createContentPlan(input = {}) {
           expectedStatusVersion,
           reservationToken: reservation.reservationToken,
           errorCode: error?.code || "AUTO_LISTING_CONTENT_PLAN_FAILED",
+          ...gatewayProvenance,
         }));
       } catch (cause) {
         assertLeaseActive(input);

@@ -119,7 +119,11 @@ function throwingOversizedArray(length) {
 }
 
 test("deterministic gate and closed checker response accept complete source-bound evidence", async () => {
-  const result = await checkGeneratedAsset(await input(checkerValue()));
+  const result = await checkGeneratedAsset(await input(checkerValue(), {
+    gatewayExecution: {
+      channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
+    },
+  }));
   assert.equal(result.accepted, true);
   assert.equal(result.evidence.generatedHash.length, 64);
   assert.equal(result.evidence.requestId, "check-1");
@@ -132,6 +136,19 @@ test("deterministic gate and closed checker response accept complete source-boun
     height: 1024,
     size: result.evidence.sourceAssets[0].size,
   }]);
+});
+
+test("checker rejects an open leased execution before a paid inspection", async () => {
+  let calls = 0;
+  const candidate = await input(checkerValue(), {
+    gatewayExecution: {
+      channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9,
+      idleTimeoutMs: 300_000, fallback: true,
+    },
+  });
+  candidate.gateway.inspectImage = async () => { calls += 1; };
+  await assert.rejects(checkGeneratedAsset(candidate), checkerUnavailable);
+  assert.equal(calls, 0);
 });
 
 test("legacy accepted checker evidence remains valid when no category style images existed", () => {

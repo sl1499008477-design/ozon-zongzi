@@ -70,6 +70,7 @@ test("reservation locks the exact active plan and version before creating a data
   });
   const result = await repository.reserveGenerationAttempt({
     ...scope, attemptIdentityHash, generationSize, maxAttempts: 3,
+    gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9,
   });
   assert.deepEqual(result, {
     status: "RESERVED", attemptNo: 1, leaseToken: "lease-a:1", generationSize,
@@ -82,6 +83,9 @@ test("reservation locks the exact active plan and version before creating a data
   assert.match(itemQuery.text, /FOR UPDATE OF item/i);
   const insert = db.queries.find(({ text }) => /INSERT INTO ai_generation_assets/i.test(text));
   assert.match(insert.text, /expected_status_version/i);
+  assert.match(insert.text, /gateway_connection_id.*gateway_connection_version/is);
+  assert.equal(insert.parameters.includes("connection-b"), true);
+  assert.equal(insert.parameters.includes(9), true);
   assert.match(insert.text, /NOW\(\)\+\(/i);
 });
 
@@ -216,8 +220,13 @@ test("owner transitions carry the full scope, active-plan, version, lease-token 
     sourceHash: "f".repeat(64), strategyHash: "1".repeat(64), configHash: "2".repeat(64),
     visualGroupsHash: "3".repeat(64), promptTemplateVersion: "image-v1",
     sourceAssetEvidence: completedRow.source_asset_evidence, regeneration: null,
+    gatewayConnectionId: null, gatewayConnectionVersion: null,
+    checkerConnectionId: "connection-b", checkerConnectionVersion: 9,
   });
   assert.equal(result.status, "ACCEPTED");
+  const completed = db.queries.find(({ text }) => /SET status='ACCEPTED'/i.test(text));
+  assert.match(completed.text, /gateway_connection_id IS NOT DISTINCT FROM \$\d+/i);
+  assert.match(completed.text, /checker_connection_id=\$\d+.*checker_connection_version=\$\d+/is);
   assert.equal(result.size, 123);
   assert.deepEqual(result.checkerEvidence, { accepted: true });
   const transition = db.queries.find(({ text }) => /SET status='ACCEPTED'/i.test(text));

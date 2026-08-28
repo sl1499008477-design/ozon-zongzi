@@ -28,13 +28,13 @@ async function setup({ loaderEvidence = "CONTENT_HASH", existing = null } = {}) 
   const bytes = await image(); const asset = { assetId: "asset-a", sourceRef: null, evidenceKind: "CONTENT_HASH", contentHash: sha256(bytes) };
   const fact = { factId: "f1", field: "identity.primaryName", kind: "IDENTITY_NAME", value: "Красный товар", numericValue: null, unit: null, sourcePath: "identity.primaryName" };
   const claim = { text: "Красный товар", sourceFactId: "f1", field: fact.field, value: fact.value, numericValue: null, unit: null };
-  let gatewayCalls = 0; let loaderCalls = 0; let objectBytes = (await normalizeListingImage({ bytes, ratio: "3:4", resolution: "1K" })).bytes; const calls = []; const bindCalls = [];
+  let gatewayCalls = 0; let loaderCalls = 0; let objectBytes = (await normalizeListingImage({ bytes, ratio: "3:4", resolution: "1K" })).bytes; const calls = []; const bindCalls = []; const reserveInputs = [];
   const input = {
     scope, plan: { id: scope.planId, jobId: scope.jobId, itemId: scope.itemId, sourceAccountId: scope.accountId, profileId: "profile-a", profileVersion: 3, plannerModel: "checker", promptTemplateVersion: "image-v1", planHash, sourceHash: "b".repeat(64), strategyHash: "c".repeat(64), configHash: "d".repeat(64), visualGroupsHash: "e".repeat(64), visualGroups: { groups: [{ visualGroupKey: "main", referenceImages: [asset] }] }, plan: { slots: [{ slotKey: "cover", visualGroupKey: "main", role: "MAIN", textDensity: "LIGHT", preserve: ["shape"], referenceAssetIds: ["asset-a"] }] }, factRegistry: [{ ...fact, visualGroupKeys: ["main"] }] },
     slot: { slotKey: "cover", visualGroupKey: "main", role: "MAIN", textDensity: "LIGHT", preserve: ["shape"], referenceAssetIds: ["asset-a"] }, categoryStyle: null, profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3, textModel: "checker", imageModel: "image-model" }, imageModel: "image-model", ratio: "3:4", resolution: "1K", size: "768x1024", quality: "high", templateVersion: "image-v1",
     sourceAssetLoader: { async loadSourceAsset(request) { loaderCalls += 1; assert.equal(request.sourceRef, asset.sourceRef); return { assetId: asset.assetId, sourceRef: asset.sourceRef, evidenceKind: loaderEvidence, bytes, contentType: "image/png", width: 768, height: 1024 }; } },
     repository: {
-      async reserveGenerationAttempt() { return existing ? { status: "EXISTING_ACCEPTED", record: existing } : reserved(); },
+      async reserveGenerationAttempt(value) { reserveInputs.push(value); return existing ? { status: "EXISTING_ACCEPTED", record: existing } : reserved(); },
       async bindGenerationAttemptInput(value) { bindCalls.push(value); return { status: "BOUND", inputHash: value.inputHash }; },
       async findStoredGenerationAsset() { return null; }, async recordAssetCleanupRequired(value) { return value; },
       async revertStoredGenerationAsset() { return { disposition: "REVERTED" }; },
@@ -45,7 +45,7 @@ async function setup({ loaderEvidence = "CONTENT_HASH", existing = null } = {}) 
     storage: { async putObjectFromBuffer(value) { objectBytes = Buffer.from(value.buffer); return { key: value.key, sha256: sha256(value.buffer), contentType: value.contentType, size: value.buffer.length }; }, async getObjectBuffer() { return objectBytes; } },
     gateway: { async generateImage(request) { gatewayCalls += 1; assert.equal(Object.hasOwn(request, "timeoutMs"), false); assert.equal(request.idleTimeoutMs, 300_000); assert.doesNotMatch(request.prompt, /https:\/\//); assert.equal(request.sourceImages[0].bytes.equals(bytes), true); return { bytes, requestId: "generate-1", modelEvidence: { requestedImageModel: "image-model", gatewayReportedImageModel: "image-model", gatewayReportedImageModelPresent: true, orchestratorModel: "" } }; }, async inspectImage(request) { const styleIds = request.prompt.includes("categoryStyleReferenceEvidenceIds") ? fixtureStyleIds(request.prompt) : []; return { requestId: "check-1", modelEvidence: { requestedTextModel: "checker", gatewayReportedTextModel: "checker", gatewayReportedTextModelPresent: true }, value: { matchesProduct: true, matchesCategoryStyle: true, claimsVerified: true, russianText: true, quality: "PASS", prohibitedContent: false, reasons: [], evidence: { identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] }, categoryStyle: { matches: true, referenceEvidenceIds: styleIds }, claims: [claim], detectedTexts: ["товар"], language: "ru", qualityFlags: [], prohibitedFlags: [] } } }; } },
   };
-  return { input, calls, bindCalls, bytes, asset, fact, claim, gatewayCalls: () => gatewayCalls, loaderCalls: () => loaderCalls };
+  return { input, calls, bindCalls, reserveInputs, bytes, asset, fact, claim, gatewayCalls: () => gatewayCalls, loaderCalls: () => loaderCalls };
 }
 
 function checkerResponse(fixture, overrides = {}, evidenceOverrides = {}) {
@@ -82,10 +82,17 @@ function fixtureStyleIds(prompt) {
 
 test("generates an accepted slot from server-loaded bytes and does not expose source URLs", async () => {
   const fixture = await setup();
+  fixture.input.gatewayExecution = {
+    channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
+  };
   const result = await generateImageSlot(fixture.input);
   assert.equal(result.accepted, true); assert.equal(fixture.gatewayCalls(), 1);
   assert.equal(result.objectKeyVersion, "ATTEMPT_V2");
   assert.deepEqual(fixture.calls.map(([name]) => name), ["stored", "complete"]);
+  assert.equal(fixture.reserveInputs[0].gatewayConnectionId, "connection-b");
+  assert.equal(fixture.reserveInputs[0].gatewayConnectionVersion, 9);
+  assert.equal(fixture.calls[1][1].checkerConnectionId, "connection-b");
+  assert.equal(fixture.calls[1][1].checkerConnectionVersion, 9);
 });
 
 test("passes the frozen category style for the current image role to the final image prompt", async () => {

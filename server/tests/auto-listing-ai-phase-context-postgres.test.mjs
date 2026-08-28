@@ -14,7 +14,7 @@ import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.
 const H = (character) => character.repeat(64);
 const PROHIBITED = ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"];
 
-function message(phase, overrides = {}) {
+function rawMessage(phase, overrides = {}) {
   return {
     contractVersion: "V1",
     accountId: "account-a",
@@ -26,6 +26,28 @@ function message(phase, overrides = {}) {
     ...(phase === "GENERATE_IMAGE_SLOT" ? { slotKey: "main-1" } : {}),
     ...overrides,
   };
+}
+
+function execution(overrides = {}) {
+  return {
+    outboxId: "outbox-a",
+    dispatchGeneration: 4,
+    channelId: "channel-a",
+    connectionId: "connection-a",
+    connectionVersion: 1,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function contextRequest(phase, executionOverrides = {}) {
+  return { message: rawMessage(phase), execution: execution(executionOverrides) };
+}
+
+function message(phase, overrides = {}) {
+  return { message: rawMessage(phase, overrides), execution: execution() };
 }
 
 function boundary(overrides = {}) {
@@ -197,6 +219,8 @@ const profileColumns = {
   profile_text_protocol: "SUB2API_RESPONSES", profile_image_protocol: "SUB2API_OPENAI_IMAGES",
   profile_text_model: "text-model", profile_image_model: "image-model", profile_enabled: false,
   profile_connection_id: "connection-a", profile_connection_version: 1,
+  execution_channel_id: "channel-a", execution_connection_id: "connection-a",
+  execution_connection_version: 1, execution_connection_base_url: "https://gateway.invalid",
 };
 
 function planBundle(plan = basePlanRow(), overrides = {}) {
@@ -344,7 +368,7 @@ test("PLAN_CONTENT loads the exact snapshot, frozen config/strategy and configur
   assert.deepEqual(Object.keys(context.phaseInput).sort(), [
     "sourceSnapshotId", "gatewayProfile", "gateway", "repository", "sourceCapture", "strategyCapture",
     "configCapture", "visualGroupsCapture", "promptTemplateVersion", "prohibitedClaims", "regeneration",
-    "planningContract", "evidenceRepository",
+    "planningContract", "evidenceRepository", "gatewayExecution",
   ].sort());
   assert.equal(context.phaseInput.sourceSnapshotId, "snapshot-a");
   assert.equal(context.phaseInput.planningContract, "LEGACY_FULL_PLAN_V3");
@@ -363,7 +387,10 @@ test("PLAN_CONTENT loads the exact snapshot, frozen config/strategy and configur
   assert.equal(context.phaseInput.visualGroupsCapture.sourceHash, SOURCE_HASH);
   assert.deepEqual(context.phaseInput.prohibitedClaims, PROHIBITED);
   assert.equal(context.phaseInput.regeneration, null);
-  assert.deepEqual(pool.calls[1].values, ["account-a", "job-a", "item-a", "snapshot-a"]);
+  assert.deepEqual(pool.calls[1].values, [
+    "account-a", "job-a", "item-a", "snapshot-a",
+    "channel-a", "connection-a", 1, "worker-a", "worker-token-a",
+  ]);
   assert.match(pool.calls[1].sql,
     /p\.account_id=j\.account_id\s+AND\s+p\.id=j\.ai_profile_id\s+AND\s+p\.config_version=j\.ai_profile_version/iu);
   assert.match(pool.calls[1].sql, /p\.connection_id AS profile_connection_id/iu);
@@ -371,6 +398,58 @@ test("PLAN_CONTENT loads the exact snapshot, frozen config/strategy and configur
   assert.doesNotMatch(pool.calls[1].sql, /p\.enabled IS TRUE/iu);
   assert.doesNotMatch(pool.calls[1].sql, /ORDER\s+BY|LIMIT\s+1/iu);
   assert.deepEqual(pool.calls[2].values, ["account-a", "strategy-v1"]);
+});
+
+test("PLAN_CONTENT keeps frozen models but routes only through the exact adopted channel connection", async () => {
+  const pool = scriptedPool([
+    [boundary()],
+    [planBundle(undefined, {
+      id: undefined, account_id: undefined, job_id: undefined, item_id: undefined,
+      execution_channel_id: "channel-b",
+      execution_connection_id: "connection-b",
+      execution_connection_version: 7,
+      execution_connection_base_url: "https://leased-gateway.invalid",
+    })],
+    [],
+  ]);
+
+  const loaded = await createPostgresAutoListingAiPhaseContextLoader(dependencies(pool))(
+    contextRequest("PLAN_CONTENT", {
+      channelId: "channel-b", connectionId: "connection-b", connectionVersion: 7,
+    }),
+  );
+
+  assert.equal(loaded.phaseInput.gatewayProfile.id, "profile-a");
+  assert.equal(loaded.phaseInput.gatewayProfile.configVersion, 3);
+  assert.equal(loaded.phaseInput.gatewayProfile.textModel, "text-model");
+  assert.equal(loaded.phaseInput.gatewayProfile.imageModel, "image-model");
+  assert.equal(loaded.phaseInput.gatewayProfile.baseUrl, "https://leased-gateway.invalid");
+  assert.equal(loaded.phaseInput.gatewayProfile.connectionId, "connection-b");
+  assert.equal(loaded.phaseInput.gatewayProfile.connectionVersion, 7);
+  assert.deepEqual(loaded.phaseInput.gatewayExecution, {
+    channelId: "channel-b",
+    connectionId: "connection-b",
+    connectionVersion: 7,
+    idleTimeoutMs: 300_000,
+  });
+  assert.equal(Object.isFrozen(loaded.phaseInput.gatewayExecution), true);
+  assert.match(pool.calls[1].sql, /JOIN auto_listing_ai_profile_channels/iu);
+  assert.match(pool.calls[1].sql, /JOIN ai_gateway_connection_versions/iu);
+  for (const value of ["channel-b", "connection-b", 7, "worker-a", "worker-token-a"]) {
+    assert.equal(pool.calls[1].values.includes(value), true);
+  }
+  assert.doesNotMatch(pool.calls[1].sql, /ORDER\s+BY|LIMIT\s+1/iu);
+});
+
+test("exact routing rejects a mismatched adopted channel instead of falling back to the profile connection", async () => {
+  const pool = scriptedPool([[boundary()], []]);
+  await assert.rejects(
+    createPostgresAutoListingAiPhaseContextLoader(dependencies(pool))(contextRequest("PLAN_CONTENT", {
+      channelId: "channel-b", connectionId: "connection-b", connectionVersion: 7,
+    })),
+    { code: "AUTO_LISTING_AI_PHASE_CONTEXT_EVIDENCE_INVALID", retryable: false },
+  );
+  assert.equal(pool.calls.length, 2);
 });
 
 test("PLAN_CONTENT hydrates the exact published V2 rule from the job-frozen version without current-policy drift", async () => {
@@ -558,7 +637,10 @@ test("GENERATE_IMAGE_SLOT uses the active derived plan, exact slot and frozen im
   assert.deepEqual(Object.keys(context.phaseInput.plan.factRegistry[0]).sort(), [
     "factId", "kind", "sourcePath", "value", "visualGroupKeys",
   ]);
-  assert.deepEqual(pool.calls[1].values, ["account-a", "job-a", "item-a", "plan-derived", "snapshot-a"]);
+  assert.deepEqual(pool.calls[1].values, [
+    "account-a", "job-a", "item-a", "plan-derived", "snapshot-a",
+    "channel-a", "connection-a", 1, "worker-a", "worker-token-a",
+  ]);
   assert.deepEqual(pool.calls[2].values, ["account-a", "strategy-frozen-v2"]);
   assert.doesNotMatch(pool.calls[1].sql, /latest|ORDER\s+BY|LIMIT\s+1/iu);
 });

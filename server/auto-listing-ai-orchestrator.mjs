@@ -15,7 +15,7 @@ const PHASE_INPUT_KEYS = Object.freeze({
   PLAN_CONTENT: Object.freeze([
     "sourceSnapshotId", "gatewayProfile", "gateway", "repository", "evidenceRepository", "sourceCapture", "strategyCapture",
     "configCapture", "visualGroupsCapture", "promptTemplateVersion", "prohibitedClaims", "regeneration",
-    "planningContract",
+    "planningContract", "gatewayExecution",
   ]),
   MATERIALIZE_SOURCE_ASSET: Object.freeze([
     "parentPlan", "sourceSnapshot", "policy", "repository", "downloader", "storage", "logger",
@@ -23,13 +23,16 @@ const PHASE_INPUT_KEYS = Object.freeze({
   FINALIZE_MATERIALIZED_PLAN: Object.freeze(["parentPlan", "repository"]),
   GENERATE_IMAGE_SLOT: Object.freeze([
     "plan", "slot", "categoryStyle", "categoryStyleReferences", "sourceAssetLoader", "repository", "gateway", "profile", "imageModel", "ratio",
-    "resolution", "size", "quality", "templateVersion", "regeneration", "storage", "logger", "maxAttempts",
+    "resolution", "size", "quality", "templateVersion", "regeneration", "storage", "logger", "maxAttempts", "gatewayExecution",
   ]),
   GENERATE_RICH_CONTENT: Object.freeze([
     "plan", "profile", "gateway", "repository", "factRegistry", "acceptedAssets", "planHash", "sourceHash",
-    "promptTemplateVersion", "maxAttempts", "leaseOwner",
+    "promptTemplateVersion", "maxAttempts", "leaseOwner", "gatewayExecution",
   ]),
 });
+const GATEWAY_EXECUTION_KEYS = Object.freeze([
+  "channelId", "connectionId", "connectionVersion", "idleTimeoutMs",
+]);
 const PHASE_STATUS = Object.freeze({
   PLAN_CONTENT: "PLANNING",
   MATERIALIZE_SOURCE_ASSET: "PLANNING",
@@ -279,6 +282,12 @@ function assertPhaseInput(rawContext, phase) {
   return phaseInput;
 }
 
+function validGatewayExecution(value) {
+  return value === null || (exactDataKeys(value, GATEWAY_EXECUTION_KEYS)
+    && safeId(value.channelId) && safeId(value.connectionId)
+    && validVersion(value.connectionVersion) && value.idleTimeoutMs === 300_000);
+}
+
 function validateParentPhaseInput(phaseInput, context) {
   return scopeMatchesPlan(phaseInput.parentPlan, context)
     && phaseInput.parentPlan.id === context.activeContentPlanId;
@@ -496,6 +505,8 @@ export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {
   }
 
   const phaseInput = assertPhaseInput(input.context, message.phase);
+  if (["PLAN_CONTENT", "GENERATE_IMAGE_SLOT", "GENERATE_RICH_CONTENT"].includes(message.phase)
+    && !validGatewayExecution(phaseInput.gatewayExecution)) throw invalid();
   assertServices(dependencies);
 
   if (message.phase === "MATERIALIZE_SOURCE_ASSET" || message.phase === "FINALIZE_MATERIALIZED_PLAN") {

@@ -107,12 +107,13 @@ function phasePolicies(overrides = {}) {
 }
 
 function context(message, overrides = {}) {
+  const currentMessage = message?.message ?? message;
   return {
-    accountId: message.accountId,
+    accountId: currentMessage.accountId,
     jobId: "job-a",
-    itemId: message.itemId,
+    itemId: currentMessage.itemId,
     status: "PLANNING",
-    statusVersion: message.expectedStatusVersion,
+    statusVersion: currentMessage.expectedStatusVersion,
     activeContentPlanId: null,
     phaseInput: { requestId: "phase-input-a" },
     ...overrides,
@@ -305,8 +306,9 @@ test("a lost apply response returns failure, then the queue redelivery ACKs stal
   const worker = createAutoListingAiWorker({
     enabled: true,
     bossFactory: () => harness.boss,
-    loadContext: async (message) => {
+    loadContext: async (request) => {
       loads += 1;
+      const message = request.message;
       return context(message, advanced ? { statusVersion: message.expectedStatusVersion + 1 } : {});
     },
     orchestrate: async ({ message }) => { orchestrations += 1; return phaseOutcome(message); },
@@ -641,7 +643,7 @@ test("dedicated worker creates the v2 drain and v3 queue and reloads exact conte
   const work = harness.calls.find((entry) => entry[0] === "work");
   assert.equal(work[1], AUTO_LISTING_AI_QUEUE);
   assert.equal(work[2].perJobResults, true);
-  assert.deepEqual(loaded, [baseMessage]);
+  assert.deepEqual(loaded, [{ message: baseMessage, execution: null }]);
   assert.deepEqual(orchestrated, [{ message: baseMessage, context: context(baseMessage) }]);
   assert.deepEqual(result, [{
     id: "queue-job-a",
@@ -1073,6 +1075,43 @@ test("v3 business retry keeps one adopted execution and never cools or switches 
   assert.equal(attempts, 2);
   assert.equal(applied.length, 1);
   assert.deepEqual(applied[0].execution, adoptedExecution);
+  await worker.stop();
+});
+
+test("context loading receives the current adopted v3 execution while legacy v2 receives null", async () => {
+  const harness = dualBossHarness();
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const loaded = [];
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() { return adoptedExecution; },
+      async requeueChannelFailure() { throw new Error("must not requeue"); },
+    }),
+    loadContext: async (input) => {
+      loaded.push(input);
+      return context(input.message);
+    },
+    orchestrate: async ({ message }) => phaseOutcome(message),
+    workflow: passthroughWorkflow,
+    logger: { log() {} },
+  });
+  await worker.start();
+
+  await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-context", data: workMessage() }]);
+  await harness.handler(AUTO_LISTING_AI_QUEUE)([{ id: "v2-context", data: baseMessage }]);
+
+  assert.deepEqual(loaded, [
+    { message: baseMessage, execution: adoptedExecution },
+    { message: baseMessage, execution: null },
+  ]);
   await worker.stop();
 });
 

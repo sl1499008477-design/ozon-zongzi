@@ -9,6 +9,7 @@ const TOP_LEVEL_KEYS = new Set(["matchesProduct", "matchesCategoryStyle", "claim
 const EVIDENCE_KEYS = new Set(["identity", "categoryStyle", "claims", "detectedTexts", "language", "qualityFlags", "prohibitedFlags"]);
 const LEGACY_TOP_LEVEL_KEYS = new Set(["matchesProduct", "claimsVerified", "russianText", "quality", "prohibitedContent", "reasons", "evidence"]);
 const LEGACY_EVIDENCE_KEYS = new Set(["identity", "claims", "detectedTexts", "language", "qualityFlags", "prohibitedFlags"]);
+const GATEWAY_EXECUTION_KEYS = new Set(["channelId", "connectionId", "connectionVersion", "idleTimeoutMs"]);
 const IDENTITY_KEYS = new Set(["color", "shape", "accessoryCount", "sourceAssetIds"]);
 const CATEGORY_STYLE_EVIDENCE_KEYS = new Set(["matches", "referenceEvidenceIds"]);
 const CLAIM_KEYS = new Set(["text", "sourceFactId", "field", "value", "numericValue", "unit"]);
@@ -625,6 +626,7 @@ function terminalCheckerContractError(failure, requestIds, callCount) {
 }
 
 export async function checkGeneratedAsset(input = {}) {
+  const gatewayExecution = input.gatewayExecution ?? null;
   const styleReferences = categoryStyleAssets(input.categoryStyleReferences || []);
   const claimEvidenceFactIds = input.templateVersion === CLAIM_EVIDENCE_TEMPLATE ? input.claimEvidenceFactIds : null;
   if (!plainObject(input)
@@ -641,7 +643,11 @@ export async function checkGeneratedAsset(input = {}) {
     || ((input.categoryStyle ?? null) === null && styleReferences.length > 0)
     || (claimEvidenceFactIds !== null && (!stringArray(claimEvidenceFactIds, { maxItems: ARRAY_LIMITS.claims, maxBytes: 240 })
       || claimEvidenceFactIds.some((factId) => !input.facts.some((fact) => fact?.factId === factId))))
-    || typeof input.gateway?.inspectImage !== "function") {
+    || typeof input.gateway?.inspectImage !== "function"
+    || !(gatewayExecution === null || (exactObject(gatewayExecution, GATEWAY_EXECUTION_KEYS)
+      && clean(gatewayExecution.channelId, 240) && clean(gatewayExecution.connectionId, 240)
+      && Number.isInteger(gatewayExecution.connectionVersion) && gatewayExecution.connectionVersion >= 1
+      && gatewayExecution.idleTimeoutMs === 300_000))) {
     throw checkerError("CHECKER_UNAVAILABLE", true);
   }
   const { generated, references, facts, gateway, profile, checkerModel, scope, templateVersion } = input;
@@ -696,7 +702,7 @@ export async function checkGeneratedAsset(input = {}) {
       model: checkerModel,
       correlationId: scope.correlationId,
       requestKey: scope.requestKey,
-      idleTimeoutMs: 300_000,
+      idleTimeoutMs: gatewayExecution?.idleTimeoutMs ?? 300_000,
       prompt: `${checkerInstruction}${forbiddenTextInstruction ? `\n${forbiddenTextInstruction}` : ""}${claimEvidenceInstruction ? `\n${claimEvidenceInstruction}` : ""}${roleInstruction ? `\n${roleInstruction}` : ""}${styleInstruction ? `\n${styleInstruction}` : ""}\n${evidenceContext}`,
       image: { bytes: normalized.bytes, contentType: normalized.contentType },
       sourceImages: checkerReferences

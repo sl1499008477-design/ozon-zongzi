@@ -7,11 +7,11 @@ const CONTRACTS = new Set(["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"]);
 const RESPONSE_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "owner", "planningContract",
   "inputHash", "skeletonHash", "profileId", "profileVersion", "modelName",
-  "promptTemplateVersion", "gatewayRequestId", "response",
+  "promptTemplateVersion", "gatewayRequestId", "response", "gatewayConnectionId", "gatewayConnectionVersion",
 ]);
 const LOAD_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "owner", "planningContract",
-  "inputHash", "skeletonHash", "profileId", "profileVersion",
+  "inputHash", "skeletonHash", "profileId", "profileVersion", "gatewayConnectionId", "gatewayConnectionVersion",
 ]);
 const OWNER_KEYS = new Set(["kind", "id"]);
 const VALIDATION_KEYS = new Set(["accountId", "responseId", "status", "validatorVersion", "issues"]);
@@ -162,6 +162,11 @@ function assertContract(value, skeletonHash) {
 
 function projectResponseCommand(raw) {
   const input = projectedData(raw);
+  if (input?.owner?.kind === "DIAGNOSTIC" && !Object.hasOwn(input, "gatewayConnectionId")
+    && !Object.hasOwn(input, "gatewayConnectionVersion")) {
+    input.gatewayConnectionId = null;
+    input.gatewayConnectionVersion = null;
+  }
   if (!exact(input, RESPONSE_KEYS)) throw invalid();
   for (const key of ["accountId", "jobId", "itemId", "sourceSnapshotId", "profileId"]) {
     if (!safeId(input[key])) throw invalid();
@@ -171,6 +176,10 @@ function projectResponseCommand(raw) {
     || !safeText(input.modelName) || !safeText(input.promptTemplateVersion)
     || !(input.gatewayRequestId === null || safeText(input.gatewayRequestId))) throw invalid();
   input.owner = projectOwner(input.owner);
+  if (!((input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+    || (safeId(input.gatewayConnectionId) && Number.isInteger(input.gatewayConnectionVersion)
+      && input.gatewayConnectionVersion >= 1 && input.gatewayConnectionVersion <= 2_147_483_647))
+    || (input.owner.kind === "DIAGNOSTIC" && input.gatewayConnectionId !== null)) throw invalid();
   assertContract(input.planningContract, input.skeletonHash);
   const rootKeys = input.planningContract === "FIXED_SKELETON_V1" ? FIXED_ROOT_KEYS : LEGACY_ROOT_KEYS;
   if (!exact(input.response, rootKeys)) throw invalid();
@@ -206,6 +215,11 @@ function projectValidationCommand(raw) {
 
 function projectLoadScope(raw) {
   const input = projectedData(raw);
+  if (input?.owner?.kind === "DIAGNOSTIC" && !Object.hasOwn(input, "gatewayConnectionId")
+    && !Object.hasOwn(input, "gatewayConnectionVersion")) {
+    input.gatewayConnectionId = null;
+    input.gatewayConnectionVersion = null;
+  }
   if (!exact(input, LOAD_KEYS)) throw invalid();
   for (const key of ["accountId", "jobId", "itemId", "sourceSnapshotId", "profileId"]) {
     if (!safeId(input[key])) throw invalid();
@@ -213,6 +227,10 @@ function projectLoadScope(raw) {
   if (!HASH.test(input.inputHash || "") || !Number.isInteger(input.profileVersion)
     || input.profileVersion < 1 || input.profileVersion > 2_147_483_647) throw invalid();
   input.owner = projectOwner(input.owner);
+  if (!((input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+    || (safeId(input.gatewayConnectionId) && Number.isInteger(input.gatewayConnectionVersion)
+      && input.gatewayConnectionVersion >= 1 && input.gatewayConnectionVersion <= 2_147_483_647))
+    || (input.owner.kind === "DIAGNOSTIC" && input.gatewayConnectionId !== null)) throw invalid();
   assertContract(input.planningContract, input.skeletonHash);
   return deepFreeze(input);
 }
@@ -327,7 +345,8 @@ export function createPostgresContentPlanEvidenceRepository({
         ? "auto_listing_content_plan_attempts" : "auto_listing_content_plan_diagnostic_runs";
       const locked = await client.query(
         `SELECT id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,
-                planning_contract,input_hash,skeleton_hash
+                planning_contract,input_hash,skeleton_hash,
+                ${input.owner.kind === "ATTEMPT" ? "gateway_connection_id,gateway_connection_version" : "NULL AS gateway_connection_id,NULL::INTEGER AS gateway_connection_version"}
            FROM ${ownerTable}
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4 AND id=$5
           FOR UPDATE`,
@@ -338,6 +357,9 @@ export function createPostgresContentPlanEvidenceRepository({
         || owner.job_id !== input.jobId || owner.item_id !== input.itemId
         || owner.source_snapshot_id !== input.sourceSnapshotId || owner.profile_id !== input.profileId
         || Number(owner.profile_version) !== input.profileVersion
+        || (owner.gateway_connection_id ?? null) !== input.gatewayConnectionId
+        || (owner.gateway_connection_version === null || owner.gateway_connection_version === undefined
+          ? null : Number(owner.gateway_connection_version)) !== input.gatewayConnectionVersion
         || owner.planning_contract !== input.planningContract || owner.input_hash !== input.inputHash
         || (owner.skeleton_hash ?? null) !== input.skeletonHash) throw conflict();
       const existing = await client.query(
@@ -442,9 +464,23 @@ export function createPostgresContentPlanEvidenceRepository({
             AND response.source_snapshot_id=$4 AND response.${ownerColumn}=$5
             AND response.planning_contract=$6 AND response.input_hash=$7
             AND response.skeleton_hash IS NOT DISTINCT FROM $8
-            AND response.profile_id=$9 AND response.profile_version=$10`,
+            AND response.profile_id=$9 AND response.profile_version=$10
+            ${scope.owner.kind === "ATTEMPT" ? `AND EXISTS (
+              SELECT 1 FROM auto_listing_content_plan_attempts AS attempt
+               WHERE attempt.account_id=response.account_id AND attempt.id=response.attempt_id
+                 AND attempt.job_id=response.job_id AND attempt.item_id=response.item_id
+                 AND attempt.expected_status_version=(
+                   SELECT item.status_version FROM auto_listing_job_items AS item
+                    WHERE item.account_id=attempt.account_id AND item.job_id=attempt.job_id
+                      AND item.id=attempt.item_id
+                 )
+                 AND attempt.gateway_connection_id IS NOT DISTINCT FROM $11
+                 AND attempt.gateway_connection_version IS NOT DISTINCT FROM $12
+            )` : ""}`,
         [scope.accountId, scope.jobId, scope.itemId, scope.sourceSnapshotId, scope.owner.id,
-          scope.planningContract, scope.inputHash, scope.skeletonHash, scope.profileId, scope.profileVersion],
+          scope.planningContract, scope.inputHash, scope.skeletonHash, scope.profileId, scope.profileVersion,
+          ...(scope.owner.kind === "ATTEMPT"
+            ? [scope.gatewayConnectionId, scope.gatewayConnectionVersion] : [])],
       );
       if (result.rowCount === 0) return null;
       if (result.rowCount !== 1) throw conflict();

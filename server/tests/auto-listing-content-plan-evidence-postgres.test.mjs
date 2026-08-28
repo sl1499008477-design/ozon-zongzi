@@ -21,6 +21,8 @@ function responseCommand(overrides = {}) {
     modelName: "vendor/planner-model",
     promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_V3",
     gatewayRequestId: "gateway-request-a",
+    gatewayConnectionId: "connection-a",
+    gatewayConnectionVersion: 3,
     response: { version: 1, language: "ru", slots: [] },
     ...overrides,
   };
@@ -76,6 +78,7 @@ test("records one bounded response before validation and exact replay returns th
         id: "attempt-a", account_id: "account-a", job_id: "job-a", item_id: "item-a",
         source_snapshot_id: "snapshot-a", profile_id: "profile-a", profile_version: 3,
         planning_contract: "LEGACY_FULL_PLAN_V3", input_hash: HASH_A, skeleton_hash: null,
+        gateway_connection_id: "connection-a", gateway_connection_version: 3,
       }], rowCount: 1 };
     }
     if (/FROM auto_listing_content_plan_responses/i.test(sql)) {
@@ -196,11 +199,14 @@ test("records one exact validation result and loads evidence only by the immutab
     accountId: "account-a", jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a",
     owner: { kind: "ATTEMPT", id: "attempt-a" }, planningContract: "LEGACY_FULL_PLAN_V3",
     inputHash: HASH_A, skeletonHash: null, profileId: "profile-a", profileVersion: 3,
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3,
   });
   assert.equal(outcome.response.id, "response-a");
   assert.equal(outcome.validation.status, "REJECTED");
   const loadSql = db.queries.find(({ text }) => /LEFT JOIN auto_listing_content_plan_validation_results/i.test(text)).text;
   assert.match(loadSql, /attempt_id=\$\d+/i);
+  assert.match(loadSql, /gateway_connection_id IS NOT DISTINCT FROM \$\d+/i);
+  assert.match(loadSql, /gateway_connection_version IS NOT DISTINCT FROM \$\d+/i);
   assert.doesNotMatch(loadSql, /ORDER BY|LIMIT 1|MAX\(/i);
   assert.equal(JSON.stringify(outcome).includes(HASH_B), false);
 });

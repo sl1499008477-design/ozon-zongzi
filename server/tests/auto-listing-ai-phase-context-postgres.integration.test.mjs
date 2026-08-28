@@ -17,13 +17,13 @@ const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const H = (character) => character.repeat(64);
 
 function message(ids, phase, overrides = {}) {
-  return {
+  return { message: {
     contractVersion: "V1", accountId: ids.accountA, itemId: ids.item, phase,
     expectedStatusVersion: 7, correlationId: `correlation-${ids.suffix}`,
     ...(phase === "MATERIALIZE_SOURCE_ASSET" ? { sourceAssetId: "source-a" } : {}),
     ...(phase === "GENERATE_IMAGE_SLOT" ? { slotKey: "main-1" } : {}),
     ...overrides,
-  };
+  }, execution: null };
 }
 
 const inert = () => ({ name: "inert" });

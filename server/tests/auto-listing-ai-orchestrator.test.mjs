@@ -3,6 +3,12 @@ import test from "node:test";
 import { orchestrateAutoListingAiPhase } from "../auto-listing-ai-orchestrator.mjs";
 
 const H = (digit = "a") => digit.repeat(64);
+const gatewayExecution = Object.freeze({
+  channelId: "channel-a",
+  connectionId: "connection-a",
+  connectionVersion: 3,
+  idleTimeoutMs: 300_000,
+});
 const services = (overrides = {}) => ({
   planContent: async () => ({ id: "plan-parent", accountId: "account-a", jobId: "job-a", itemId: "item-a" }),
   materializeSourceAsset: async () => ({
@@ -81,7 +87,7 @@ function phaseInput(phase) {
     sourceSnapshotId: "snapshot-a", gatewayProfile: inert, gateway: inert, repository: inert, evidenceRepository: inert,
     sourceCapture: inert, strategyCapture: inert, configCapture: inert, visualGroupsCapture: inert,
     promptTemplateVersion: "planner-v1", prohibitedClaims: [], regeneration: null,
-    planningContract: "LEGACY_FULL_PLAN_V3",
+    planningContract: "LEGACY_FULL_PLAN_V3", gatewayExecution,
   };
   if (phase === "MATERIALIZE_SOURCE_ASSET") return {
     parentPlan: parent, sourceSnapshot: inert, policy: undefined, repository: inert,
@@ -93,11 +99,12 @@ function phaseInput(phase) {
     sourceAssetLoader: inert, repository: inert, gateway: inert,
     profile: inert, imageModel: "image-model", ratio: "3:4", resolution: "1K", size: "768x1024",
     quality: "medium", templateVersion: "image-v1", regeneration: null, storage: inert, logger: null, maxAttempts: 3,
+    gatewayExecution,
   };
   return {
     plan, profile: inert, gateway: inert, repository: inert, factRegistry: [], acceptedAssets: acceptedAssets(),
     planHash: H("e"), sourceHash: H("f"), promptTemplateVersion: "rich-v1", maxAttempts: 3,
-    leaseOwner: "rich-worker",
+    leaseOwner: "rich-worker", gatewayExecution,
   };
 }
 
@@ -231,6 +238,42 @@ test("routes every phase exactly once with only server-loaded scope and returns 
       assert.equal(forwarded.planId, "plan-derived");
       assert.equal(forwarded.correlationId, "correlation-a");
     }
+  }
+});
+
+test("forwards one exact frozen gateway execution to every paid phase", async () => {
+  for (const [phase, serviceName] of [
+    ["PLAN_CONTENT", "planContent"],
+    ["GENERATE_IMAGE_SLOT", "generateImageSlot"],
+    ["GENERATE_RICH_CONTENT", "generateRichContent"],
+  ]) {
+    let forwarded;
+    const configured = services({
+      [serviceName]: async (input) => {
+        forwarded = input.gatewayExecution;
+        if (phase === "PLAN_CONTENT") {
+          return { id: "plan-parent", accountId: "account-a", jobId: "job-a", itemId: "item-a" };
+        }
+        if (phase === "GENERATE_IMAGE_SLOT") {
+          return {
+            status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+            planId: "plan-derived", slotKey: "main-1", role: "MAIN",
+          };
+        }
+        return {
+          status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+          planId: "plan-derived",
+        };
+      },
+    });
+    const currentContext = context(phase, {
+      phaseInput: { ...phaseInput(phase), gatewayExecution },
+    });
+    const outcome = await orchestrateAutoListingAiPhase({
+      message: message(phase), context: currentContext,
+    }, configured);
+    assert.equal(outcome.disposition, "ACK");
+    assert.equal(forwarded, gatewayExecution);
   }
 });
 

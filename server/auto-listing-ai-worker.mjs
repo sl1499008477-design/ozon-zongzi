@@ -307,7 +307,10 @@ export function createAutoListingAiWorker(config = {}) {
         outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
       });
     }
-    const loaded = await loadContext(message);
+    const loaded = await loadContext(Object.freeze({
+      message,
+      execution: execution ? execution.current() : null,
+    }));
     if (execution?.lost()) {
       return Object.freeze({
         persist: false,

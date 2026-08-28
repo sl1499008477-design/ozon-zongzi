@@ -1026,10 +1026,17 @@ test("reserves before its one text gateway call, persists deterministic checker 
     assert.doesNotMatch(request.prompt, /https?:\/\/|secret/i);
     return { value: validContent(), requestId: "gateway-1", modelEvidence: { requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model", gatewayReportedTextModelPresent: true }, usage: { totalTokens: 42 } };
   } };
-  const result = await generateRichContent(generationInput(repo, gateway));
+  const result = await generateRichContent(generationInput(repo, gateway, {
+    gatewayExecution: {
+      channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
+    },
+  }));
   assert.equal(result.status, "ACCEPTED"); assert.equal(gatewayCalls, 1);
   assert.deepEqual(repo.calls.map(([name]) => name), ["reserve", "complete"]);
   assert.equal(repo.calls[0][1].maxAttempts, 5);
+  assert.equal(repo.calls[0][1].gatewayConnectionId, "connection-b");
+  assert.equal(repo.calls[0][1].gatewayConnectionVersion, 9);
+  assert.equal(repo.calls[1][1].gatewayConnectionId, "connection-b");
   assert.equal(repo.calls[1][1].checkerResult.accepted, true);
   assert.deepEqual(repo.calls[1][1].assetEvidence.map((entry) => entry.assetId), assets.map((entry) => entry.id).sort());
   assert.equal(repo.calls[1][1].gatewayRequestId, "gateway-1");

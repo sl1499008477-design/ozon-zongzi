@@ -215,6 +215,13 @@ function validateScope(input) {
   }
 }
 
+function validGatewayProvenance(input) {
+  if (!Object.hasOwn(input, "gatewayConnectionId") && !Object.hasOwn(input, "gatewayConnectionVersion")) return true;
+  return (input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+    || (clean(input.gatewayConnectionId) && Number.isInteger(input.gatewayConnectionVersion)
+      && input.gatewayConnectionVersion >= 1 && input.gatewayConnectionVersion <= 2_147_483_647);
+}
+
 function validateReservation(input) {
   validateScope(input);
   for (const key of ["planHash", "sourceHash", "factRegistryHash", "assetHash", "promptHash"]) {
@@ -226,7 +233,8 @@ function validateReservation(input) {
     || !validAssetEvidence(input.assetEvidence, input)
     || !exactObject(input.requestEvidence, new Set(["requestKey", "schemaVersion"]))
     || input.requestEvidence.requestKey !== `auto-listing-rich-${input.inputHash}` || input.requestEvidence.schemaVersion !== VERSION
-    || !Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 5) {
+    || !Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 5
+    || !validGatewayProvenance(input)) {
     throw attemptError();
   }
   let identity = null;
@@ -319,6 +327,8 @@ export function createMemoryRichContentRepository({
     for (const key of ["sourceFactEvidence", "assetEvidence", "requestEvidence"]) {
       if (input[key] !== undefined && !same(input[key], row[key])) throw attemptError();
     }
+    if ((row.gatewayConnectionId ?? null) !== (input.gatewayConnectionId ?? null)
+      || (row.gatewayConnectionVersion ?? null) !== (input.gatewayConnectionVersion ?? null)) throw attemptError();
     return row;
   };
 
@@ -375,6 +385,8 @@ export function createMemoryRichContentRepository({
         Object.assign(reclaimable[0], {
           status: "GENERATING", errorCode: null, errorRetryable: null,
           leaseOwner, leaseToken, leaseExpiresAt: timestamp + leaseMs, updatedAt: timestamp,
+          gatewayConnectionId: input.gatewayConnectionId ?? null,
+          gatewayConnectionVersion: input.gatewayConnectionVersion ?? null,
         });
         return {
           status: "RESERVED", attemptNo: reclaimable[0].attemptNo, leaseToken,
@@ -510,11 +522,13 @@ export function createPostgresRichContentRepository({
         const reclaimed = await client.query(
           `UPDATE ai_rich_content_results
            SET status='GENERATING',error_code=NULL,error_retryable=NULL,
-               lease_owner=$2,lease_token=$3,lease_expires_at=NOW()+($4 * INTERVAL '1 millisecond'),updated_at=NOW()
+               lease_owner=$2,lease_token=$3,lease_expires_at=NOW()+($4 * INTERVAL '1 millisecond'),
+               gateway_connection_id=$5,gateway_connection_version=$6,updated_at=NOW()
            WHERE id=$1 AND status='GENERATING' AND lease_expires_at <= NOW()
              AND lease_owner='AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED'
            RETURNING *`,
-          [reclaimable.rows[0].id, leaseOwner, leaseToken, leaseMs],
+          [reclaimable.rows[0].id, leaseOwner, leaseToken, leaseMs,
+            input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null],
         );
         const record = mapRow(reclaimed.rows[0]);
         if (reclaimed.rowCount !== 1 || record?.status !== "GENERATING"
@@ -541,13 +555,15 @@ export function createPostgresRichContentRepository({
            id,account_id,job_id,item_id,plan_id,profile_id,source_hash,asset_hash,input_hash,attempt_no,
            model_name,profile_version,prompt_template_version,rich_content,output_hash,checker_result,status,
            plan_hash,fact_registry_hash,prompt_hash,request_evidence,model_evidence,source_fact_evidence,
-           asset_evidence,gateway_request_id,lease_owner,lease_token,lease_expires_at
+           asset_evidence,gateway_request_id,lease_owner,lease_token,lease_expires_at,
+           gateway_connection_id,gateway_connection_version
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'{}'::JSONB,'','{}'::JSONB,'GENERATING',
-           $14,$15,$16,$17::JSONB,NULL,$18::JSONB,$19::JSONB,NULL,$20,$21,NOW()+($22 * INTERVAL '1 millisecond'))`,
+           $14,$15,$16,$17::JSONB,NULL,$18::JSONB,$19::JSONB,NULL,$20,$21,NOW()+($22 * INTERVAL '1 millisecond'),$23,$24)`,
         [rowId, ...values, input.profileId, input.sourceHash, input.assetHash, input.inputHash, attemptNo,
           input.modelName, input.profileVersion, input.promptTemplateVersion, input.planHash,
           input.factRegistryHash, input.promptHash, JSON.stringify(input.requestEvidence),
-          JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), leaseOwner, leaseToken, leaseMs],
+          JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), leaseOwner, leaseToken, leaseMs,
+          input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null],
       );
       await client.query("COMMIT");
       return { status: "RESERVED", attemptNo, leaseToken, inputHash: input.inputHash, promptHash: input.promptHash };
@@ -584,6 +600,8 @@ export function createPostgresRichContentRepository({
          AND plan_hash=$17 AND source_hash=$18 AND fact_registry_hash=$19 AND asset_hash=$20 AND prompt_hash=$21
          AND profile_id=$22 AND profile_version=$23 AND model_name=$24 AND prompt_template_version=$25
          AND source_fact_evidence=$26::JSONB AND asset_evidence=$27::JSONB AND request_evidence=$28::JSONB
+         AND gateway_connection_id IS NOT DISTINCT FROM $29
+         AND gateway_connection_version IS NOT DISTINCT FROM $30
        RETURNING *`,
       [...SCOPE_KEYS.map((key) => input[key]), input.inputHash, input.attemptNo, status,
         JSON.stringify(accepted ? input.richContent : {}), accepted ? input.outputHash : "",
@@ -592,7 +610,8 @@ export function createPostgresRichContentRepository({
         accepted ? null : input.errorRetryable, accepted ? new Date() : null, input.leaseToken,
         input.planHash, input.sourceHash, input.factRegistryHash, input.assetHash, input.promptHash,
         input.profileId, input.profileVersion, input.modelName, input.promptTemplateVersion,
-        JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence)],
+        JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence),
+        input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null],
       );
     } catch {
       throw repositoryError();
@@ -618,11 +637,14 @@ export function createPostgresRichContentRepository({
            AND plan_hash=$8 AND source_hash=$9 AND fact_registry_hash=$10 AND asset_hash=$11 AND prompt_hash=$12
            AND profile_id=$13 AND profile_version=$14 AND model_name=$15 AND prompt_template_version=$16
            AND source_fact_evidence=$17::JSONB AND asset_evidence=$18::JSONB AND request_evidence=$19::JSONB
+           AND gateway_connection_id IS NOT DISTINCT FROM $20
+           AND gateway_connection_version IS NOT DISTINCT FROM $21
          RETURNING *`,
         [...SCOPE_KEYS.map((key) => input[key]), input.inputHash, input.attemptNo, input.leaseToken,
           input.planHash, input.sourceHash, input.factRegistryHash, input.assetHash, input.promptHash,
           input.profileId, input.profileVersion, input.modelName, input.promptTemplateVersion,
-          JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence)],
+          JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence),
+          input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null],
       );
     } catch {
       throw repositoryError();

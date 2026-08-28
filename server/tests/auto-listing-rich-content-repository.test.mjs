@@ -928,8 +928,12 @@ test("PostgreSQL default rich-content lease outlives the bounded two-minute mode
     pool, token: () => "lease-duration", id: () => "rich-duration",
   });
 
-  assert.equal((await repository.reserveRichContentAttempt(reservationInput())).status, "RESERVED");
-  assert.equal(insertValues?.at(-1), 300_000);
+  assert.equal((await repository.reserveRichContentAttempt(reservationInput({
+    gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9,
+  }))).status, "RESERVED");
+  assert.equal(insertValues?.includes(300_000), true);
+  assert.equal(insertValues?.includes("connection-b"), true);
+  assert.equal(insertValues?.includes(9), true);
 });
 
 test("PostgreSQL rich channel release uses the full scope evidence attempt and token fence", async () => {
@@ -970,6 +974,7 @@ test("PostgreSQL rich channel release uses the full scope evidence attempt and t
   assert.match(transition.sql, /account_id=\$1.*item_id=\$3.*input_hash=\$5.*attempt_no=\$6/isu);
   assert.match(transition.sql, /lease_token=\$7/isu);
   assert.match(transition.sql, /plan_hash=.*source_hash=.*fact_registry_hash=.*asset_hash=.*prompt_hash=/isu);
+  assert.match(transition.sql, /gateway_connection_id IS NOT DISTINCT FROM \$20/iu);
   assert.equal(transition.values[6], "rich-channel-token");
 });
 

@@ -42,6 +42,16 @@ const text = (value) => typeof value === "string" && value.trim() ? value.trim()
 const strictText = (value, max = 240) => typeof value === "string" && value.trim() && value === value.trim()
   && value.length <= max && !/[\u0000-\u001f\u007f]/u.test(value) ? value : "";
 const stableScope = (input) => ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey"].every((key) => strictText(input?.scope?.[key]));
+const GATEWAY_EXECUTION_KEYS = ["channelId", "connectionId", "connectionVersion", "idleTimeoutMs"];
+function gatewayExecutionFor(value) {
+  if (value === undefined || value === null) return null;
+  if (!exactKeys(value, GATEWAY_EXECUTION_KEYS) || !strictText(value.channelId)
+    || !strictText(value.connectionId) || !Number.isInteger(value.connectionVersion)
+    || value.connectionVersion < 1 || value.idleTimeoutMs !== 300_000) {
+    throw failure("AUTO_LISTING_IMAGE_INPUT_INVALID");
+  }
+  return value;
+}
 const sameJson = (left, right) => JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 const emptyCopyPolicyVersion = (slot, templateVersion) => FIXED_COPY_TEMPLATES.has(templateVersion)
   && (!Array.isArray(slot?.claims) || slot.claims.length === 0) ? EMPTY_COPY_CHECKER_POLICY_VERSION : null;
@@ -842,6 +852,11 @@ const requestId = (value) => typeof value === "string" && value.trim() && value 
 export async function generateImageSlot(input = {}) {
   const { scope, plan, slot, sourceAssetLoader, repository, gateway, profile, imageModel, ratio, resolution, templateVersion, regeneration = null, storage, logger = null, maxAttempts = 3 } = input;
   const validated = preflight(input);
+  const gatewayExecution = gatewayExecutionFor(input.gatewayExecution);
+  const gatewayProvenance = {
+    gatewayConnectionId: gatewayExecution?.connectionId ?? null,
+    gatewayConnectionVersion: gatewayExecution?.connectionVersion ?? null,
+  };
   assertLeaseActive(input);
   const quality = validated.quality;
   const effectiveRegeneration = regeneration ?? plan.regeneration ?? null;
@@ -871,6 +886,7 @@ export async function generateImageSlot(input = {}) {
       ...(legacyAttemptIdentityHash ? { legacyAttemptIdentityHash } : {}),
       generationSize: validated.size,
       maxAttempts,
+      ...gatewayProvenance,
     });
   } catch {
     throw repositoryFailure();
@@ -893,12 +909,13 @@ export async function generateImageSlot(input = {}) {
   if (reservation?.status !== "RESERVED" || !strictText(reservation.leaseToken) || !Number.isInteger(reservation.attemptNo)
     || reservation.attemptNo < 1 || reservation.attemptNo > maxAttempts
     || reservation.generationSize !== validated.size) throw failure("AUTO_LISTING_IMAGE_RESERVATION_FAILED", true);
-  const attempt = { ...scope, attemptIdentityHash, inputHash: attemptIdentityHash, generationSize: validated.size, attemptNo: reservation.attemptNo, leaseToken: reservation.leaseToken };
+  const attempt = { ...scope, attemptIdentityHash, inputHash: attemptIdentityHash, generationSize: validated.size, attemptNo: reservation.attemptNo, leaseToken: reservation.leaseToken, ...gatewayProvenance };
   let gatewayRequestId = null;
   let checkerRequestId = null;
   let generatedModelEvidence = null;
   let storedAsset = null;
   let terminalized = false;
+  let checkerStarted = false;
   try {
     const references = await loadReferences({ sourceAssetLoader, scope, selected: validated.selected });
     const categoryStyleReferences = await loadCategoryStyleReferences({
@@ -992,7 +1009,7 @@ export async function generateImageSlot(input = {}) {
       let generated;
       try {
         assertLeaseActive(input);
-        generated = await gateway.generateImage({ profile, model: imageModel, correlationId: input.correlationId || `auto-listing:${scope.jobId}:${scope.itemId}`, requestKey: `auto-listing-image-${inputHash}-attempt-${attempt.attemptNo}`, idleTimeoutMs: 300_000, prompt, sourceImages: [...references, ...categoryStyleReferences].map(({ bytes, contentType }) => ({ bytes, contentType })), size: gatewayImageSize(imageModel, ratio, validated.size), quality });
+        generated = await gateway.generateImage({ profile, model: imageModel, correlationId: input.correlationId || `auto-listing:${scope.jobId}:${scope.itemId}`, requestKey: `auto-listing-image-${inputHash}-attempt-${attempt.attemptNo}`, idleTimeoutMs: gatewayExecution?.idleTimeoutMs ?? 300_000, prompt, sourceImages: [...references, ...categoryStyleReferences].map(({ bytes, contentType }) => ({ bytes, contentType })), size: gatewayImageSize(imageModel, ratio, validated.size), quality });
         assertLeaseActive(input);
         gatewayRequestId = requestId(generated?.requestId);
       } catch (cause) {
@@ -1016,6 +1033,7 @@ export async function generateImageSlot(input = {}) {
     let checked;
     try {
       assertLeaseActive(input);
+      checkerStarted = true;
       checked = await checkGeneratedAsset({ generated: normalized, references, categoryStyle: validated.categoryStyle,
         categoryStyleReferences, facts, gateway, profile,
         checkerModel: profile?.textModel, scope: {
@@ -1024,6 +1042,7 @@ export async function generateImageSlot(input = {}) {
         }, templateVersion, ratio, resolution, textRequired, textForbidden, visualBrief,
         claimEvidenceFactIds: slotClaimEvidenceFactIds(slot),
         dimensionAnnotationsRequired: dimensionAnnotationsRequiredFor(slot, templateVersion),
+        gatewayExecution,
         ...(typeof input.assertLeaseActive === "function" ? { assertLeaseActive: input.assertLeaseActive } : {}) });
       assertLeaseActive(input);
       checkerRequestId = requestId(checked?.evidence?.requestId);
@@ -1037,7 +1056,8 @@ export async function generateImageSlot(input = {}) {
     }
     if (!checked.accepted) {
       assertLeaseActive(input);
-      await repositoryCall(repository, "rejectGenerationAttempt", { ...attempt, role: slot.role, ...storedAsset, code: checked.code, retryable: attempt.attemptNo < maxAttempts, checkerEvidence: checked.evidence, gatewayRequestId, checkerRequestId, modelEvidence: generatedModelEvidence }, input);
+      await repositoryCall(repository, "rejectGenerationAttempt", { ...attempt, role: slot.role, ...storedAsset, code: checked.code, retryable: attempt.attemptNo < maxAttempts, checkerEvidence: checked.evidence, gatewayRequestId, checkerRequestId, modelEvidence: generatedModelEvidence,
+        checkerConnectionId: gatewayExecution?.connectionId ?? null, checkerConnectionVersion: gatewayExecution?.connectionVersion ?? null }, input);
       terminalized = true;
       const rejected = failure(checked.code, attempt.attemptNo < maxAttempts);
       if (attempt.attemptNo >= maxAttempts) await finalizeExhausted({ repository, scope, slot, inputHash, attemptNo: attempt.attemptNo, error: rejected });
@@ -1048,6 +1068,8 @@ export async function generateImageSlot(input = {}) {
       profileId: profile.id, profileVersion: profile.configVersion, modelName: imageModel, promptHash,
       planHash: plan.planHash, sourceHash: plan.sourceHash, strategyHash: plan.strategyHash, configHash: plan.configHash, visualGroupsHash: plan.visualGroupsHash,
       promptTemplateVersion: templateVersion, sourceAssetEvidence: sourceEvidence(references), regeneration: effectiveRegeneration, generationSize: validated.size };
+    completeInput.checkerConnectionId = gatewayExecution?.connectionId ?? null;
+    completeInput.checkerConnectionVersion = gatewayExecution?.connectionVersion ?? null;
     assertLeaseActive(input);
     const completed = await repositoryCall(repository, "completeGenerationAttempt", completeInput, input);
     terminalized = true;
@@ -1072,6 +1094,8 @@ export async function generateImageSlot(input = {}) {
         gatewayRequestId,
         checkerRequestId,
         modelEvidence: generatedModelEvidence,
+        checkerConnectionId: checkerStarted ? gatewayExecution?.connectionId ?? null : null,
+        checkerConnectionVersion: checkerStarted ? gatewayExecution?.connectionVersion ?? null : null,
       }, input);
       terminalized = true;
       throw error;
@@ -1085,6 +1109,8 @@ export async function generateImageSlot(input = {}) {
         retryable,
         gatewayRequestId,
         checkerRequestId,
+        checkerConnectionId: checkerStarted ? gatewayExecution?.connectionId ?? null : null,
+        checkerConnectionVersion: checkerStarted ? gatewayExecution?.connectionVersion ?? null : null,
         ...(RECOVERABLE_CHECKER_FAILURES.has(error?.code) && storedAsset && generatedModelEvidence
           ? {
               ...storedAsset,

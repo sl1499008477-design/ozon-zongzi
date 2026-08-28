@@ -963,7 +963,8 @@ test("planner preserves an adapter 404 for channel revalidation instead of rewri
     async releaseContentPlanChannelReservation(input) {
       channelReleases += 1;
       assert.deepEqual(Object.keys(input).sort(), [
-        "accountId", "attemptId", "errorCode", "expectedStatusVersion", "inputHash", "itemId", "jobId",
+        "accountId", "attemptId", "errorCode", "expectedStatusVersion", "gatewayConnectionId", "gatewayConnectionVersion",
+        "inputHash", "itemId", "jobId",
         "planningContract", "profileId", "profileVersion", "requestKey", "reservationToken", "skeletonHash",
         "sourceSnapshotId",
       ]);
@@ -1302,27 +1303,36 @@ test("production repository port receives frozen snapshot, profile, request, and
     sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
     planningContract: "LEGACY_FULL_PLAN_V3",
     evidenceRepository: passthroughEvidenceRepository,
+    gatewayExecution: {
+      channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
+    },
     ...planningArgs,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse() { return { value: validPlan(built), requestId: "gateway-one" }; } },
     repository,
   });
   assert.deepEqual(Object.keys(calls[0][1]).sort(), [
-    "accountId", "expectedStatusVersion", "inputHash", "itemId", "jobId", "planningContract",
+    "accountId", "expectedStatusVersion", "gatewayConnectionId", "gatewayConnectionVersion", "inputHash", "itemId", "jobId", "planningContract",
     "profileId", "profileVersion", "requestKey", "skeletonHash", "sourceSnapshotId",
   ]);
   assert.equal(calls[0][1].sourceSnapshotId, "snapshot-db-1");
   assert.equal(calls[0][1].expectedStatusVersion, 7);
   assert.equal(calls[0][1].profileId, "profile-1");
+  assert.equal(calls[0][1].gatewayConnectionId, "connection-b");
+  assert.equal(calls[0][1].gatewayConnectionVersion, 9);
   const stage = calls.find(([name]) => name === "stage")[1];
   const save = calls.find(([name]) => name === "save")[1];
   assert.equal(stage.attemptId, "attempt-test");
   assert.equal(stage.fromStage, "FILLING_COPY");
   assert.equal(stage.toStage, "VALIDATING_COPY");
+  assert.equal(stage.gatewayConnectionId, "connection-b");
+  assert.equal(stage.gatewayConnectionVersion, 9);
   assert.equal(save.sourceSnapshotId, "snapshot-db-1");
   assert.equal(save.expectedStatusVersion, 7);
   assert.equal(save.requestKey, calls[0][1].requestKey);
   assert.equal(save.strategyVersionId, "strategy-v1");
+  assert.equal(save.gatewayConnectionId, "connection-b");
+  assert.equal(save.gatewayConnectionVersion, 9);
   assert.deepEqual(save.factRegistry, built.plannerInput.factRegistry);
   assert.equal(save.factRegistryHash, hash(built.plannerInput.factRegistry));
 });

@@ -53,6 +53,8 @@ function reservation(overrides = {}) {
     inputHash: HASH,
     expectedStatusVersion: 7,
     requestKey: `auto-listing-plan-${"b".repeat(64)}`,
+    gatewayConnectionId: "connection-a",
+    gatewayConnectionVersion: 3,
     ...overrides,
   };
 }
@@ -214,6 +216,9 @@ test("reserve locks the exact account job item and its default lease covers the 
   assert.doesNotMatch(activeQuery.text, /input_hash=/i, "only one live planner lease may exist per item across all inputs");
   const attemptInsert = db.queries.find((entry) => /INSERT INTO auto_listing_content_plan_attempts/i.test(entry.text));
   assert.match(attemptInsert.text, /planning_contract/i);
+  assert.match(attemptInsert.text, /gateway_connection_id.*gateway_connection_version/is);
+  assert.equal(attemptInsert.values.includes("connection-a"), true);
+  assert.equal(attemptInsert.values.includes(3), true);
   assert.equal(attemptInsert.values.includes("LEGACY_FULL_PLAN_V3"), true);
   assert.equal(attemptInsert.values.includes(300_000), true);
   assert.equal(db.releases(), 1);
@@ -284,6 +289,10 @@ test("an expired exact attempt renews the same evidence owner instead of chargin
     plannerStage: "VALIDATING_COPY",
   });
   assert.equal(db.queries.some(({ text }) => /INSERT INTO auto_listing_content_plan_attempts/i.test(text)), false);
+  const reclaim = db.queries.find(({ text }) => /SET lease_owner=/i.test(text));
+  assert.match(reclaim.text, /gateway_connection_id=.*gateway_connection_version=/is);
+  assert.equal(reclaim.values.includes("connection-a"), true);
+  assert.equal(reclaim.values.includes(3), true);
 });
 
 test("channel release expires only the exact content-plan attempt without terminalizing its business budget", async () => {
@@ -352,6 +361,7 @@ test("advanceContentPlanStage changes only the exact active attempt and rejects 
     attemptId: "attempt-a", inputHash: HASH, expectedStatusVersion: 7,
     reservationToken: "lease-a", planningContract: "LEGACY_FULL_PLAN_V3", skeletonHash: null,
     fromStage: "FILLING_COPY", toStage: "VALIDATING_COPY",
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3,
   }), {
     attemptId: "attempt-a", planningContract: "LEGACY_FULL_PLAN_V3",
     skeletonHash: null, plannerStage: "VALIDATING_COPY",
@@ -363,6 +373,8 @@ test("advanceContentPlanStage changes only the exact active attempt and rejects 
   assert.match(query.text, /planner_stage=\$\d+[\s\S]*RETURNING/i);
   assert.equal(query.values.includes("FILLING_COPY"), true);
   assert.equal(query.values.includes("VALIDATING_COPY"), true);
+  assert.match(query.text, /gateway_connection_id IS NOT DISTINCT FROM \$\d+/i);
+  assert.match(query.text, /gateway_connection_version IS NOT DISTINCT FROM \$\d+/i);
 });
 
 test("reserve rejects a planning contract that differs from the frozen job item", async () => {
