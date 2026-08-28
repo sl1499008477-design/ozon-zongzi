@@ -1008,6 +1008,7 @@ test("rollback requires a fresh audited rollback capability and republishes the 
     { rows: [{ id: "connection-old", version: 1, status_version: 6 }] },
     { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-active" }] },
     { rows: [{ ...passed, enabled: true }] },
+    { rows: [] },
     { rowCount: 1, rows: [{ event_id: "audit-profile", action: "AUTO_LISTING_AI_PROFILE_ROLLBACK",
       actor_id: "account-a", occurred_at: new Date("2026-08-09T03:04:05.000Z") }] }, { rows: [] },
   ]);
@@ -1023,6 +1024,7 @@ test("rollback requires a fresh audited rollback capability and republishes the 
   assert.match(calls[5].sql, /metadata->>'purpose'='ROLLBACK_CAPABILITY'/iu);
   assert.match(calls[6].sql, /status='VALIDATED'/iu);
   assert.match(calls[15].sql, /status='ACTIVE'/iu);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_ai_profile_channels/iu.test(sql)), true);
   assert.equal(calls.at(-2).sql, "COMMIT");
 });
 

@@ -994,12 +994,52 @@ if (!enabled) {
         code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409,
       });
       await passCapability(successor, "ROLLBACK_CAPABILITY", "first");
+      await pool.query("ALTER TABLE auto_listing_ai_profile_channels DISABLE TRIGGER auto_listing_ai_profile_channels_no_delete");
+      await pool.query(
+        "DELETE FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND profile_id=$2 AND profile_version=1 AND channel_id='primary'",
+        [accountId, successor.profile.id],
+      );
+      await pool.query("ALTER TABLE auto_listing_ai_profile_channels ENABLE TRIGGER auto_listing_ai_profile_channels_no_delete");
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND profile_id=$2 AND profile_version=1",
+        [accountId, successor.profile.id],
+      )).rows[0].count), 0, "the historical encrypted rollback target starts without a channel");
+      await pool.query(`CREATE FUNCTION reject_rollback_primary_${suffix}() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'forced rollback primary channel insert failure'; END;
+        $$`);
+      await pool.query(`CREATE TRIGGER reject_rollback_primary_${suffix}
+        BEFORE INSERT ON auto_listing_ai_profile_channels
+        FOR EACH ROW WHEN (NEW.channel_id = 'primary')
+        EXECUTE FUNCTION reject_rollback_primary_${suffix}()`);
+      await assert.rejects(profiles.rollbackProfile(rollbackInput), {
+        code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED", status: 503,
+      });
+      assert.deepEqual((await pool.query(
+        "SELECT id,enabled FROM ai_gateway_profiles WHERE account_id=$1 AND id IN ($2,$3) ORDER BY id",
+        [accountId, successor.profile.id, second.profile.id],
+      )).rows, [{ id: second.profile.id, enabled: true }, { id: successor.profile.id, enabled: false }].sort((a, b) => a.id.localeCompare(b.id)));
+      assert.deepEqual((await pool.query(
+        "SELECT id,status FROM ai_gateway_connection_versions WHERE account_id=$1 AND id IN ($2,$3) ORDER BY id",
+        [accountId, successor.connection.id, second.connection.id],
+      )).rows, [{ id: second.connection.id, status: "ACTIVE" }, { id: successor.connection.id, status: "RETIRED" }].sort((a, b) => a.id.localeCompare(b.id)));
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_ROLLBACK'",
+        [accountId],
+      )).rows[0].count), 0);
+      await pool.query(`DROP TRIGGER reject_rollback_primary_${suffix} ON auto_listing_ai_profile_channels`);
+      await pool.query(`DROP FUNCTION reject_rollback_primary_${suffix}()`);
       const rolledBack = await profiles.rollbackProfile(rollbackInput);
       assert.equal(rolledBack.enabled, true);
       assert.equal(rolledBack.activation.kind, "ROLLBACK");
       assert.equal(rolledBack.activation.actorId, accountId);
       assert.equal(new Date(rolledBack.activation.occurredAt).toISOString(), rolledBack.activation.occurredAt);
       assert.equal((await profiles.rollbackProfile(rollbackInput)).duplicate, true);
+      assert.deepEqual((await pool.query(
+        `SELECT channel_id,channel_order,connection_id,connection_version
+           FROM auto_listing_ai_profile_channels
+          WHERE account_id=$1 AND profile_id=$2 AND profile_version=1`,
+        [accountId, successor.profile.id],
+      )).rows, [{ channel_id: "primary", channel_order: 1, connection_id: successor.connection.id, connection_version: 1 }]);
       const activationOverview = await settings.loadSettingsOverview({ accountId });
       assert.deepEqual(
         activationOverview.profiles.find((candidate) => candidate.id === successor.profile.id)?.activation,
