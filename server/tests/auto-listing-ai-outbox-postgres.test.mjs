@@ -206,14 +206,14 @@ test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1 account
   }), ["account-b", "account-c"]);
 
   assert.match(pool.calls[0].sql, /contract_version='V1'/iu);
-  assert.match(pool.calls[0].sql, /state='PENDING'[\s\S]*?attempts < \$3[\s\S]*?next_retry_at <= NOW\(\)/iu);
-  assert.match(pool.calls[0].sql, /state='PROCESSING'[\s\S]*?lease_expires_at <= NOW\(\)/iu);
-  assert.match(pool.calls[0].sql, /state='DEAD' AND EXISTS[\s\S]*?i\.status_version=auto_listing_ai_outbox\.expected_status_version/iu);
+  assert.match(pool.calls[0].sql, /outbox\.state='PENDING'[\s\S]*?outbox\.next_retry_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL OR outbox\.attempts < \$3/iu);
+  assert.match(pool.calls[0].sql, /outbox\.state='PROCESSING'[\s\S]*?outbox\.lease_expires_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL OR outbox\.attempts < \$3/iu);
+  assert.match(pool.calls[0].sql, /profile\.connection_id IS NULL AND outbox\.state='DEAD'[\s\S]*?dispatch_contract_version IS DISTINCT FROM 'CHANNEL_WORK_V1'[\s\S]*?i\.status_version=outbox\.expected_status_version/iu);
   assert.match(pool.calls[0].sql, /i\.status='PLANNING'[\s\S]*?i\.status='GENERATING'/iu);
-  assert.match(pool.calls[0].sql, /state='COMPLETED'[\s\S]*?INTERVAL '3 hours'[\s\S]*?NOT EXISTS/iu);
-  assert.doesNotMatch(pool.calls[0].sql, /contract_version='V1' AND attempts < \$3/iu);
-  assert.match(pool.calls[0].sql, /account_id > \$1/iu);
-  assert.match(pool.calls[0].sql, /GROUP BY account_id[\s\S]*?ORDER BY account_id[\s\S]*?LIMIT \$2/iu);
+  assert.match(pool.calls[0].sql, /profile\.connection_id IS NULL AND outbox\.state='COMPLETED'[\s\S]*?INTERVAL '3 hours'[\s\S]*?NOT EXISTS/iu);
+  assert.doesNotMatch(pool.calls[0].sql, /outbox\.contract_version='V1' AND outbox\.attempts < \$3/iu);
+  assert.match(pool.calls[0].sql, /outbox\.account_id > \$1/iu);
+  assert.match(pool.calls[0].sql, /GROUP BY outbox\.account_id[\s\S]*?ORDER BY outbox\.account_id[\s\S]*?LIMIT \$2/iu);
   assert.deepEqual(pool.calls[0].parameters, ["account-a", 2, 4]);
 
   await assert.rejects(
@@ -357,6 +357,11 @@ test("public inputs are closed and identifiers use the 240 UTF-8 byte boundary",
   for (const execute of [
     () => repository.listAutoListingAiOutbox({ accountId: "account-a", unexpected: true }),
     () => repository.claimAutoListingAiMessages({ accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 1_000, unexpected: true }),
+    () => repository.claimAutoListingAiWork({ accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 1_000, unexpected: true }),
+    () => repository.markAutoListingAiWorkPublished({ accountId: "account-a", itemId: "item-a", id: "outbox-a", workerId: "relay-a", leaseToken: "lease-a", publicationId: "publication-a", unexpected: true }),
+    () => repository.releaseUnpublishedAutoListingAiWork({ accountId: "account-a", itemId: "item-a", id: "outbox-a", workerId: "relay-a", leaseToken: "lease-a", publicationId: "publication-a", unexpected: true }),
+    () => repository.adoptAutoListingAiWork({ accountId: "account-a", itemId: "item-a", id: "outbox-a", publicationId: "publication-a", dispatchGeneration: 1, relayOwner: "relay-a", relayToken: "lease-a", workerId: "worker-a", workerLeaseToken: "worker-lease-a", leaseMs: 1_000, unexpected: true }),
+    () => repository.renewAutoListingAiWorkLease({ accountId: "account-a", itemId: "item-a", id: "outbox-a", publicationId: "publication-a", dispatchGeneration: 1, workerId: "worker-a", leaseToken: "worker-lease-a", leaseMs: 1_000, unexpected: true }),
     () => repository.completeAutoListingAiMessage({ accountId: "account-a", itemId: "界".repeat(81), id: "ai-outbox-1", workerId: "worker-a", leaseToken: "lease-a" }),
     () => repository.failAutoListingAiMessage({ accountId: "account-a", itemId: "item-a", id: "ai-outbox-1", workerId: "worker-a", leaseToken: "lease-a", errorCode: "API_KEY_EXPOSED" }),
   ]) await assert.rejects(execute(), { code: "AUTO_LISTING_AI_OUTBOX_INVALID" });

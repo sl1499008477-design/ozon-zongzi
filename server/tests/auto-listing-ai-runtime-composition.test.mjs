@@ -9,6 +9,8 @@ import {
   createDefaultAutoListingAiProductionOutboxRelay,
 } from "../auto-listing-ai-runtime-composition.mjs";
 import {
+  createAutoListingAiWorkPublisher,
+  createAutoListingAiWorkQueueAdapter,
   createLegacyAutoListingAiOutboxPublisher,
   createLegacyAutoListingAiQueueAdapter,
 } from "../auto-listing-ai-queue.mjs";
@@ -388,7 +390,9 @@ test("production relay discovers runnable accounts from the shared outbox in fai
     },
     async claimAutoListingAiMessages(input) { events.push(["claim", input.accountId]); return []; },
     async claimLegacyAutoListingAiMessages(input) { events.push(["legacy-claim", input.accountId]); return []; },
-    async claimAutoListingAiWork() { throw new Error("connection work must wait for Task 5 fencing"); },
+    async claimAutoListingAiWork(input) { events.push(["v3-claim", input.accountId]); return []; },
+    async markAutoListingAiWorkPublished() { throw new Error("no rows"); },
+    async releaseUnpublishedAutoListingAiWork() { throw new Error("no rows"); },
     async renewAutoListingAiMessageLease() { throw new Error("no rows"); },
     async completeAutoListingAiMessage() {},
     async failAutoListingAiMessage() {},
@@ -402,7 +406,7 @@ test("production relay discovers runnable accounts from the shared outbox in fai
     async send() { throw new Error("empty outbox must not send"); },
     async stop() { events.push(["boss-stop"]); },
   };
-  let tick;
+  const ticks = [];
   const ports = Object.freeze({
     createBoss() { events.push(["boss-create"]); return boss; },
     createOutboxRepository({ pool }) { events.push(["repository", pool]); return repository; },
@@ -412,8 +416,20 @@ test("production relay discovers runnable accounts from the shared outbox in fai
         ...options,
         timers: {
           setTimeout, clearTimeout,
-          setInterval(callback) { tick = callback; return { unref() {} }; },
+          setInterval(callback) { ticks.push(callback); return { unref() {} }; },
           clearInterval() { events.push(["timer-stop"]); },
+        },
+        intervalMs: 5_000,
+      });
+    },
+    createWorkQueueAdapter: createAutoListingAiWorkQueueAdapter,
+    createWorkPublisher(options) {
+      return createAutoListingAiWorkPublisher({
+        ...options,
+        timers: {
+          setTimeout, clearTimeout,
+          setInterval(callback) { ticks.push(callback); return { unref() {} }; },
+          clearInterval() { events.push(["work-timer-stop"]); },
         },
         intervalMs: 5_000,
       });
@@ -427,27 +443,37 @@ test("production relay discovers runnable accounts from the shared outbox in fai
   assert.deepEqual(Object.keys(relay).sort(), ["start", "stop"]);
   assert.equal(events.some(([name]) => name === "boss-create" || name === "discover"), false);
   assert.equal(await relay.start(), true);
-  assert.equal(typeof tick, "function");
-  await tick();
-  await tick();
+  assert.equal(ticks.length, 2);
+  await Promise.all(ticks.map((tick) => tick()));
+  await Promise.all(ticks.map((tick) => tick()));
   await relay.stop();
 
   assert.deepEqual(events.filter(([name]) => name === "discover").map(([, input]) => input), [
     { afterAccountId: null, limit: 100 },
+    { afterAccountId: null, limit: 100 },
+    { afterAccountId: "account-b", limit: 100 },
     { afterAccountId: "account-b", limit: 100 },
     { afterAccountId: "account-c", limit: 100 },
+    { afterAccountId: "account-c", limit: 100 },
+    { afterAccountId: null, limit: 100 },
     { afterAccountId: null, limit: 100 },
   ]);
   assert.deepEqual(events.filter(([name]) => name === "claim").map(([, accountId]) => accountId), []);
   assert.deepEqual(events.filter(([name]) => name === "legacy-claim").map(([, accountId]) => accountId), [
     "account-a", "account-b", "account-c", "account-a", "account-b",
   ]);
-  assert.deepEqual(events.filter(([name]) => name === "queue").map(([, name]) => name), ["auto-listing-ai-v2"]);
+  assert.deepEqual(events.filter(([name]) => name === "v3-claim").map(([, accountId]) => accountId), [
+    "account-a", "account-b", "account-c", "account-a", "account-b",
+  ]);
+  assert.deepEqual(events.filter(([name]) => name === "queue").map(([, name]) => name).sort(), [
+    "auto-listing-ai-v2", "auto-listing-ai-v3",
+  ]);
   assert.equal(events.filter(([name]) => name === "legacy-dead").length, 5);
   assert.equal(events.some(([name]) => name === "generic-dead"), false);
-  assert.equal(events.filter(([name]) => name === "boss-create").length, 1);
-  assert.equal(events.filter(([name]) => name === "boss-stop").length, 1);
+  assert.equal(events.filter(([name]) => name === "boss-create").length, 2);
+  assert.equal(events.filter(([name]) => name === "boss-stop").length, 2);
   assert.equal(events.filter(([name]) => name === "timer-stop").length, 1);
+  assert.equal(events.filter(([name]) => name === "work-timer-stop").length, 1);
 });
 
 test("default production relay is lazy, uses the same database configuration and does not query before start", async () => {
@@ -468,14 +494,16 @@ test("default production relay is lazy, uses the same database configuration and
   assert.deepEqual({ pools, queries, connections }, { pools: 1, queries: 0, connections: 0 });
 });
 
-test("default production relay runs one bounded legacy-only v2 cycle with fake leaf infrastructure", async () => {
+test("default production relay runs bounded v2 legacy and v3 connection cycles without crossing claim kinds", async () => {
   const events = [];
   const pool = Object.freeze({ async query() {}, async connect() {} });
   const repository = Object.freeze({
     async listRunnableAutoListingAiAccountIds(input) { events.push(["discover", input]); return ["account-a"]; },
     async claimLegacyAutoListingAiMessages(input) { events.push(["legacy-claim", input]); return []; },
     async claimAutoListingAiMessages() { events.push(["generic-claim"]); throw new Error("must not claim generic work"); },
-    async claimAutoListingAiWork() { events.push(["v3-claim"]); throw new Error("must not claim v3 work"); },
+    async claimAutoListingAiWork(input) { events.push(["v3-claim", input]); return []; },
+    async markAutoListingAiWorkPublished() { throw new Error("no rows"); },
+    async releaseUnpublishedAutoListingAiWork() { throw new Error("no rows"); },
     async renewAutoListingAiMessageLease() { throw new Error("no rows"); },
     async completeAutoListingAiMessage() { throw new Error("no rows"); },
     async failAutoListingAiMessage() { throw new Error("no rows"); },
@@ -504,19 +532,24 @@ test("default production relay runs one bounded legacy-only v2 cycle with fake l
 
   assert.deepEqual(events.filter(([name]) => name === "discover"), [
     ["discover", { afterAccountId: null, limit: 100 }],
+    ["discover", { afterAccountId: null, limit: 100 }],
   ]);
   assert.deepEqual(events.filter(([name]) => name === "legacy-claim"), [[
     "legacy-claim",
     { accountId: "account-a", workerId: "auto-listing-ai-outbox-relay-v1", limit: 1, leaseMs: 30_000 },
   ]]);
-  assert.equal(events.some(([name]) => name === "generic-claim" || name === "v3-claim" || name === "send"), false);
+  assert.deepEqual(events.filter(([name]) => name === "v3-claim"), [[
+    "v3-claim",
+    { accountId: "account-a", workerId: "auto-listing-ai-work-relay-v3", limit: 1, leaseMs: 30_000 },
+  ]]);
+  assert.equal(events.some(([name]) => name === "generic-claim" || name === "send"), false);
   assert.deepEqual(events.filter(([name]) => name === "reconcile-legacy-dead"), [
     ["reconcile-legacy-dead", { accountId: "account-a", limit: 1 }],
   ]);
   assert.equal(events.some(([name]) => name === "reconcile-generic-dead"), false);
-  const queue = events.find(([name]) => name === "queue");
-  assert.equal(queue[1], "auto-listing-ai-v2");
-  assert.equal(Object.hasOwn(queue[2], "expireInSeconds"), false);
-  assert.equal(events.filter(([name]) => name === "boss-create").length, 1);
-  assert.equal(events.filter(([name]) => name === "boss-stop").length, 1);
+  const queues = events.filter(([name]) => name === "queue");
+  assert.deepEqual(queues.map(([, name]) => name).sort(), ["auto-listing-ai-v2", "auto-listing-ai-v3"]);
+  assert.equal(queues.every((queue) => !Object.hasOwn(queue[2], "expireInSeconds")), true);
+  assert.equal(events.filter(([name]) => name === "boss-create").length, 2);
+  assert.equal(events.filter(([name]) => name === "boss-stop").length, 2);
 });

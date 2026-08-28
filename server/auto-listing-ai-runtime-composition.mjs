@@ -8,6 +8,8 @@ import { createAutoListingAiCredentialResolver } from "./auto-listing-ai-credent
 import { createAutoListingAiSettingsPostgres } from "./auto-listing-ai-settings-postgres.mjs";
 import { createPostgresAiOutboxRepository } from "./auto-listing-ai-outbox-postgres.mjs";
 import {
+  createAutoListingAiWorkPublisher,
+  createAutoListingAiWorkQueueAdapter,
   createLegacyAutoListingAiOutboxPublisher,
   createLegacyAutoListingAiQueueAdapter,
 } from "./auto-listing-ai-queue.mjs";
@@ -36,6 +38,7 @@ import { createSub2ApiGatewayPolicy } from "./sub2api-gateway-boundary.mjs";
 const INPUT_KEYS = new Set(["env", "resolvePool", "ports"]);
 const RELAY_PORT_KEYS = new Set([
   "createBoss", "createOutboxRepository", "createQueueAdapter", "createPublisher",
+  "createWorkQueueAdapter", "createWorkPublisher",
 ]);
 const RELAY_INFRASTRUCTURE_KEYS = new Set(["createBoss", "createOutboxRepository"]);
 const DIAGNOSTIC_PORT_KEYS = new Set([
@@ -269,6 +272,8 @@ const DEFAULT_RELAY_PORTS = Object.freeze({
   ...DEFAULT_RELAY_INFRASTRUCTURE,
   createQueueAdapter: (options) => createLegacyAutoListingAiQueueAdapter(options),
   createPublisher: (options) => createLegacyAutoListingAiOutboxPublisher(options),
+  createWorkQueueAdapter: (options) => createAutoListingAiWorkQueueAdapter(options),
+  createWorkPublisher: (options) => createAutoListingAiWorkPublisher(options),
 });
 
 function defaultRelayPorts(infrastructure) {
@@ -532,31 +537,35 @@ export async function createAutoListingAiProductionOutboxRelay(input = {}) {
   try {
     const repository = assertPortShape(ports.createOutboxRepository({ pool }), [
       "listRunnableAutoListingAiAccountIds", "claimLegacyAutoListingAiMessages",
+      "claimAutoListingAiWork", "markAutoListingAiWorkPublished", "releaseUnpublishedAutoListingAiWork",
       "renewAutoListingAiMessageLease", "completeAutoListingAiMessage",
       "failAutoListingAiMessage", "reconcileDeadLegacyAutoListingAiMessages",
       "reconcileInterruptedAutoListingAiItems",
     ]);
-    let afterAccountId = null;
-    const accountIds = async () => {
-      let values = await repository.listRunnableAutoListingAiAccountIds({ afterAccountId, limit: 100 });
-      if (!Array.isArray(values)) throw new Error("invalid discovery");
-      if (values.length === 0 && afterAccountId !== null) {
-        afterAccountId = null;
-        values = await repository.listRunnableAutoListingAiAccountIds({ afterAccountId, limit: 100 });
-      }
-      if (values.length > 0) afterAccountId = values[values.length - 1];
-      return values;
+    const createAccountIds = () => {
+      let afterAccountId = null;
+      return async () => {
+        let values = await repository.listRunnableAutoListingAiAccountIds({ afterAccountId, limit: 100 });
+        if (!Array.isArray(values)) throw new Error("invalid discovery");
+        if (values.length === 0 && afterAccountId !== null) {
+          afterAccountId = null;
+          values = await repository.listRunnableAutoListingAiAccountIds({ afterAccountId, limit: 100 });
+        }
+        if (values.length > 0) afterAccountId = values[values.length - 1];
+        return values;
+      };
     };
-    const queueAdapter = assertPortShape(ports.createQueueAdapter({
+    const timers = Object.freeze({ setTimeout, clearTimeout, setInterval, clearInterval });
+    const legacyQueueAdapter = assertPortShape(ports.createQueueAdapter({
       enabled: true,
       bossFactory: () => ports.createBoss({ database: config.database, queue: config.queue }),
     }), ["start", "publish", "stop"]);
-    const publisher = assertPortShape(ports.createPublisher({
+    const legacyPublisher = assertPortShape(ports.createPublisher({
       enabled: true,
       outboxRepository: repository,
-      queueAdapter,
-      accountIds,
-      timers: Object.freeze({ setTimeout, clearTimeout, setInterval, clearInterval }),
+      queueAdapter: legacyQueueAdapter,
+      accountIds: createAccountIds(),
+      timers,
       workerId: "auto-listing-ai-outbox-relay-v1",
       batchSize: 1,
       leaseMs: 30_000,
@@ -564,9 +573,33 @@ export async function createAutoListingAiProductionOutboxRelay(input = {}) {
       intervalMs: 5_000,
       accountConcurrency: 4,
     }), ["start", "stop"]);
+    const workQueueAdapter = assertPortShape(ports.createWorkQueueAdapter({
+      enabled: true,
+      bossFactory: () => ports.createBoss({ database: config.database, queue: config.queue }),
+    }), ["start", "publish", "stop"]);
+    const workPublisher = assertPortShape(ports.createWorkPublisher({
+      enabled: true,
+      outboxRepository: repository,
+      queueAdapter: workQueueAdapter,
+      accountIds: createAccountIds(),
+      timers,
+      workerId: "auto-listing-ai-work-relay-v3",
+      batchSize: 1,
+      leaseMs: 30_000,
+      publishTimeoutMs: 10_000,
+      intervalMs: 5_000,
+      accountConcurrency: 4,
+    }), ["start", "stop"]);
     return Object.freeze({
-      start: () => publisher.start(),
-      stop: () => publisher.stop(),
+      async start() {
+        const values = await Promise.all([legacyPublisher.start(), workPublisher.start()]);
+        return values.every((value) => value === true);
+      },
+      async stop() {
+        const values = await Promise.allSettled([legacyPublisher.stop(), workPublisher.stop()]);
+        const failed = values.find((value) => value.status === "rejected");
+        if (failed) throw failed.reason;
+      },
     });
   } catch (error) {
     if (error?.code === "AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED") throw error;

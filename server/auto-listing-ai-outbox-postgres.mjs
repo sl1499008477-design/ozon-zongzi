@@ -5,6 +5,10 @@ import {
   isSafeAutoListingAiIdentifier,
   normalizeAutoListingAiMessage,
 } from "./auto-listing-ai-message.mjs";
+import {
+  AUTO_LISTING_AI_WORK_CONTRACT_VERSION,
+  normalizeAutoListingAiWorkMessage,
+} from "./auto-listing-ai-work-message.mjs";
 
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,119}$/;
 const SENSITIVE_CODE_FRAGMENT = /(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|CREDENTIAL|AUTHORIZATION|BEARER|COOKIE|SESSION_?ID|PRIVATE_?KEY)/u;
@@ -128,6 +132,60 @@ function ownershipInput(raw, { lease = false, failure = false } = {}) {
   };
 }
 
+function publicationOwnershipInput(raw) {
+  const input = plainInput(raw);
+  const keys = ["accountId", "itemId", "id", "workerId", "leaseToken", "publicationId"];
+  if (!exactKeys(input, [keys])) throw problem("AUTO_LISTING_AI_OUTBOX_INVALID");
+  return {
+    accountId: identifier(input.accountId),
+    itemId: identifier(input.itemId),
+    id: identifier(input.id),
+    workerId: identifier(input.workerId),
+    leaseToken: identifier(input.leaseToken),
+    publicationId: identifier(input.publicationId),
+  };
+}
+
+function adoptWorkInput(raw) {
+  const input = plainInput(raw);
+  const keys = [
+    "accountId", "itemId", "id", "publicationId", "dispatchGeneration",
+    "relayOwner", "relayToken", "workerId", "workerLeaseToken", "leaseMs",
+  ];
+  if (!exactKeys(input, [keys])) throw problem("AUTO_LISTING_AI_OUTBOX_INVALID");
+  return {
+    accountId: identifier(input.accountId),
+    itemId: identifier(input.itemId),
+    id: identifier(input.id),
+    publicationId: identifier(input.publicationId),
+    dispatchGeneration: positiveInteger(input.dispatchGeneration, 2_147_483_647),
+    relayOwner: identifier(input.relayOwner),
+    relayToken: identifier(input.relayToken),
+    workerId: identifier(input.workerId),
+    workerLeaseToken: identifier(input.workerLeaseToken),
+    leaseMs: positiveInteger(input.leaseMs, 24 * 60 * 60 * 1000),
+  };
+}
+
+function renewWorkInput(raw) {
+  const input = plainInput(raw);
+  const keys = [
+    "accountId", "itemId", "id", "publicationId", "dispatchGeneration",
+    "workerId", "leaseToken", "leaseMs",
+  ];
+  if (!exactKeys(input, [keys])) throw problem("AUTO_LISTING_AI_OUTBOX_INVALID");
+  return {
+    accountId: identifier(input.accountId),
+    itemId: identifier(input.itemId),
+    id: identifier(input.id),
+    publicationId: identifier(input.publicationId),
+    dispatchGeneration: positiveInteger(input.dispatchGeneration, 2_147_483_647),
+    workerId: identifier(input.workerId),
+    leaseToken: identifier(input.leaseToken),
+    leaseMs: positiveInteger(input.leaseMs, 24 * 60 * 60 * 1000),
+  };
+}
+
 function phaseTarget(message) {
   if (message.phase === "MATERIALIZE_SOURCE_ASSET") return message.sourceAssetId;
   if (message.phase === "GENERATE_IMAGE_SLOT") return message.slotKey;
@@ -169,6 +227,42 @@ function mapRow(row) {
   });
 }
 
+function mapWorkRow(row) {
+  if (!row || !Number.isSafeInteger(row.dispatch_generation) || row.dispatch_generation < 1
+    || !(row.lease_expires_at instanceof Date)) {
+    throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+  }
+  const message = mapRow(row)?.message;
+  let workMessage;
+  try {
+    workMessage = normalizeAutoListingAiWorkMessage({
+      workContractVersion: AUTO_LISTING_AI_WORK_CONTRACT_VERSION,
+      message,
+      execution: {
+        outboxId: row.id,
+        dispatchGeneration: row.dispatch_generation,
+        channelId: row.channel_id,
+        connectionId: row.connection_id,
+        connectionVersion: row.connection_version,
+        leaseOwner: row.lease_owner,
+        leaseToken: row.lease_token,
+        leaseExpiresAt: row.lease_expires_at.toISOString(),
+      },
+    });
+  } catch {
+    throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+  }
+  return Object.freeze({
+    accountId: row.account_id,
+    itemId: row.item_id,
+    id: row.id,
+    leaseOwner: row.lease_owner,
+    leaseToken: row.lease_token,
+    publicationId: row.publication_id,
+    workMessage,
+  });
+}
+
 export function createPostgresAiOutboxRepository(rawOptions = {}) {
   const options = factoryOptions(rawOptions);
   const pool = options.pool;
@@ -198,6 +292,39 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
     if (!row) throw problem("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
     return row;
   };
+  const transaction = async (operation) => {
+    let client;
+    let clientQuery;
+    let release;
+    let transactionStarted = false;
+    try {
+      client = await poolConnect.call(pool);
+      try {
+        clientQuery = client?.query;
+        release = client?.release;
+      } catch { throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED"); }
+      if (typeof clientQuery !== "function" || typeof release !== "function") {
+        throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+      }
+      await clientQuery.call(client, "BEGIN ISOLATION LEVEL READ COMMITTED");
+      transactionStarted = true;
+      const value = await operation((...args) => clientQuery.call(client, ...args));
+      await clientQuery.call(client, "COMMIT");
+      transactionStarted = false;
+      return value;
+    } catch (error) {
+      if (transactionStarted && typeof clientQuery === "function") {
+        try { await clientQuery.call(client, "ROLLBACK"); } catch {}
+      }
+      if (error?.code === "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED"
+        || error?.code === "AUTO_LISTING_AI_OUTBOX_INVALID") throw error;
+      throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+    } finally {
+      if (typeof release === "function") {
+        try { release.call(client); } catch {}
+      }
+    }
+  };
   const reconcileDeadMessages = async (input, { legacy }) => {
     const request = reconcileInput(input);
     const frozenLegacyJoin = legacy ? `
@@ -215,6 +342,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
              JOIN auto_listing_job_items AS i
                ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id${frozenLegacyJoin}
             WHERE o.account_id=$1 AND o.contract_version='V1' AND o.state='DEAD'
+              AND o.dispatch_contract_version IS DISTINCT FROM 'CHANNEL_WORK_V1'
               AND i.status_version=o.expected_status_version
               AND ((o.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
                     AND i.status='PLANNING')
@@ -260,43 +388,52 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
     async listRunnableAutoListingAiAccountIds(input) {
       const request = accountDiscoveryInput(input);
       const result = await query(
-        `SELECT account_id
-         FROM auto_listing_ai_outbox
-         WHERE contract_version='V1'
-           AND ($1::TEXT IS NULL OR account_id > $1)
-           AND ((state='PENDING' AND attempts < $3 AND next_retry_at <= NOW())
-             OR (state='PROCESSING' AND lease_expires_at <= NOW())
-             OR (state='DEAD' AND EXISTS (
+        `SELECT outbox.account_id
+         FROM auto_listing_ai_outbox AS outbox
+         JOIN auto_listing_jobs AS job
+           ON job.account_id=outbox.account_id AND job.id=outbox.job_id
+         JOIN ai_gateway_profiles AS profile
+           ON profile.account_id=job.account_id AND profile.id=job.ai_profile_id
+          AND profile.config_version=job.ai_profile_version
+         WHERE outbox.contract_version='V1'
+           AND ($1::TEXT IS NULL OR outbox.account_id > $1)
+           AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW()
+                 AND (profile.connection_id IS NOT NULL OR outbox.attempts < $3))
+             OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()
+                 AND (profile.connection_id IS NOT NULL OR outbox.attempts < $3))
+             OR (profile.connection_id IS NULL AND outbox.state='DEAD'
+               AND outbox.dispatch_contract_version IS DISTINCT FROM 'CHANNEL_WORK_V1' AND EXISTS (
                SELECT 1 FROM auto_listing_job_items AS i
-                WHERE i.account_id=auto_listing_ai_outbox.account_id
-                  AND i.job_id=auto_listing_ai_outbox.job_id
-                  AND i.id=auto_listing_ai_outbox.item_id
-                  AND i.status_version=auto_listing_ai_outbox.expected_status_version
-                  AND ((auto_listing_ai_outbox.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
+                WHERE i.account_id=outbox.account_id
+                  AND i.job_id=outbox.job_id
+                  AND i.id=outbox.item_id
+                  AND i.status_version=outbox.expected_status_version
+                  AND ((outbox.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
                         AND i.status='PLANNING')
-                    OR (auto_listing_ai_outbox.phase IN ('GENERATE_IMAGE_SLOT','GENERATE_RICH_CONTENT')
+                    OR (outbox.phase IN ('GENERATE_IMAGE_SLOT','GENERATE_RICH_CONTENT')
                         AND i.status='GENERATING'))
              ))
-             OR (state='COMPLETED' AND published_at <= NOW()-INTERVAL '3 hours'
+             OR (profile.connection_id IS NULL AND outbox.state='COMPLETED'
+               AND outbox.published_at <= NOW()-INTERVAL '3 hours'
                AND EXISTS (
                  SELECT 1 FROM auto_listing_job_items AS i
-                  WHERE i.account_id=auto_listing_ai_outbox.account_id
-                    AND i.job_id=auto_listing_ai_outbox.job_id
-                    AND i.id=auto_listing_ai_outbox.item_id
-                    AND i.status_version=auto_listing_ai_outbox.expected_status_version
+                  WHERE i.account_id=outbox.account_id
+                    AND i.job_id=outbox.job_id
+                    AND i.id=outbox.item_id
+                    AND i.status_version=outbox.expected_status_version
                     AND i.status IN ('PLANNING','GENERATING')
                     AND i.updated_at <= NOW()-INTERVAL '3 hours'
                )
                AND NOT EXISTS (
                  SELECT 1 FROM auto_listing_ai_outbox AS live
-                  WHERE live.account_id=auto_listing_ai_outbox.account_id
-                    AND live.job_id=auto_listing_ai_outbox.job_id
-                    AND live.item_id=auto_listing_ai_outbox.item_id
-                    AND live.expected_status_version=auto_listing_ai_outbox.expected_status_version
+                  WHERE live.account_id=outbox.account_id
+                    AND live.job_id=outbox.job_id
+                    AND live.item_id=outbox.item_id
+                    AND live.expected_status_version=outbox.expected_status_version
                     AND live.state IN ('PENDING','PROCESSING')
                )))
-         GROUP BY account_id
-         ORDER BY account_id
+         GROUP BY outbox.account_id
+         ORDER BY outbox.account_id
          LIMIT $2`,
         [request.afterAccountId, request.limit, maxAttempts],
       );
@@ -329,6 +466,9 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
            SELECT i.account_id,i.job_id,i.id AS item_id,i.status,i.status_version,j.correlation_id
              FROM auto_listing_job_items AS i
              JOIN auto_listing_jobs AS j ON j.account_id=i.account_id AND j.id=i.job_id
+             JOIN ai_gateway_profiles AS profile
+               ON profile.account_id=j.account_id AND profile.id=j.ai_profile_id
+              AND profile.config_version=j.ai_profile_version AND profile.connection_id IS NULL
             WHERE i.account_id=$1 AND i.status IN ('PLANNING','GENERATING')
               AND i.updated_at <= NOW()-INTERVAL '3 hours'
               AND EXISTS (
@@ -608,6 +748,373 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
 
     async claimLegacyAutoListingAiMessages(input) {
       return this.claimAutoListingAiMessages(input);
+    },
+
+    async claimAutoListingAiWork(input) {
+      const request = claimInput(input);
+      let client;
+      let clientQuery;
+      let release;
+      let transactionStarted = false;
+      try {
+        client = await poolConnect.call(pool);
+        try {
+          clientQuery = client?.query;
+          release = client?.release;
+        } catch { throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED"); }
+        if (typeof clientQuery !== "function" || typeof release !== "function") {
+          throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+        }
+        await clientQuery.call(client, "BEGIN ISOLATION LEVEL READ COMMITTED");
+        transactionStarted = true;
+        const rows = [];
+        for (let index = 0; index < request.limit; index += 1) {
+          const selected = await clientQuery.call(
+            client,
+            `SELECT outbox.*,job.ai_profile_id,job.ai_profile_version,
+                    item.status AS item_status,item.status_version AS item_status_version,
+                    channel.channel_id,channel.connection_id,channel.connection_version,
+                    NOW()+($2 * INTERVAL '1 millisecond') AS claim_lease_expires_at
+               FROM auto_listing_ai_outbox AS outbox
+               JOIN auto_listing_jobs AS job
+                 ON job.account_id=outbox.account_id AND job.id=outbox.job_id
+               JOIN ai_gateway_profiles AS profile
+                 ON profile.account_id=job.account_id AND profile.id=job.ai_profile_id
+                AND profile.config_version=job.ai_profile_version
+                AND profile.connection_id IS NOT NULL AND profile.connection_version IS NOT NULL
+               JOIN auto_listing_job_items AS item
+                 ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
+               JOIN LATERAL (
+                 SELECT candidate.channel_id,candidate.connection_id,candidate.connection_version,
+                        (candidate.assigned_job_id=outbox.job_id AND candidate.assigned_item_id=outbox.item_id) AS fixed
+                   FROM auto_listing_ai_profile_channels AS candidate
+                   JOIN ai_gateway_connection_versions AS connection
+                     ON connection.account_id=candidate.account_id
+                    AND connection.id=candidate.connection_id
+                    AND connection.version=candidate.connection_version
+                   LEFT JOIN auto_listing_job_items AS assigned_item
+                     ON assigned_item.account_id=candidate.account_id
+                    AND assigned_item.job_id=candidate.assigned_job_id
+                    AND assigned_item.id=candidate.assigned_item_id
+                  WHERE candidate.account_id=job.account_id
+                    AND candidate.profile_id=job.ai_profile_id
+                    AND candidate.profile_version=job.ai_profile_version
+                    AND candidate.enabled IS TRUE
+                    AND candidate.requires_revalidation IS FALSE
+                    AND (candidate.cooldown_until IS NULL OR candidate.cooldown_until <= NOW())
+                    AND connection.status IN ('ACTIVE','VALIDATED','RETIRED')
+                    AND (candidate.execution_lease_expires_at IS NULL OR candidate.execution_lease_expires_at <= NOW())
+                    AND (
+                      (candidate.assigned_job_id=outbox.job_id AND candidate.assigned_item_id=outbox.item_id)
+                      OR (
+                        NOT EXISTS (
+                          SELECT 1 FROM auto_listing_ai_profile_channels AS fixed_channel
+                           WHERE fixed_channel.account_id=outbox.account_id
+                             AND fixed_channel.profile_id=job.ai_profile_id
+                             AND fixed_channel.profile_version=job.ai_profile_version
+                             AND fixed_channel.assigned_job_id=outbox.job_id
+                             AND fixed_channel.assigned_item_id=outbox.item_id
+                        )
+                        AND (
+                          candidate.assigned_job_id IS NULL
+                          OR (candidate.execution_lease_expires_at IS NULL OR candidate.execution_lease_expires_at <= NOW())
+                            AND (assigned_item.status NOT IN ('PLANNING','GENERATING')
+                              OR NOT EXISTS (
+                                SELECT 1 FROM auto_listing_ai_outbox AS recoverable
+                                 WHERE recoverable.account_id=candidate.account_id
+                                   AND recoverable.job_id=candidate.assigned_job_id
+                                   AND recoverable.item_id=candidate.assigned_item_id
+                                   AND recoverable.contract_version='V1'
+                                   AND recoverable.state IN ('PENDING','PROCESSING')
+                              ))
+                        )
+                      )
+                    )
+                  ORDER BY
+                    CASE WHEN candidate.assigned_job_id=outbox.job_id AND candidate.assigned_item_id=outbox.item_id THEN 0
+                         WHEN candidate.connection_id=item.last_ai_connection_id
+                          AND candidate.connection_version=item.last_ai_connection_version THEN 1
+                         ELSE 2 END,
+                    candidate.channel_order,candidate.channel_id
+                  LIMIT 1
+                  FOR UPDATE OF candidate SKIP LOCKED
+               ) AS channel ON TRUE
+              WHERE outbox.account_id=$1 AND outbox.contract_version='V1'
+                AND ((outbox.state='PENDING' AND COALESCE(outbox.next_retry_at,outbox.available_at) <= NOW())
+                  OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
+                AND item.status_version=outbox.expected_status_version
+                AND ((outbox.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
+                      AND item.status='PLANNING')
+                  OR (outbox.phase IN ('GENERATE_IMAGE_SLOT','GENERATE_RICH_CONTENT')
+                      AND item.status='GENERATING'))
+                AND NOT EXISTS (
+                  SELECT 1 FROM auto_listing_ai_outbox AS live
+                   WHERE live.account_id=outbox.account_id AND live.job_id=outbox.job_id
+                     AND live.item_id=outbox.item_id AND live.id<>outbox.id
+                     AND live.contract_version='V1' AND live.state='PROCESSING'
+                     AND live.lease_expires_at > NOW()
+                )
+              ORDER BY CASE WHEN channel.fixed THEN 0 ELSE 1 END,
+                       COALESCE(outbox.next_retry_at,outbox.available_at),job.created_at,item.source_order,
+                       outbox.created_at,outbox.id
+              LIMIT 1
+              FOR UPDATE OF outbox,item SKIP LOCKED`,
+            [request.accountId, request.leaseMs],
+          );
+          const candidate = selected.rows?.[0];
+          if (!candidate) break;
+          let leaseToken;
+          try { leaseToken = identifier(token()); } catch {
+            throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+          }
+          const leaseExpiresAt = candidate.claim_lease_expires_at;
+          const channelUpdate = await clientQuery.call(
+            client,
+            `UPDATE auto_listing_ai_profile_channels
+                SET assigned_job_id=$5,assigned_item_id=$6,assigned_status_version=$7,assigned_at=NOW(),
+                    execution_lease_owner=$8,execution_lease_token=$9,execution_lease_expires_at=$10,updated_at=NOW()
+              WHERE account_id=$1 AND profile_id=$2 AND profile_version=$3 AND channel_id=$4
+              RETURNING channel_id,connection_id,connection_version`,
+            [request.accountId, candidate.ai_profile_id, candidate.ai_profile_version, candidate.channel_id,
+              candidate.job_id, candidate.item_id, candidate.expected_status_version, request.workerId,
+              leaseToken, leaseExpiresAt],
+          );
+          if (channelUpdate.rows?.length !== 1) throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+          const itemUpdate = await clientQuery.call(
+            client,
+            `UPDATE auto_listing_job_items
+                SET last_ai_connection_id=$4,last_ai_connection_version=$5,last_ai_channel_assigned_at=NOW(),updated_at=NOW()
+              WHERE account_id=$1 AND job_id=$2 AND id=$3 AND status_version=$6
+              RETURNING id`,
+            [request.accountId, candidate.job_id, candidate.item_id, candidate.connection_id,
+              candidate.connection_version, candidate.expected_status_version],
+          );
+          if (itemUpdate.rows?.length !== 1) throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+          const claimedWork = await clientQuery.call(
+            client,
+            `UPDATE auto_listing_ai_outbox
+                SET state='PROCESSING',attempts=attempts+1,dispatch_contract_version='CHANNEL_WORK_V1',
+                    dispatch_generation=dispatch_generation+1,dispatch_queued_at=NOW(),
+                    publication_id=dedupe_key || ':' || (dispatch_generation+1)::TEXT,published_at=NULL,
+                    lease_owner=$3,lease_token=$4,lease_expires_at=$5,updated_at=NOW()
+              WHERE account_id=$1 AND id=$2 AND item_id=$6
+                AND ((state='PENDING' AND COALESCE(next_retry_at,available_at) <= NOW())
+                  OR (state='PROCESSING' AND lease_expires_at <= NOW()))
+              RETURNING *`,
+            [request.accountId, candidate.id, request.workerId, leaseToken, leaseExpiresAt, candidate.item_id],
+          );
+          const claimedRow = claimedWork.rows?.[0];
+          if (!claimedRow) throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+          rows.push(mapWorkRow({
+            ...claimedRow,
+            channel_id: candidate.channel_id,
+            connection_id: candidate.connection_id,
+            connection_version: candidate.connection_version,
+          }));
+        }
+        await clientQuery.call(client, "COMMIT");
+        transactionStarted = false;
+        return rows;
+      } catch (error) {
+        if (transactionStarted && typeof clientQuery === "function") {
+          try { await clientQuery.call(client, "ROLLBACK"); } catch {}
+        }
+        if (error?.code === "AUTO_LISTING_AI_OUTBOX_INVALID") throw error;
+        throw problem("AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED");
+      } finally {
+        if (typeof release === "function") {
+          try { release.call(client); } catch {}
+        }
+      }
+    },
+
+    async markAutoListingAiWorkPublished(input) {
+      const value = publicationOwnershipInput(input);
+      const result = await query(
+        `UPDATE auto_listing_ai_outbox AS outbox
+            SET published_at=COALESCE(outbox.published_at,NOW()),updated_at=NOW()
+          WHERE outbox.account_id=$1 AND outbox.id=$2 AND outbox.item_id=$3
+            AND outbox.lease_owner=$4 AND outbox.lease_token=$5
+            AND outbox.publication_id=$6 AND outbox.dispatch_contract_version='CHANNEL_WORK_V1'
+            AND outbox.dispatch_generation > 0
+            AND outbox.publication_id=outbox.dedupe_key || ':' || outbox.dispatch_generation
+            AND outbox.state='PROCESSING'
+            AND outbox.lease_expires_at > NOW()
+            AND EXISTS (
+              SELECT 1 FROM auto_listing_ai_profile_channels AS channel
+               WHERE channel.account_id=outbox.account_id
+                 AND channel.assigned_job_id=outbox.job_id AND channel.assigned_item_id=outbox.item_id
+                 AND channel.assigned_status_version=outbox.expected_status_version
+                 AND channel.execution_lease_owner=outbox.lease_owner
+                 AND channel.execution_lease_token=outbox.lease_token
+                 AND channel.execution_lease_expires_at=outbox.lease_expires_at
+                 AND channel.execution_lease_expires_at > NOW()
+            )
+          RETURNING outbox.id`,
+        [value.accountId, value.id, value.itemId, value.workerId, value.leaseToken, value.publicationId],
+      );
+      if (result.rows?.length !== 1) throw problem("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+      return Object.freeze({ published: true });
+    },
+
+    async releaseUnpublishedAutoListingAiWork(input) {
+      const value = publicationOwnershipInput(input);
+      return transaction(async (txQuery) => {
+        const locked = await txQuery(
+          `SELECT outbox.job_id,outbox.expected_status_version,outbox.dispatch_generation,channel.channel_id
+             FROM auto_listing_ai_outbox AS outbox
+             JOIN auto_listing_ai_profile_channels AS channel
+               ON channel.account_id=outbox.account_id
+              AND channel.assigned_job_id=outbox.job_id AND channel.assigned_item_id=outbox.item_id
+            WHERE outbox.account_id=$1 AND outbox.id=$2 AND outbox.item_id=$3
+              AND outbox.lease_owner=$4 AND outbox.lease_token=$5 AND outbox.publication_id=$6
+              AND outbox.dispatch_contract_version='CHANNEL_WORK_V1' AND outbox.dispatch_generation > 0
+              AND outbox.publication_id=outbox.dedupe_key || ':' || outbox.dispatch_generation
+              AND outbox.state='PROCESSING' AND outbox.published_at IS NULL
+              AND outbox.lease_expires_at > NOW()
+              AND channel.execution_lease_owner=outbox.lease_owner
+              AND channel.assigned_status_version=outbox.expected_status_version
+              AND channel.execution_lease_token=outbox.lease_token
+              AND channel.execution_lease_expires_at=outbox.lease_expires_at
+              AND channel.execution_lease_expires_at > NOW()
+            FOR UPDATE OF outbox,channel`,
+          [value.accountId, value.id, value.itemId, value.workerId, value.leaseToken, value.publicationId],
+        );
+        const fence = locked.rows?.[0];
+        if (!fence) throw problem("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+        const outbox = await txQuery(
+          `UPDATE auto_listing_ai_outbox
+              SET state='PENDING',publication_id=NULL,published_at=NULL,dispatch_queued_at=NULL,
+                  lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,next_retry_at=NOW(),updated_at=NOW()
+            WHERE account_id=$1 AND id=$2 AND item_id=$3 AND lease_owner=$4 AND lease_token=$5
+              AND publication_id=$6 AND dispatch_generation=$7
+            RETURNING id`,
+          [value.accountId, value.id, value.itemId, value.workerId, value.leaseToken,
+            value.publicationId, fence.dispatch_generation],
+        );
+        const channel = await txQuery(
+          `UPDATE auto_listing_ai_profile_channels
+              SET execution_lease_owner=NULL,execution_lease_token=NULL,execution_lease_expires_at=NULL,updated_at=NOW()
+            WHERE account_id=$1 AND channel_id=$2 AND assigned_job_id=$3 AND assigned_item_id=$4
+              AND assigned_status_version=$7
+              AND execution_lease_owner=$5 AND execution_lease_token=$6
+            RETURNING channel_id`,
+          [value.accountId, fence.channel_id, fence.job_id, value.itemId, value.workerId, value.leaseToken,
+            fence.expected_status_version],
+        );
+        if (outbox.rows?.length !== 1 || channel.rows?.length !== 1) {
+          throw problem("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+        }
+        return Object.freeze({ released: true });
+      });
+    },
+
+    async adoptAutoListingAiWork(input) {
+      const value = adoptWorkInput(input);
+      return transaction(async (txQuery) => {
+        const locked = await txQuery(
+          `SELECT outbox.*,channel.channel_id,channel.connection_id,channel.connection_version,
+                  NOW()+($8 * INTERVAL '1 millisecond') AS next_lease_expires_at
+             FROM auto_listing_ai_outbox AS outbox
+             JOIN auto_listing_ai_profile_channels AS channel
+               ON channel.account_id=outbox.account_id
+              AND channel.assigned_job_id=outbox.job_id AND channel.assigned_item_id=outbox.item_id
+            WHERE outbox.account_id=$1 AND outbox.id=$2 AND outbox.item_id=$3
+              AND outbox.publication_id=$4 AND outbox.dispatch_generation=$5
+              AND outbox.publication_id=outbox.dedupe_key || ':' || outbox.dispatch_generation
+              AND outbox.lease_owner=$6 AND outbox.lease_token=$7
+              AND outbox.dispatch_contract_version='CHANNEL_WORK_V1' AND outbox.state='PROCESSING'
+              AND outbox.published_at IS NOT NULL AND outbox.lease_expires_at > NOW()
+              AND channel.execution_lease_owner=$6 AND channel.execution_lease_token=$7
+              AND channel.assigned_status_version=outbox.expected_status_version
+              AND channel.execution_lease_expires_at=outbox.lease_expires_at
+              AND channel.execution_lease_expires_at > NOW()
+            FOR UPDATE OF outbox,channel`,
+          [value.accountId, value.id, value.itemId, value.publicationId, value.dispatchGeneration,
+            value.relayOwner, value.relayToken, value.leaseMs],
+        );
+        const fence = locked.rows?.[0];
+        if (!fence) throw problem("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+        const expiry = fence.next_lease_expires_at;
+        const outbox = await txQuery(
+          `UPDATE auto_listing_ai_outbox
+              SET lease_owner=$6,lease_token=$7,lease_expires_at=$8,updated_at=NOW()
+            WHERE account_id=$1 AND id=$2 AND item_id=$3 AND publication_id=$4 AND dispatch_generation=$5
+              AND lease_owner=$9 AND lease_token=$10
+            RETURNING *`,
+          [value.accountId, value.id, value.itemId, value.publicationId, value.dispatchGeneration,
+            value.workerId, value.workerLeaseToken, expiry, value.relayOwner, value.relayToken],
+        );
+        const channel = await txQuery(
+          `UPDATE auto_listing_ai_profile_channels
+              SET execution_lease_owner=$5,execution_lease_token=$6,execution_lease_expires_at=$7,updated_at=NOW()
+            WHERE account_id=$1 AND channel_id=$2 AND assigned_job_id=$3 AND assigned_item_id=$4
+              AND assigned_status_version=$10
+              AND execution_lease_owner=$8 AND execution_lease_token=$9
+            RETURNING channel_id`,
+          [value.accountId, fence.channel_id, fence.job_id, value.itemId, value.workerId,
+            value.workerLeaseToken, expiry, value.relayOwner, value.relayToken, fence.expected_status_version],
+        );
+        if (outbox.rows?.length !== 1 || channel.rows?.length !== 1) {
+          throw problem("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+        }
+        return mapWorkRow({
+          ...outbox.rows[0], channel_id: fence.channel_id,
+          connection_id: fence.connection_id, connection_version: fence.connection_version,
+        });
+      });
+    },
+
+    async renewAutoListingAiWorkLease(input) {
+      const value = renewWorkInput(input);
+      return transaction(async (txQuery) => {
+        const locked = await txQuery(
+          `SELECT outbox.*,channel.channel_id,channel.connection_id,channel.connection_version,
+                  NOW()+($8 * INTERVAL '1 millisecond') AS next_lease_expires_at
+             FROM auto_listing_ai_outbox AS outbox
+             JOIN auto_listing_ai_profile_channels AS channel
+               ON channel.account_id=outbox.account_id
+              AND channel.assigned_job_id=outbox.job_id AND channel.assigned_item_id=outbox.item_id
+            WHERE outbox.account_id=$1 AND outbox.id=$2 AND outbox.item_id=$3
+              AND outbox.publication_id=$4 AND outbox.dispatch_generation=$5
+              AND outbox.publication_id=outbox.dedupe_key || ':' || outbox.dispatch_generation
+              AND outbox.lease_owner=$6 AND outbox.lease_token=$7
+              AND outbox.dispatch_contract_version='CHANNEL_WORK_V1' AND outbox.state='PROCESSING'
+              AND outbox.lease_expires_at > NOW()
+              AND channel.execution_lease_owner=$6 AND channel.execution_lease_token=$7
+              AND channel.assigned_status_version=outbox.expected_status_version
+              AND channel.execution_lease_expires_at=outbox.lease_expires_at
+              AND channel.execution_lease_expires_at > NOW()
+            FOR UPDATE OF outbox,channel`,
+          [value.accountId, value.id, value.itemId, value.publicationId, value.dispatchGeneration,
+            value.workerId, value.leaseToken, value.leaseMs],
+        );
+        const fence = locked.rows?.[0];
+        if (!fence) throw problem("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+        const expiry = fence.next_lease_expires_at;
+        const outbox = await txQuery(
+          `UPDATE auto_listing_ai_outbox SET lease_expires_at=$8,updated_at=NOW()
+            WHERE account_id=$1 AND id=$2 AND item_id=$3 AND publication_id=$4 AND dispatch_generation=$5
+              AND lease_owner=$6 AND lease_token=$7 RETURNING *`,
+          [value.accountId, value.id, value.itemId, value.publicationId, value.dispatchGeneration,
+            value.workerId, value.leaseToken, expiry],
+        );
+        const channel = await txQuery(
+          `UPDATE auto_listing_ai_profile_channels SET execution_lease_expires_at=$7,updated_at=NOW()
+            WHERE account_id=$1 AND channel_id=$2 AND assigned_job_id=$3 AND assigned_item_id=$4
+              AND assigned_status_version=$8
+              AND execution_lease_owner=$5 AND execution_lease_token=$6 RETURNING channel_id`,
+          [value.accountId, fence.channel_id, fence.job_id, value.itemId,
+            value.workerId, value.leaseToken, expiry, fence.expected_status_version],
+        );
+        if (outbox.rows?.length !== 1 || channel.rows?.length !== 1) {
+          throw problem("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+        }
+        return mapWorkRow({
+          ...outbox.rows[0], channel_id: fence.channel_id,
+          connection_id: fence.connection_id, connection_version: fence.connection_version,
+        });
+      });
     },
 
     async renewAutoListingAiMessageLease(input) {
