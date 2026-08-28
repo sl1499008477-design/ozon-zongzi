@@ -6,7 +6,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { buildGeneratedAssetObjectKey } from "../auto-listing-asset-store.mjs";
-import { createPostgresAutoListingAiPhaseContextLoader } from "../auto-listing-ai-phase-context-postgres.mjs";
+import {
+  createPostgresAutoListingAiPhaseContextLoader,
+  projectAutoListingGenerationReferences,
+} from "../auto-listing-ai-phase-context-postgres.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 
@@ -128,8 +131,8 @@ if (!enabled) {
       );
       await admin.query(
         `INSERT INTO auto_listing_job_items
-           (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version)
-         VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',7)`,
+           (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order)
+         VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',7,1)`,
         [ids.item, ids.job, ids.accountA, ids.snapshot, ids.store, ids.warehouse],
       );
       const options = {
@@ -137,6 +140,7 @@ if (!enabled) {
         gateway: inert(), contentPlanRepository: inert(), contentPlanEvidenceRepository: inert(), sourceMaterializationRepository: inert(),
         generationRepository: inert(), richContentRepository: inert(), downloader: inert(), storage: inert(),
         sourceAssetLoader: inert(), logger: null, planPromptTemplateVersion: "planner-v1",
+        referenceProjector: projectAutoListingGenerationReferences,
         prohibitedClaims: ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"],
         maxAttempts: 3, richContentMaxAttempts: 5, richContentLeaseOwner: "rich-worker",
       };

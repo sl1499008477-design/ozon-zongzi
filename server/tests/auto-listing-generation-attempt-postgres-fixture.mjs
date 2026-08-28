@@ -47,19 +47,33 @@ export async function runGenerationAttemptPostgresFixture({ connectionString } =
       "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
       [accountId, `user-${suffix}`],
     );
-    for (const [connectionId, status, version] of [
-      [connectionAId, "ACTIVE", 1], [connectionBId, "VALIDATED", 1],
-    ]) {
+    for (const [connectionId, version] of [[connectionAId, 1], [connectionBId, 1]]) {
       await client.query(
         `INSERT INTO ai_gateway_connection_versions (
            account_id,id,version,display_name,base_url,ciphertext,iv,auth_tag,algorithm,key_version,
            fingerprint,status,status_version,idempotency_key,request_hash,correlation_id,created_by
-         ) VALUES ($1,$2,$3,$2,'https://gateway.invalid','cipher','iv','tag','aes-256-gcm','key-1',$4,$5,1,$6,$7,$8,$9)`,
-        [accountId, connectionId, version, hash(connectionId === connectionAId ? "a" : "b"), status,
+         ) VALUES ($1,$2,$3,$2,'https://gateway.invalid','cipher','iv','tag','aes-256-gcm','key-1',$4,'PENDING',1,$5,$6,$7,$8)`,
+        [accountId, connectionId, version, hash(connectionId === connectionAId ? "a" : "b"),
           `connection-key-${connectionId}`, hash(connectionId === connectionAId ? "c" : "d"),
           `correlation-${connectionId}`, accountId],
       );
+      const validationResult = { outcome: "PASSED", connectionId, connectionVersion: version };
+      const validated = await client.query(
+        `UPDATE ai_gateway_connection_versions
+            SET status='VALIDATED',status_version=2,validation_result=$4::JSONB,validation_hash=$5,
+                validated_at=NOW(),validated_by=$1
+          WHERE account_id=$1 AND id=$2 AND version=$3 AND status='PENDING' AND status_version=1`,
+        [accountId, connectionId, version, JSON.stringify(validationResult), sha256(validationResult)],
+      );
+      if (validated.rowCount !== 1) throw new Error(`connection validation setup failed for ${connectionId}`);
     }
+    const activated = await client.query(
+      `UPDATE ai_gateway_connection_versions
+          SET status='ACTIVE',status_version=3,activated_at=NOW(),activated_by=$1
+        WHERE account_id=$1 AND id=$2 AND version=1 AND status='VALIDATED' AND status_version=2`,
+      [accountId, connectionAId],
+    );
+    if (activated.rowCount !== 1) throw new Error(`connection activation setup failed for ${connectionAId}`);
     await client.query(
       "INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,'Store','Store',$2,'active',$3)",
       [storeId, `client-${suffix}`, accountId],
@@ -81,7 +95,7 @@ export async function runGenerationAttemptPostgresFixture({ connectionString } =
       [jobId, accountId, `job-key-${suffix}`, hash("3"), strategyId],
     );
     await client.query(
-      "INSERT INTO auto_listing_job_items (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version) VALUES ($1,$2,$3,$4,$5,$6,'GENERATING',7)",
+      "INSERT INTO auto_listing_job_items (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order) VALUES ($1,$2,$3,$4,$5,$6,'GENERATING',7,1)",
       [itemId, jobId, accountId, snapshotId, storeId, warehouseId],
     );
     await client.query(
@@ -347,6 +361,7 @@ export async function runGenerationAttemptPostgresFixture({ connectionString } =
     const memoryReleased = await memoryRepository.releaseGenerationLease({
       ...scope, attemptIdentityHash: channelIdentity, inputHash: channelInputHash,
       generationSize, attemptNo: memoryLease.attemptNo, leaseToken: memoryLease.leaseToken,
+      gatewayConnectionId: connectionAId, gatewayConnectionVersion: 1,
       errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED",
       role: "MAIN", profileId, profileVersion: 1, modelName: "image-a",
       gatewayRequestId: `channel-gateway-${suffix}`, checkerRequestId: `channel-checker-${suffix}`,
