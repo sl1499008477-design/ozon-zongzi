@@ -9,8 +9,8 @@ import {
   createDefaultAutoListingAiProductionOutboxRelay,
 } from "../auto-listing-ai-runtime-composition.mjs";
 import {
-  createAutoListingAiOutboxPublisher,
-  createAutoListingAiQueueAdapter,
+  createLegacyAutoListingAiOutboxPublisher,
+  createLegacyAutoListingAiQueueAdapter,
 } from "../auto-listing-ai-queue.mjs";
 
 const phases = Object.freeze({
@@ -387,6 +387,8 @@ test("production relay discovers runnable accounts from the shared outbox in fai
       return pages.get(input.afterAccountId) || [];
     },
     async claimAutoListingAiMessages(input) { events.push(["claim", input.accountId]); return []; },
+    async claimLegacyAutoListingAiMessages(input) { events.push(["legacy-claim", input.accountId]); return []; },
+    async claimAutoListingAiWork() { throw new Error("connection work must wait for Task 5 fencing"); },
     async renewAutoListingAiMessageLease() { throw new Error("no rows"); },
     async completeAutoListingAiMessage() {},
     async failAutoListingAiMessage() {},
@@ -403,9 +405,9 @@ test("production relay discovers runnable accounts from the shared outbox in fai
   const ports = Object.freeze({
     createBoss() { events.push(["boss-create"]); return boss; },
     createOutboxRepository({ pool }) { events.push(["repository", pool]); return repository; },
-    createQueueAdapter: createAutoListingAiQueueAdapter,
+    createQueueAdapter: createLegacyAutoListingAiQueueAdapter,
     createPublisher(options) {
-      return createAutoListingAiOutboxPublisher({
+      return createLegacyAutoListingAiOutboxPublisher({
         ...options,
         timers: {
           setTimeout, clearTimeout,
@@ -435,9 +437,11 @@ test("production relay discovers runnable accounts from the shared outbox in fai
     { afterAccountId: "account-c", limit: 100 },
     { afterAccountId: null, limit: 100 },
   ]);
-  assert.deepEqual(events.filter(([name]) => name === "claim").map(([, accountId]) => accountId), [
+  assert.deepEqual(events.filter(([name]) => name === "claim").map(([, accountId]) => accountId), []);
+  assert.deepEqual(events.filter(([name]) => name === "legacy-claim").map(([, accountId]) => accountId), [
     "account-a", "account-b", "account-c", "account-a", "account-b",
   ]);
+  assert.deepEqual(events.filter(([name]) => name === "queue").map(([, name]) => name), ["auto-listing-ai-v2"]);
   assert.equal(events.filter(([name]) => name === "boss-create").length, 1);
   assert.equal(events.filter(([name]) => name === "boss-stop").length, 1);
   assert.equal(events.filter(([name]) => name === "timer-stop").length, 1);

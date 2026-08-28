@@ -8,8 +8,8 @@ import { createAutoListingAiCredentialResolver } from "./auto-listing-ai-credent
 import { createAutoListingAiSettingsPostgres } from "./auto-listing-ai-settings-postgres.mjs";
 import { createPostgresAiOutboxRepository } from "./auto-listing-ai-outbox-postgres.mjs";
 import {
-  createAutoListingAiOutboxPublisher,
-  createAutoListingAiQueueAdapter,
+  createLegacyAutoListingAiOutboxPublisher,
+  createLegacyAutoListingAiQueueAdapter,
 } from "./auto-listing-ai-queue.mjs";
 import { orchestrateAutoListingAiPhase } from "./auto-listing-ai-orchestrator.mjs";
 import { createPostgresContentPlanRepository } from "./auto-listing-content-plan-repository.mjs";
@@ -262,8 +262,8 @@ const DEFAULT_PORTS = Object.freeze({
 const DEFAULT_RELAY_PORTS = Object.freeze({
   createBoss: DEFAULT_PORTS.createBoss,
   createOutboxRepository: ({ pool }) => createPostgresAiOutboxRepository({ pool }),
-  createQueueAdapter: (options) => createAutoListingAiQueueAdapter(options),
-  createPublisher: (options) => createAutoListingAiOutboxPublisher(options),
+  createQueueAdapter: (options) => createLegacyAutoListingAiQueueAdapter(options),
+  createPublisher: (options) => createLegacyAutoListingAiOutboxPublisher(options),
 });
 
 const DEFAULT_DIAGNOSTIC_PORTS = Object.freeze({
@@ -513,7 +513,7 @@ export async function createAutoListingAiProductionOutboxRelay(input = {}) {
 
   try {
     const repository = assertPortShape(ports.createOutboxRepository({ pool }), [
-      "listRunnableAutoListingAiAccountIds", "claimAutoListingAiMessages",
+      "listRunnableAutoListingAiAccountIds", "claimLegacyAutoListingAiMessages",
       "renewAutoListingAiMessageLease", "completeAutoListingAiMessage",
       "failAutoListingAiMessage", "reconcileDeadAutoListingAiMessages",
       "reconcileInterruptedAutoListingAiItems",

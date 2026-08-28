@@ -121,6 +121,23 @@ test("PostgreSQL outbox claims with account scope, SKIP LOCKED, database lease t
   ]);
 });
 
+test("legacy PostgreSQL claim excludes every job whose frozen profile has a connection", async () => {
+  const pool = scriptedPool([{ rows: [] }]);
+  const repository = createPostgresAiOutboxRepository({ pool, token: () => "legacy-fence" });
+
+  assert.deepEqual(await repository.claimLegacyAutoListingAiMessages({
+    accountId: "account-a", workerId: "worker-a", limit: 5, leaseMs: 60_000,
+  }), []);
+
+  const sql = pool.calls.map((call) => call.sql).join("\n");
+  assert.match(sql, /JOIN ai_gateway_profiles AS profile/iu);
+  assert.match(sql, /profile\.account_id=job\.account_id/iu);
+  assert.match(sql, /profile\.id=job\.ai_profile_id/iu);
+  assert.match(sql, /profile\.config_version=job\.ai_profile_version/iu);
+  assert.match(sql, /profile\.connection_id IS NULL/iu);
+  assert.doesNotMatch(sql, /INSERT INTO auto_listing_ai_channels|dispatch_contract_version='CHANNEL_WORK_V1'/iu);
+});
+
 test("claim locks jobs before a fresh-snapshot update selects one eligible outbox per batch", async () => {
   const pool = scriptedPool([{ rows: [{ job_id: "job-a" }] }, { rows: [] }]);
   const repository = createPostgresAiOutboxRepository({ pool, token: () => "batch-order" });

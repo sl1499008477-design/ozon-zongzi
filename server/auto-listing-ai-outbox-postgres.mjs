@@ -465,6 +465,10 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
            )
            SELECT job.id AS job_id
              FROM auto_listing_jobs AS job
+             JOIN ai_gateway_profiles AS profile
+               ON profile.account_id=job.account_id AND profile.id=job.ai_profile_id
+              AND profile.config_version=job.ai_profile_version
+              AND profile.connection_id IS NULL
              JOIN LATERAL (
                SELECT outbox.created_at,outbox.id
                  FROM auto_listing_ai_outbox AS outbox
@@ -512,6 +516,12 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                      FROM auto_listing_ai_outbox AS outbox
                      JOIN auto_listing_job_items AS item
                        ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
+                     JOIN auto_listing_jobs AS frozen_job
+                       ON frozen_job.account_id=outbox.account_id AND frozen_job.id=outbox.job_id
+                     JOIN ai_gateway_profiles AS profile
+                       ON profile.account_id=frozen_job.account_id AND profile.id=frozen_job.ai_profile_id
+                      AND profile.config_version=frozen_job.ai_profile_version
+                      AND profile.connection_id IS NULL
                     WHERE outbox.account_id=$1 AND outbox.job_id=locked.job_id
                       AND outbox.contract_version='V1' AND outbox.attempts < $5
                       AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW())
@@ -557,6 +567,10 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
           try { release.call(client); } catch {}
         }
       }
+    },
+
+    async claimLegacyAutoListingAiMessages(input) {
+      return this.claimAutoListingAiMessages(input);
     },
 
     async renewAutoListingAiMessageLease(input) {
