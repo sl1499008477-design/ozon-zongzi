@@ -17,9 +17,22 @@ test("administrator settings page composes the closed Task 8 client and presenta
     "testModelProfile",
     "publishModelProfile",
     "rollbackModelProfile",
+    "addAutoListingAiChannel",
+    "setAutoListingAiChannelEnabled",
     "aiSettingsPresentation",
   ]) assert.match(page, new RegExp(`\\b${operation}\\b`));
   assert.doesNotMatch(page, /fetch\s*\(|apiRequest|\/v1\/models|\/v1\/responses|\/v1\/images/);
+});
+
+test("independent channel controls stay below the one shared model and protocol selection", () => {
+  assert.match(page, /function AutoListingChannelSection/);
+  assert.match(page, /自动上架独立通道/);
+  assert.match(page, /当前商品完成后停用生效/);
+  const selection = page.indexOf("function ModelSelectionSection");
+  const channels = page.indexOf("function AutoListingChannelSection");
+  assert.ok(selection >= 0 && channels > selection);
+  const channelSection = page.slice(channels, page.indexOf("function CapabilityPublishSection", channels));
+  assert.doesNotMatch(channelSection, /文字模型|图片模型|textProtocol|imageProtocol|gatewayKey|baseUrl/);
 });
 
 test("gateway key is one-way input state that is never hydrated or stored", () => {

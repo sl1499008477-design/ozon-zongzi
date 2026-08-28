@@ -47,7 +47,7 @@ function catalogDetail() {
 function overview() {
   return {
     accountId: "account-a", activeConnection: null, activeProfile: null,
-    connections: [], catalogs: [], syncTasks: [], profiles: [],
+    connections: [], catalogs: [], syncTasks: [], profiles: [], channels: [], channelCandidates: [],
     pagination: {
       connections: { pageSize: 10, hasMore: true, nextCursor: "Y3Vyc29y" },
       profiles: { pageSize: 10, hasMore: false, nextCursor: null },

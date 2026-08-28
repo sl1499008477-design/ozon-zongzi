@@ -23,6 +23,7 @@ import {
   SafetyCertificateOutlined,
 } from "@ant-design/icons";
 import {
+  addAutoListingAiChannel,
   createAiSettingsIntentStore,
   createLatestAiSettingsLoader,
   createGatewayConnection,
@@ -32,6 +33,7 @@ import {
   publishModelProfile,
   requestModelSync,
   rollbackModelProfile,
+  setAutoListingAiChannelEnabled,
   testModelProfile,
 } from "./auto-listing-ai-settings-client.js";
 import {
@@ -252,6 +254,44 @@ function ModelSelectionSection({
     </div>
     <Button type="primary" disabled={busy || !canSaveSelection}
       loading={activeRequest === "保存模型选择"} onClick={onSaveSelection}>保存模型选择</Button>
+  </Card>;
+}
+
+function AutoListingChannelSection({
+  activeProfile, activeRequest, busy, channelCandidates, channels, channelsWarning,
+  onAddChannel, onSetChannelEnabled,
+}) {
+  const [selectedCandidateId, setSelectedCandidateId] = useState("");
+  const candidate = channelCandidates.find((row) => row.connectionId === selectedCandidateId) || null;
+  const columns = [
+    { title: "通道", dataIndex: "displayName", render: (value, row) => <Space direction="vertical" size={0}>
+      <strong>{value}</strong><span className="ai-model-settings-hint">#{row.channelOrder}</span>
+    </Space> },
+    { title: "已验证连接", dataIndex: "connectionDisplayName" },
+    { title: "状态", key: "status", render: (_value, row) => <Tag color={row.status === "AVAILABLE" ? "success"
+      : row.status === "BUSY" ? "processing" : row.status === "COOLDOWN" ? "warning" : "default"}>{row.statusLabel}</Tag> },
+    { title: "当前商品", dataIndex: "assignedItemId", render: (value) => value || "—" },
+    { title: "操作", key: "action", render: (_value, row) => <Space direction="vertical" size={4}>
+      <Button size="small" disabled={busy} loading={activeRequest === (row.enabled ? "停用独立通道" : "启用独立通道")}
+        onClick={() => onSetChannelEnabled(row, !row.enabled)}>{row.enabled ? "停用" : "启用"}</Button>
+      {row.status === "BUSY" && row.enabled ? <span className="ai-model-settings-hint">当前商品完成后停用生效</span> : null}
+    </Space> },
+  ];
+  return <Card className="ai-model-settings-channels-card" title="自动上架独立通道">
+    <p className="ai-model-settings-hint">通道沿用当前正式模型与协议；连接仅可从已验证且兼容的候选项添加。</p>
+    {channelsWarning ? <Alert type="warning" showIcon title={channelsWarning} /> : null}
+    {!activeProfile ? <Alert type="info" showIcon title="请先发布正式 AI 配置" /> : <>
+      <Space wrap className="ai-model-settings-channel-add">
+        <Select value={selectedCandidateId || undefined} disabled={busy || !channelCandidates.length}
+          placeholder="选择已验证兼容连接" onChange={setSelectedCandidateId}
+          options={channelCandidates.map((row) => ({ value: row.connectionId, label: row.connectionDisplayName }))} />
+        <Button type="primary" disabled={busy || !candidate} loading={activeRequest === "添加独立通道"}
+          onClick={() => { if (candidate) onAddChannel(candidate); }}>添加通道</Button>
+      </Space>
+      {!channelCandidates.length ? <p className="ai-model-settings-hint">暂无已验证且兼容的连接可添加。</p> : null}
+      <Table className="ai-model-settings-channels" rowKey="channelId" size="small" pagination={false}
+        scroll={{ x: 760 }} dataSource={channels} columns={columns} locale={{ emptyText: "暂无独立通道" }} />
+    </>}
   </Card>;
 }
 
@@ -725,6 +765,21 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     }, withSignal(intent, signal));
   }, "AI 模型配置已发布，仅影响新建自动上架任务");
 
+  const addChannel = (candidate) => runAction("添加独立通道", async () => {
+    const activeProfile = overview?.activeProfile;
+    if (!activeProfile || !candidate) throw new Error("请先发布正式 AI 配置并选择已验证兼容连接");
+    await addAutoListingAiChannel({ profileId: activeProfile.id, profileVersion: activeProfile.configVersion,
+      connectionId: candidate.connectionId, connectionVersion: candidate.connectionVersion,
+      displayName: candidate.connectionDisplayName });
+  }, "独立通道已添加");
+
+  const setChannelEnabled = (channel, enabled) => runAction(enabled ? "启用独立通道" : "停用独立通道", async () => {
+    const activeProfile = overview?.activeProfile;
+    if (!activeProfile || !channel) throw new Error("当前正式 AI 配置不可用");
+    await setAutoListingAiChannelEnabled({ profileId: activeProfile.id, profileVersion: activeProfile.configVersion,
+      channelId: channel.channelId, enabled });
+  }, enabled ? "独立通道已启用" : "独立通道已停用");
+
   const rollbackProfile = (profile) => runAction("安全回退", async (signal) => {
     const view = presentation.profiles.find((row) => row.id === profile.id);
     if (!view?.actions?.canRollback || !rollbackConfirmedProfileIds.includes(profile.id)) {
@@ -797,6 +852,9 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
           onTextModelChange={(value) => { setTextModel(value); setDraftDirty(true); }}
           profileName={profileName} selectedConnectionId={selectedConnectionId}
           selectionPresentation={selectionPresentation} textModel={textModel} textOptions={textOptions} />
+        <AutoListingChannelSection activeProfile={effectiveOverview?.activeProfile || null} activeRequest={activeRequest}
+          busy={busy || loading} channelCandidates={presentation.channelCandidates} channels={presentation.channels}
+          channelsWarning={presentation.channelsWarning} onAddChannel={addChannel} onSetChannelEnabled={setChannelEnabled} />
         <CapabilityPublishSection activeRequest={activeRequest} busy={busy}
           onCostConfirmationChange={(checked) => setCostConfirmedProfileIds((current) => (
             checked ? [...new Set([...current, selectedProfile.id])] : current.filter((id) => id !== selectedProfile.id)

@@ -24,6 +24,11 @@ const PAID_ERROR_CODES = new Set([
   "GATEWAY_TIMEOUT", "GATEWAY_CANCELLED", "RETRYABLE_GATEWAY", "NON_RETRYABLE_AUTH",
   "NON_RETRYABLE_GATEWAY", "INVALID_GATEWAY_RESPONSE",
 ]);
+const CHANNEL_STATUS_LABELS = Object.freeze({ AVAILABLE: "可用", BUSY: "使用中", COOLDOWN: "冷却中",
+  REQUIRES_REVALIDATION: "需要重新验证", DISABLED: "已停用" });
+const CHANNEL_KEYS = ["channelId", "displayName", "channelOrder", "enabled", "status", "connectionDisplayName",
+  "connectionId", "connectionVersion", "assignedItemId", "cooldownUntil", "requiresRevalidation", "lastErrorCode"];
+const CHANNEL_CANDIDATE_KEYS = ["connectionId", "connectionVersion", "connectionDisplayName"];
 
 function record(value) {
   try {
@@ -54,6 +59,65 @@ function safeModelId(value) {
   return typeof value === "string" && value === value.trim() && value.length > 0 && value.length <= 300
     && /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,299}$/u.test(value)
     && value.split("/").every((part) => part && part !== "." && part !== "..");
+}
+
+function safeChannelText(value) {
+  return typeof value === "string" && value === value.trim() && value.length <= 200;
+}
+
+function safeChannelErrorCode(value) {
+  return value === null || (typeof value === "string" && /^[A-Z][A-Z0-9_]{0,119}$/u.test(value));
+}
+
+function channelPresentation(raw) {
+  const value = exactRecord(raw, CHANNEL_KEYS);
+  if (!value || !safeEntityId(value.channelId) || !safeChannelText(value.displayName)
+    || !Number.isSafeInteger(value.channelOrder) || value.channelOrder < 1 || typeof value.enabled !== "boolean"
+    || !Object.hasOwn(CHANNEL_STATUS_LABELS, value.status) || !safeChannelText(value.connectionDisplayName)
+    || !safeEntityId(value.connectionId) || !Number.isSafeInteger(value.connectionVersion) || value.connectionVersion < 1
+    || !(value.assignedItemId === null || safeEntityId(value.assignedItemId))
+    || !(value.cooldownUntil === null || iso(value.cooldownUntil)) || typeof value.requiresRevalidation !== "boolean"
+    || !safeChannelErrorCode(value.lastErrorCode)) return null;
+  return Object.freeze({
+    channelId: value.channelId,
+    displayName: value.displayName,
+    channelOrder: value.channelOrder,
+    enabled: value.enabled,
+    status: value.status,
+    statusLabel: CHANNEL_STATUS_LABELS[value.status],
+    connectionDisplayName: value.connectionDisplayName,
+    connectionId: value.connectionId,
+    connectionVersion: value.connectionVersion,
+    assignedItemId: value.assignedItemId,
+    cooldownUntil: value.cooldownUntil,
+    requiresRevalidation: value.requiresRevalidation,
+    lastErrorCode: value.lastErrorCode,
+  });
+}
+
+function channelCandidatePresentation(raw) {
+  const value = exactRecord(raw, CHANNEL_CANDIDATE_KEYS);
+  if (!value || !safeEntityId(value.connectionId) || !Number.isSafeInteger(value.connectionVersion)
+    || value.connectionVersion < 1 || !safeChannelText(value.connectionDisplayName)) return null;
+  return Object.freeze({ connectionId: value.connectionId, connectionVersion: value.connectionVersion,
+    connectionDisplayName: value.connectionDisplayName });
+}
+
+function channelsPresentation(rawChannels, rawCandidates) {
+  if (!Array.isArray(rawChannels) || !Array.isArray(rawCandidates) || rawCandidates.length > 100) {
+    return Object.freeze({ channels: Object.freeze([]), channelCandidates: Object.freeze([]), channelsWarning: null });
+  }
+  const channels = rawChannels.map(channelPresentation);
+  const candidates = rawCandidates.map(channelCandidatePresentation);
+  if (channels.some((row) => row === null) || candidates.some((row) => row === null)
+    || new Set(channels.map((row) => row.channelId)).size !== channels.length
+    || new Set(candidates.map((row) => row.connectionId)).size !== candidates.length) {
+    return Object.freeze({ channels: Object.freeze([]), channelCandidates: Object.freeze([]), channelsWarning: null });
+  }
+  const frozenChannels = Object.freeze(channels);
+  return Object.freeze({ channels: frozenChannels, channelCandidates: Object.freeze(candidates),
+    channelsWarning: frozenChannels.length && !frozenChannels.some((row) => ["AVAILABLE", "BUSY"].includes(row.status))
+      ? "当前没有可用的独立通道，请检查通道配置" : null });
 }
 
 function actionContract(value) {
@@ -193,6 +257,7 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
   const testable = new Set(actions?.testableProfileIds || []);
   const publishable = new Set(actions?.publishableProfileIds || []);
   const rollback = new Set(actions?.rollbackProfileIds || []);
+  const channelState = channelsPresentation(source.channels, source.channelCandidates);
   const connections = (Array.isArray(source.connections) ? source.connections : []).map((raw) => {
     const row = record(raw) || {};
     return Object.freeze({ id: typeof row.id === "string" ? row.id : "", displayName: typeof row.displayName === "string" ? row.displayName : "",
@@ -223,5 +288,5 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
   });
   return Object.freeze({ canCreateConnection: actions?.canCreateConnection === true,
     profileCreatableCatalogIds, connections: Object.freeze(connections),
-    profiles: Object.freeze(profiles), recommendations: recommendations(source.catalogs) });
+    profiles: Object.freeze(profiles), recommendations: recommendations(source.catalogs), ...channelState });
 }

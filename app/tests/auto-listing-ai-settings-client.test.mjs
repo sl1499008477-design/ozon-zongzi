@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   AI_SETTINGS_SAFE_ERROR_CODES,
+  addAutoListingAiChannel,
   createAiSettingsIntentStore,
   createGatewayConnection,
   createModelProfile,
@@ -12,6 +13,7 @@ import {
   publishModelProfile,
   requestModelSync,
   rollbackModelProfile,
+  setAutoListingAiChannelEnabled,
   testModelProfile,
 } from "../src/auto-listing-ai-settings-client.js";
 import { AUTO_LISTING_AI_SETTINGS_SAFE_CODES } from "../../server/auto-listing-ai-settings-routes.mjs";
@@ -77,6 +79,17 @@ function paidCapability(overrides = {}) {
     errorCode: null, ...overrides };
 }
 
+function channel(overrides = {}) {
+  return { channelId: "channel-a", displayName: "备用 Gateway", channelOrder: 2, enabled: true,
+    status: "AVAILABLE", connectionDisplayName: "备用 sub2API", connectionId: "connection-b", connectionVersion: 2,
+    assignedItemId: null, cooldownUntil: null, requiresRevalidation: false, lastErrorCode: null, ...overrides };
+}
+
+function channelCandidate(overrides = {}) {
+  return { connectionId: "connection-b", connectionVersion: 2,
+    connectionDisplayName: "备用 sub2API", ...overrides };
+}
+
 function catalogCapability(overrides = {}) {
   return { outcome: "NOT_TESTED", checkedAt: CHECKED_AT, text: false, image: false, ...overrides };
 }
@@ -134,7 +147,7 @@ function catalog(overrides = {}) {
 
 function overview(overrides = {}) {
   return { accountId: "account-a", activeConnection: null, activeProfile: null,
-    connections: [], catalogs: [], syncTasks: [], profiles: [],
+    connections: [], catalogs: [], syncTasks: [], profiles: [], channels: [], channelCandidates: [],
     pagination: { connections: { pageSize: 10, hasMore: false, nextCursor: null },
       profiles: { pageSize: 10, hasMore: false, nextCursor: null } },
     actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] },
@@ -168,7 +181,7 @@ async function task7ProfileRollbackValidation() {
     { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-retired" }] },
     { rows: [{ id: "connection-profile-rollback", version: 1, status_version: 6 }] },
     { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-active" }] },
-    { rows: [{ ...passedProfile, enabled: true }] },
+    { rows: [{ ...passedProfile, enabled: true }] }, { rowCount: 1, rows: [] },
     { rowCount: 1, rows: [{ event_id: "audit-profile" }] }, { rows: [] },
   ];
   const client = {
@@ -345,6 +358,37 @@ test("client sends only the exact Task 7 paths and closed DTO bodies", async (t)
     ["/api/admin/auto-listing/ai-settings/profiles/profile-a/rollback", "POST", { configVersion: 1, idempotencyKey: "intent-a", correlationId: "corr-a", costConfirmed: true }],
   ]);
   assert.ok(calls.every(({ options }) => options.headers["X-Client-Ai-Settings"] === "1"));
+});
+
+test("channel commands use only the exact Task 2 routes and closed bodies", async (t) => {
+  const calls = [];
+  installTransport(t, async (url, options) => {
+    calls.push({ url, options });
+    return response(options.body.includes('"enabled"') ? channel({ enabled: false, status: "DISABLED" }) : channel());
+  });
+  await addAutoListingAiChannel({ profileId: "profile-a", profileVersion: 1,
+    connectionId: "connection-b", connectionVersion: 2, displayName: "备用 Gateway" });
+  await setAutoListingAiChannelEnabled({ profileId: "profile-a", profileVersion: 1, channelId: "channel-a", enabled: false });
+  assert.deepEqual(calls.map(({ url, options }) => [new URL(url, "http://localhost").pathname, options.method, JSON.parse(options.body)]), [
+    ["/api/admin/auto-listing/ai-settings/profiles/profile-a/versions/1/channels", "POST", {
+      connectionId: "connection-b", connectionVersion: 2, displayName: "备用 Gateway" }],
+    ["/api/admin/auto-listing/ai-settings/profiles/profile-a/versions/1/channels/channel-a/status", "POST", { enabled: false }],
+  ]);
+});
+
+test("channel DTOs reject unknown fields, unsafe values, and sensitive aliases", async (t) => {
+  const base = overview({ channels: [channel()], channelCandidates: [channelCandidate()] });
+  installTransport(t, async () => response(base));
+  assert.deepEqual((await loadAiSettings()).channels, [channel()]);
+  for (const mutation of [
+    { channels: [{ ...channel(), apiKey: "must-not-leak" }] },
+    { channels: [channel({ cooldownUntil: "2026-08-08T00:00:00Z" })] },
+    { channels: [channel({ status: "UNKNOWN" })] },
+    { channelCandidates: [{ ...channelCandidate(), endpoint: "https://must-not-leak.example" }] },
+  ]) {
+    globalThis.fetch = async () => response({ ...base, ...mutation });
+    await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+  }
 });
 
 test("abort, 64 KiB body limits, accessors, proxies, secret or oversized responses fail closed", async (t) => {

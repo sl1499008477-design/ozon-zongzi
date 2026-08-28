@@ -118,6 +118,27 @@
   min-width: 0;
 }
 
+.ai-model-settings-page .ai-model-settings-channel-add {
+  display: flex;
+  align-items: center;
+}
+
+.ai-model-settings-page .ai-model-settings-channel-add .ant-select {
+  min-width: min(100%, 320px);
+}
+
+.ai-model-settings-page .ai-model-settings-channels {
+  min-width: 0;
+}
+
+.ai-model-settings-page .ai-model-settings-page__grid > .ai-model-settings-channels-card {
+  grid-column: 1 / -1;
+}
+
+.ai-model-settings-page .ai-model-settings-channels .ant-table-cell {
+  overflow-wrap: anywhere;
+}
+
 .ai-model-settings-page .ai-model-settings-history .ant-table-cell {
   overflow-wrap: anywhere;
 }
@@ -133,6 +154,10 @@
   }
 
   .ai-model-settings-page .ai-model-settings-page__grid > .ant-card:last-child {
+    grid-column: auto;
+  }
+
+  .ai-model-settings-page .ai-model-settings-page__grid > .ai-model-settings-channels-card {
     grid-column: auto;
   }
 }

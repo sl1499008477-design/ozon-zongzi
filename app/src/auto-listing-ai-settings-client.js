@@ -21,6 +21,10 @@ const CATALOG_KEYS = ["id", "accountId", "connectionId", "connectionVersion", "s
 const CAPABILITY_KEYS = ["profileId", "configVersion", "outcome", "features", "latencyMs", "models", "checkedAt", "errorCode", "enabled"];
 const ACTION_KEYS = ["canCreateConnection", "syncableConnectionIds", "profileCreatableCatalogIds",
   "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"];
+const CHANNEL_KEYS = ["channelId", "displayName", "channelOrder", "enabled", "status", "connectionDisplayName",
+  "connectionId", "connectionVersion", "assignedItemId", "cooldownUntil", "requiresRevalidation", "lastErrorCode"];
+const CHANNEL_CANDIDATE_KEYS = ["connectionId", "connectionVersion", "connectionDisplayName"];
+const CHANNEL_STATUSES = new Set(["AVAILABLE", "BUSY", "COOLDOWN", "REQUIRES_REVALIDATION", "DISABLED"]);
 const PAGINATION_KEYS = ["pageSize", "hasMore", "nextCursor"];
 const CATALOG_SUMMARY_KEYS = ["schemaVersion", "connectionVersion", "syncedAt", "requestIdHash",
   "activeSelectionState", "activeSelection", "modelCount"];
@@ -77,7 +81,9 @@ export const AI_SETTINGS_SAFE_ERROR_CODES = Object.freeze(["AUTO_LISTING_AI_SETT
   "AUTO_LISTING_AI_SETTINGS_CAPABILITY_SUBCALL_CONFLICT", "AI_GATEWAY_PROFILE_NOT_FOUND", "AI_GATEWAY_PROFILE_VERSION_CONFLICT",
   "AI_GATEWAY_CAPABILITY_IN_PROGRESS", "AI_GATEWAY_CAPABILITY_REQUEST_INVALID", "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", "PERMISSION_FORBIDDEN",
   "AUTO_LISTING_AI_SETTINGS_RESPONSE_TOO_LARGE", "REQUEST_ABORTED", "REQUEST_TIMEOUT", "RESPONSE_TOO_LARGE",
-  "AI_SETTINGS_CLIENT_RESPONSE_INVALID", "AI_SETTINGS_CLIENT_REQUEST_INVALID"]);
+  "AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_FOUND", "AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT",
+  "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INCOMPATIBLE", "AUTO_LISTING_AI_PROFILE_CHANNEL_REVALIDATION_REQUIRED",
+  "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INELIGIBLE", "AI_SETTINGS_CLIENT_RESPONSE_INVALID", "AI_SETTINGS_CLIENT_REQUEST_INVALID"]);
 const SAFE_ERROR_CODES = new Set(AI_SETTINGS_SAFE_ERROR_CODES);
 const SAFE_ERROR_LABELS = Object.freeze({ AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED: "AI 模型设置暂时不可用",
   REQUEST_ABORTED: "请求已取消", REQUEST_TIMEOUT: "请求超时，请稍后重试", RESPONSE_TOO_LARGE: "服务响应过大，已拒绝处理",
@@ -491,6 +497,38 @@ function validateActions(raw) {
   });
 }
 
+function safeChannelText(value) {
+  return typeof value === "string" && value === value.trim() && value.length <= 200;
+}
+
+function safeChannelErrorCode(value) {
+  return value === null || (typeof value === "string" && /^[A-Z][A-Z0-9_]{0,119}$/u.test(value));
+}
+
+function validateChannel(raw) {
+  return responseValidation(() => {
+    const value = exactResponse(raw, CHANNEL_KEYS);
+    if (!id(value.channelId) || !safeChannelText(value.displayName) || !Number.isSafeInteger(value.channelOrder)
+      || value.channelOrder < 1 || typeof value.enabled !== "boolean" || !CHANNEL_STATUSES.has(value.status)
+      || !safeChannelText(value.connectionDisplayName) || !id(value.connectionId) || version(value.connectionVersion) < 1
+      || !(value.assignedItemId === null || id(value.assignedItemId)) || !isoTimestamp(value.cooldownUntil, true)
+      || typeof value.requiresRevalidation !== "boolean" || !safeChannelErrorCode(value.lastErrorCode)) {
+      throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    }
+    return Object.freeze(value);
+  });
+}
+
+function validateChannelCandidate(raw) {
+  return responseValidation(() => {
+    const value = exactResponse(raw, CHANNEL_CANDIDATE_KEYS);
+    if (!id(value.connectionId) || version(value.connectionVersion) < 1 || !safeChannelText(value.connectionDisplayName)) {
+      throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    }
+    return Object.freeze(value);
+  });
+}
+
 function validateCatalog(raw, maximum = MAX_BYTES) {
   return responseValidation(() => {
     const value = exactResponse(raw, CATALOG_KEYS, maximum);
@@ -628,13 +666,17 @@ export async function loadAiSettings(rawOptions = {}) {
   if (profileCursor !== null) query.set("profileCursor", profileCursor);
   const path = query.size ? `${BASE}?${query.toString()}` : BASE;
   try { const raw = await apiRequest(path, { signal: options.signal, timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxResponseBytes: MAX_BYTES }); return unwrap(raw, (data) => {
-    const value = exactResponse(data, ["accountId", "activeConnection", "activeProfile", "connections", "catalogs", "syncTasks", "profiles", "pagination", "actions"]);
+    const value = exactResponse(data, ["accountId", "activeConnection", "activeProfile", "connections", "catalogs", "syncTasks", "profiles", "channels", "channelCandidates", "pagination", "actions"]);
     if (!id(value.accountId) || (value.activeConnection !== null && !validateConnection(value.activeConnection))
       || (value.activeProfile !== null && !validateProfile(value.activeProfile))
       || !Array.isArray(value.connections) || !Array.isArray(value.catalogs) || !Array.isArray(value.syncTasks)
-      || !Array.isArray(value.profiles) || !uniqueIds(value.connections) || !uniqueIds(value.catalogs) || !uniqueIds(value.syncTasks) || !uniqueIds(value.profiles)) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+      || !Array.isArray(value.profiles) || !Array.isArray(value.channels) || !Array.isArray(value.channelCandidates)
+      || value.channelCandidates.length > 100 || !uniqueIds(value.connections) || !uniqueIds(value.catalogs)
+      || !uniqueIds(value.syncTasks) || !uniqueIds(value.profiles) || !uniqueIds(value.channels, "channelId")
+      || !uniqueIds(value.channelCandidates, "connectionId")) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     return deepFreeze({ ...value, connections: value.connections.map(validateConnection), catalogs: value.catalogs.map(validateCatalogSummary),
       syncTasks: value.syncTasks.map(validateTask), profiles: value.profiles.map(validateProfile),
+      channels: value.channels.map(validateChannel), channelCandidates: value.channelCandidates.map(validateChannelCandidate),
       pagination: validatePagination(value.pagination), actions: validateActions(value.actions) });
   }); } catch (error) { throw safeRemoteError(error); }
 }
@@ -733,6 +775,21 @@ export async function rollbackModelProfile(raw, rawIntent) {
   if (input.costConfirmed !== true) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   try { const result = await request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/rollback`, { configVersion: version(input.configVersion), idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId, costConfirmed: true }, intent.signal, intent.timeoutMs, validateProfile); settleIntent(rawIntent); return result;
   } catch (error) { settleIntent(rawIntent, error); throw error; }
+}
+
+export async function addAutoListingAiChannel(raw) {
+  const input = closed(raw, ["profileId", "profileVersion", "connectionId", "connectionVersion", "displayName"]);
+  return request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/versions/${version(input.profileVersion)}/channels`, {
+    connectionId: id(input.connectionId), connectionVersion: version(input.connectionVersion), displayName: text(input.displayName, 200),
+  }, undefined, DEFAULT_TIMEOUT_MS, validateChannel);
+}
+
+export async function setAutoListingAiChannelEnabled(raw) {
+  const input = closed(raw, ["profileId", "profileVersion", "channelId", "enabled"]);
+  if (typeof input.enabled !== "boolean") throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  return request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/versions/${version(input.profileVersion)}/channels/${encodeURIComponent(id(input.channelId))}/status`, {
+    enabled: input.enabled,
+  }, undefined, DEFAULT_TIMEOUT_MS, validateChannel);
 }
 
 export async function pollAiSettingsUntil(predicate, { signal, timeoutMs } = {}) {

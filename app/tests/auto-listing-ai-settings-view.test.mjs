@@ -38,9 +38,39 @@ function paidCapability(overrides = {}) {
     errorCode: null, ...overrides };
 }
 
-function overview(overrides = {}) {
-  return { connections: [{ id: "connection-a", displayName: "本地 sub2API", baseUrl: "https://gateway.example/v1", version: 1, status: "VALIDATED", validationResult: { outcome: "PASSED" } }], catalogs: [], syncTasks: [], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES", enabled: false, capabilityResult: paidCapability(), capabilityCheckedAt: CHECKED_AT, connectionId: "connection-a", connectionVersion: 1 }], actions: { canCreateConnection: true, syncableConnectionIds: ["connection-a"], profileCreatableCatalogIds: [], testableProfileIds: ["profile-a"], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] }, ...overrides };
+function channel(overrides = {}) {
+  return { channelId: "channel-a", displayName: "独立通道", channelOrder: 2, enabled: true,
+    status: "BUSY", connectionDisplayName: "已验证 Gateway", connectionId: "connection-b", connectionVersion: 2,
+    assignedItemId: "item-a", cooldownUntil: null, requiresRevalidation: false, lastErrorCode: null, ...overrides };
 }
+
+function channelCandidate(overrides = {}) {
+  return { connectionId: "connection-b", connectionVersion: 2, connectionDisplayName: "已验证 Gateway", ...overrides };
+}
+
+function overview(overrides = {}) {
+  return { connections: [{ id: "connection-a", displayName: "本地 sub2API", baseUrl: "https://gateway.example/v1", version: 1, status: "VALIDATED", validationResult: { outcome: "PASSED" } }], catalogs: [], syncTasks: [], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES", enabled: false, capabilityResult: paidCapability(), capabilityCheckedAt: CHECKED_AT, connectionId: "connection-a", connectionVersion: 1 }], channels: [], channelCandidates: [], actions: { canCreateConnection: true, syncableConnectionIds: ["connection-a"], profileCreatableCatalogIds: [], testableProfileIds: ["profile-a"], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] }, ...overrides };
+}
+
+test("channel presentation maps only known channel statuses and keeps the DTO closed", () => {
+  const view = aiSettingsPresentation(overview({ channels: [channel()], channelCandidates: [channelCandidate()] }));
+  assert.deepEqual(view.channels, [{ ...channel(), statusLabel: "使用中" }]);
+  assert.deepEqual(view.channelCandidates, [channelCandidate()]);
+  assert.equal(Object.isFrozen(view.channels[0]), true);
+  assert.equal(view.channelsWarning, null);
+
+  for (const mutation of [
+    { status: "UNKNOWN" }, { cooldownUntil: "2026-08-08T00:00:00Z" }, { ciphertext: "must-not-leak" },
+  ]) assert.deepEqual(aiSettingsPresentation(overview({ channels: [{ ...channel(), ...mutation }] })).channels, []);
+});
+
+test("channel presentation warns only when configured channels cannot process work", () => {
+  assert.equal(aiSettingsPresentation(overview({ channels: [channel({ status: "DISABLED", enabled: false })] })).channelsWarning,
+    "当前没有可用的独立通道，请检查通道配置");
+  assert.equal(aiSettingsPresentation(overview({ channels: [channel({ status: "COOLDOWN" })] })).channelsWarning,
+    "当前没有可用的独立通道，请检查通道配置");
+  assert.equal(aiSettingsPresentation(overview({ channels: [channel({ status: "AVAILABLE" })] })).channelsWarning, null);
+});
 
 test("presentation exposes only closed audit-backed activation evidence and never falls back to createdAt", () => {
   const activated = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0],
