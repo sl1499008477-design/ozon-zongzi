@@ -426,10 +426,11 @@ test("job reads project durable AI queue state in the existing item query", asyn
   assert.match(itemReads[0].sql, /auto_listing_ai_profile_channels AS assigned_channel/u);
   assert.match(itemReads[0].sql, /auto_listing_ai_profile_channels AS available_channel/u);
   assert.match(itemReads[0].sql, /ai_queue\.expected_status_version=i\.status_version/u);
-  assert.match(itemReads[0].sql, /execution_lease_expires_at > NOW\(\)[\s\S]*'CALLING_AI'/u);
-  assert.match(itemReads[0].sql, /last_error_code IN \([\s\S]*'SWITCHING_AI_CHANNEL'/u);
-  assert.match(itemReads[0].sql, /available_channel\.channel_id IS NULL[\s\S]*'WAITING_FOR_AI_CHANNEL'/u);
-  assert.match(itemReads[0].sql, /ORDER BY ai_queue\.created_at DESC,ai_queue\.id DESC[\s\S]*LIMIT 1/u);
+  assert.match(itemReads[0].sql, /WHEN live_execution\.outbox_id IS NOT NULL THEN 'CALLING_AI'[\s\S]*WHEN latest_failure\.outbox_id IS NOT NULL THEN 'SWITCHING_AI_CHANNEL'[\s\S]*runnable_queue\.assignment_exact IS TRUE THEN 'WAITING_FOR_AI_CHANNEL'/u);
+  assert.match(itemReads[0].sql, /auto_listing_ai_outbox AS live_queue[\s\S]*live_queue\.state='PROCESSING'[\s\S]*\) live_execution ON TRUE/u);
+  assert.match(itemReads[0].sql, /live_channel\.execution_lease_owner=live_queue\.lease_owner[\s\S]*live_channel\.execution_lease_token=live_queue\.lease_token[\s\S]*live_channel\.execution_lease_expires_at=live_queue\.lease_expires_at[\s\S]*live_channel\.execution_lease_expires_at>NOW\(\)/u);
+  assert.match(itemReads[0].sql, /auto_listing_ai_outbox AS failed_queue[\s\S]*failed_queue\.state='PENDING'[\s\S]*failed_queue\.last_error_code IN \([\s\S]*ORDER BY failed_queue\.updated_at DESC,failed_queue\.created_at DESC,failed_queue\.id DESC[\s\S]*\) latest_failure ON TRUE/u);
+  assert.match(itemReads[0].sql, /ORDER BY CASE WHEN available_channel\.fixed THEN 0 ELSE 1 END,[\s\S]*COALESCE\(ai_queue\.next_retry_at,ai_queue\.available_at\)[\s\S]*ai_queue\.created_at,ai_queue\.id[\s\S]*\) runnable_queue ON TRUE/u);
 });
 
 function warehouseGraph({ itemCount = 1, priceMultiplierMicros, useCategoryStrategy } = {}) {

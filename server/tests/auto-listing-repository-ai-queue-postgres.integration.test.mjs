@@ -53,6 +53,7 @@ async function seedScenario(label, {
   lastErrorCode = null,
   channelMode = "free",
   addNewerPendingSibling = false,
+  phaseTargetId = null,
 } = {}) {
   const marker = `${label}-${suffix}`;
   const accountId = `account-${marker}`;
@@ -190,16 +191,18 @@ async function seedScenario(label, {
   const message = {
     contractVersion: "V1", accountId, itemId, phase,
     expectedStatusVersion, correlationId,
+    ...(phase === "GENERATE_IMAGE_SLOT" ? { slotKey: phaseTargetId } : {}),
+    ...(phase === "MATERIALIZE_SOURCE_ASSET" ? { sourceAssetId: phaseTargetId } : {}),
   };
   await pool.query(
     `INSERT INTO auto_listing_ai_outbox (
-       id,account_id,job_id,item_id,event_type,dedupe_key,state,contract_version,phase,
+       id,account_id,job_id,item_id,event_type,dedupe_key,state,contract_version,phase,phase_target_id,
        expected_status_version,correlation_id,payload,next_retry_at,last_error_code,
        lease_owner,lease_token,lease_expires_at,created_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,'V1',$5,$8,$9,$10::JSONB,$11,$12,$13,$14,$15,
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,'V1',$5,$8,$9,$10,$11::JSONB,$12,$13,$14,$15,$16,
        '2026-08-28T00:00:00.000Z'::TIMESTAMPTZ)`,
     [outboxId, accountId, jobId, itemId, phase, autoListingAiMessageDedupeKey(message), outboxState,
-      expectedStatusVersion, correlationId, JSON.stringify(message), nextRetryAt, lastErrorCode,
+      phaseTargetId, expectedStatusVersion, correlationId, JSON.stringify(message), nextRetryAt, lastErrorCode,
       outboxState === "PROCESSING" ? "worker-exact" : null,
       outboxState === "PROCESSING" ? "token-exact" : null,
       leaseExpiresAt],
@@ -226,9 +229,61 @@ async function seedScenario(label, {
   }
 
   return {
-    accountId, storeId, warehouseId, strategyId, profileId,
-    jobId, itemId, channelId,
+    accountId, storeId, warehouseId, strategyId, profileId, connectionId,
+    jobId, itemId, channelId, outboxId, expectedStatusVersion,
   };
+}
+
+async function addReplacementCapacity(scenario, label) {
+  const marker = `${label}-${suffix}`;
+  const connectionId = `connection-${marker}`;
+  await pool.query(
+    `INSERT INTO ai_gateway_connection_versions (
+       account_id,id,version,display_name,base_url,ciphertext,iv,auth_tag,algorithm,key_version,
+       fingerprint,status,idempotency_key,request_hash,correlation_id,created_by
+     ) VALUES ($1,$2,1,$3,'https://gateway.invalid','ciphertext','iv','tag','aes-256-gcm','local-v1',
+       $4,'PENDING',$5,$6,$7,$1)`,
+    [scenario.accountId, connectionId, `Replacement ${label}`, `fingerprint-${marker}`,
+      `connection-key-${marker}`, hash("6"), `connection-correlation-${marker}`],
+  );
+  await pool.query(
+    `UPDATE ai_gateway_connection_versions
+        SET status='VALIDATED',status_version=2,validation_result='{"outcome":"PASSED"}'::JSONB,
+            validation_hash=$3,validated_at=NOW(),validated_by=$1
+      WHERE account_id=$1 AND id=$2 AND version=1`,
+    [scenario.accountId, connectionId, hash("7")],
+  );
+  await pool.query(
+    `INSERT INTO auto_listing_ai_profile_channels (
+       account_id,profile_id,profile_version,channel_id,display_name,connection_id,connection_version,
+       channel_order,enabled
+     ) VALUES ($1,$2,1,$3,$4,$5,1,2,TRUE)`,
+    [scenario.accountId, scenario.profileId, `channel-${marker}`, `Replacement ${label}`, connectionId],
+  );
+}
+
+async function insertImageSibling(scenario, {
+  label, slotKey, nextRetryAt, createdAt, updatedAt, lastErrorCode = null,
+}) {
+  const outboxId = `outbox-${label}-${suffix}`;
+  const correlationId = `correlation-${label}-${suffix}`;
+  const message = {
+    contractVersion: "V1", accountId: scenario.accountId, itemId: scenario.itemId,
+    phase: "GENERATE_IMAGE_SLOT", slotKey,
+    expectedStatusVersion: scenario.expectedStatusVersion, correlationId,
+  };
+  await pool.query(
+    `INSERT INTO auto_listing_ai_outbox (
+       id,account_id,job_id,item_id,slot_key,event_type,dedupe_key,state,contract_version,phase,
+       phase_target_id,expected_status_version,correlation_id,payload,next_retry_at,last_error_code,
+       created_at,updated_at
+     ) VALUES ($1,$2,$3,$4,$5,'GENERATE_IMAGE_SLOT',$6,'PENDING','V1','GENERATE_IMAGE_SLOT',
+       $5,$7,$8,$9::JSONB,$10,$11,$12,$13)`,
+    [outboxId, scenario.accountId, scenario.jobId, scenario.itemId, slotKey,
+      autoListingAiMessageDedupeKey(message), scenario.expectedStatusVersion, correlationId,
+      JSON.stringify(message), nextRetryAt, lastErrorCode, createdAt, updatedAt],
+  );
+  return outboxId;
 }
 
 async function seedSameAccountCallingJob(scenario) {
@@ -411,5 +466,83 @@ test("task queue projection matches allocator runnable and reclaimable-channel s
     aiChannelDisplayName: null,
     aiChannelSwitching: false,
     aiChannelWaitStartedAt: new Date("2020-01-01T00:00:00.000Z"),
+  });
+});
+
+test("latest channel failure outranks clean sibling image work and owns the switching timestamp", {
+  skip: enabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
+  timeout: 120_000,
+}, async () => {
+  const noCapacity = await seedScenario("image-siblings-no-capacity", {
+    status: "GENERATING",
+    phase: "GENERATE_IMAGE_SLOT",
+    phaseTargetId: "slot-a",
+    nextRetryAt: "2026-08-28T00:05:00.000Z",
+    lastErrorCode: "AI_GATEWAY_NETWORK_FAILED",
+    channelMode: "unavailable",
+  });
+  await pool.query(
+    "UPDATE auto_listing_ai_outbox SET updated_at='2026-08-28T00:05:00.000Z'::TIMESTAMPTZ WHERE id=$1",
+    [noCapacity.outboxId],
+  );
+  await pool.query(
+    `UPDATE auto_listing_job_items
+        SET last_ai_connection_id=$3,last_ai_connection_version=1,last_ai_channel_assigned_at=NOW()
+      WHERE account_id=$1 AND id=$2`,
+    [noCapacity.accountId, noCapacity.itemId, noCapacity.connectionId],
+  );
+  await insertImageSibling(noCapacity, {
+    label: "image-clean-no-capacity",
+    slotKey: "slot-b",
+    nextRetryAt: "2026-08-28T00:01:00.000Z",
+    createdAt: "2026-08-28T00:00:01.000Z",
+    updatedAt: "2026-08-28T00:01:00.000Z",
+  });
+  assert.deepEqual(await queueProjection(noCapacity), {
+    aiQueueState: "SWITCHING_AI_CHANNEL",
+    aiChannelDisplayName: "Channel image-siblings-no-capacity",
+    aiChannelSwitching: true,
+    aiChannelWaitStartedAt: new Date("2026-08-28T00:05:00.000Z"),
+  });
+
+  const replacement = await seedScenario("image-siblings-replacement", {
+    status: "GENERATING",
+    phase: "GENERATE_IMAGE_SLOT",
+    phaseTargetId: "slot-a",
+    nextRetryAt: "2026-08-28T00:04:00.000Z",
+    lastErrorCode: "AI_GATEWAY_NETWORK_FAILED",
+    channelMode: "unavailable",
+  });
+  await pool.query(
+    "UPDATE auto_listing_ai_outbox SET updated_at='2026-08-28T00:04:00.000Z'::TIMESTAMPTZ WHERE id=$1",
+    [replacement.outboxId],
+  );
+  await pool.query(
+    `UPDATE auto_listing_job_items
+        SET last_ai_connection_id=$3,last_ai_connection_version=1,last_ai_channel_assigned_at=NOW()
+      WHERE account_id=$1 AND id=$2`,
+    [replacement.accountId, replacement.itemId, replacement.connectionId],
+  );
+  await insertImageSibling(replacement, {
+    label: "image-second-failure",
+    slotKey: "slot-b",
+    nextRetryAt: "2026-08-28T00:06:00.000Z",
+    createdAt: "2026-08-28T00:00:01.000Z",
+    updatedAt: "2026-08-28T00:06:00.000Z",
+    lastErrorCode: "AI_GATEWAY_RATE_LIMITED",
+  });
+  await insertImageSibling(replacement, {
+    label: "image-clean-replacement",
+    slotKey: "slot-c",
+    nextRetryAt: "2026-08-28T00:02:00.000Z",
+    createdAt: "2026-08-28T00:00:02.000Z",
+    updatedAt: "2026-08-28T00:02:00.000Z",
+  });
+  await addReplacementCapacity(replacement, "image-replacement");
+  assert.deepEqual(await queueProjection(replacement), {
+    aiQueueState: "SWITCHING_AI_CHANNEL",
+    aiChannelDisplayName: "Channel image-siblings-replacement",
+    aiChannelSwitching: true,
+    aiChannelWaitStartedAt: new Date("2026-08-28T00:06:00.000Z"),
   });
 });
