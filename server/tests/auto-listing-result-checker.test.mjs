@@ -163,6 +163,30 @@ test("legacy accepted checker evidence remains valid when no category style imag
   assert.equal(Object.hasOwn(result.evidence, "categoryStyleGuidance"), false);
 });
 
+test("disabled category strategy ignores and normalizes irrelevant checker style evidence", async () => {
+  const request = await input(checkerValue({ matchesCategoryStyle: false }, {
+    categoryStyle: { matches: true, referenceEvidenceIds: ["hallucinated-style-reference"] },
+  }));
+  let calls = 0;
+  const inspect = request.gateway.inspectImage;
+  request.gateway.inspectImage = async (...args) => {
+    calls += 1;
+    return inspect(...args);
+  };
+
+  const result = await checkGeneratedAsset(request);
+
+  assert.equal(calls, 1);
+  assert.equal(result.accepted, true);
+  assert.equal(result.evidence.checkerResult.matchesCategoryStyle, true);
+  assert.deepEqual(result.evidence.checkerResult.evidence.categoryStyle, {
+    matches: true,
+    referenceEvidenceIds: [],
+  });
+  assert.equal(Object.hasOwn(result.evidence, "categoryStyleAssets"), false);
+  assert.equal(Object.hasOwn(result.evidence, "categoryStyleGuidance"), false);
+});
+
 test("rejects an image that is valid product evidence but does not match cited category style", async () => {
   const styleBytes = await sharp({ create: { width: 900, height: 1200, channels: 4, background: "#cc3366" } }).webp().toBuffer();
   const response = checkerValue({ matchesCategoryStyle: false }, {

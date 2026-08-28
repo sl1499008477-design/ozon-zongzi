@@ -447,6 +447,59 @@ test("final input binding returns accepted reuse or a stable conflict before dup
   assert.equal(reused.record.inputHash, inputHash);
 });
 
+test("versioned memory retries reuse an accepted image from an earlier item version", async () => {
+  let statusVersion = 7;
+  let sequence = 0;
+  const repository = createMemoryGenerationAttemptRepository({
+    token: () => `lease-version-${++sequence}`,
+    readItemState: async () => ({
+      status: "GENERATING",
+      statusVersion,
+      activeContentPlanId: scope.planId,
+    }),
+  });
+  const firstIdentity = "6".repeat(64);
+  const retryIdentity = "7".repeat(64);
+  const first = await repository.reserveGenerationAttempt({
+    ...scope,
+    expectedStatusVersion: 7,
+    attemptIdentityHash: firstIdentity,
+    generationSize,
+    maxAttempts: 3,
+  });
+  await repository.bindGenerationAttemptInput({
+    ...scope,
+    expectedStatusVersion: 7,
+    attemptIdentityHash: firstIdentity,
+    inputHash,
+    ...first,
+  });
+  await repository.completeGenerationAttempt({
+    ...complete(first, firstIdentity),
+    expectedStatusVersion: 7,
+  });
+
+  statusVersion = 9;
+  const retry = await repository.reserveGenerationAttempt({
+    ...scope,
+    expectedStatusVersion: 9,
+    attemptIdentityHash: retryIdentity,
+    generationSize,
+    maxAttempts: 3,
+  });
+  const reused = await repository.bindGenerationAttemptInput({
+    ...scope,
+    expectedStatusVersion: 9,
+    attemptIdentityHash: retryIdentity,
+    inputHash,
+    ...retry,
+  });
+
+  assert.equal(reused.status, "EXISTING_ACCEPTED");
+  assert.equal(reused.record.expectedStatusVersion, 7);
+  assert.equal(reused.record.inputHash, inputHash);
+});
+
 test("the versioned memory adapter matches the production stale/cancelled/active-plan fence before writes", async () => {
   for (const [state, expected] of [
     [{ status: "CANCELLED", statusVersion: 7, activeContentPlanId: scope.planId }, "CANCELLED"],

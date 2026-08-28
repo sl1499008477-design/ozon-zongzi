@@ -513,8 +513,9 @@ test("image aggregation waits until every active-plan slot is terminal and then 
   assert.doesNotMatch(waiting.calls[3].sql, /LEFT JOIN skipped s USING\s*\(slot_key\)/iu);
   assert.doesNotMatch(waiting.calls[3].sql, /accepted[\s\S]*expected_status_version/iu,
     "accepted assets from the same active plan must survive a controlled retry version change");
-  assert.doesNotMatch(waiting.calls[3].sql, /skipped[\s\S]*correlation_id/iu,
-    "skipped slots from the same active plan must survive a controlled retry correlation change");
+  assert.match(waiting.calls[3].sql, /skipped[\s\S]*details->>'statusVersion'=\$5/iu,
+    "a controlled retry must wait for every slot instead of inheriting an earlier run's skip");
+  assert.equal(waiting.calls[3].values[4], 3);
 
   const complete = scriptedClient([
     { rowCount: 1, rows: [{ status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived" }] },
@@ -587,8 +588,12 @@ test("same-correlation image audits are target-bound across accepted, skipped, a
   const duplicateId = duplicate.calls[2].values[0];
   assert.notEqual(acceptedId, skippedId);
   assert.equal(skippedId, duplicateId);
-  assert.deepEqual(JSON.parse(accepted.calls[2].values[9]), { planId: "plan-derived", slotKey: "slot-main" });
-  assert.deepEqual(JSON.parse(skipped.calls[2].values[9]), { planId: "plan-derived", slotKey: "slot-2" });
+  assert.deepEqual(JSON.parse(accepted.calls[2].values[9]), {
+    planId: "plan-derived", slotKey: "slot-main", statusVersion: 3,
+  });
+  assert.deepEqual(JSON.parse(skipped.calls[2].values[9]), {
+    planId: "plan-derived", slotKey: "slot-2", statusVersion: 3,
+  });
 });
 
 test("all-terminal insufficient image evidence closes safely as BLOCKED", async () => {

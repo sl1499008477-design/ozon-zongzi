@@ -247,6 +247,7 @@ test("runtime injects the AI workflow into job creation only when both feature f
     const workflow = {
       async stageInitialPlanWork() {},
       async applyPhaseOutcome() {},
+      async requeueChannelFailure() {},
     };
     const repository = { name: "repository-a" };
     const service = { name: "service-a" };

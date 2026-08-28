@@ -328,6 +328,103 @@ test("binding a later PostgreSQL attempt recovers a specific checker-contract fa
   assert.match(recoveryQuery.text, /CHECKER_EVIDENCE_INVALID/iu);
 });
 
+test("binding a new retry version reuses an accepted image from the previous version", async () => {
+  const retryScope = { ...scope, expectedStatusVersion: 9 };
+  const retryItemRow = { ...itemRow, status_version: 9 };
+  const previousIdentityHash = "d".repeat(64);
+  const objectKey = buildGeneratedAssetObjectKey({
+    ...scope,
+    attemptIdentityHash: previousIdentityHash,
+    inputHash,
+    attemptNo: 1,
+    contentHash,
+  });
+  const ownedRow = reservedRow({
+    id: "generation-retry",
+    expected_status_version: 9,
+    attempt_identity_hash: attemptIdentityHash,
+    input_hash: attemptIdentityHash,
+    lease_token: "lease-retry:1",
+  });
+  const acceptedRow = reservedRow({
+    id: "generation-accepted",
+    expected_status_version: 7,
+    attempt_identity_hash: previousIdentityHash,
+    input_hash: inputHash,
+    status: "ACCEPTED",
+    lease_token: null,
+    lease_expires_at: null,
+    final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    accepted_at: new Date("2026-08-04T00:00:20.000Z"),
+    object_key_version: "ATTEMPT_V2",
+    object_key: objectKey,
+    content_hash: contentHash,
+    content_type: "image/png",
+    width: 768,
+    height: 1024,
+    size_bytes: 123,
+    gateway_request_id: "gateway-accepted",
+    checker_request_id: "checker-accepted",
+    prompt_hash: "e".repeat(64),
+    plan_hash: "f".repeat(64),
+    source_hash: "1".repeat(64),
+    strategy_hash: "2".repeat(64),
+    config_hash: "3".repeat(64),
+    visual_groups_hash: "4".repeat(64),
+    prompt_template_version: "image-v1",
+    source_asset_evidence: [{
+      assetId: "source-a",
+      contentHash: "5".repeat(64),
+      contentType: "image/png",
+      width: 10,
+      height: 20,
+      size: 30,
+    }],
+    checker_result: { accepted: true },
+    model_evidence: { requestedImageModel: "image-a" },
+    regeneration: null,
+  });
+  const db = fakePool((sql) => {
+    if (/FROM auto_listing_job_items AS item/iu.test(sql)) return { rows: [retryItemRow], rowCount: 1 };
+    if (/lease_token=\$12.*status='GENERATING'/isu.test(sql) && /^\s*SELECT/iu.test(sql)) {
+      return { rows: [ownedRow], rowCount: 1 };
+    }
+    if (/input_hash=\$7.*generation_size=\$8.*id<>\$9/isu.test(sql)) {
+      return { rows: [acceptedRow], rowCount: 1 };
+    }
+    if (/UPDATE ai_generation_assets SET status='FAILED'/iu.test(sql)) return { rows: [], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  const result = await repository.bindGenerationAttemptInput({
+    ...retryScope,
+    attemptIdentityHash,
+    inputHash,
+    generationSize,
+    attemptNo: 1,
+    leaseToken: "lease-retry:1",
+  });
+
+  assert.equal(result.status, "EXISTING_ACCEPTED");
+  assert.equal(result.record.expectedStatusVersion, 7);
+  assert.equal(result.record.inputHash, inputHash);
+  const conflictQuery = db.queries.find(({ text }) => /status='ACCEPTED'/iu.test(text)
+    && /final_input_bound_at IS NOT NULL/iu.test(text));
+  assert.doesNotMatch(conflictQuery.text, /expected_status_version/iu);
+  assert.deepEqual(conflictQuery.parameters, [
+    retryScope.accountId,
+    retryScope.jobId,
+    retryScope.itemId,
+    retryScope.planId,
+    retryScope.visualGroupKey,
+    retryScope.slotKey,
+    inputHash,
+    generationSize,
+    "generation-retry",
+  ]);
+});
+
 test("channel release keeps stored image evidence while clearing the exact owned lease", async () => {
   const objectKey = buildGeneratedAssetObjectKey({
     ...scope, attemptIdentityHash, inputHash, attemptNo: 1, contentHash,

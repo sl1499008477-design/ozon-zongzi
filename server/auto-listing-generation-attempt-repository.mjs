@@ -136,8 +136,12 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
           gatewayConnectionVersion: row.gatewayConnectionVersion ?? null,
           ...(reusable ? { recoveryRecord: copy(row) } : {}) };
       }
-      const conflict = rows.find((candidate) => candidate !== row && keyOf(candidate) === keyOf(input)
-        && candidate.inputHash === input.inputHash && ["GENERATING", "ACCEPTED"].includes(candidate.status));
+      const conflict = rows.find((candidate) => candidate !== row
+        && scopeKeys.every((key) => candidate[key] === input[key])
+        && candidate.inputHash === input.inputHash
+        && candidate.generationSize === input.generationSize
+        && (candidate.status === "ACCEPTED"
+          || (candidate.status === "GENERATING" && candidate.finalInputBoundAt !== null)));
       if (conflict?.status === "ACCEPTED") {
         Object.assign(row, { status: "FAILED", errorCode: "FINAL_INPUT_REUSED", errorRetryable: false, leaseToken: null, leaseExpiresAt: null });
         return { status: "EXISTING_ACCEPTED", record: copy(conflict) };

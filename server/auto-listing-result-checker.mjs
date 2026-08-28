@@ -433,7 +433,8 @@ function validateResponse(value, references, facts, templateVersion, styleRefere
     });
   }
   const expectedStyleIds = styleReferences.map((reference) => reference.evidenceId);
-  if (!legacy && (!sameJson(evidence.categoryStyle.referenceEvidenceIds, expectedStyleIds)
+  if (!legacy && styleReferences.length > 0
+    && (!sameJson(evidence.categoryStyle.referenceEvidenceIds, expectedStyleIds)
     || evidence.categoryStyle.matches !== value.matchesCategoryStyle)) {
     throw checkerError("CHECKER_UNAVAILABLE", true, {
       detailCode: "CATEGORY_STYLE_EVIDENCE_MISMATCH", failureField: "/evidence/categoryStyle",
@@ -469,13 +470,20 @@ function validateResponse(value, references, facts, templateVersion, styleRefere
       || !claimMetadataBoundToFact(normalizedClaim, fact)
       || !claimTextBoundToFact(normalizedClaim, fact)) unverifiedClaim = true;
   }
-  const normalizedEvidence = templateVersion === CLAIM_EVIDENCE_TEMPLATE
+  let normalizedEvidence = templateVersion === CLAIM_EVIDENCE_TEMPLATE
     ? { ...evidence, claims: normalizedClaims }
     : evidence;
+  const normalizeUnusedCategoryStyle = !legacy && styleReferences.length === 0;
+  if (normalizeUnusedCategoryStyle) {
+    normalizedEvidence = {
+      ...normalizedEvidence,
+      categoryStyle: { matches: true, referenceEvidenceIds: [] },
+    };
+  }
   return {
     evidence: normalizedEvidence,
-    checkerResult: templateVersion === CLAIM_EVIDENCE_TEMPLATE
-      ? { ...value, evidence: normalizedEvidence }
+    checkerResult: templateVersion === CLAIM_EVIDENCE_TEMPLATE || normalizeUnusedCategoryStyle
+      ? { ...value, ...(normalizeUnusedCategoryStyle ? { matchesCategoryStyle: true } : {}), evidence: normalizedEvidence }
       : value,
     unverifiedClaim,
     legacy,

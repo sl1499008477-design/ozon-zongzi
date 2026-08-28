@@ -24,7 +24,7 @@ function validAiWorkflow(value) {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
-    const expected = ["stageInitialPlanWork", "applyPhaseOutcome"];
+    const expected = ["stageInitialPlanWork", "applyPhaseOutcome", "requeueChannelFailure"];
     const keys = Reflect.ownKeys(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
     return keys.length === expected.length

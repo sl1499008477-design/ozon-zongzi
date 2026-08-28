@@ -582,10 +582,10 @@ export function createPostgresGenerationAttemptRepository(options = {}) {
       const conflict = await client.query(
         `SELECT * FROM ai_generation_assets
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
-           AND visual_group_key=$5 AND slot_key=$6 AND expected_status_version=$7
-           AND input_hash=$8 AND generation_size=$9 AND id<>$10 AND (status='ACCEPTED'
+           AND visual_group_key=$5 AND slot_key=$6
+           AND input_hash=$7 AND generation_size=$8 AND id<>$9 AND (status='ACCEPTED'
              OR (status='GENERATING' AND final_input_bound_at IS NOT NULL))
-         FOR UPDATE`, [...scopeValues(input), input.inputHash, input.generationSize, row.id],
+         FOR UPDATE`, [...scopeValues(input).slice(0, 6), input.inputHash, input.generationSize, row.id],
       );
       if (conflict.rowCount) {
         if (conflict.rowCount !== 1) throw failure("AUTO_LISTING_IMAGE_ATTEMPT_CONFLICT");

@@ -529,7 +529,11 @@ export async function applyAutoListingAiPhaseOutcome(rawInput = {}, runtime = {}
     if (!slots.has(input.phaseTargetId)) throw conflict();
     const eventType = input.outcome.outcome === "IMAGE_SLOT_SKIPPED"
       ? "AI_IMAGE_SLOT_SKIPPED" : "AI_IMAGE_SLOT_ACCEPTED";
-    await audit(input, row, eventType, { planId: plan.id, slotKey: input.phaseTargetId });
+    await audit(input, row, eventType, {
+      planId: plan.id,
+      slotKey: input.phaseTargetId,
+      statusVersion: row.status_version,
+    });
     const terminal = await query(input.client,
       `WITH planned AS (
          SELECT slot->>'slotKey' AS slot_key,slot->>'role' AS role,
@@ -551,7 +555,7 @@ export async function applyAutoListingAiPhaseOutcome(rawInput = {}, runtime = {}
        ), skipped AS (
          SELECT DISTINCT details->>'slotKey' AS slot_key FROM auto_listing_events
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND event_type='AI_IMAGE_SLOT_SKIPPED'
-            AND details->>'planId'=$4
+            AND details->>'planId'=$4 AND details->>'statusVersion'=$5
        )
        SELECT p.slot_key,p.role,p.visual_group_key,
               CASE WHEN a.slot_key IS NOT NULL THEN 'ACCEPTED'
@@ -559,7 +563,7 @@ export async function applyAutoListingAiPhaseOutcome(rawInput = {}, runtime = {}
          FROM planned p
          LEFT JOIN accepted a ON a.slot_key=p.slot_key AND a.role=p.role
          LEFT JOIN skipped s ON s.slot_key=p.slot_key`,
-      [input.accountId, input.jobId, input.itemId, plan.id]);
+      [input.accountId, input.jobId, input.itemId, plan.id, row.status_version]);
     if (terminal?.rowCount !== slots.size) throw conflict();
     const terminalRows = terminal.rows || [];
     if (terminalRows.some((asset) => asset.terminal_status === "PENDING")) {
