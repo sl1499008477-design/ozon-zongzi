@@ -11,8 +11,12 @@ remediation commit `94363872782a9269d458680bf6944fffc69e2b7e`
 remediation commit `b7b95c7fb5c260bcb2dfccb4ea2028b7e8ca1cd2`
 (`fix: validate paid evidence before preserving producer`), and PostgreSQL
 acceptance-fixture remediation commit `11e67d78dd1ecd57c53e2a0c845041bddfb431ae`
-(`test: repair task 7 PostgreSQL acceptance fixtures`). The original report was
-recorded in commit `100aeef8f3cf119a8720f51231a0fdbe1a998d8d`.
+(`test: repair task 7 PostgreSQL acceptance fixtures`), and fifth-review
+PostgreSQL routing-acceptance commit
+`d56fb551e18fae99958ebca61b4e11a3af9a0f21`
+(`test: cover task 7 PostgreSQL exact routing`). The original report was
+recorded in commit `100aeef8f3cf119a8720f51231a0fdbe1a998d8d` and the fourth-review
+report update in `f59e423d206efd9e64613ac2885cd66b4473d5de`.
 
 Paid auto-listing phases now keep the job-frozen profile models and protocols while resolving only the exact adopted channel connection/version. No selector, arbitrary connection, current-profile, or default-connection fallback was added. Planner, image generator/checker, and rich-content attempts persist their leased connection provenance, and repository writes fence the account/item/status-version attempt owner and connection version.
 
@@ -56,6 +60,14 @@ rejects because new versions must begin `PENDING`. The fixture remediation adds
 the current required job-item fields and creates both connections as PENDING,
 then transitions both through PENDING → VALIDATED with capability evidence and
 A through VALIDATED → ACTIVE with exact status-version increments.
+
+The fifth fresh cumulative review failed with 0 Critical, 2 Important, and
+0 Minor findings, both acceptance gaps rather than production defects. The
+planner PostgreSQL test supplied no mandatory gateway pair, so it failed closed
+before exercising its SQL. The passing phase-context integration covered only
+legacy `execution: null`, so it did not prove the real connection-backed v3
+route or its no-fallback mismatch behavior. The fifth fixture-only commit
+closes both gaps using legal PENDING → VALIDATED → ACTIVE connection setup.
 
 ## TDD evidence
 
@@ -121,6 +133,16 @@ Fourth-review RED was reproduced against a disposable PostgreSQL 16 container:
   required real reference projector, the generation job item's `source_order`,
   and the memory release producer pair. These were corrected only in the two
   authorized test fixtures; no production file changed.
+
+Fifth-review RED/acceptance-gap reproduction used a fresh disposable
+PostgreSQL 16 container. The planner repository test failed 0/1 with
+`AUTO_LISTING_CONTENT_PLAN_REPOSITORY_INVALID` before any SQL because its
+request omitted the now-mandatory gateway connection id/version. The existing
+phase-context integration remained green, but direct inspection confirmed it
+passed only `execution: null`; therefore it could not exercise or reject any
+connection-backed v3 route. The fixture was first repaired to reach PostgreSQL,
+then the A→B provenance, stale-write, real-v3, and mismatch assertions were
+added. They exposed no production failure.
 
 ### GREEN
 
@@ -270,6 +292,36 @@ Task 6 memory parity:    139 tests, 138 pass, 0 fail, 1 gated skip
 Task 8 idle/delivery:    207 tests, 207 pass, 0 fail, 0 skips
 ```
 
+Final fifth-review PostgreSQL 16 acceptance run with both gates enabled:
+
+```text
+tests 71
+pass 71
+fail 0
+skipped 0
+```
+
+This run covered the prior eight-file PostgreSQL routing/workflow suite plus
+`auto-listing-content-plan-repository-postgres.test.mjs`. It executed real SQL
+for planner A→B accepted-evidence reuse (producer remains A), invalid-evidence
+replacement (new producer B), no-evidence reclaim (producer B), and stale
+connection/status/token/lease no-partial-write fences. It also executed a real
+v3 profile/channel/connection-version/outbox/item-assignment route and rejected
+account, profile, channel, connection, version, lease-owner, lease-token,
+lease-expiry, status-version, and assignment mismatches without fallback.
+
+Normal fifth-review regressions after the final fixture edits remained:
+
+```text
+Task 7 expanded direct: 415 tests, 412 pass, 0 fail, 3 gated skips
+Task 6 memory parity:    139 tests, 138 pass, 0 fail, 1 gated skip
+Task 8 idle/delivery:    207 tests, 207 pass, 0 fail, 0 skips
+```
+
+Both fifth-review files passed `node --check`; `git diff --check` passed. The
+disposable `codex-task7-pg16-fifth` container was stopped, its `--rm` cleanup
+was verified with `docker ps -a`, and no container with that name remains.
+
 The final skips are PostgreSQL integration gates requiring explicit
 nonproduction environment configuration. All ten files changed by the second
 remediation passed `node --check`; `git diff --check` also passed.
@@ -410,6 +462,17 @@ The fourth review remediation changed test fixtures only:
 - `server/tests/auto-listing-ai-phase-context-postgres.integration.test.mjs`
 - `server/tests/auto-listing-generation-attempt-postgres-fixture.mjs`
 
+The fifth review remediation also changed tests only:
+
+- `server/tests/auto-listing-ai-phase-context-postgres.integration.test.mjs`
+- `server/tests/auto-listing-content-plan-repository-postgres.test.mjs`
+
+The planner fixture now creates both connection versions through the legal
+lifecycle and supplies the exact producer pair to every covered command. The
+phase-context fixture retains the legacy case and adds a connection-backed v3
+profile/channel/outbox assignment plus the complete mismatch matrix. Existing
+fields were sufficient; no migration, schema, or production file changed.
+
 `server/auto-listing-ai-credential-resolver.mjs` did not require a production change: its existing exact-version resolver already met Task 7 and its direct regression remained green.
 
 ## Task 6 and Task 8 compatibility
@@ -426,7 +489,7 @@ The fourth review remediation changed test fixtures only:
 
 - The exact gated Task 7 routing, generation provenance, reclaim/clear-switch,
   checker provenance, and workflow integration assertions were executed on a
-  disposable local PostgreSQL 16 container and passed 70/70 with zero skips.
+  disposable local PostgreSQL 16 container and passed 71/71 with zero skips.
   This was not a production database and the container was removed afterward.
 - No real independent second key was configured, so real dual-channel paid concurrency is not claimed.
 - No real gateway or Ozon call was made, by design.
@@ -445,6 +508,7 @@ The fourth review remediation changed test fixtures only:
 Rollback the implementation with:
 
 ```bash
+git revert d56fb551e18fae99958ebca61b4e11a3af9a0f21
 git revert 11e67d78dd1ecd57c53e2a0c845041bddfb431ae
 git revert b7b95c7fb5c260bcb2dfccb4ea2028b7e8ca1cd2
 git revert 94363872782a9269d458680bf6944fffc69e2b7e
