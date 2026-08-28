@@ -4,6 +4,7 @@ import {
 } from "./auto-listing-ai-message.mjs";
 
 const INPUT_KEYS = Object.freeze(["message", "context"]);
+const LEASED_INPUT_KEYS = Object.freeze(["message", "context", "leaseActive"]);
 const CONTEXT_KEYS = Object.freeze([
   "accountId", "jobId", "itemId", "status", "statusVersion", "activeContentPlanId", "phaseInput",
 ]);
@@ -195,12 +196,13 @@ function ownErrorValue(error, key) {
 
 function channelFailure(message, error) {
   const code = ownErrorValue(error, "code");
+  const adapterModelNotFound = code === "NON_RETRYABLE_GATEWAY" && ownErrorValue(error, "status") === 404;
   const failureScope = CHANNEL_TRANSIENT_CODES.has(code) ? "CHANNEL_TRANSIENT"
-    : CHANNEL_REVALIDATION_CODES.has(code) ? "CHANNEL_REVALIDATION" : null;
+    : CHANNEL_REVALIDATION_CODES.has(code) || adapterModelNotFound ? "CHANNEL_REVALIDATION" : null;
   if (failureScope === null) return null;
   const explicitDelivery = ownErrorValue(error, "deliveryState");
   const deliveryState = DELIVERY_STATES.has(explicitDelivery)
-    ? explicitDelivery : NOT_SENT_CHANNEL_CODES.has(code) ? "NOT_SENT" : "POSSIBLY_SENT";
+    ? explicitDelivery : NOT_SENT_CHANNEL_CODES.has(code) || adapterModelNotFound ? "NOT_SENT" : "POSSIBLY_SENT";
   const explicitRetryAfter = ownErrorValue(error, "retryAfterMs");
   const retryAfterMs = Number.isInteger(explicitRetryAfter)
     && explicitRetryAfter >= 0 && explicitRetryAfter <= MAX_RETRY_AFTER_MS
@@ -389,7 +391,16 @@ function serviceFailure(message, error) {
   });
 }
 
-async function invokePhase(message, context, phaseInput, services) {
+function assertLeaseActive(leaseActive) {
+  try {
+    if (!leaseActive()) throw invalid();
+  } catch {
+    throw invalid();
+  }
+}
+
+async function invokePhase(message, context, phaseInput, services, leaseActive) {
+  assertLeaseActive(leaseActive);
   if (message.phase === "PLAN_CONTENT") return services.planContent({
     ...phaseInput,
     accountId: context.accountId,
@@ -440,6 +451,7 @@ async function invokePhase(message, context, phaseInput, services) {
   }
   const results = [];
   for (const visualGroupKey of [...byGroup.keys()].sort()) {
+    assertLeaseActive(leaseActive);
     const result = await services.generateRichContent({
       ...phaseInput,
       acceptedAssets: byGroup.get(visualGroupKey),
@@ -464,7 +476,8 @@ async function invokePhase(message, context, phaseInput, services) {
  * state writes, logging or side effects beyond one injected phase service.
  */
 export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {}) {
-  if (!exactKeys(input, INPUT_KEYS)) throw invalid();
+  const leased = exactDataKeys(input, LEASED_INPUT_KEYS) && typeof input.leaseActive === "function";
+  if (!exactKeys(input, INPUT_KEYS) && !leased) throw invalid();
   let message;
   try { message = normalizeAutoListingAiMessage(input.message); } catch { throw invalid(); }
   const context = assertContext(input.context, message);
@@ -494,7 +507,8 @@ export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {
   }
 
   try {
-    const result = await invokePhase(message, context, phaseInput, dependencies);
+    const result = await invokePhase(message, context, phaseInput, dependencies,
+      leased ? input.leaseActive : () => true);
     if (message.phase === "MATERIALIZE_SOURCE_ASSET" && result?.status === "SKIPPED") {
       if (result.reasonCode === "AUTO_LISTING_SOURCE_MATERIALIZATION_STALE") {
         return outcome(message, "ACK", "STALE", result.reasonCode, false);

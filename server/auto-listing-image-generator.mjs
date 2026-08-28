@@ -960,9 +960,6 @@ export async function generateImageSlot(input = {}) {
         gatewayRequestId = requestId(generated?.requestId);
       } catch (cause) {
         gatewayRequestId = requestId(cause?.requestId);
-        if (cause?.code === "INVALID_GATEWAY_RESPONSE") {
-          throw failure("AUTO_LISTING_IMAGE_GATEWAY_INVALID", true);
-        }
         throw cause;
       }
       generatedModelEvidence = generated?.modelEvidence || null;

@@ -1120,19 +1120,19 @@ test("an occupied lease has no external call and gateway failure is terminalized
   assert.equal(failing.calls[0][1].leaseToken, "lease-a");
 });
 
-test("a malformed successful image response remains rejected but uses the bounded slot retry", async () => {
+test("a malformed gateway response keeps its channel code for worker requeue classification", async () => {
   const fixture = await setup();
+  const gatewayError = new Error("malformed provider response");
+  gatewayError.code = "INVALID_GATEWAY_RESPONSE";
+  gatewayError.retryable = false;
   fixture.input.gateway.generateImage = async () => {
-    const error = new Error("malformed provider response");
-    error.code = "INVALID_GATEWAY_RESPONSE";
-    error.retryable = false;
-    throw error;
+    throw gatewayError;
   };
   await assert.rejects(
     generateImageSlot(fixture.input),
-    (error) => error?.code === "AUTO_LISTING_IMAGE_GATEWAY_INVALID" && error?.retryable === true,
+    (error) => error === gatewayError,
   );
-  assert.equal(fixture.calls.find(([name]) => name === "failed")[1].code, "AUTO_LISTING_IMAGE_GATEWAY_INVALID");
+  assert.equal(fixture.calls.find(([name]) => name === "failed")[1].code, "INVALID_GATEWAY_RESPONSE");
 });
 
 test("malformed reserved attempt numbers fail closed before gateway, storage, or terminal mutation", async () => {
@@ -1377,39 +1377,26 @@ test("terminal checker retry preserves the first known external request id", asy
   assert.equal(failed.modelEvidence.requestedImageModel, "image-model");
 });
 
-test("terminal structured checker failure keeps the generated image and safe repair diagnostic", async () => {
+test("structured checker gateway failure keeps the generated image and channel error unchanged", async () => {
   const fixture = await setup();
   let checkerCalls = 0;
+  const gatewayError = Object.assign(new Error("private malformed response"), {
+    code: "INVALID_GATEWAY_RESPONSE",
+    requestId: "checker-invalid-1",
+    failureField: "/evidence/claims/0/unit",
+  });
   fixture.input.gateway.inspectImage = async () => {
     checkerCalls += 1;
-    throw Object.assign(new Error("private malformed response"), {
-      code: "INVALID_GATEWAY_RESPONSE",
-      requestId: `checker-invalid-${checkerCalls}`,
-      failureField: "/evidence/claims/0/unit",
-    });
+    throw gatewayError;
   };
 
-  await assert.rejects(generateImageSlot(fixture.input), (error) => {
-    assert.equal(error?.code, "CHECKER_RESPONSE_INVALID");
-    assert.equal(error?.requestId, "checker-invalid-2");
-    return true;
-  });
+  await assert.rejects(generateImageSlot(fixture.input), (error) => error === gatewayError);
 
   assert.equal(fixture.gatewayCalls(), 1);
-  assert.equal(checkerCalls, 2);
+  assert.equal(checkerCalls, 1);
   const failed = fixture.calls.find(([name]) => name === "failed")[1];
-  assert.equal(failed.code, "CHECKER_RESPONSE_INVALID");
-  assert.equal(failed.checkerRequestId, "checker-invalid-2");
-  assert.equal(failed.objectKeyVersion, "ATTEMPT_V2");
-  assert.equal(failed.modelEvidence.requestedImageModel, "image-model");
-  assert.deepEqual(failed.checkerEvidence, {
-    version: "CHECKER_FAILURE_V1",
-    failureCode: "CHECKER_RESPONSE_INVALID",
-    detailCode: "STRUCTURED_RESPONSE_INVALID",
-    failureField: "/evidence/claims/0/unit",
-    requestIds: ["checker-invalid-1", "checker-invalid-2"],
-    callCount: 2,
-  });
+  assert.equal(failed.code, "INVALID_GATEWAY_RESPONSE");
+  assert.equal(failed.checkerRequestId, "checker-invalid-1");
 });
 
 test("a later task attempt reuses an image stored before checker outage without another paid generation", async () => {

@@ -301,7 +301,19 @@ export function createAutoListingAiWorker(config = {}) {
   }
 
   async function executePhaseAttempt(message, finalAttempt, execution = null) {
+    if (execution?.lost()) {
+      return Object.freeze({
+        persist: false,
+        outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
+      });
+    }
     const loaded = await loadContext(message);
+    if (execution?.lost()) {
+      return Object.freeze({
+        persist: false,
+        outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
+      });
+    }
     const context = normalizeContext(loaded, message);
     if (!context || context.statusVersion !== message.expectedStatusVersion) {
       return Object.freeze({
@@ -316,7 +328,15 @@ export function createAutoListingAiWorker(config = {}) {
       });
     }
     assertCurrentPhaseInput(context);
-    const outcome = await orchestrate({ message, context });
+    const outcome = await orchestrate(execution
+      ? { message, context, leaseActive: () => !execution.lost() }
+      : { message, context });
+    if (execution?.lost()) {
+      return Object.freeze({
+        persist: false,
+        outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
+      });
+    }
     let normalized = normalizeOrchestratorOutcome(outcome, message);
     if (execution && typeof normalized.failureScope === "string"
       && normalized.failureScope.startsWith("CHANNEL_")) {
@@ -337,7 +357,7 @@ export function createAutoListingAiWorker(config = {}) {
     return workflow.applyOutcome({ message, outcome, execution });
   }
 
-  async function runMessage(job, message, execution = null, leaseLost = () => false) {
+  async function runMessage(job, message, execution = null) {
     const policy = policies[message.phase];
     try {
       const outcome = await limiters[message.phase](async () => {
@@ -356,6 +376,13 @@ export function createAutoListingAiWorker(config = {}) {
             log(message, result.outcome.failureCode);
             await waitBeforeRetry(policy, attempt, timers);
           } catch (error) {
+            if (execution?.lost()) {
+              terminal = Object.freeze({
+                persist: false,
+                outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
+              });
+              break;
+            }
             const errorCode = safeErrorCode(error);
             const retryable = safeErrorRetryable(error);
             if (!retryable || attempt > policy.retryLimit) {
@@ -367,10 +394,10 @@ export function createAutoListingAiWorker(config = {}) {
           }
         }
         if (!terminal) throw workerError("AUTO_LISTING_AI_PHASE_FAILED");
-        if (execution && leaseLost()) {
+        if (execution?.lost()) {
           return Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" });
         }
-        if (terminal.persist) await persistOutcome(message, terminal.outcome, execution);
+        if (terminal.persist) await persistOutcome(message, terminal.outcome, execution?.current() ?? null);
         return terminal.outcome;
       });
       const output = safeOutcome(outcome);
@@ -408,24 +435,33 @@ export function createAutoListingAiWorker(config = {}) {
   function startHeartbeat(message, execution) {
     let active = true;
     let lost = false;
+    let currentExecution = execution;
     let handle = null;
     let running = null;
+    const now = typeof timers.now === "function" ? () => timers.now() : () => performance.now();
+    let nextBeatAt = now() + HEARTBEAT_INTERVAL_MS;
+    const schedule = () => {
+      if (active) handle = timers.setTimeout(beat, Math.max(0, nextBeatAt - now()));
+    };
     const beat = () => {
       if (!active) return;
-      running = Promise.resolve(executionRepository.renew({
-        message,
-        execution,
-        leaseMs: EXECUTION_LEASE_MS,
-      })).then(() => {
-        if (active) handle = timers.setTimeout(beat, HEARTBEAT_INTERVAL_MS);
-      }, () => {
+      nextBeatAt += HEARTBEAT_INTERVAL_MS;
+      running = Promise.resolve().then(() => executionRepository.renew({
+        message, execution: currentExecution, leaseMs: EXECUTION_LEASE_MS,
+      })).then((value) => {
+        const renewed = adoptedExecution(message, value);
+        if (!renewed) throw workerError("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+        currentExecution = renewed;
+        schedule();
+      }).catch(() => {
         lost = true;
         active = false;
       }).finally(() => { running = null; });
     };
-    handle = timers.setTimeout(beat, HEARTBEAT_INTERVAL_MS);
+    schedule();
     return Object.freeze({
       lost: () => lost,
+      current: () => currentExecution,
       async stop() {
         active = false;
         if (handle !== null) timers.clearTimeout(handle);
@@ -460,7 +496,7 @@ export function createAutoListingAiWorker(config = {}) {
     }
     const heartbeat = startHeartbeat(work.message, execution);
     try {
-      return await runMessage(job, work.message, execution, heartbeat.lost);
+      return await runMessage(job, work.message, heartbeat);
     } finally {
       await heartbeat.stop();
     }

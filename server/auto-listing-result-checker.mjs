@@ -30,6 +30,12 @@ const SOFT_QUALITY_FAILURES = [
   "SUBJECT_NOT_DOMINANT", "LABEL_OVERLAP", "LABEL_READABILITY_LOW",
 ];
 const MANUAL_REVIEW_WARNING_PREFIX = "AUTO_LISTING_MANUAL_REVIEW_WARNING:";
+const SAFE_GATEWAY_FAILURE_CODES = new Set([
+  "AI_GATEWAY_NETWORK_FAILED", "AI_GATEWAY_RATE_LIMITED", "AI_GATEWAY_IDLE_TIMEOUT",
+  "AI_GATEWAY_UNEXPECTED_EOF", "AI_GATEWAY_UNAUTHORIZED", "AI_GATEWAY_MODEL_NOT_FOUND",
+  "AI_GATEWAY_CAPABILITY_INVALID", "INVALID_GATEWAY_RESPONSE", "RETRYABLE_GATEWAY",
+  "GATEWAY_TIMEOUT", "NON_RETRYABLE_AUTH", "NON_RETRYABLE_GATEWAY",
+]);
 const PROHIBITED_FLAGS = new Set([
   "CONTACT", "REVIEW_REQUEST", "EXTERNAL_PROMOTION", "AFTER_SALES_GUIDANCE",
   "CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY",
@@ -711,21 +717,11 @@ export async function checkGeneratedAsset(input = {}) {
     try {
       response = await gateway.inspectImage(request);
     } catch (cause) {
-      if (cause?.code !== "INVALID_GATEWAY_RESPONSE") {
-        const unavailable = checkerError("CHECKER_UNAVAILABLE", true);
-        const knownRequestId = clean(cause?.requestId) || requestIds.at(-1) || "";
-        if (knownRequestId) unavailable.requestId = knownRequestId;
-        throw unavailable;
-      }
-      const requestId = clean(cause?.requestId);
-      if (requestId) requestIds.push(requestId);
-      repairFailure = {
-        failureCode: "CHECKER_RESPONSE_INVALID",
-        detailCode: "STRUCTURED_RESPONSE_INVALID",
-        ...(safeFailureField(cause?.failureField) ? { failureField: cause.failureField } : {}),
-      };
-      if (callCount === 1) continue;
-      throw terminalCheckerContractError(repairFailure, requestIds, callCount);
+      if (SAFE_GATEWAY_FAILURE_CODES.has(cause?.code)) throw cause;
+      const unavailable = checkerError("CHECKER_UNAVAILABLE", true);
+      const knownRequestId = clean(cause?.requestId) || requestIds.at(-1) || "";
+      if (knownRequestId) unavailable.requestId = knownRequestId;
+      throw unavailable;
     }
     const responseRequestId = clean(response?.requestId);
     if (responseRequestId) requestIds.push(responseRequestId);

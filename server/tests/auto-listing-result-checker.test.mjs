@@ -1092,36 +1092,21 @@ test("malformed checker output is an operationally distinguishable retryable fai
   await assert.rejects(checkGeneratedAsset(await input({ matchesProduct: true })), (error) => error?.code === "CHECKER_EVIDENCE_INVALID" && error?.retryable === true);
 });
 
-test("reuses the generated image for one structured-response repair without retrying image generation", async () => {
+test("propagates a malformed gateway response without an inline paid inspection retry", async () => {
   const request = await input(checkerValue());
-  const calls = [];
-  request.gateway.inspectImage = async (checkerRequest) => {
-    calls.push({ requestKey: checkerRequest.requestKey, prompt: checkerRequest.prompt });
-    if (calls.length === 1) {
-      throw Object.assign(new Error("malformed structured response"), {
-        code: "INVALID_GATEWAY_RESPONSE",
-        requestId: "checker-invalid-1",
-        failureField: "/evidence/claims/0/unit",
-      });
-    }
-    return {
-      requestId: "checker-repaired-2",
-      modelEvidence: {
-        requestedTextModel: "checker-a",
-        gatewayReportedTextModel: "checker-a",
-        gatewayReportedTextModelPresent: true,
-      },
-      value: checkerValue(),
-    };
+  let calls = 0;
+  const gatewayError = Object.assign(new Error("malformed structured response"), {
+    code: "INVALID_GATEWAY_RESPONSE",
+    requestId: "checker-invalid-1",
+    failureField: "/evidence/claims/0/unit",
+  });
+  request.gateway.inspectImage = async () => {
+    calls += 1;
+    throw gatewayError;
   };
 
-  const result = await checkGeneratedAsset(request);
-
-  assert.equal(result.accepted, true);
-  assert.equal(result.evidence.requestId, "checker-repaired-2");
-  assert.equal(calls.length, 2);
-  assert.notEqual(calls[0].requestKey, calls[1].requestKey);
-  assert.match(calls[1].prompt, /\/evidence\/claims\/0\/unit/u);
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === gatewayError);
+  assert.equal(calls, 1);
 });
 
 test("repairs one locally inconsistent evidence result and then accepts the corrected result", async () => {
@@ -1175,56 +1160,52 @@ test("two inconsistent evidence results retain the exact safe contract field", a
   });
 });
 
-test("two malformed structured responses fail with an accurate safe diagnostic", async () => {
+test("preserves a safe non-retryable gateway rejection for worker classification", async () => {
   const request = await input(checkerValue());
   let calls = 0;
+  const gatewayError = Object.assign(new Error("gateway rejected request"), {
+    code: "NON_RETRYABLE_GATEWAY", status: 404, requestId: "checker-model-missing",
+  });
   request.gateway.inspectImage = async () => {
     calls += 1;
-    throw Object.assign(new Error("private malformed response"), {
-      code: "INVALID_GATEWAY_RESPONSE",
-      requestId: `checker-invalid-${calls}`,
-      failureField: "/evidence/claims/0/unit",
-    });
+    throw gatewayError;
   };
 
-  await assert.rejects(checkGeneratedAsset(request), (error) => {
-    assert.equal(error?.code, "CHECKER_RESPONSE_INVALID");
-    assert.equal(error?.retryable, true);
-    assert.equal(error?.requestId, "checker-invalid-2");
-    assert.deepEqual(error?.checkerEvidence, {
-      version: "CHECKER_FAILURE_V1",
-      failureCode: "CHECKER_RESPONSE_INVALID",
-      detailCode: "STRUCTURED_RESPONSE_INVALID",
-      failureField: "/evidence/claims/0/unit",
-      requestIds: ["checker-invalid-1", "checker-invalid-2"],
-      callCount: 2,
-    });
-    assert.doesNotMatch(JSON.stringify(error), /private malformed response/u);
-    return true;
-  });
-  assert.equal(calls, 2);
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === gatewayError);
+  assert.equal(calls, 1);
 });
 
-test("does not impose an application deadline or duplicate a failed inspection", async () => {
+test("does not impose an application deadline or rewrite a failed inspection", async () => {
   const request = await input(checkerValue());
   const timeouts = [];
+  const gatewayError = Object.assign(new Error("checker timed out"), { code: "GATEWAY_TIMEOUT", retryable: true });
   request.gateway.inspectImage = async (gatewayRequest) => {
     timeouts.push(Object.hasOwn(gatewayRequest, "timeoutMs"));
-    throw Object.assign(new Error("checker timed out"), { code: "GATEWAY_TIMEOUT", retryable: true });
+    throw gatewayError;
   };
 
-  await assert.rejects(checkGeneratedAsset(request), checkerUnavailable);
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === gatewayError);
   assert.deepEqual(timeouts, [false]);
 });
 
-test("does not automatically retry non-timeout checker failures", async () => {
+test("does not rewrite or automatically retry non-timeout checker failures", async () => {
   const request = await input(checkerValue());
   let calls = 0;
+  const gatewayError = Object.assign(new Error("gateway rejected request"), { code: "NON_RETRYABLE_GATEWAY" });
   request.gateway.inspectImage = async () => {
     calls += 1;
-    throw Object.assign(new Error("gateway rejected request"), { code: "NON_RETRYABLE_GATEWAY" });
+    throw gatewayError;
+  };
+
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === gatewayError);
+  assert.equal(calls, 1);
+});
+
+test("still bounds an unknown coded checker exception instead of persisting its private code", async () => {
+  const request = await input(checkerValue());
+  request.gateway.inspectImage = async () => {
+    throw Object.assign(new Error("private upstream detail"), { code: "PRIVATE_GATEWAY_SECRET" });
   };
 
   await assert.rejects(checkGeneratedAsset(request), checkerUnavailable);
-  assert.equal(calls, 1);
 });

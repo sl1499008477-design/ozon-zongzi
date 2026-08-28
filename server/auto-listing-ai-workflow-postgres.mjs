@@ -682,7 +682,7 @@ async function finishExecution(client, message, execution, result, resetChannelH
         SET execution_lease_owner=NULL,execution_lease_token=NULL,execution_lease_expires_at=NULL,
             assigned_job_id=CASE WHEN enabled AND $8 THEN assigned_job_id ELSE NULL END,
             assigned_item_id=CASE WHEN enabled AND $8 THEN assigned_item_id ELSE NULL END,
-            assigned_status_version=CASE WHEN enabled AND $8 THEN assigned_status_version ELSE NULL END,
+            assigned_status_version=CASE WHEN enabled AND $8 THEN $10::INTEGER ELSE NULL END,
             assigned_at=CASE WHEN enabled AND $8 THEN assigned_at ELSE NULL END,
             consecutive_failure_count=CASE WHEN $9 THEN 0 ELSE consecutive_failure_count END,
             last_error_code=CASE WHEN $9 AND cooldown_until<=NOW() THEN NULL ELSE last_error_code END,
@@ -693,7 +693,8 @@ async function finishExecution(client, message, execution, result, resetChannelH
         AND connection_id=$7
       RETURNING channel_id`,
     [message.accountId, execution.channelId, message.itemId, message.expectedStatusVersion,
-      execution.leaseOwner, execution.leaseToken, execution.connectionId, keepAssignment, resetChannelHealth],
+      execution.leaseOwner, execution.leaseToken, execution.connectionId, keepAssignment, resetChannelHealth,
+      result.statusVersion],
   );
   if (outbox?.rowCount !== 1 || channel?.rowCount !== 1) throw conflict();
 }

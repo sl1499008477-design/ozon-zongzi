@@ -389,6 +389,46 @@ test("generates one independently scoped rich-content document per visual group"
   assert.deepEqual(calls.map((call) => call.acceptedAssets.length), [6, 6]);
 });
 
+test("lease loss after one rich-content group prevents starting the next paid group", async () => {
+  const plan = derivedPlan();
+  const secondSlots = [
+    slot("group-b-main", "MAIN", 7), slot("group-b-selling-1", "SELLING_POINT", 8),
+    slot("group-b-selling-2", "SELLING_POINT", 9), slot("group-b-detail", "DETAIL", 10),
+    slot("group-b-scene", "SCENE", 11), slot("group-b-info", "INFOGRAPHIC", 12),
+  ].map((entry) => ({ ...entry, visualGroupKey: "group-b" }));
+  plan.plan.slots.push(...secondSlots);
+  plan.visualGroups.groups.push({
+    visualGroupKey: "group-b",
+    referenceImages: [{
+      assetId: "source-b", evidenceKind: "CONTENT_HASH", contentHash: H("7"), sourceRefHash: H("8"), sourceRef: null,
+    }],
+  });
+  const acceptedAssets = plan.plan.slots.map((entry, index) => ({
+    id: `lease-asset-${index}`, status: "ACCEPTED",
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
+    slotKey: entry.slotKey, visualGroupKey: entry.visualGroupKey, role: entry.role,
+  }));
+  let leaseActive = true;
+  const calls = [];
+  const result = await orchestrateAutoListingAiPhase({
+    message: message("GENERATE_RICH_CONTENT"),
+    context: context("GENERATE_RICH_CONTENT", {
+      phaseInput: { ...phaseInput("GENERATE_RICH_CONTENT"), plan, acceptedAssets },
+    }),
+    leaseActive: () => leaseActive,
+  }, services({ generateRichContent: async (input) => {
+    calls.push(input.visualGroupKey);
+    leaseActive = false;
+    return {
+      status: "ACCEPTED", accountId: input.accountId, jobId: input.jobId, itemId: input.itemId,
+      planId: input.planId,
+    };
+  } }));
+
+  assert.deepEqual(calls, ["group-a"]);
+  assert.equal(result.disposition, "FAIL");
+});
+
 test("maps final MAIN and minimum-six outcomes without touching accepted siblings or adding a checker phase", async () => {
   const cases = [
     ["BLOCKED", "FAIL", "FAILED", "AUTO_LISTING_MAIN_IMAGE_REQUIRED", true],
@@ -584,6 +624,27 @@ test("classifies every supported channel failure with explicit safe delivery met
     assert.equal(value.deliveryState, deliveryState, code);
     assert.equal(value.retryAfterMs, retryAfterMs, code);
     assert.doesNotMatch(JSON.stringify(value), /raw upstream detail/u);
+  }
+});
+
+test("classifies adapter 404 model rejection as NOT_SENT revalidation without broadening other 4xx failures", async () => {
+  for (const [status, expectedScope, expectedDelivery] of [
+    [404, "CHANNEL_REVALIDATION", "NOT_SENT"],
+    [400, "BUSINESS", null],
+  ]) {
+    const error = Object.assign(new Error("safe gateway rejection"), {
+      code: "NON_RETRYABLE_GATEWAY", retryable: false, status,
+    });
+    const value = await orchestrateAutoListingAiPhase({
+      message: message("PLAN_CONTENT"), context: context("PLAN_CONTENT"),
+    }, services({ planContent: async () => { throw error; } }));
+
+    assert.equal(value.failureScope, expectedScope, status);
+    assert.equal(value.deliveryState, expectedDelivery, status);
+    if (status === 404) {
+      assert.equal(value.disposition, "RETRY");
+      assert.equal(value.failureCode, "NON_RETRYABLE_GATEWAY");
+    }
   }
 });
 

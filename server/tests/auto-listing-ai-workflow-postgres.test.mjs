@@ -236,6 +236,39 @@ test("a disabled busy channel finishes the accepted outcome then releases assign
   assert.match(client.calls[7].sql, /state='COMPLETED'/iu);
 });
 
+test("an enabled busy channel advances its fixed assignment to the next phase status version", async () => {
+  const client = scriptedClient([
+    {}, { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ status: "PLANNING", status_version: 2,
+      active_content_plan_id: "plan-derived", planning_contract: "FIXED_SKELETON_V1" }] },
+    { rowCount: 1, rows: [{ id: "plan-derived", parent_plan_id: "plan-parent",
+      derivation_kind: "SOURCE_MATERIALIZATION", plan: { slots: [{ slotKey: "slot-main", role: "MAIN" }] } }] },
+    { rowCount: 1, rows: [{ status: "GENERATING", status_version: 3 }] },
+    { rowCount: 1, rows: [{ id: "event-a" }] },
+    { rowCount: 1, rows: [{ id: "next-outbox" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    {},
+  ]);
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...client, release() {} }; } },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "FINALIZE_MATERIALIZED_PLAN", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const result = await workflow.applyPhaseOutcome({
+    message,
+    outcome: { ...outcome("FINALIZE_MATERIALIZED_PLAN", "MATERIALIZED_PLAN_READY"),
+      failureScope: null, deliveryState: null, retryAfterMs: null },
+    execution: v3Execution(),
+  });
+
+  assert.equal(result.statusVersion, 3);
+  assert.match(client.calls[9].sql, /assigned_status_version=CASE WHEN enabled AND \$8 THEN \$10::INTEGER ELSE NULL END/iu);
+  assert.equal(client.calls[9].values[9], 3);
+});
+
 test("stageInitialPlanWork is idempotent only when the exact transition event and closed PLAN work already exist", async () => {
   const duplicate = scriptedClient([
     { rowCount: 1, rows: [{ status: "PLANNING", status_version: 2, ai_profile_id: "profile-a", ai_profile_version: 3 }] },
