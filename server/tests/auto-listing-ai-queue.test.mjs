@@ -11,6 +11,7 @@ import {
   createLegacyAutoListingAiQueueAdapter,
 } from "../auto-listing-ai-queue.mjs";
 import { createMemoryAutoListingAiOutboxRepository } from "../auto-listing-ai-outbox-repository.mjs";
+import { autoListingAiWorkSingletonKey } from "../auto-listing-ai-work-message.mjs";
 
 const message = Object.freeze({
   contractVersion: "V1",
@@ -180,6 +181,59 @@ test("v3 publisher marks only exact fenced publication metadata and never comple
       publicationId: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8:1",
     }],
   ]);
+});
+
+test("v3 publisher rejects a claimed row whose nested message belongs to another account before queue publication", async () => {
+  const forgedWorkMessage = {
+    ...workMessage,
+    message: { ...workMessage.message, accountId: "account-b" },
+  };
+  const singletonKey = autoListingAiWorkSingletonKey(forgedWorkMessage);
+  const calls = [];
+  const queueAdapter = createAutoListingAiQueueAdapter({
+    enabled: true,
+    bossFactory: () => ({
+      async start() {},
+      async createQueue() {},
+      async send() { calls.push("send"); return "must-not-publish"; },
+      async stop() {},
+    }),
+  });
+  const publisher = createAutoListingAiOutboxPublisher({
+    enabled: true,
+    outboxRepository: {
+      async claimAutoListingAiWork() {
+        calls.push("claim");
+        return [{
+          accountId: "account-a",
+          itemId: "item-a",
+          id: "ai-outbox-a",
+          leaseOwner: "publisher-work",
+          leaseToken: "lease-work",
+          publicationId: singletonKey,
+          workMessage: forgedWorkMessage,
+        }];
+      },
+      async markAutoListingAiWorkPublished() { calls.push("mark"); },
+      async releaseUnpublishedAutoListingAiWork() { calls.push("release"); },
+      async completeAutoListingAiMessage() { calls.push("complete"); },
+    },
+    queueAdapter,
+    accountIds: async () => ["account-a"],
+    timers: { setTimeout, clearTimeout, setInterval, clearInterval },
+    workerId: "publisher-work",
+    batchSize: 1,
+    leaseMs: 30_000,
+    publishTimeoutMs: 1_000,
+    intervalMs: 10_000,
+  });
+
+  await assert.rejects(
+    publisher.publishOnce({ accountId: "account-a" }),
+    (error) => error?.code === "AUTO_LISTING_AI_PUBLISHER_FAILED"
+      && error.retryable === true && !/account-b|forged/iu.test(error.message),
+  );
+  assert.deepEqual(calls, ["claim"]);
 });
 
 test("v3 publisher rejects forged queue publication evidence without marking or releasing the lease", async () => {

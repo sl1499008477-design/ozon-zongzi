@@ -37,6 +37,7 @@ const INPUT_KEYS = new Set(["env", "resolvePool", "ports"]);
 const RELAY_PORT_KEYS = new Set([
   "createBoss", "createOutboxRepository", "createQueueAdapter", "createPublisher",
 ]);
+const RELAY_INFRASTRUCTURE_KEYS = new Set(["createBoss", "createOutboxRepository"]);
 const DIAGNOSTIC_PORT_KEYS = new Set([
   "loadCredentialKey", "createCipher", "createCredentialRepository",
   "createCredentialResolver", "createGateway", "createEvidenceRepository",
@@ -259,12 +260,29 @@ const DEFAULT_PORTS = Object.freeze({
   phaseServices,
 });
 
-const DEFAULT_RELAY_PORTS = Object.freeze({
+const DEFAULT_RELAY_INFRASTRUCTURE = Object.freeze({
   createBoss: DEFAULT_PORTS.createBoss,
   createOutboxRepository: ({ pool }) => createPostgresAiOutboxRepository({ pool }),
+});
+
+const DEFAULT_RELAY_PORTS = Object.freeze({
+  ...DEFAULT_RELAY_INFRASTRUCTURE,
   createQueueAdapter: (options) => createLegacyAutoListingAiQueueAdapter(options),
   createPublisher: (options) => createLegacyAutoListingAiOutboxPublisher(options),
 });
+
+function defaultRelayPorts(infrastructure) {
+  if (!exactObject(infrastructure, RELAY_INFRASTRUCTURE_KEYS)
+    || [...RELAY_INFRASTRUCTURE_KEYS].some((key) => typeof infrastructure[key] !== "function")) {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+  }
+  if (infrastructure === DEFAULT_RELAY_INFRASTRUCTURE) return DEFAULT_RELAY_PORTS;
+  return Object.freeze({
+    ...DEFAULT_RELAY_PORTS,
+    createBoss: infrastructure.createBoss,
+    createOutboxRepository: infrastructure.createOutboxRepository,
+  });
+}
 
 const DEFAULT_DIAGNOSTIC_PORTS = Object.freeze({
   loadCredentialKey: DEFAULT_PORTS.loadCredentialKey,
@@ -556,6 +574,8 @@ export async function createAutoListingAiProductionOutboxRelay(input = {}) {
   }
 }
 
-export function createDefaultAutoListingAiProductionOutboxRelay({ env, resolvePool } = {}) {
-  return createAutoListingAiProductionOutboxRelay({ env, resolvePool, ports: DEFAULT_RELAY_PORTS });
+export function createDefaultAutoListingAiProductionOutboxRelay(
+  { env, resolvePool } = {}, infrastructure = DEFAULT_RELAY_INFRASTRUCTURE,
+) {
+  return createAutoListingAiProductionOutboxRelay({ env, resolvePool, ports: defaultRelayPorts(infrastructure) });
 }

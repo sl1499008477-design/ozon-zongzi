@@ -464,3 +464,51 @@ test("default production relay is lazy, uses the same database configuration and
   assert.deepEqual(Object.keys(relay).sort(), ["start", "stop"]);
   assert.deepEqual({ pools, queries, connections }, { pools: 1, queries: 0, connections: 0 });
 });
+
+test("default production relay runs one bounded legacy-only v2 cycle with fake leaf infrastructure", async () => {
+  const events = [];
+  const pool = Object.freeze({ async query() {}, async connect() {} });
+  const repository = Object.freeze({
+    async listRunnableAutoListingAiAccountIds(input) { events.push(["discover", input]); return ["account-a"]; },
+    async claimLegacyAutoListingAiMessages(input) { events.push(["legacy-claim", input]); return []; },
+    async claimAutoListingAiMessages() { events.push(["generic-claim"]); throw new Error("must not claim generic work"); },
+    async claimAutoListingAiWork() { events.push(["v3-claim"]); throw new Error("must not claim v3 work"); },
+    async renewAutoListingAiMessageLease() { throw new Error("no rows"); },
+    async completeAutoListingAiMessage() { throw new Error("no rows"); },
+    async failAutoListingAiMessage() { throw new Error("no rows"); },
+    async reconcileDeadAutoListingAiMessages(input) { events.push(["reconcile-dead", input]); return { recovered: 0 }; },
+    async reconcileInterruptedAutoListingAiItems(input) { events.push(["reconcile-interrupted", input]); return { recovered: 0 }; },
+  });
+  const boss = Object.freeze({
+    async start() { events.push(["boss-start"]); },
+    async createQueue(name, options) { events.push(["queue", name, options]); },
+    async send() { events.push(["send"]); throw new Error("empty outbox must not publish"); },
+    async stop() { events.push(["boss-stop"]); },
+  });
+
+  const relay = await createDefaultAutoListingAiProductionOutboxRelay({
+    env: enabledEnv(),
+    resolvePool: async () => pool,
+  }, Object.freeze({
+    createBoss(input) { events.push(["boss-create", input]); return boss; },
+    createOutboxRepository(input) { events.push(["repository", input]); return repository; },
+  }));
+
+  assert.deepEqual(events, [["repository", { pool }]]);
+  assert.equal(await relay.start(), true);
+  await relay.stop();
+
+  assert.deepEqual(events.filter(([name]) => name === "discover"), [
+    ["discover", { afterAccountId: null, limit: 100 }],
+  ]);
+  assert.deepEqual(events.filter(([name]) => name === "legacy-claim"), [[
+    "legacy-claim",
+    { accountId: "account-a", workerId: "auto-listing-ai-outbox-relay-v1", limit: 1, leaseMs: 30_000 },
+  ]]);
+  assert.equal(events.some(([name]) => name === "generic-claim" || name === "v3-claim" || name === "send"), false);
+  const queue = events.find(([name]) => name === "queue");
+  assert.equal(queue[1], "auto-listing-ai-v2");
+  assert.equal(Object.hasOwn(queue[2], "expireInSeconds"), false);
+  assert.equal(events.filter(([name]) => name === "boss-create").length, 1);
+  assert.equal(events.filter(([name]) => name === "boss-stop").length, 1);
+});

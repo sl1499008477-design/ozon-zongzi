@@ -402,7 +402,8 @@ function createOutboxPublisher(rawOptions, { work }) {
           try {
             workMessage = normalizeAutoListingAiWorkMessage(row?.workMessage);
             singletonKey = autoListingAiWorkSingletonKey(workMessage);
-            if (row.accountId !== input.accountId || row.itemId !== workMessage.message.itemId
+            if (row.accountId !== input.accountId || row.accountId !== workMessage.message.accountId
+              || row.itemId !== workMessage.message.itemId
               || row.id !== workMessage.execution.outboxId || row.leaseOwner !== workerId
               || row.leaseOwner !== workMessage.execution.leaseOwner
               || row.leaseToken !== workMessage.execution.leaseToken
