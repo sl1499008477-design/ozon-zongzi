@@ -4,7 +4,7 @@ import {
 } from "./auto-listing-ai-message.mjs";
 
 const INPUT_KEYS = Object.freeze(["message", "context"]);
-const LEASED_INPUT_KEYS = Object.freeze(["message", "context", "leaseActive"]);
+const LEASED_INPUT_KEYS = Object.freeze(["message", "context", "assertLeaseActive"]);
 const CONTEXT_KEYS = Object.freeze([
   "accountId", "jobId", "itemId", "status", "statusVersion", "activeContentPlanId", "phaseInput",
 ]);
@@ -391,16 +391,17 @@ function serviceFailure(message, error) {
   });
 }
 
-function assertLeaseActive(leaseActive) {
+function assertLeaseActive(assertActive) {
   try {
-    if (!leaseActive()) throw invalid();
-  } catch {
+    assertActive();
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_AI_EXECUTION_LEASE_LOST") throw error;
     throw invalid();
   }
 }
 
-async function invokePhase(message, context, phaseInput, services, leaseActive) {
-  assertLeaseActive(leaseActive);
+async function invokePhase(message, context, phaseInput, services, assertActive) {
+  assertLeaseActive(assertActive);
   if (message.phase === "PLAN_CONTENT") return services.planContent({
     ...phaseInput,
     accountId: context.accountId,
@@ -408,6 +409,7 @@ async function invokePhase(message, context, phaseInput, services, leaseActive) 
     itemId: context.itemId,
     expectedStatusVersion: message.expectedStatusVersion,
     correlationId: message.correlationId,
+    assertLeaseActive: assertActive,
   });
   if (message.phase === "MATERIALIZE_SOURCE_ASSET") return services.materializeSourceAsset({
     ...phaseInput,
@@ -442,6 +444,7 @@ async function invokePhase(message, context, phaseInput, services, leaseActive) 
       expectedStatusVersion: message.expectedStatusVersion,
     },
     correlationId: message.correlationId,
+    assertLeaseActive: assertActive,
   });
   const byGroup = new Map();
   for (const asset of phaseInput.acceptedAssets) {
@@ -451,7 +454,7 @@ async function invokePhase(message, context, phaseInput, services, leaseActive) 
   }
   const results = [];
   for (const visualGroupKey of [...byGroup.keys()].sort()) {
-    assertLeaseActive(leaseActive);
+    assertLeaseActive(assertActive);
     const result = await services.generateRichContent({
       ...phaseInput,
       acceptedAssets: byGroup.get(visualGroupKey),
@@ -461,7 +464,9 @@ async function invokePhase(message, context, phaseInput, services, leaseActive) 
       itemId: context.itemId,
       planId: context.activeContentPlanId,
       correlationId: message.correlationId,
+      assertLeaseActive: assertActive,
     });
+    assertLeaseActive(assertActive);
     results.push({ ...result, visualGroupKey });
   }
   return {
@@ -476,7 +481,7 @@ async function invokePhase(message, context, phaseInput, services, leaseActive) 
  * state writes, logging or side effects beyond one injected phase service.
  */
 export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {}) {
-  const leased = exactDataKeys(input, LEASED_INPUT_KEYS) && typeof input.leaseActive === "function";
+  const leased = exactDataKeys(input, LEASED_INPUT_KEYS) && typeof input.assertLeaseActive === "function";
   if (!exactKeys(input, INPUT_KEYS) && !leased) throw invalid();
   let message;
   try { message = normalizeAutoListingAiMessage(input.message); } catch { throw invalid(); }
@@ -508,7 +513,7 @@ export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {
 
   try {
     const result = await invokePhase(message, context, phaseInput, dependencies,
-      leased ? input.leaseActive : () => true);
+      leased ? input.assertLeaseActive : () => {});
     if (message.phase === "MATERIALIZE_SOURCE_ASSET" && result?.status === "SKIPPED") {
       if (result.reasonCode === "AUTO_LISTING_SOURCE_MATERIALIZATION_STALE") {
         return outcome(message, "ACK", "STALE", result.reasonCode, false);
@@ -524,6 +529,7 @@ export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {
     assertSuccessfulResult(result, message.phase, context, message, phaseInput);
     return outcome(message, "ACK", SUCCESS_OUTCOME[message.phase], null, false);
   } catch (error) {
+    if (error?.code === "AUTO_LISTING_AI_EXECUTION_LEASE_LOST") throw error;
     return serviceFailure(message, error);
   }
 }

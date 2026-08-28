@@ -6,6 +6,13 @@ const VERSION = "AUTO_LISTING_RICH_CONTENT_V1";
 const DETERMINISTIC_FALLBACK_PREFIX = "auto-listing-rich-fallback-";
 const MAX_PROMPT_BYTES = 256 * 1024;
 const HASH = /^[a-f0-9]{64}$/;
+const EXECUTION_LEASE_LOST = "AUTO_LISTING_AI_EXECUTION_LEASE_LOST";
+const SAFE_GATEWAY_FAILURE_CODES = new Set([
+  "AI_GATEWAY_NETWORK_FAILED", "AI_GATEWAY_RATE_LIMITED", "AI_GATEWAY_IDLE_TIMEOUT",
+  "AI_GATEWAY_UNEXPECTED_EOF", "AI_GATEWAY_UNAUTHORIZED", "AI_GATEWAY_MODEL_NOT_FOUND",
+  "AI_GATEWAY_CAPABILITY_INVALID", "INVALID_GATEWAY_RESPONSE", "RETRYABLE_GATEWAY",
+  "GATEWAY_TIMEOUT", "NON_RETRYABLE_AUTH", "NON_RETRYABLE_GATEWAY",
+]);
 const SCOPE_KEYS = ["accountId", "jobId", "itemId", "planId"];
 const FACT_EVIDENCE_KEYS = new Set(["factId", "field", "kind", "value", "numericValue", "unit", "sourcePath"]);
 const ASSET_EVIDENCE_KEYS = new Set([
@@ -75,6 +82,10 @@ function richError(code, message = "富文本生成失败", retryable = false) {
   error.code = code;
   error.retryable = retryable;
   return error;
+}
+
+function assertLeaseActive(input) {
+  if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
 }
 
 export const RICH_CONTENT_JSON_SCHEMA = Object.freeze({
@@ -709,6 +720,7 @@ function assertExistingAccepted(record, input, hashes) {
 
 export async function generateRichContent(input = {}) {
   const scope = assertGenerationInput(input);
+  assertLeaseActive(input);
   const port = repositoryPort(input.repository);
   const hashes = buildRichContentPrompt(input);
   const selectedFacts = factsForAcceptedAssets(input.plan, input.acceptedAssets, input.factRegistry);
@@ -763,6 +775,7 @@ export async function generateRichContent(input = {}) {
   let completion = null;
   try {
     if (typeof input.gateway?.createTextResponse !== "function") throw richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED", "Шлюз недоступен", true);
+    assertLeaseActive(input);
     response = await input.gateway.createTextResponse({
       profile: input.profile,
       model: input.profile.textModel,
@@ -771,10 +784,13 @@ export async function generateRichContent(input = {}) {
       prompt: hashes.prompt,
       jsonSchema: RICH_CONTENT_JSON_SCHEMA,
     });
+    assertLeaseActive(input);
   } catch (cause) {
+    if (cause?.code === EXECUTION_LEASE_LOST || SAFE_GATEWAY_FAILURE_CODES.has(cause?.code)) throw cause;
     completion = fallback("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED");
     if (!completion) {
       const gatewayFailure = richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED", "Шлюз генерации недоступен", cause?.retryable !== false);
+      assertLeaseActive(input);
       await port.fail({ ...reservationInput, ...lease, errorCode: gatewayFailure.code, errorRetryable: gatewayFailure.retryable });
       throw gatewayFailure;
     }
@@ -784,6 +800,7 @@ export async function generateRichContent(input = {}) {
     completion = fallback("AUTO_LISTING_RICH_CONTENT_GATEWAY_EVIDENCE_INVALID");
     if (!completion) {
       const invalidEvidence = richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_EVIDENCE_INVALID", "Шлюз не подтвердил запрос и модель", true);
+      assertLeaseActive(input);
       await port.fail({ ...reservationInput, ...lease, errorCode: invalidEvidence.code, errorRetryable: true });
       throw invalidEvidence;
     }
@@ -794,12 +811,14 @@ export async function generateRichContent(input = {}) {
     if (!checked.valid) {
       const policy = checked.checkerResult.code === "POLICY_REJECTED";
       if (policy) {
+        assertLeaseActive(input);
         await port.reject({ ...reservationInput, ...lease,
           errorCode: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED", errorRetryable: false });
         throw richError("AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED", "Модель вернула недопустимый документ", false);
       }
       completion = fallback("AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID");
       if (!completion) {
+        assertLeaseActive(input);
         await port.fail({ ...reservationInput, ...lease,
           errorCode: "AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID", errorRetryable: true });
         throw richError("AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID", "Модель вернула недопустимый документ", true);
@@ -824,6 +843,7 @@ export async function generateRichContent(input = {}) {
     usage: clone(completion.usage),
   };
   try {
+    assertLeaseActive(input);
     const accepted = await port.complete(complete);
     if (!plainObject(accepted) || !clean(accepted.id, 240) || accepted.status !== "ACCEPTED"
       || accepted.attemptNo !== complete.attemptNo
@@ -845,6 +865,7 @@ export async function generateRichContent(input = {}) {
     }
     return accepted;
   } catch (cause) {
+    if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
     try { await port.fail({ ...reservationInput, ...lease, errorCode: "AUTO_LISTING_RICH_CONTENT_COMPLETE_FAILED", errorRetryable: true }); } catch {}
     throw cause;
   }

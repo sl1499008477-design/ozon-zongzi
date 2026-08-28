@@ -1209,3 +1209,23 @@ test("still bounds an unknown coded checker exception instead of persisting its 
 
   await assert.rejects(checkGeneratedAsset(request), checkerUnavailable);
 });
+
+test("checker lease loss after provider return prevents evidence handling and a repair call", async () => {
+  const request = await input(checkerValue());
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  let calls = 0;
+  request.assertLeaseActive = () => { if (!active) throw stale; };
+  const inspect = request.gateway.inspectImage;
+  request.gateway.inspectImage = async (gatewayRequest) => {
+    calls += 1;
+    const response = await inspect(gatewayRequest);
+    active = false;
+    return response;
+  };
+
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === stale);
+  assert.equal(calls, 1);
+});

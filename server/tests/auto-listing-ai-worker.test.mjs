@@ -1338,3 +1338,56 @@ test("v3 heartbeat keeps planned start times despite consecutive slow renewals",
   assert.deepEqual(starts, [10_000, 20_000]);
   await worker.stop();
 });
+
+test("v3 marks a renewal lost at the next heartbeat deadline without overlapping a 12-second renew", async () => {
+  const harness = dualBossHarness();
+  const timers = manualTimers();
+  let finishModel;
+  let writes = 0;
+  const starts = [];
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() {
+        starts.push(timers.now());
+        return new Promise((resolve) => timers.setTimeout(() => resolve(Object.freeze({
+          ...adoptedExecution,
+          leaseExpiresAt: new Date(Date.now() + 180_000).toISOString(),
+        })), 12_000));
+      },
+      async requeueChannelFailure() { writes += 1; },
+    }),
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => new Promise((resolve) => {
+      finishModel = () => resolve(phaseOutcome(message));
+    }),
+    workflow: Object.freeze({ async applyOutcome() { writes += 1; } }),
+    logger: { log() {} },
+    timers,
+  });
+  await worker.start();
+  const processing = harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-renew-deadline", data: workMessage() }]);
+  let settled = false;
+  processing.finally(() => { settled = true; });
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  await timers.advanceBy(20_000);
+  finishModel();
+  await new Promise((resolve) => setImmediate(resolve));
+  const settledAtDeadline = settled;
+  await timers.advanceBy(2_000);
+  const result = await processing;
+
+  assert.equal(settledAtDeadline, true, "stop must not wait for an overdue renewal promise");
+  assert.equal(result[0].output.code, "AUTO_LISTING_AI_MESSAGE_STALE");
+  assert.deepEqual(starts, [10_000], "an overdue renew must not overlap with another database renew");
+  assert.equal(writes, 0);
+  await worker.stop();
+});

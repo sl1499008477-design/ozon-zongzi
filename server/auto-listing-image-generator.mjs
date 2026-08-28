@@ -28,6 +28,7 @@ const ROLE_BRIEF_TEMPLATES = new Set(["AUTO_LISTING_CONTENT_PLAN_FILL_V5", "AUTO
 const RECOVERABLE_CHECKER_FAILURES = new Set([
   "CHECKER_UNAVAILABLE", "CHECKER_RESPONSE_INVALID", "CHECKER_EVIDENCE_INVALID",
 ]);
+const EXECUTION_LEASE_LOST = "AUTO_LISTING_AI_EXECUTION_LEASE_LOST";
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 const text = (value) => typeof value === "string" && value.trim() ? value.trim() : "";
@@ -47,6 +48,9 @@ const slotTextForbidden = (slot, templateVersion) => emptyCopyPolicyVersion(slot
 const slotTextRequired = (slot, templateVersion) => slot.textDensity !== "NONE" && !slotTextForbidden(slot, templateVersion);
 
 function failure(code, retryable = false) { const error = new Error("自动上架图片生成失败"); error.code = code; error.retryable = retryable; return error; }
+function assertLeaseActive(input) {
+  if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
+}
 
 function generationSize(value, ratio, resolution) {
   if (!strictText(value, 32)) throw failure("AUTO_LISTING_IMAGE_INPUT_INVALID");
@@ -808,6 +812,7 @@ const requestId = (value) => typeof value === "string" && value.trim() && value 
 export async function generateImageSlot(input = {}) {
   const { scope, plan, slot, sourceAssetLoader, repository, gateway, profile, imageModel, ratio, resolution, templateVersion, regeneration = null, storage, logger = null, maxAttempts = 3 } = input;
   const validated = preflight(input);
+  assertLeaseActive(input);
   const quality = validated.quality;
   const effectiveRegeneration = regeneration ?? plan.regeneration ?? null;
   const textRequired = slotTextRequired(slot, templateVersion);
@@ -956,7 +961,9 @@ export async function generateImageSlot(input = {}) {
     } else {
       let generated;
       try {
+        assertLeaseActive(input);
         generated = await gateway.generateImage({ profile, model: imageModel, correlationId: input.correlationId || `auto-listing:${scope.jobId}:${scope.itemId}`, requestKey: `auto-listing-image-${inputHash}-attempt-${attempt.attemptNo}`, prompt, sourceImages: [...references, ...categoryStyleReferences].map(({ bytes, contentType }) => ({ bytes, contentType })), size: gatewayImageSize(imageModel, ratio, validated.size), quality });
+        assertLeaseActive(input);
         gatewayRequestId = requestId(generated?.requestId);
       } catch (cause) {
         gatewayRequestId = requestId(cause?.requestId);
@@ -969,9 +976,12 @@ export async function generateImageSlot(input = {}) {
       normalized = await normalizeListingImage({ bytes: generated?.bytes, ratio, resolution, targetSize: validated.size });
     }
     if (normalized.bytes.length > MAX_NORMALIZED_BYTES || referenceBytes + normalized.bytes.length > MAX_AGGREGATE_BYTES) throw failure("AUTO_LISTING_ASSET_TOO_LARGE");
+    assertLeaseActive(input);
     storedAsset = await storeGeneratedAsset({ scope: attempt, normalized, storage, repository, logger });
+    assertLeaseActive(input);
     let checked;
     try {
+      assertLeaseActive(input);
       checked = await checkGeneratedAsset({ generated: normalized, references, categoryStyle: validated.categoryStyle,
         categoryStyleReferences, facts, gateway, profile,
         checkerModel: profile?.textModel, scope: {
@@ -979,7 +989,9 @@ export async function generateImageSlot(input = {}) {
           requestKey: `auto-listing-check-${inputHash}-attempt-${attempt.attemptNo}`,
         }, templateVersion, ratio, resolution, textRequired, textForbidden, visualBrief,
         claimEvidenceFactIds: slotClaimEvidenceFactIds(slot),
-        dimensionAnnotationsRequired: dimensionAnnotationsRequiredFor(slot, templateVersion) });
+        dimensionAnnotationsRequired: dimensionAnnotationsRequiredFor(slot, templateVersion),
+        ...(typeof input.assertLeaseActive === "function" ? { assertLeaseActive: input.assertLeaseActive } : {}) });
+      assertLeaseActive(input);
       checkerRequestId = requestId(checked?.evidence?.requestId);
     } catch (cause) {
       checkerRequestId = requestId(cause?.requestId) || checkerRequestId;
@@ -990,6 +1002,7 @@ export async function generateImageSlot(input = {}) {
       checked = acceptSoftCheckerFailureForManualReview(checked);
     }
     if (!checked.accepted) {
+      assertLeaseActive(input);
       await repositoryCall(repository, "rejectGenerationAttempt", { ...attempt, role: slot.role, ...storedAsset, code: checked.code, retryable: attempt.attemptNo < maxAttempts, checkerEvidence: checked.evidence, gatewayRequestId, checkerRequestId, modelEvidence: generatedModelEvidence });
       terminalized = true;
       const rejected = failure(checked.code, attempt.attemptNo < maxAttempts);
@@ -1001,6 +1014,7 @@ export async function generateImageSlot(input = {}) {
       profileId: profile.id, profileVersion: profile.configVersion, modelName: imageModel, promptHash,
       planHash: plan.planHash, sourceHash: plan.sourceHash, strategyHash: plan.strategyHash, configHash: plan.configHash, visualGroupsHash: plan.visualGroupsHash,
       promptTemplateVersion: templateVersion, sourceAssetEvidence: sourceEvidence(references), regeneration: effectiveRegeneration, generationSize: validated.size };
+    assertLeaseActive(input);
     const completed = await repositoryCall(repository, "completeGenerationAttempt", completeInput);
     terminalized = true;
     if (!verifyExistingAccepted(completed, scope, inputHash, { attemptIdentityHash, legacyHashes: legacyHashesFor(references), plan, slot, profile, imageModel, templateVersion, references, facts, promptHash, regeneration: effectiveRegeneration, textRequired, textForbidden, categoryStyle: validated.categoryStyle, categoryStyleReferences, generationSize: validated.size, stored: storedAsset })
@@ -1010,6 +1024,7 @@ export async function generateImageSlot(input = {}) {
       ? { ...completed, acceptedWithWarnings: true, manualReviewWarnings }
       : completed;
   } catch (error) {
+    if (error?.code === EXECUTION_LEASE_LOST) throw error;
     if (!terminalized) {
       const retryable = error?.retryable === true && attempt.attemptNo < maxAttempts;
       await repositoryCall(repository, "failGenerationAttempt", {

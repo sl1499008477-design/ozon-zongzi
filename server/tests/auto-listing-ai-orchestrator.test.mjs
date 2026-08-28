@@ -409,24 +409,27 @@ test("lease loss after one rich-content group prevents starting the next paid gr
     slotKey: entry.slotKey, visualGroupKey: entry.visualGroupKey, role: entry.role,
   }));
   let leaseActive = true;
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
   const calls = [];
-  const result = await orchestrateAutoListingAiPhase({
+  await assert.rejects(orchestrateAutoListingAiPhase({
     message: message("GENERATE_RICH_CONTENT"),
     context: context("GENERATE_RICH_CONTENT", {
       phaseInput: { ...phaseInput("GENERATE_RICH_CONTENT"), plan, acceptedAssets },
     }),
-    leaseActive: () => leaseActive,
+    assertLeaseActive: () => { if (!leaseActive) throw stale; },
   }, services({ generateRichContent: async (input) => {
+    input.assertLeaseActive();
     calls.push(input.visualGroupKey);
     leaseActive = false;
     return {
       status: "ACCEPTED", accountId: input.accountId, jobId: input.jobId, itemId: input.itemId,
       planId: input.planId,
     };
-  } }));
+  } })), (error) => error === stale);
 
   assert.deepEqual(calls, ["group-a"]);
-  assert.equal(result.disposition, "FAIL");
 });
 
 test("maps final MAIN and minimum-six outcomes without touching accepted siblings or adding a checker phase", async () => {

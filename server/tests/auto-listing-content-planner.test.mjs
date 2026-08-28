@@ -930,6 +930,97 @@ test("reused corrupted or cross-scope rows fail closed, and gateway failures per
   assert.equal(releases, 1);
 });
 
+test("planner preserves an adapter 404 for channel revalidation instead of rewriting it", async () => {
+  const built = planner();
+  const gatewayError = Object.assign(new Error("model missing"), {
+    code: "NON_RETRYABLE_GATEWAY", status: 404, retryable: false,
+  });
+  const repository = {
+    async reserveContentPlan(input) { return reserved(input); },
+    advanceContentPlanStage: advanceStage,
+    async saveContentPlan() { throw new Error("must not save"); },
+    async releaseContentPlanReservation() {},
+  };
+
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(),
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { throw gatewayError; } },
+    repository,
+  }), (error) => error === gatewayError);
+  assert.equal(built.inputHash.length, 64);
+});
+
+test("planner lease loss after provider return writes no response, validation, or plan result", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  const writes = [];
+  const repository = {
+    async reserveContentPlan(input) { return reserved(input); },
+    advanceContentPlanStage: advanceStage,
+    async saveContentPlan() { writes.push("plan"); },
+    async releaseContentPlanReservation() {},
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse() { writes.push("response"); },
+    async recordValidation() { writes.push("validation"); },
+  };
+
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    assertLeaseActive() { if (!active) throw stale; },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() {
+      active = false;
+      return { value: output, requestId: "gateway-stale" };
+    } },
+    repository,
+  }), (error) => error === stale);
+  assert.deepEqual(writes, []);
+});
+
+test("planner lease loss between response evidence and later persistence stops every later result write", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  const writes = [];
+  const repository = {
+    async reserveContentPlan(input) { return reserved(input); },
+    async advanceContentPlanStage() { writes.push("stage"); },
+    async saveContentPlan() { writes.push("plan"); },
+    async releaseContentPlanReservation() {},
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) {
+      writes.push("response");
+      active = false;
+      return Object.freeze({ id: "response-stale", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId });
+    },
+    async recordValidation() { writes.push("validation"); },
+  };
+
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    assertLeaseActive() { if (!active) throw stale; },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { return { value: output, requestId: "gateway-stale-stage" }; } },
+    repository,
+  }), (error) => error === stale);
+  assert.deepEqual(writes, ["response"]);
+});
+
 test("regeneration requires a stable reason plus request ID and changes the input hash without mutating old plans", () => {
   const source = sourceCapture();
   const groups = buildVisualGroups({ sourceCapture: source });

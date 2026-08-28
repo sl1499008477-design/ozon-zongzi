@@ -30,6 +30,7 @@ const SOFT_QUALITY_FAILURES = [
   "SUBJECT_NOT_DOMINANT", "LABEL_OVERLAP", "LABEL_READABILITY_LOW",
 ];
 const MANUAL_REVIEW_WARNING_PREFIX = "AUTO_LISTING_MANUAL_REVIEW_WARNING:";
+const EXECUTION_LEASE_LOST = "AUTO_LISTING_AI_EXECUTION_LEASE_LOST";
 const SAFE_GATEWAY_FAILURE_CODES = new Set([
   "AI_GATEWAY_NETWORK_FAILED", "AI_GATEWAY_RATE_LIMITED", "AI_GATEWAY_IDLE_TIMEOUT",
   "AI_GATEWAY_UNEXPECTED_EOF", "AI_GATEWAY_UNAUTHORIZED", "AI_GATEWAY_MODEL_NOT_FOUND",
@@ -61,6 +62,10 @@ function checkerError(code, retryable = false, details = {}) {
   const failureField = safeFailureField(details.failureField);
   if (failureField) error.failureField = failureField;
   return error;
+}
+
+function assertLeaseActive(input) {
+  if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
 }
 
 const plainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
@@ -714,15 +719,18 @@ export async function checkGeneratedAsset(input = {}) {
       prompt: `${checkerRequest.prompt}\n上一次质检结果未通过结构化合同校验。请重新独立检查同一张图片并严格遵守 jsonSchema，不得沿用上次结果。错误类型：${repairFailure.detailCode}${repairFailure.failureField ? `；错误位置：${repairFailure.failureField}` : ""}。`,
     };
     let response;
+    assertLeaseActive(input);
     try {
       response = await gateway.inspectImage(request);
     } catch (cause) {
+      if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
       if (SAFE_GATEWAY_FAILURE_CODES.has(cause?.code)) throw cause;
       const unavailable = checkerError("CHECKER_UNAVAILABLE", true);
       const knownRequestId = clean(cause?.requestId) || requestIds.at(-1) || "";
       if (knownRequestId) unavailable.requestId = knownRequestId;
       throw unavailable;
     }
+    assertLeaseActive(input);
     const responseRequestId = clean(response?.requestId);
     if (responseRequestId) requestIds.push(responseRequestId);
     if (!responseRequestId || !validModelEvidence(response?.modelEvidence, checkerModel)) {

@@ -1311,11 +1311,56 @@ test("uses a deterministic fact-only rich document when the AI gateway is unavai
   }).valid, true);
 });
 
+test("explicit channel failures bypass deterministic fallback and remain untouched for Worker requeue", async () => {
+  const { generateRichContent } = await richModule();
+  const cases = [
+    ["NON_RETRYABLE_AUTH", 401],
+    ["NON_RETRYABLE_AUTH", 403],
+    ["NON_RETRYABLE_GATEWAY", 404],
+    ["AI_GATEWAY_RATE_LIMITED", 429],
+    ["GATEWAY_TIMEOUT", null],
+  ];
+  for (const [code, status] of cases) {
+    const repo = repository();
+    const gatewayError = Object.assign(new Error("safe channel failure"), {
+      code, status, retryable: code !== "NON_RETRYABLE_AUTH" && code !== "NON_RETRYABLE_GATEWAY",
+    });
+    await assert.rejects(generateRichContent(generationInput(repo, {
+      async createTextResponse() { throw gatewayError; },
+    })), (error) => error === gatewayError, `${code}:${status}`);
+    assert.deepEqual(repo.calls.map(([name]) => name), ["reserve"], `${code}:${status}`);
+  }
+});
+
+test("rich-content lease loss after provider return persists neither completion nor failure", async () => {
+  const { generateRichContent } = await richModule();
+  const repo = repository();
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  await assert.rejects(generateRichContent(generationInput(repo, {
+    async createTextResponse() {
+      active = false;
+      return {
+        value: validContent(), requestId: "gateway-stale",
+        modelEvidence: {
+          requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model",
+          gatewayReportedTextModelPresent: true,
+        },
+      };
+    },
+  }, {
+    assertLeaseActive() { if (!active) throw stale; },
+  })), (error) => error === stale);
+  assert.deepEqual(repo.calls.map(([name]) => name), ["reserve"]);
+});
+
 test("falls back for malformed or unavailable gateways but still rejects policy violations", async () => {
   const { generateRichContent } = await richModule();
   for (const gateway of [
     { async createTextResponse() { return { requestId: "bad" }; } },
-    { async createTextResponse() { throw Object.assign(new Error("safe gateway failure"), { code: "RETRYABLE_GATEWAY", retryable: true }); } },
+    { async createTextResponse() { throw Object.assign(new Error("unclassified gateway failure"), { retryable: true }); } },
   ]) {
     const repo = repository();
     const accepted = await generateRichContent(generationInput(repo, gateway));

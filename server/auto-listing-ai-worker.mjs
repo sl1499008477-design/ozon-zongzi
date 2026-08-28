@@ -329,7 +329,9 @@ export function createAutoListingAiWorker(config = {}) {
     }
     assertCurrentPhaseInput(context);
     const outcome = await orchestrate(execution
-      ? { message, context, leaseActive: () => !execution.lost() }
+      ? { message, context, assertLeaseActive: () => {
+          if (execution.lost()) throw workerError("AUTO_LISTING_AI_EXECUTION_LEASE_LOST");
+        } }
       : { message, context });
     if (execution?.lost()) {
       return Object.freeze({
@@ -443,20 +445,35 @@ export function createAutoListingAiWorker(config = {}) {
     const schedule = () => {
       if (active) handle = timers.setTimeout(beat, Math.max(0, nextBeatAt - now()));
     };
+    const markLost = () => {
+      lost = true;
+      active = false;
+      if (handle !== null) timers.clearTimeout(handle);
+      handle = null;
+      running = null;
+    };
     const beat = () => {
       if (!active) return;
+      handle = null;
+      if (running !== null) {
+        markLost();
+        return;
+      }
       nextBeatAt += HEARTBEAT_INTERVAL_MS;
-      running = Promise.resolve().then(() => executionRepository.renew({
+      schedule();
+      const renewal = Promise.resolve().then(() => executionRepository.renew({
         message, execution: currentExecution, leaseMs: EXECUTION_LEASE_MS,
       })).then((value) => {
         const renewed = adoptedExecution(message, value);
         if (!renewed) throw workerError("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+        if (!active || running !== renewal) return;
         currentExecution = renewed;
-        schedule();
       }).catch(() => {
-        lost = true;
-        active = false;
-      }).finally(() => { running = null; });
+        if (active && running === renewal) markLost();
+      }).finally(() => {
+        if (running === renewal) running = null;
+      });
+      running = renewal;
     };
     schedule();
     return Object.freeze({
@@ -465,7 +482,8 @@ export function createAutoListingAiWorker(config = {}) {
       async stop() {
         active = false;
         if (handle !== null) timers.clearTimeout(handle);
-        if (running) await running;
+        handle = null;
+        running = null;
       },
     });
   }

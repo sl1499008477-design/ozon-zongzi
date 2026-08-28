@@ -1135,6 +1135,52 @@ test("a malformed gateway response keeps its channel code for worker requeue cla
   assert.equal(fixture.calls.find(([name]) => name === "failed")[1].code, "INVALID_GATEWAY_RESPONSE");
 });
 
+test("image lease loss after provider return persists no generated result and starts no checker call", async () => {
+  const fixture = await setup();
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  let checkerCalls = 0;
+  fixture.input.assertLeaseActive = () => { if (!active) throw stale; };
+  fixture.input.gateway.generateImage = async () => {
+    active = false;
+    return {
+      bytes: fixture.bytes, requestId: "generate-stale",
+      modelEvidence: {
+        requestedImageModel: "image-model", gatewayReportedImageModel: "image-model",
+        gatewayReportedImageModelPresent: true, orchestratorModel: "",
+      },
+    };
+  };
+  fixture.input.gateway.inspectImage = async () => { checkerCalls += 1; };
+
+  await assert.rejects(generateImageSlot(fixture.input), (error) => error === stale);
+  assert.equal(checkerCalls, 0);
+  assert.deepEqual(fixture.calls, []);
+});
+
+test("image lease loss after asset persistence starts no checker and writes no later attempt result", async () => {
+  const fixture = await setup();
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  let checkerCalls = 0;
+  fixture.input.assertLeaseActive = () => { if (!active) throw stale; };
+  const recordStored = fixture.input.repository.recordStoredGenerationAsset;
+  fixture.input.repository.recordStoredGenerationAsset = async (input) => {
+    const result = await recordStored(input);
+    active = false;
+    return result;
+  };
+  fixture.input.gateway.inspectImage = async () => { checkerCalls += 1; };
+
+  await assert.rejects(generateImageSlot(fixture.input), (error) => error === stale);
+  assert.equal(checkerCalls, 0);
+  assert.deepEqual(fixture.calls.map(([name]) => name), ["stored"]);
+});
+
 test("malformed reserved attempt numbers fail closed before gateway, storage, or terminal mutation", async () => {
   for (const attemptNo of [0, 4]) {
     const fixture = await setup();

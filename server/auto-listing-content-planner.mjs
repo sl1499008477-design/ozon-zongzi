@@ -45,6 +45,13 @@ const DENSITIES = new Set(["NONE", "LIGHT", "MEDIUM", "HEAVY"]);
 const REGENERATION_REASONS = new Set(["USER_REQUESTED", "QUALITY_RETRY", "ADMIN_RETRY"]);
 const PROHIBITED_CLAIMS = new Set(["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"]);
 const HASH = /^[a-f0-9]{64}$/;
+const EXECUTION_LEASE_LOST = "AUTO_LISTING_AI_EXECUTION_LEASE_LOST";
+const SAFE_GATEWAY_FAILURE_CODES = new Set([
+  "AI_GATEWAY_NETWORK_FAILED", "AI_GATEWAY_RATE_LIMITED", "AI_GATEWAY_IDLE_TIMEOUT",
+  "AI_GATEWAY_UNEXPECTED_EOF", "AI_GATEWAY_UNAUTHORIZED", "AI_GATEWAY_MODEL_NOT_FOUND",
+  "AI_GATEWAY_CAPABILITY_INVALID", "INVALID_GATEWAY_RESPONSE", "RETRYABLE_GATEWAY",
+  "GATEWAY_TIMEOUT", "NON_RETRYABLE_AUTH", "NON_RETRYABLE_GATEWAY",
+]);
 const ATTRIBUTE_KEYS = new Set(["attributeId", "dictionaryValueId", "values", "multiple"]);
 const ATTRIBUTE_B_KEYS = new Set(["key", "value", "dictionary_value_id"]);
 const ATTRIBUTE_C_KEYS = new Set(["id", "name", "values", "is_required"]);
@@ -73,6 +80,10 @@ function plannerError(code = "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID", safeM
   const error = new Error(safeMessage);
   error.code = code;
   return error;
+}
+
+function assertLeaseActive(input) {
+  if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
 }
 
 const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
@@ -740,6 +751,7 @@ export async function createContentPlan(input = {}) {
     || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(planningContract)
     || !Number.isInteger(expectedStatusVersion) || expectedStatusVersion < 1
     || expectedStatusVersion > 2_147_483_647) throw plannerError();
+  assertLeaseActive(input);
   const plannerContext = buildPlannerInput({
     sourceCapture: input.sourceCapture,
     strategyCapture: input.strategyCapture,
@@ -833,6 +845,7 @@ export async function createContentPlan(input = {}) {
             skeleton: fixedSkeleton,
             categoryRoleGuidance: plannerContext.plannerInput.strategy,
           } : fixedSkeleton || plannerContext.plannerInput;
+        assertLeaseActive(input);
         response = await gateway.createTextResponse({
           profile: gatewayProfile,
           model: plannerContext.plannerInput.plannerModel,
@@ -852,10 +865,12 @@ export async function createContentPlan(input = {}) {
               : "只返回符合指定 JSON Schema 且能由 sourceFactIds 逐项证明的 ContentPlan。",
           ].join("\n"),
         });
+        assertLeaseActive(input);
       } catch (error) {
-        if (typeof error?.code === "string" && /^(AI_GATEWAY_|RETRYABLE_GATEWAY$|NON_RETRYABLE_AUTH$|INVALID_GATEWAY_RESPONSE$)/.test(error.code)) throw error;
+        if (error?.code === EXECUTION_LEASE_LOST || SAFE_GATEWAY_FAILURE_CODES.has(error?.code)) throw error;
         throw plannerError("AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED", "AI 图片规划暂时失败");
       }
+      assertLeaseActive(input);
       try {
         responseEvidence = await evidenceRepository.recordResponse({
           ...evidenceScope,
@@ -867,11 +882,13 @@ export async function createContentPlan(input = {}) {
       } catch {
         throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划证据暂时无法保存");
       }
+      assertLeaseActive(input);
     }
     if (!responseEvidence || typeof responseEvidence.id !== "string" || !isPlainObject(responseEvidence.response)) {
       throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划证据暂时无法读取");
     }
     if (reservation.plannerStage === "FILLING_COPY") {
+      assertLeaseActive(input);
       try {
         await repository.advanceContentPlanStage({
           ...scope,
@@ -906,6 +923,7 @@ export async function createContentPlan(input = {}) {
         });
       }
     } else diagnosis = diagnoseContentPlanClosed({ plan: responseEvidence.response, plannerContext });
+    assertLeaseActive(input);
     try {
       await evidenceRepository.recordValidation({
         accountId: scope.accountId,
@@ -917,12 +935,14 @@ export async function createContentPlan(input = {}) {
     } catch {
       throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划校验结果暂时无法保存");
     }
+    assertLeaseActive(input);
     if (diagnosis.status !== "ACCEPTED") throw contentPlanError();
     const plan = diagnosis.plan;
     const gatewayRequestId = optionalGatewayRequestId(responseEvidence.gatewayRequestId);
     const planHash = sha256(plan);
     if (typeof repository.saveContentPlan !== "function") throw plannerError();
     let stored;
+    assertLeaseActive(input);
     try {
       stored = await repository.saveContentPlan({
         ...scope,
