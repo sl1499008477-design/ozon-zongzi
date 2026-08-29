@@ -72,29 +72,37 @@ const ROLE_FIELDS = Object.freeze([
   ["infographic", "信息图", 1, 2],
 ]);
 
-function ProtectedReviewImage({ image }) {
+function ProtectedReviewImage({ image, onStateChange }) {
   const [src, setSrc] = useState("");
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
     let objectUrl = "";
     setSrc("");
     setFailed(false);
+    onStateChange(image.id || image.url, "loading");
     loadAutoListingReviewImage(image.url, { signal: controller.signal }).then((blob) => {
       if (!active) return;
       objectUrl = URL.createObjectURL(blob);
       setSrc(objectUrl);
-    }).catch(() => { if (active) setFailed(true); });
+      onStateChange(image.id || image.url, "loaded");
+    }).catch(() => {
+      if (!active) return;
+      setFailed(true);
+      onStateChange(image.id || image.url, "failed");
+    });
     return () => {
       active = false;
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [image.url]);
+  }, [attempt, image.id, image.url, onStateChange]);
   if (src) return <img src={src} alt={image.roleLabel || "生成商品图"} />;
   return <span className="auto-listing-review-image-status" role="status">
-    {failed ? "图片加载失败" : "图片加载中"}
+    {failed ? <><span>图片加载失败</span><Button size="small" onClick={() => setAttempt((value) => value + 1)}>重新加载</Button></>
+      : "图片加载中"}
   </span>;
 }
 
@@ -245,6 +253,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   const [review, setReview] = useState(null);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewImageStates, setReviewImageStates] = useState({});
   const [actionItemId, setActionItemId] = useState("");
   const [importDetail, setImportDetail] = useState(null);
   const [importDetailOpen, setImportDetailOpen] = useState(false);
@@ -685,6 +694,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     const requestVersion = ++reviewRequestRef.current;
     setReviewOpen(true);
     setReview(null);
+    setReviewImageStates({});
     setReviewLoading(true);
     try {
       const result = await apiRequest(`/auto-listing/items/${encodeURIComponent(itemId)}/review`);
@@ -703,7 +713,21 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     setReviewOpen(false);
     setReviewLoading(false);
     setReview(null);
+    setReviewImageStates({});
   };
+
+  const updateReviewImageState = useCallback((imageId, status) => {
+    setReviewImageStates((current) => current[imageId] === status
+      ? current : { ...current, [imageId]: status });
+  }, []);
+
+  const reviewImageTotal = Array.isArray(review?.images) ? review.images.length : 0;
+  const reviewImageLoaded = Object.values(reviewImageStates).filter((status) => status === "loaded").length;
+  const reviewImageFailed = Object.values(reviewImageStates).filter((status) => status === "failed").length;
+  const reviewImageLoading = Math.max(0, reviewImageTotal - reviewImageLoaded - reviewImageFailed);
+  const reviewImageSummary = reviewImageLoaded === reviewImageTotal && reviewImageTotal > 0
+    ? `已加载 ${reviewImageLoaded}/${reviewImageTotal}`
+    : `已加载 ${reviewImageLoaded}/${reviewImageTotal} · 正在加载 ${reviewImageLoading}${reviewImageFailed ? ` · 失败 ${reviewImageFailed}` : ""}`;
 
   const openPlanDiagnostic = async (row) => {
     if (account?.role !== "admin") return;
@@ -988,13 +1012,14 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         {review?.error ? <Alert type="error" title={review.error} /> : review ? <>
           <Card size="small" title="商品与目标"><p>{review.source?.title || review.source?.sku || "—"}</p><p>店铺：{storeLabels.get(String(review.target?.storeId || "")) || "—"}</p><p>仓库：{review.target?.warehouseLabel || review.target?.warehouseId || "—"}</p></Card>
           {review.source?.thumbnailUrl ? <Card size="small" title="采集来源图片"><div className="auto-listing-review-images"><img src={review.source.thumbnailUrl} alt="采集来源商品" /></div></Card> : null}
+          {reviewImageTotal ? <div className="auto-listing-review-load-summary" role="status">{reviewImageSummary}</div> : null}
           {(review.visualGroups || []).map((group) => <Card key={group.key} size="small" title={`生成图片组：${group.key}`}>
             <div className="auto-listing-review-images">{(review.images || []).filter((image) => image.visualGroupKey === group.key).map((image) => {
               const substituted = image.requestedRole && image.requestedRole !== image.role;
               const warningLabels = Array.isArray(image.manualReviewWarningLabels) ? image.manualReviewWarningLabels : [];
               return <Card key={image.id || image.url} size="small"
                 title={substituted ? `${image.requestedRoleLabel} → ${image.roleLabel}` : (image.roleLabel || image.role)}>
-                <ProtectedReviewImage image={image} />
+                <ProtectedReviewImage image={image} onStateChange={updateReviewImageState} />
                 <div className="auto-listing-review-image-notes">
                   {image.substitutionReasonLabel ? <Tag color="blue">{image.substitutionReasonLabel}</Tag> : null}
                   {warningLabels.length ? warningLabels.map((label) => <Tag color="orange" key={label}>需人工关注：{label}</Tag>)

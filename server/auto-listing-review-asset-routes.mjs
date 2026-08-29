@@ -1,11 +1,16 @@
 import crypto from "node:crypto";
 
 import { isSafeAutoListingAiIdentifier } from "./auto-listing-ai-message.mjs";
+import {
+  cacheAutoListingReviewPreview,
+  readAutoListingReviewPreview,
+} from "./auto-listing-review-preview.mjs";
 import { getObjectBuffer } from "./object-storage.mjs";
 import { autoListingEnabled } from "./runtime-config.mjs";
 
-const ROUTE = /^\/auto-listing\/items\/([^/]+)\/assets\/([^/]+)$/u;
+const ROUTE = /^\/auto-listing\/items\/([^/]+)\/assets\/([^/]+)(\/preview)?$/u;
 const MAX_ASSET_BYTES = 25 * 1024 * 1024;
+const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
 const CONTENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 function routeError(code, status = 400) {
@@ -59,10 +64,13 @@ export function createAutoListingReviewAssetHttpHandler({
   authenticate,
   getService,
   getObject = getObjectBuffer,
+  readPreview = readAutoListingReviewPreview,
+  cachePreview = cacheAutoListingReviewPreview,
   sendJson,
 } = {}) {
   if (typeof isEnabled !== "function" || typeof authenticate !== "function"
     || typeof getService !== "function" || typeof getObject !== "function"
+    || typeof readPreview !== "function" || typeof cachePreview !== "function"
     || typeof sendJson !== "function") {
     throw new TypeError("Auto-listing review asset route dependencies are required");
   }
@@ -82,6 +90,7 @@ export function createAutoListingReviewAssetHttpHandler({
       if ([...url.searchParams.keys()].length) throw routeError("AUTO_LISTING_REVIEW_ASSET_INVALID");
       const itemId = decodeId(match[1]);
       const assetId = decodeId(match[2]);
+      const previewRequested = match[3] === "/preview";
       const service = await getService();
       if (typeof service?.getAcceptedAsset !== "function") {
         throw routeError("AUTO_LISTING_REVIEW_ASSET_UNAVAILABLE", 503);
@@ -89,21 +98,40 @@ export function createAutoListingReviewAssetHttpHandler({
       const record = evidence(await service.getAcceptedAsset({ actor, itemId, assetId }), {
         accountId: actor?.id, itemId, assetId,
       });
-      const stored = await getObject(record.objectKey, { maxBytes: record.sizeBytes });
-      if (!Buffer.isBuffer(stored) || stored.length !== record.sizeBytes
-        || crypto.createHash("sha256").update(stored).digest("hex") !== record.contentHash) {
-        throw routeError("AUTO_LISTING_REVIEW_ASSET_UNAVAILABLE", 503);
+      let responseBytes;
+      let responseContentType;
+      if (previewRequested) {
+        responseBytes = await readPreview({ contentHash: record.contentHash });
+        if (responseBytes === null) {
+          const stored = await getObject(record.objectKey, { maxBytes: record.sizeBytes });
+          if (!Buffer.isBuffer(stored) || stored.length !== record.sizeBytes
+            || crypto.createHash("sha256").update(stored).digest("hex") !== record.contentHash) {
+            throw routeError("AUTO_LISTING_REVIEW_ASSET_UNAVAILABLE", 503);
+          }
+          responseBytes = await cachePreview({ contentHash: record.contentHash, bytes: stored });
+        }
+        if (!Buffer.isBuffer(responseBytes) || responseBytes.length < 1 || responseBytes.length > MAX_PREVIEW_BYTES) {
+          throw routeError("AUTO_LISTING_REVIEW_ASSET_UNAVAILABLE", 503);
+        }
+        responseContentType = "image/webp";
+      } else {
+        responseBytes = await getObject(record.objectKey, { maxBytes: record.sizeBytes });
+        if (!Buffer.isBuffer(responseBytes) || responseBytes.length !== record.sizeBytes
+          || crypto.createHash("sha256").update(responseBytes).digest("hex") !== record.contentHash) {
+          throw routeError("AUTO_LISTING_REVIEW_ASSET_UNAVAILABLE", 503);
+        }
+        responseContentType = record.contentType;
       }
       if (typeof res?.writeHead !== "function" || typeof res?.end !== "function") {
         throw routeError("AUTO_LISTING_REVIEW_ASSET_UNAVAILABLE", 503);
       }
       res.writeHead(200, {
-        "Content-Type": record.contentType,
-        "Content-Length": String(record.sizeBytes),
-        "Cache-Control": "private, max-age=60",
+        "Content-Type": responseContentType,
+        "Content-Length": String(responseBytes.length),
+        "Cache-Control": previewRequested ? "private, max-age=86400, immutable" : "private, max-age=60",
         "X-Content-Type-Options": "nosniff",
       });
-      res.end(stored);
+      res.end(responseBytes);
     } catch (error) {
       const response = safeError(error);
       sendJson(res, response.status, { ok: false, code: response.code, message: response.message });

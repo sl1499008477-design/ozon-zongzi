@@ -66,7 +66,7 @@ function publicUrl(value, { optional = false } = {}) {
 function imageUrl(value, itemId, assetId) {
   const source = typeof value === "string" ? value.trim() : "";
   const authenticatedAssetPath = `/auto-listing/items/${itemId}/assets/${assetId}`;
-  if (source === authenticatedAssetPath) return source;
+  if (source === authenticatedAssetPath || source === `${authenticatedAssetPath}/preview`) return source;
   return publicUrl(source);
 }
 

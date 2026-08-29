@@ -79,13 +79,13 @@ const reviewDetail = {
     manualReviewWarningLabels: ["商品主体不够突出"],
     slotKey: "main-1",
     accepted: true,
-    url: "/auto-listing/items/item-review/assets/asset-review",
+    url: "/auto-listing/items/item-review/assets/asset-review/preview",
   }],
   richContent: { previewText: "审核富文本" },
   timeline: [],
 };
 
-test("review drawer loads protected generated images through the authenticated API boundary", async () => {
+test("review drawer retries a failed protected preview and reports completed loading progress", async () => {
   let vite;
   let browser;
   let context;
@@ -127,9 +127,13 @@ test("review drawer loads protected generated images through the authenticated A
         await route.fulfill({ status: 200, json: { ok: true, data: reviewDetail } });
         return;
       }
-      if (url.pathname === "/api/auto-listing/items/item-review/assets/asset-review") {
+      if (url.pathname === "/api/auto-listing/items/item-review/assets/asset-review/preview") {
         assetRequests += 1;
         assetAuthorizations.push(request.headers().authorization || "");
+        if (assetRequests === 1) {
+          await route.fulfill({ status: 503, json: { message: "preview temporarily unavailable" } });
+          return;
+        }
         await route.fulfill({ status: 200, contentType: "image/webp", body: IMAGE_BYTES });
         return;
       }
@@ -140,16 +144,19 @@ test("review drawer loads protected generated images through the authenticated A
     await page.getByRole("tab", { name: "任务中心" }).click();
     await page.getByText("等待审核", { exact: true }).waitFor();
     await page.getByRole("button", { name: "查看" }).click();
+    await page.getByRole("button", { name: "重新加载" }).waitFor({ timeout: 2_000 });
+    await page.getByRole("button", { name: "重新加载" }).click();
     const image = page.locator('img[alt="细节图"]');
-    await image.waitFor();
+    await image.waitFor({ timeout: 2_000 });
     await page.waitForTimeout(300);
 
-    assert.ok(assetRequests >= 1);
+    assert.equal(assetRequests, 2);
     assert.deepEqual(new Set(assetAuthorizations), new Set(["Bearer review-token"]));
     assert.ok(await image.evaluate((element) => element.naturalWidth > 0));
     await page.getByText("尺寸图 → 细节图", { exact: true }).waitFor();
     await page.getByText("缺少可信尺寸，已改用细节图", { exact: true }).waitFor();
     await page.getByText("需人工关注：商品主体不够突出", { exact: true }).waitFor();
+    await page.getByText("已加载 1/1", { exact: true }).waitFor();
     assert.deepEqual(pageErrors, []);
   } finally {
     await context?.close();

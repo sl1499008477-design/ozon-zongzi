@@ -1107,6 +1107,11 @@ export async function generateImageSlot(input = {}) {
     terminalized = true;
     if (!verifyExistingAccepted(completed, scope, inputHash, { attemptIdentityHash, legacyHashes: legacyHashesFor(references), plan, slot, profile, imageModel, templateVersion, references, facts, promptHash, regeneration: effectiveRegeneration, textRequired, textForbidden, categoryStyle: validated.categoryStyle, categoryStyleReferences, generationSize: validated.size, stored: storedAsset })
       || completed.attemptNo !== attempt.attemptNo || !await verifyAcceptedObject(completed, storage)) throw repositoryFailure();
+    if (typeof input.cacheReviewPreview === "function") {
+      try {
+        await input.cacheReviewPreview({ contentHash: completed.contentHash, bytes: normalized.bytes });
+      } catch {}
+    }
     const manualReviewWarnings = manualReviewWarningsFromCheckerEvidence(completed.checkerEvidence);
     return manualReviewWarnings.length
       ? { ...completed, acceptedWithWarnings: true, manualReviewWarnings }

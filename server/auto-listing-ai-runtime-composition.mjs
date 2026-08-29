@@ -25,6 +25,7 @@ import { finalizeMaterializedPlan } from "./auto-listing-materialized-plan.mjs";
 import { createActiveMaterializedSourceAssetLoader } from "./auto-listing-materialized-source-loader.mjs";
 import { createPostgresRichContentRepository } from "./auto-listing-rich-content-repository.mjs";
 import { generateRichContent } from "./auto-listing-rich-content.mjs";
+import { cacheAutoListingReviewPreview } from "./auto-listing-review-preview.mjs";
 import { createAutoListingSourceImageDownloader } from "./auto-listing-source-downloader.mjs";
 import { createPostgresSourceMaterializationRepository } from "./auto-listing-source-materialization-repository.mjs";
 import { materializeSourceAsset } from "./auto-listing-source-materializer.mjs";
@@ -219,7 +220,10 @@ const phaseServices = Object.freeze({
   planContent: createContentPlan,
   materializeSourceAsset,
   finalizeMaterializedPlan,
-  generateImageSlot,
+  generateImageSlot: (input) => generateImageSlot({
+    ...input,
+    cacheReviewPreview: cacheAutoListingReviewPreview,
+  }),
   generateRichContent,
 });
 

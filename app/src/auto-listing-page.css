@@ -168,9 +168,20 @@
   background: #f8fafc;
 }
 
+.auto-listing-review-load-summary {
+  margin: 12px 0;
+  padding: 8px 12px;
+  color: #475569;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
 .auto-listing-review-image-status {
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 8px;
   width: 100%;
   aspect-ratio: 3 / 4;
   color: #64748b;

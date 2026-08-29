@@ -7,7 +7,7 @@ import { createAutoListingReviewAssetHttpHandler } from "../auto-listing-review-
 const bytes = Buffer.from("verified-image-bytes");
 const contentHash = crypto.createHash("sha256").update(bytes).digest("hex");
 
-function harness({ enabled = true, authenticate, service, storedBytes = bytes } = {}) {
+function harness({ enabled = true, authenticate, service, storedBytes = bytes, readPreview, cachePreview } = {}) {
   const replies = []; const objectReads = []; const writes = [];
   const value = service || {
     async getAcceptedAsset(input) {
@@ -30,6 +30,8 @@ function harness({ enabled = true, authenticate, service, storedBytes = bytes } 
       objectReads.push({ objectKey, options });
       return storedBytes;
     },
+    readPreview,
+    cachePreview,
     sendJson: (_res, status, payload) => replies.push({ status, payload }),
   });
   return { handler, response, replies, objectReads, writes };
@@ -54,6 +56,48 @@ test("authenticated review asset route streams only hash-verified accepted bytes
   });
   assert.deepEqual(local.writes[1].body, bytes);
   assert.deepEqual(local.replies, []);
+});
+
+test("authenticated preview route serves cached WebP bytes without rereading the full object", async () => {
+  const previewBytes = Buffer.from("cached-webp-preview");
+  const local = harness({
+    readPreview: async ({ contentHash: requestedHash }) => {
+      assert.equal(requestedHash, contentHash);
+      return previewBytes;
+    },
+    cachePreview: async () => { throw new Error("must not recreate cached preview"); },
+  });
+
+  assert.equal(await local.handler(
+    { method: "GET" }, local.response,
+    new URL("http://local/auto-listing/items/item-a/assets/asset-a/preview"),
+  ), true);
+  assert.deepEqual(local.objectReads, []);
+  assert.equal(local.writes[0].status, 200);
+  assert.equal(local.writes[0].headers["Content-Type"], "image/webp");
+  assert.deepEqual(local.writes[1].body, previewBytes);
+});
+
+test("uncached preview verifies the full object once before caching and serving its derivative", async () => {
+  const previewBytes = Buffer.from("created-webp-preview");
+  const cached = [];
+  const local = harness({
+    readPreview: async () => null,
+    cachePreview: async (value) => { cached.push(value); return previewBytes; },
+  });
+
+  await local.handler(
+    { method: "GET" }, local.response,
+    new URL("http://local/auto-listing/items/item-a/assets/asset-a/preview"),
+  );
+  assert.deepEqual(local.objectReads, [{
+    objectKey: "auto-listing/account-a/item-a/asset-a.png",
+    options: { maxBytes: bytes.length },
+  }]);
+  assert.equal(cached.length, 1);
+  assert.equal(cached[0].contentHash, contentHash);
+  assert.equal(cached[0].bytes.equals(bytes), true);
+  assert.deepEqual(local.writes[1].body, previewBytes);
 });
 
 test("review asset route rejects cross-input, wrong methods, and disabled access before object read", async () => {

@@ -82,6 +82,8 @@ function fixtureStyleIds(prompt) {
 
 test("generates an accepted slot from server-loaded bytes and does not expose source URLs", async () => {
   const fixture = await setup();
+  const previews = [];
+  fixture.input.cacheReviewPreview = async (value) => { previews.push(value); };
   fixture.input.gatewayExecution = {
     channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
   };
@@ -93,6 +95,21 @@ test("generates an accepted slot from server-loaded bytes and does not expose so
   assert.equal(fixture.reserveInputs[0].gatewayConnectionVersion, 9);
   assert.equal(fixture.calls[1][1].checkerConnectionId, "connection-b");
   assert.equal(fixture.calls[1][1].checkerConnectionVersion, 9);
+  assert.equal(previews.length, 1);
+  assert.equal(previews[0].contentHash, result.contentHash);
+  assert.equal(crypto.createHash("sha256").update(previews[0].bytes).digest("hex"), result.contentHash);
+});
+
+test("a local review-preview cache failure never changes an accepted generation result", async () => {
+  const fixture = await setup();
+  let attempts = 0;
+  fixture.input.cacheReviewPreview = async () => { attempts += 1; throw new Error("local preview cache unavailable"); };
+
+  const result = await generateImageSlot(fixture.input);
+
+  assert.equal(result.accepted, true);
+  assert.equal(attempts, 1);
+  assert.deepEqual(fixture.calls.map(([name]) => name), ["stored", "complete"]);
 });
 
 test("passes the frozen category style for the current image role to the final image prompt", async () => {

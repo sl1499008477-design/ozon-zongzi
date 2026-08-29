@@ -29,7 +29,7 @@ function object(value) {
 }
 
 function publicAssetUrl(itemId, assetId) {
-  return `/auto-listing/items/${itemId}/assets/${assetId}`;
+  return `/auto-listing/items/${itemId}/assets/${assetId}/preview`;
 }
 
 function previewText(value) {

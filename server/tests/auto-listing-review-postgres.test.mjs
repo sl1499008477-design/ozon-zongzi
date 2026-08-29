@@ -74,7 +74,7 @@ test("review repository reads one account-scoped repeatable snapshot and returns
   assert.deepEqual(evidence.item.price, price);
   assert.equal(evidence.images.length, 6);
   assert.equal(evidence.images[0].visualGroupKey, "group-a");
-  assert.equal(evidence.images[0].publicUrl, "/auto-listing/items/item-a/assets/asset-group-a-1");
+  assert.equal(evidence.images[0].publicUrl, "/auto-listing/items/item-a/assets/asset-group-a-1/preview");
   assert.equal(evidence.richContent.previewText, "Новый заголовок\nТекст рядом с изображением\nОписание");
   assert.deepEqual(db.control, ["BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", "COMMIT"]);
   assert.match(db.calls[0].sql, /JOIN auto_listing_jobs AS job[\s\S]*job\.account_id=item\.account_id/u);
@@ -120,7 +120,7 @@ test("review repository exposes only planned role substitutions and third-attemp
     manualReviewWarnings: ["SUBJECT_NOT_DOMINANT"],
     slotKey: "group-a:slot-2",
     accepted: true,
-    publicUrl: "/auto-listing/items/item-a/assets/asset-group-a-2",
+    publicUrl: "/auto-listing/items/item-a/assets/asset-group-a-2/preview",
   });
   assert.deepEqual(evidence.images[2].manualReviewWarnings, []);
   const sql = db.calls.find((call) => /FROM ai_generation_assets AS asset/i.test(call.sql)).sql;

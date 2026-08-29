@@ -214,6 +214,10 @@ test("accepts only the authenticated same-item asset proxy path as a relative im
     images: [{ ...fixture().images[0], publicUrl: "/auto-listing/items/item-a/assets/image-a" }],
   }));
   assert.equal(value.images[0].url, "/auto-listing/items/item-a/assets/image-a");
+  const preview = createAutoListingReviewView(fixture({
+    images: [{ ...fixture().images[0], publicUrl: "/auto-listing/items/item-a/assets/image-a/preview" }],
+  }));
+  assert.equal(preview.images[0].url, "/auto-listing/items/item-a/assets/image-a/preview");
   for (const publicUrl of ["/local/files/private", "//evil.test/image", "/auto-listing/items/item-b/assets/image-a?token=x"]) {
     assert.throws(() => createAutoListingReviewView(fixture({
       images: [{ ...fixture().images[0], publicUrl }],
