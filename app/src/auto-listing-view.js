@@ -4,8 +4,8 @@ const STATUS = Object.freeze({
   PLANNING: ["正在规划图片内容", "processing"],
   GENERATING: ["正在生成图片和内容", "processing"],
   READY_FOR_REVIEW: ["等待审核", "success"],
-  UPLOAD_QUEUED: ["等待上传到 Ozon", "processing"],
-  UPLOADING: ["正在上传到 Ozon", "processing"],
+  UPLOAD_QUEUED: ["等待处理上传任务", "processing"],
+  UPLOADING: ["正在准备上传资料", "processing"],
   SUCCEEDED: ["已完成上架", "success"],
   RETRYABLE_ERROR: ["处理暂时失败", "warning"],
   BLOCKED: ["需要处理问题", "error"],
@@ -239,6 +239,21 @@ function projectWorkflowProgress(value) {
   return Object.freeze({ phase, state, attemptCount, updatedAt, nextRetryAt });
 }
 
+function projectUploadPreparation(value, status) {
+  if (!["UPLOAD_QUEUED", "UPLOADING"].includes(status)) return undefined;
+  const descriptors = safeDataRoot(value);
+  if (!descriptors || Reflect.ownKeys(descriptors).length !== 2
+    || descriptors.published?.enumerable !== true || descriptors.total?.enumerable !== true
+    || !Object.hasOwn(descriptors.published, "value") || !Object.hasOwn(descriptors.total, "value")) {
+    return undefined;
+  }
+  const published = descriptors.published.value;
+  const total = descriptors.total.value;
+  if (!Number.isSafeInteger(published) || !Number.isSafeInteger(total)
+    || total < 1 || published < 0 || published > total) return undefined;
+  return Object.freeze({ published, total });
+}
+
 function projectAiQueue(descriptors, status) {
   const keys = ["aiQueueState", "aiChannelDisplayName", "aiChannelSwitching", "aiChannelWaitStartedAt"];
   const present = keys.filter((key) => descriptors[key]);
@@ -320,6 +335,10 @@ function projectItem(value, { allowJobFields = true } = {}) {
     if (!workflowProgress) return null;
     output.workflowProgress = workflowProgress;
   }
+  if (descriptors.uploadPreparation) {
+    const uploadPreparation = projectUploadPreparation(field("uploadPreparation"), status);
+    if (uploadPreparation) output.uploadPreparation = uploadPreparation;
+  }
   const aiQueue = projectAiQueue(descriptors, status);
   if (aiQueue === null) return null;
   if (aiQueue) Object.assign(output, aiQueue);
@@ -358,7 +377,13 @@ export function autoListingItemPresentation(item = {}) {
   const safe = projectItem(item) || {};
   const itemId = typeof safe.itemId === "string" ? safe.itemId : "";
   const status = typeof safe.status === "string" ? safe.status : "";
-  const [statusLabel, tone] = STATUS[status] || ["未知状态", "default"];
+  const [baseStatusLabel, tone] = STATUS[status] || ["未知状态", "default"];
+  const uploadPreparation = safe.uploadPreparation;
+  const statusLabel = status === "UPLOADING" && uploadPreparation
+    ? uploadPreparation.published === uploadPreparation.total
+      ? "图片已准备，正在提交到 Ozon"
+      : `正在准备图片 ${uploadPreparation.published}/${uploadPreparation.total}`
+    : baseStatusLabel;
   const failureCode = typeof safe.failureCode === "string" ? safe.failureCode : "";
   const progress = safe.workflowProgress;
   const progressLabels = {
@@ -567,9 +592,15 @@ export function autoListingTaskProgress(row = {}) {
   const waitingForChannel = ["WAITING_FOR_AI_CHANNEL", "SWITCHING_AI_CHANNEL"].includes(row?.aiQueueState);
   const completedPercent = row?.workflowProgress?.phase === "PLAN_CONTENT"
     ? STATUS_PERCENT.SOURCE_READY : STATUS_PERCENT.PLANNING;
+  const uploadPreparation = projectUploadPreparation(row?.uploadPreparation, status);
+  const uploadPercent = status === "UPLOADING" && uploadPreparation
+    ? STATUS_PERCENT.UPLOAD_QUEUED
+      + Math.floor((STATUS_PERCENT.UPLOADING - STATUS_PERCENT.UPLOAD_QUEUED)
+        * uploadPreparation.published / uploadPreparation.total)
+    : null;
   const percent = waitingForChannel ? completedPercent
-    : Object.hasOwn(STATUS_PERCENT, status) ? STATUS_PERCENT[status]
-    : ["RETRYABLE_ERROR", "BLOCKED", "CANCELLED"].includes(status) ? failurePercent(row) : 0;
+    : uploadPercent ?? (Object.hasOwn(STATUS_PERCENT, status) ? STATUS_PERCENT[status]
+      : ["RETRYABLE_ERROR", "BLOCKED", "CANCELLED"].includes(status) ? failurePercent(row) : 0);
   return Object.freeze({ percent: Math.min(percent, 99) === percent ? percent : 100 });
 }
 
@@ -592,6 +623,14 @@ export function autoListingTaskDuration(row = {}, nowMs = Date.now()) {
     terminal,
     prefix: status === "SUCCEEDED" ? "总用时" : failed || cancelled ? "未上架 · 已用时" : "已用时",
   });
+}
+
+export function autoListingStageDuration(row = {}, nowMs = Date.now()) {
+  const status = typeof row?.status === "string" ? row.status : "";
+  if (!["UPLOAD_QUEUED", "UPLOADING"].includes(status)) return null;
+  const start = timestampMilliseconds(row?.updatedAt);
+  const milliseconds = start === null || !Number.isFinite(nowMs) ? 0 : Math.max(0, nowMs - start);
+  return Object.freeze({ milliseconds, prefix: "当前阶段" });
 }
 
 export function autoListingTaskMatchesFilter(row = {}, filter) {

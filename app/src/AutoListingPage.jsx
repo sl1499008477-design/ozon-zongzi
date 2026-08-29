@@ -46,6 +46,7 @@ import {
   autoListingItemPresentation,
   autoListingCollectSelectionRows,
   autoListingTaskDuration,
+  autoListingStageDuration,
   autoListingTaskMatchesFilter,
   autoListingTaskProgress,
   autoListingTaskRows,
@@ -850,7 +851,13 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     { title: "上架店铺", dataIndex: "targetStoreId", render: (value) => storeLabels.get(String(value || "")) || "—" },
     { title: "任务用时", key: "duration", render: (_value, row) => {
       const duration = autoListingTaskDuration(row, displayNowMs);
-      return `${duration.prefix} ${taskDurationLabel(duration.milliseconds)}`;
+      const stageDuration = autoListingStageDuration(row, displayNowMs);
+      return <Space direction="vertical" size={0}>
+        {stageDuration
+          ? <span>{stageDuration.prefix} {taskDurationLabel(stageDuration.milliseconds)}</span>
+          : null}
+        <span>{duration.prefix} {taskDurationLabel(duration.milliseconds)}</span>
+      </Space>;
     } },
     { title: "创建时间", dataIndex: "jobCreatedAt", render: (value) => autoListingCreatedAtLabel(value) },
     { title: "操作", key: "actions", render: (_value, row) => {

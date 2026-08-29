@@ -10,6 +10,7 @@ const REQUEST_KEYS = new Set(["actor", "itemId", "expectedStatusVersion", "corre
 const HASH = /^[a-f0-9]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const TERMINAL_LINK_STATUSES = new Set(["SUBMITTED", "RECONCILING", "SUCCEEDED"]);
+const PUBLICATION_CONCURRENCY = 3;
 const RFBS_ERROR_CODES = new Set(["RFBS_WAREHOUSE_NOT_FOUND", "RFBS_WAREHOUSE_DISABLED",
   "RFBS_WAREHOUSE_SCOPE_MISMATCH", "RFBS_WAREHOUSE_CHANGED", "RFBS_WAREHOUSE_EVIDENCE_EXPIRED",
   "RFBS_VALIDATION_REQUIRED", "AUTO_LISTING_RFBS_VALIDATION_FAILED"]);
@@ -202,6 +203,31 @@ function creationWarehouseValidation(context, accountId) {
   return { type, evidence };
 }
 
+async function publishAcceptedAssets(assets, publishListingAsset, { actor, itemId }) {
+  const published = new Array(assets.length);
+  let nextIndex = 0;
+  let failed = false;
+  let firstError = null;
+  async function publishNext() {
+    while (!failed && nextIndex < assets.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        published[index] = await publishListingAsset({ actor, itemId, assetId: assets[index].assetId });
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+      }
+    }
+  }
+  await Promise.all(Array.from(
+    { length: Math.min(PUBLICATION_CONCURRENCY, assets.length) },
+    () => publishNext(),
+  ));
+  if (failed) throw firstError;
+  return published;
+}
+
 /** Single boundary that may enqueue a durable listing, but can never call Ozon directly. */
 export function createAutoListingUploadService({
   repository,
@@ -369,26 +395,25 @@ export function createAutoListingUploadService({
         throw uploadError("AUTO_LISTING_DIRECT_RICH_CONTENT_UNVERIFIED", 503);
       }
 
-      const publishedAssets = [];
-      for (const asset of context.acceptedAssets || []) {
-        const published = await publishListingAsset({ actor, itemId, assetId: asset.assetId });
-        publishedAssets.push({
-          assetId: published.assetId,
-          status: published.status,
-          accountId: published.accountId,
-          jobId: published.jobId,
-          itemId: published.itemId,
-          planId: published.planId,
-          visualGroupKey: published.visualGroupKey,
-          slotKey: published.slotKey,
-          role: published.role,
-          publishedUrl: published.publishedUrl,
-          contentHash: published.contentHash,
-          width: published.width,
-          height: published.height,
-          publicationVersion: published.publicationVersion,
-        });
-      }
+      const publications = await publishAcceptedAssets(
+        context.acceptedAssets || [], publishListingAsset, { actor, itemId },
+      );
+      const publishedAssets = publications.map((published) => ({
+        assetId: published.assetId,
+        status: published.status,
+        accountId: published.accountId,
+        jobId: published.jobId,
+        itemId: published.itemId,
+        planId: published.planId,
+        visualGroupKey: published.visualGroupKey,
+        slotKey: published.slotKey,
+        role: published.role,
+        publishedUrl: published.publishedUrl,
+        contentHash: published.contentHash,
+        width: published.width,
+        height: published.height,
+        publicationVersion: published.publicationVersion,
+      }));
       let draft;
       try {
         draft = buildSubmissionDraft({

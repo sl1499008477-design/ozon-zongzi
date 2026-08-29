@@ -9,6 +9,7 @@ import {
   autoListingItemPresentation,
   autoListingTaskRows,
   autoListingTaskDuration,
+  autoListingStageDuration,
   autoListingTaskMatchesFilter,
   autoListingTaskProgress,
   autoListingCreatedAtLabel,
@@ -615,6 +616,40 @@ test("derives fixed terminal and live active task durations from the job start",
   assert.deepEqual(autoListingTaskDuration({
     status: "CANCELLED", jobCreatedAt: "2026-08-25T00:00:00.000Z", updatedAt: "2026-08-25T00:02:03.000Z",
   }, Date.parse("2026-08-25T01:00:00.000Z")), { milliseconds: 123000, terminal: true, prefix: "未上架 · 已用时" });
+});
+
+test("shows image preparation progress and separates the current upload stage from total task time", () => {
+  const [preparing] = autoListingTaskRows([{
+    jobId: "job-upload",
+    createdAt: "2026-08-25T00:00:00.000Z",
+    items: [{
+      itemId: "item-upload",
+      status: "UPLOADING",
+      updatedAt: "2026-08-25T01:00:00.000Z",
+      uploadPreparation: { published: 3, total: 12 },
+    }],
+  }]);
+  assert.deepEqual(preparing.uploadPreparation, { published: 3, total: 12 });
+  assert.equal(autoListingItemPresentation(preparing).statusLabel, "正在准备图片 3/12");
+  assert.equal(autoListingTaskProgress(preparing).percent, 87);
+  assert.deepEqual(
+    autoListingStageDuration(preparing, Date.parse("2026-08-25T01:02:03.000Z")),
+    { milliseconds: 123000, prefix: "当前阶段" },
+  );
+  assert.deepEqual(
+    autoListingTaskDuration(preparing, Date.parse("2026-08-25T01:02:03.000Z")),
+    { milliseconds: 3723000, terminal: false, prefix: "已用时" },
+  );
+
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-ready", status: "UPLOADING", uploadPreparation: { published: 12, total: 12 },
+  }).statusLabel, "图片已准备，正在提交到 Ozon");
+  assert.equal(autoListingTaskProgress({
+    status: "UPLOADING", uploadPreparation: { published: 12, total: 12 },
+  }).percent, 95);
+  assert.equal(autoListingItemPresentation({ itemId: "item-queued", status: "UPLOAD_QUEUED" }).statusLabel,
+    "等待处理上传任务");
+  assert.equal(autoListingStageDuration({ status: "GENERATING", updatedAt: "2026-08-25T01:00:00.000Z" }), null);
 });
 
 test("matches exactly the seven task center filters", () => {

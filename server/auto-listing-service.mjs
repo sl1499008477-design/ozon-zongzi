@@ -471,13 +471,34 @@ function safeAiQueueProjection(source) {
   });
 }
 
+function safeUploadPreparation(value, status) {
+  try {
+    if (!["UPLOAD_QUEUED", "UPLOADING"].includes(status)
+      || !value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== 2 || !["published", "total"].every((key) =>
+      descriptors[key]?.enumerable === true && Object.hasOwn(descriptors[key], "value"))) return null;
+    const published = descriptors.published.value;
+    const total = descriptors.total.value;
+    if (!Number.isSafeInteger(published) || !Number.isSafeInteger(total)
+      || total < 1 || published < 0 || published > total) return null;
+    return Object.freeze({ published, total });
+  } catch {
+    return null;
+  }
+}
+
 function safeItem(item = {}, jobCreatedAt = null) {
   const source = item.source || item;
   const workflowProgress = safeWorkflowProgress(source.workflowProgress);
   const aiQueueProjection = safeAiQueueProjection(source);
+  const status = safeString(source.status);
+  const uploadPreparation = safeUploadPreparation(source.uploadPreparation, status);
   return {
     itemId: safeString(source.id) || safeString(source.itemId),
-    status: safeString(source.status),
+    status,
     ...(Number.isSafeInteger(source.statusVersion ?? source.status_version)
       && Number(source.statusVersion ?? source.status_version) > 0
       ? { statusVersion: Number(source.statusVersion ?? source.status_version) } : {}),
@@ -499,6 +520,7 @@ function safeItem(item = {}, jobCreatedAt = null) {
     ...(safePrice(source.price) ? { price: safePrice(source.price) } : {}),
     ...(safeString(source.failureCode) || safeString(source.failure_code) ? { failureCode: safeString(source.failureCode) || safeString(source.failure_code) } : {}),
     ...(workflowProgress ? { workflowProgress } : {}),
+    ...(uploadPreparation ? { uploadPreparation } : {}),
     ...aiQueueProjection,
     actions: safeItemActions(source),
   };

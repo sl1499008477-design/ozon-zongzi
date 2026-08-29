@@ -485,6 +485,15 @@ function itemAiQueueProjection(item) {
   });
 }
 
+function itemUploadPreparation(item) {
+  if (!["UPLOAD_QUEUED", "UPLOADING"].includes(item.status)) return null;
+  const total = Number(item.upload_asset_total);
+  const published = Number(item.upload_asset_published);
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(published)
+    || total < 1 || published < 0 || published > total) return null;
+  return Object.freeze({ published, total });
+}
+
 function mapJob(row, items, events) {
   const validatedEvents = events.map((event) => {
     if (event.event_type !== "SOURCE_CAPTURED") return event;
@@ -519,6 +528,7 @@ function mapJob(row, items, events) {
         .find((event) => ["SOURCE_CAPTURED", "BLOCK"].includes(event.event_type))?.details || {};
       const workflowProgress = itemWorkflowProgress(item);
       const aiQueueProjection = itemAiQueueProjection(item);
+      const uploadPreparation = itemUploadPreparation(item);
       return {
         id: item.id,
         status: item.status,
@@ -547,6 +557,7 @@ function mapJob(row, items, events) {
         ...(audit.price ? { price: audit.price } : {}),
         ...(item.failure_code ? { failureCode: item.failure_code } : {}),
         ...(workflowProgress ? { workflowProgress } : {}),
+        ...(uploadPreparation ? { uploadPreparation } : {}),
         ...aiQueueProjection,
       };
     }),
@@ -592,7 +603,9 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
             ai_projection.queue_state AS ai_queue_state,
             ai_projection.channel_display_name AS ai_channel_display_name,
             COALESCE(ai_projection.channel_switching,FALSE) AS ai_channel_switching,
-            ai_projection.wait_started_at AS ai_channel_wait_started_at
+            ai_projection.wait_started_at AS ai_channel_wait_started_at,
+            upload_preparation.total_assets AS upload_asset_total,
+            upload_preparation.published_assets AS upload_asset_published
        FROM auto_listing_job_items i
        JOIN auto_listing_source_snapshots s ON s.id=i.snapshot_id AND s.account_id=$2
        LEFT JOIN LATERAL (
@@ -839,6 +852,38 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
            ) runnable_queue ON TRUE
           WHERE ai_job.account_id=$2 AND ai_job.id=$1
        ) ai_projection ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::INTEGER AS total_assets,
+                COUNT(publication.asset_id)::INTEGER AS published_assets
+           FROM (
+             SELECT DISTINCT ON (asset.visual_group_key,asset.slot_key)
+                    asset.id,asset.account_id,asset.item_id,asset.plan_id,asset.content_hash
+               FROM ai_generation_assets AS asset
+               JOIN ai_content_plans AS plan
+                 ON plan.account_id=asset.account_id AND plan.job_id=asset.job_id
+                AND plan.item_id=asset.item_id AND plan.id=asset.plan_id
+               CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'slots') AS planned_slot
+              WHERE i.status IN ('UPLOAD_QUEUED','UPLOADING')
+                AND asset.account_id=i.account_id AND asset.job_id=i.job_id
+                AND asset.item_id=i.id AND asset.plan_id=i.active_content_plan_id
+                AND asset.status='ACCEPTED' AND planned_slot->>'slotKey'=asset.slot_key
+                AND (plan.prompt_template_version NOT IN (
+                      'AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4',
+                      'AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6'
+                    ) OR jsonb_array_length(planned_slot->'claims')>0
+                    OR asset.checker_result->>'textForbidden'='true')
+              ORDER BY asset.visual_group_key,asset.slot_key,
+                       asset.expected_status_version DESC NULLS LAST,
+                       asset.created_at DESC,asset.id DESC
+           ) AS selected_asset
+           LEFT JOIN auto_listing_asset_publications AS publication
+             ON publication.account_id=selected_asset.account_id
+            AND publication.item_id=selected_asset.item_id
+            AND publication.plan_id=selected_asset.plan_id
+            AND publication.asset_id=selected_asset.id
+            AND publication.content_hash=selected_asset.content_hash
+            AND publication.publication_version='LISTING_MEDIA_V1'
+       ) upload_preparation ON TRUE
       WHERE i.job_id=$1 AND i.account_id=$2
         ${selection ? "AND i.id=ANY($3::text[])" : ""}
       ORDER BY i.source_order ASC,i.id ASC`,

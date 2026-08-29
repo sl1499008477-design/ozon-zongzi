@@ -47,7 +47,8 @@ function localState() {
 
 const actions = Object.freeze({ review: false, approve: false, retry: false, regenerate: false, cancel: false });
 
-function item({ id, title, status, order, failureStage = null, aiQueue = null, workflowProgress = null }) {
+function item({ id, title, status, order, failureStage = null, aiQueue = null, workflowProgress = null,
+  uploadPreparation = null }) {
   return {
     itemId: `item-${id}`,
     sourceRecordId: `collect-${id}`,
@@ -69,6 +70,7 @@ function item({ id, title, status, order, failureStage = null, aiQueue = null, w
       aiChannelWaitStartedAt: aiQueue.waitStartedAt,
     } : {}),
     ...(workflowProgress ? { workflowProgress } : {}),
+    ...(uploadPreparation ? { uploadPreparation } : {}),
     price: {
       currency: "CNY",
       branch: "BLACK_GTE_80",
@@ -84,12 +86,15 @@ function item({ id, title, status, order, failureStage = null, aiQueue = null, w
   };
 }
 
-function jobs(processingStatus = "GENERATING") {
+function jobs(processingStatus = "UPLOADING") {
   return [{
     jobId: "job-center",
     createdAt: "2026-08-25T00:00:00.000Z",
     items: [
-      item({ id: "processing", title: "处理中商品", status: processingStatus, order: 1 }),
+      item({
+        id: "processing", title: "处理中商品", status: processingStatus, order: 1,
+        uploadPreparation: processingStatus === "UPLOADING" ? { published: 3, total: 12 } : null,
+      }),
       item({ id: "review", title: "待审核商品", status: "READY_FOR_REVIEW", order: 2 }),
       item({ id: "preparation", title: "准备失败商品", status: "BLOCKED", order: 3, failureStage: "PREPARATION" }),
       item({ id: "generation", title: "生成失败商品", status: "BLOCKED", order: 4, failureStage: "GENERATION" }),
@@ -232,6 +237,11 @@ test("ordered collection creation switches to the task center with exact multipl
     const switchingRow = page.getByRole("row").filter({ hasText: "切换通道商品" });
     assert.equal(await waitingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "15");
     assert.equal(await switchingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "30");
+    const uploadingRow = page.getByRole("row").filter({ hasText: "处理中商品" });
+    await uploadingRow.getByText("正在准备图片 3/12", { exact: true }).waitFor();
+    assert.equal(await uploadingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "87");
+    await uploadingRow.getByText(/当前阶段/u).waitFor();
+    await uploadingRow.getByText(/已用时/u).waitFor();
     await page.getByText("总用时 2分3秒", { exact: true }).waitFor();
     assert.ok(await page.evaluate(() => window.__intervalCountForTest(1_000)) >= 1);
     await page.getByRole("tab", { name: "创建任务" }).click();

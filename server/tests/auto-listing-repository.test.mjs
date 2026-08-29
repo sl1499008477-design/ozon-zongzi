@@ -388,6 +388,13 @@ test("job reads project durable AI queue state in the existing item query", asyn
       ai_queue_state: "CALLING_AI", ai_channel_display_name: "不得泄漏",
       ai_channel_switching: true, ai_channel_wait_started_at: createdAt,
     },
+    {
+      id: "item-uploading", status: "UPLOADING", status_version: 7,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-uploading", source_version: "1", snapshot_hash: "hash-uploading",
+      created_at: createdAt, updated_at: createdAt,
+      upload_asset_total: 12, upload_asset_published: 3,
+    },
   ];
   const pool = {
     async connect() { return pool; },
@@ -419,7 +426,10 @@ test("job reads project durable AI queue state in the existing item query", asyn
     { id: "item-switching", aiQueueState: "SWITCHING_AI_CHANNEL", aiChannelDisplayName: "故障通道", aiChannelSwitching: true, aiChannelWaitStartedAt: new Date("2026-08-28T01:02:00.000Z") },
     { id: "item-waiting", aiQueueState: "WAITING_FOR_AI_CHANNEL", aiChannelDisplayName: null, aiChannelSwitching: false, aiChannelWaitStartedAt: new Date("2026-08-28T01:03:00.000Z") },
     { id: "item-complete", aiQueueState: null, aiChannelDisplayName: null, aiChannelSwitching: false, aiChannelWaitStartedAt: null },
+    { id: "item-uploading", aiQueueState: null, aiChannelDisplayName: null, aiChannelSwitching: false, aiChannelWaitStartedAt: null },
   ]);
+  assert.deepEqual(job.items.find(({ id }) => id === "item-uploading").uploadPreparation,
+    { published: 3, total: 12 });
   const itemReads = calls.filter(({ sql }) => /FROM auto_listing_job_items i/.test(sql));
   assert.equal(itemReads.length, 1);
   assert.match(itemReads[0].sql, /LEFT JOIN LATERAL[\s\S]*auto_listing_ai_outbox AS ai_queue/u);
@@ -431,6 +441,10 @@ test("job reads project durable AI queue state in the existing item query", asyn
   assert.match(itemReads[0].sql, /live_channel\.execution_lease_owner=live_queue\.lease_owner[\s\S]*live_channel\.execution_lease_token=live_queue\.lease_token[\s\S]*live_channel\.execution_lease_expires_at=live_queue\.lease_expires_at[\s\S]*live_channel\.execution_lease_expires_at>NOW\(\)/u);
   assert.match(itemReads[0].sql, /auto_listing_ai_outbox AS failed_queue[\s\S]*failed_queue\.state='PENDING'[\s\S]*failed_queue\.last_error_code IN \([\s\S]*ORDER BY failed_queue\.updated_at DESC,failed_queue\.created_at DESC,failed_queue\.id DESC[\s\S]*\) latest_failure ON TRUE/u);
   assert.match(itemReads[0].sql, /ORDER BY CASE WHEN available_channel\.fixed THEN 0 ELSE 1 END,[\s\S]*COALESCE\(ai_queue\.next_retry_at,ai_queue\.available_at\)[\s\S]*ai_queue\.created_at,ai_queue\.id[\s\S]*\) runnable_queue ON TRUE/u);
+  assert.match(itemReads[0].sql,
+    /upload_preparation\.total_assets AS upload_asset_total[\s\S]*upload_preparation\.published_assets AS upload_asset_published/u);
+  assert.match(itemReads[0].sql,
+    /auto_listing_asset_publications AS publication[\s\S]*publication\.asset_id=selected_asset\.id/u);
 });
 
 function warehouseGraph({ itemCount = 1, priceMultiplierMicros, useCategoryStrategy } = {}) {

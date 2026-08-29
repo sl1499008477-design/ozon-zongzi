@@ -232,6 +232,79 @@ test("review upload publishes accepted assets and delegates only the typed overl
     < state.calls.findIndex(([kind]) => kind === "publish"));
 });
 
+test("review upload publishes three assets at a time and preserves image order", async () => {
+  let fixture;
+  let active = 0;
+  let maximumActive = 0;
+  let releaseScheduled = false;
+  let currentWave = [];
+  const started = [];
+  fixture = harness({
+    async publishListingAsset({ itemId, assetId }) {
+      started.push(assetId);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => {
+        currentWave.push(resolve);
+        if (releaseScheduled) return;
+        releaseScheduled = true;
+        setImmediate(() => {
+          releaseScheduled = false;
+          const wave = currentWave;
+          currentWave = [];
+          for (const release of wave) release();
+        });
+      });
+      active -= 1;
+      const asset = fixture.state.context.acceptedAssets.find((row) => row.assetId === assetId);
+      return { ...asset, publishedUrl: `https://cdn.example.com/${assetId}.jpg`,
+        publicationVersion: "LISTING_MEDIA_V1" };
+    },
+  });
+
+  await fixture.service.submitAutoListingItem(request());
+
+  assert.equal(maximumActive, 3);
+  assert.deepEqual(started, ["asset-1", "asset-2", "asset-3", "asset-4", "asset-5", "asset-6"]);
+  const submission = fixture.state.calls.find(([kind]) => kind === "submit")[1];
+  assert.deepEqual(submission.normalizedItems[0].images, [
+    "https://cdn.example.com/asset-1.jpg",
+    "https://cdn.example.com/asset-2.jpg",
+    "https://cdn.example.com/asset-3.jpg",
+    "https://cdn.example.com/asset-4.jpg",
+    "https://cdn.example.com/asset-5.jpg",
+    "https://cdn.example.com/asset-6.jpg",
+  ]);
+});
+
+test("parallel publication waits for in-flight work and stops starting assets after a failure", async () => {
+  const started = [];
+  const completed = [];
+  let releaseInFlight;
+  const inFlightGate = new Promise((resolve) => { releaseInFlight = resolve; });
+  const fixture = harness({
+    async publishListingAsset({ assetId }) {
+      started.push(assetId);
+      if (started.length === 3) setImmediate(releaseInFlight);
+      if (assetId === "asset-1") {
+        throw Object.assign(new Error("publication unavailable"), { code: "PUBLICATION_UNAVAILABLE" });
+      }
+      await inFlightGate;
+      completed.push(assetId);
+      const asset = fixture.state.context.acceptedAssets.find((row) => row.assetId === assetId);
+      return { ...asset, publishedUrl: `https://cdn.example.com/${assetId}.jpg`,
+        publicationVersion: "LISTING_MEDIA_V1" };
+    },
+  });
+
+  await assert.rejects(fixture.service.submitAutoListingItem(request()), { code: "PUBLICATION_UNAVAILABLE" });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(started, ["asset-1", "asset-2", "asset-3"]);
+  assert.deepEqual(completed, ["asset-2", "asset-3"]);
+  assert.equal(fixture.state.calls.some(([kind]) => ["reserve", "submit"].includes(kind)), false);
+});
+
 test("review upload stops before publication when the public media endpoint is unavailable", async () => {
   const { service, state } = harness({
     async checkPublicationHealth(input) {

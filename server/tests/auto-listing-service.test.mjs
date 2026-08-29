@@ -1825,6 +1825,28 @@ test("job DTO exposes only the closed durable workflow progress projection", asy
   assert.doesNotMatch(JSON.stringify(result), /lease|prompt|raw|lastError/iu);
 });
 
+test("job DTO exposes bounded upload preparation progress only while an item is uploading", async () => {
+  const repository = fakeRepository({ existing: {
+    id: "job-upload-progress", items: [{
+      id: "item-uploading", status: "UPLOADING",
+      uploadPreparation: { published: 3, total: 12 },
+    }, {
+      id: "item-complete", status: "SUCCEEDED",
+      uploadPreparation: { published: 12, total: 12 },
+    }, {
+      id: "item-invalid", status: "UPLOADING",
+      uploadPreparation: { published: 13, total: 12 },
+    }],
+  } });
+
+  const result = await createAutoListingService({ repository })
+    .getAutoListingJob({ actor, jobId: "job-upload-progress" });
+
+  assert.deepEqual(result.items[0].uploadPreparation, { published: 3, total: 12 });
+  assert.equal(Object.hasOwn(result.items[1], "uploadPreparation"), false);
+  assert.equal(Object.hasOwn(result.items[2], "uploadPreparation"), false);
+});
+
 test("job DTO exposes only the four closed AI queue projection fields", async () => {
   const repository = fakeRepository({ existing: {
     id: "job-ai-queue", items: [{
