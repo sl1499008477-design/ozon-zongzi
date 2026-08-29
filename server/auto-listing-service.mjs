@@ -546,6 +546,8 @@ function safeJob(row = {}) {
     jobId: safeString(row.id) || safeString(row.jobId),
     sourceType: safeString(row.sourceType) || safeString(row.source_type) || "COLLECT_BOX",
     status: safeString(row.status) || "CREATED",
+    ...(typeof row.useCategoryStrategy === "boolean"
+      ? { useCategoryStrategy: row.useCategoryStrategy } : {}),
     correlationId: safeString(row.correlationId) || safeString(row.correlation_id),
     createdAt,
     updatedAt: safeTimestamp(row.updatedAt) || safeTimestamp(row.updated_at),

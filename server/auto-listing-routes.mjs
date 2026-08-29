@@ -197,6 +197,8 @@ function safeJob(job = {}) {
     jobId: text(source.jobId || source.id) || "",
     sourceType: text(source.sourceType || source.source_type) || "COLLECT_BOX",
     status: text(source.status) || "CREATED",
+    ...(typeof source.useCategoryStrategy === "boolean"
+      ? { useCategoryStrategy: source.useCategoryStrategy } : {}),
     items: Array.isArray(source.items) ? source.items.map(safeItem) : [],
   };
   for (const key of ["correlationId", "createdAt", "updatedAt"]) {

@@ -1816,12 +1816,13 @@ test("legacy all-blocked creation never executes hostile published strategy-vers
 
 test("ordinary job DTOs omit internal strategy selection metadata", async () => {
   const repository = fakeRepository({ existing: {
-    id: "job-internal-strategy", items: [{
+    id: "job-internal-strategy", useCategoryStrategy: false, items: [{
       id: "item-a", status: "SOURCE_READY", strategyId: "strategy-a",
       strategyVersionId: "version-a", style: "PARAMETER_FIRST", matchedBy: "CATEGORY",
     }],
   } });
   const result = await createAutoListingService({ repository }).getAutoListingJob({ actor, jobId: "job-internal-strategy" });
+  assert.equal(result.useCategoryStrategy, false);
   assert.deepEqual(Object.keys(result.items[0]).filter((key) => /strategy|style|matched/i.test(key)), []);
 });
 

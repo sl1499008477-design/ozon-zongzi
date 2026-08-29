@@ -1396,13 +1396,15 @@ test("fails closed before reservation when profile, scope, frozen facts, or acce
   }
 });
 
-test("uses a deterministic fact-only rich document when the AI gateway is unavailable", async () => {
+test("uses a deterministic fact-only rich document for a known transient AI gateway failure", async () => {
   const { generateRichContent, validateRichContentDocument } = await richModule();
   const repo = repository();
 
   const accepted = await generateRichContent(generationInput(repo, {
     async createTextResponse() {
-      throw Object.assign(new Error("temporary gateway outage"), { retryable: true });
+      throw Object.assign(new Error("temporary gateway outage"), {
+        code: "AI_GATEWAY_NETWORK_FAILED", retryable: true,
+      });
     },
   }));
 
@@ -1424,19 +1426,54 @@ test("uses a deterministic fact-only rich document when the AI gateway is unavai
   }).valid, true);
 });
 
-test("explicit channel failures bypass deterministic fallback and remain untouched for Worker requeue", async () => {
+test("retryable rich channel failures complete with the deterministic fallback without another provider call", async () => {
   const { generateRichContent } = await richModule();
   const cases = [
-    ["NON_RETRYABLE_AUTH", 401],
-    ["NON_RETRYABLE_AUTH", 403],
-    ["NON_RETRYABLE_GATEWAY", 404],
+    ["AI_GATEWAY_NETWORK_FAILED", null],
     ["AI_GATEWAY_RATE_LIMITED", 429],
+    ["AI_GATEWAY_IDLE_TIMEOUT", null],
+    ["AI_GATEWAY_UNEXPECTED_EOF", null],
+    ["INVALID_GATEWAY_RESPONSE", 502],
+    ["RETRYABLE_GATEWAY", 503],
     ["GATEWAY_TIMEOUT", null],
   ];
   for (const [code, status] of cases) {
     const repo = repository();
     const gatewayError = Object.assign(new Error("safe channel failure"), {
-      code, status, retryable: code !== "NON_RETRYABLE_AUTH" && code !== "NON_RETRYABLE_GATEWAY",
+      code, status, retryable: true,
+    });
+    let providerCalls = 0;
+    const accepted = await generateRichContent(generationInput(repo, {
+      async createTextResponse() { providerCalls += 1; throw gatewayError; },
+    }));
+    assert.equal(accepted.status, "ACCEPTED", `${code}:${status}`);
+    assert.equal(providerCalls, 1, `${code}:${status}`);
+    assert.deepEqual(repo.calls.map(([name]) => name), ["reserve", "complete"], `${code}:${status}`);
+    assert.equal(repo.calls[1][1].usage.deterministicFallback, true, `${code}:${status}`);
+  }
+});
+
+test("rich channel authentication and model configuration failures remain visible for administration", async () => {
+  const { generateRichContent } = await richModule();
+  const cases = [
+    ["NON_RETRYABLE_AUTH", 401],
+    ["NON_RETRYABLE_AUTH", 403],
+    ["NON_RETRYABLE_GATEWAY", 404],
+    ["AI_GATEWAY_UNAUTHORIZED", 401],
+    ["AI_GATEWAY_MODEL_NOT_FOUND", 404],
+    ["AI_GATEWAY_CAPABILITY_INVALID", 422],
+    ["AI_GATEWAY_PROFILE_INVALID", null],
+    ["AI_GATEWAY_PROFILE_DISABLED", null],
+    ["AI_GATEWAY_SECRET_MISSING", null],
+    ["AI_GATEWAY_PROTOCOL_UNSUPPORTED", null],
+    ["AI_GATEWAY_MODEL_MISMATCH", null],
+    ["AI_GATEWAY_REQUEST_INVALID", null],
+    [undefined, null],
+  ];
+  for (const [code, status] of cases) {
+    const repo = repository();
+    const gatewayError = Object.assign(new Error("channel configuration failure"), {
+      code, status, retryable: false,
     });
     await assert.rejects(generateRichContent(generationInput(repo, {
       async createTextResponse() { throw gatewayError; },
@@ -1445,13 +1482,13 @@ test("explicit channel failures bypass deterministic fallback and remain untouch
   }
 });
 
-test("repeated rich channel failures reclaim one attempt immediately without becoming in progress", async () => {
+test("repeated rich channel configuration failures reclaim one attempt without becoming in progress", async () => {
   const { generateRichContent } = await richModule();
   const { createMemoryRichContentRepository } = await import("../auto-listing-rich-content-repository.mjs");
   let tokenNo = 0;
   const repo = createMemoryRichContentRepository({ token: () => `channel-lease-${++tokenNo}` });
-  const gatewayError = Object.assign(new Error("rate limited"), {
-    code: "AI_GATEWAY_RATE_LIMITED", status: 429, retryable: true,
+  const gatewayError = Object.assign(new Error("invalid credentials"), {
+    code: "NON_RETRYABLE_AUTH", status: 401, retryable: false,
   });
   let gatewayCalls = 0;
   const input = generationInput(repo, {
@@ -1575,18 +1612,15 @@ test("rich terminal repository boundaries prefer lease loss after deferred resol
   }
 });
 
-test("falls back for malformed or unavailable gateways but still rejects policy violations", async () => {
+test("falls back for malformed gateway responses but still rejects policy violations", async () => {
   const { generateRichContent } = await richModule();
-  for (const gateway of [
-    { async createTextResponse() { return { requestId: "bad" }; } },
-    { async createTextResponse() { throw Object.assign(new Error("unclassified gateway failure"), { retryable: true }); } },
-  ]) {
-    const repo = repository();
-    const accepted = await generateRichContent(generationInput(repo, gateway));
-    assert.equal(accepted.status, "ACCEPTED");
-    assert.deepEqual(repo.calls.map(([name]) => name), ["reserve", "complete"]);
-    assert.match(repo.calls.at(-1)[1].gatewayRequestId, /^auto-listing-rich-fallback-/u);
-  }
+  const malformedRepo = repository();
+  const accepted = await generateRichContent(generationInput(malformedRepo, {
+    async createTextResponse() { return { requestId: "bad" }; },
+  }));
+  assert.equal(accepted.status, "ACCEPTED");
+  assert.deepEqual(malformedRepo.calls.map(([name]) => name), ["reserve", "complete"]);
+  assert.match(malformedRepo.calls.at(-1)[1].gatewayRequestId, /^auto-listing-rich-fallback-/u);
 
   const repo = repository();
   await assert.rejects(generateRichContent(generationInput(repo, {
@@ -1608,7 +1642,9 @@ test("gateway failures complete with fallback evidence and expose no upstream se
   const repo = repository();
   const accepted = await generateRichContent(generationInput(repo, {
     async createTextResponse() {
-      throw Object.assign(new Error("secret upstream gateway body"), { code: "UPSTREAM_PRIVATE_CODE", retryable: true });
+      throw Object.assign(new Error("secret upstream gateway body"), {
+        code: "AI_GATEWAY_NETWORK_FAILED", retryable: true,
+      });
     },
   }));
   assert.equal(accepted.status, "ACCEPTED");

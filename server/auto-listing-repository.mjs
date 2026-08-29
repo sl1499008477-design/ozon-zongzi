@@ -520,6 +520,7 @@ function mapJob(row, items, events) {
     accountId: row.account_id,
     sourceType: row.source_type,
     status: row.status,
+    useCategoryStrategy: row.config_snapshot?.useCategoryStrategy !== false,
     correlationId: row.correlation_id,
     warehouseValidationEvidenceId: row.warehouse_validation_evidence_id || null,
     createdAt: row.created_at,
@@ -583,7 +584,7 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
   const jobResult = await client.query(
-    `SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id,
+    `SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id,config_snapshot,
             correlation_id,created_at,updated_at
        FROM auto_listing_jobs WHERE id=$1 AND account_id=$2`,
     [jobId, accountId],

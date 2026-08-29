@@ -848,6 +848,9 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         {item.failureLabel ? <span>{item.failureLabel}</span> : null}
       </Space>;
     } },
+    { title: "策略来源", dataIndex: "useCategoryStrategy", render: (value) => (
+      <Tag color={value === false ? undefined : "blue"}>{value === false ? "默认模板" : "类目策略"}</Tag>
+    ) },
     { title: "上架店铺", dataIndex: "targetStoreId", render: (value) => storeLabels.get(String(value || "")) || "—" },
     { title: "任务用时", key: "duration", render: (_value, row) => {
       const duration = autoListingTaskDuration(row, displayNowMs);
@@ -990,7 +993,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         })}</div> : null}
         <Tabs className="auto-listing-task-filters" activeKey={taskFilter} onChange={setTaskFilter} items={TASK_FILTER_ITEMS} />
         <div className="auto-listing-task-table"><Table rowKey="itemId" dataSource={filteredTaskRows} columns={taskColumns}
-          pagination={{ pageSize: 10 }} scroll={{ x: 1120 }} locale={{ emptyText: "暂无自动上架任务" }} /></div>
+          pagination={{ pageSize: 10 }} scroll={{ x: 1240 }} locale={{ emptyText: "暂无自动上架任务" }} /></div>
       </Card> },
       ]} />
     </Spin>

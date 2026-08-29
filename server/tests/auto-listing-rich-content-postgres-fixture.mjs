@@ -105,6 +105,12 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     const migration078 = await readFile(path.join(migrationsDir, "078_auto_listing_rich_embedded_numeric_evidence.sql"), "utf8");
     await client.query(migration078);
     await client.query(migration078);
+    const migration086 = await readFile(path.join(migrationsDir, "086_auto_listing_rich_numeric_boundary.sql"), "utf8");
+    await client.query(migration086);
+    await client.query(migration086);
+    const migration102 = await readFile(path.join(migrationsDir, "102_auto_listing_rich_evidence_compatibility.sql"), "utf8");
+    await client.query(migration102);
+    await client.query(migration102);
     await client.query("ALTER TABLE auto_listing_job_items ADD COLUMN IF NOT EXISTS active_content_plan_id TEXT");
     await client.query(
       "ALTER TABLE ai_rich_content_results ADD COLUMN IF NOT EXISTS gateway_connection_id TEXT, ADD COLUMN IF NOT EXISTS gateway_connection_version INTEGER",
@@ -246,6 +252,47 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     assert.deepEqual(evidenceValidation.rows[0], {
       fact_valid: true, asset_valid: true, asset_matches: true,
     });
+    const operationalFact = {
+      factId: "fact.internal.model", field: "attributes.internalModel", kind: "ATTRIBUTE:internal-model",
+      value: "Внутренний идентификатор", numericValue: null, unit: null,
+      sourcePath: "attributes.internalModel",
+    };
+    const historicalAssetEvidence = structuredClone(assetEvidence);
+    for (const asset of historicalAssetEvidence) {
+      asset.checkerEvidence.sourceFacts.push(structuredClone(operationalFact));
+    }
+    const historicalCheckerSuperset = await client.query(
+      `SELECT auto_listing_rich_asset_evidence_matches(
+         $1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8,$9,$10,$11
+       ) AS asset_matches`,
+      [JSON.stringify(historicalAssetEvidence), JSON.stringify(factEvidence),
+        accountId, jobId, itemId, planId, hash("1"), hash("2"), profileId, 1, "text-model"],
+    );
+    assert.deepEqual(historicalCheckerSuperset.rows[0], { asset_matches: true });
+    const derivedNumericAssetEvidence = structuredClone(historicalAssetEvidence);
+    for (const asset of derivedNumericAssetEvidence) {
+      asset.checkerEvidence.sourceFacts[0].numericValue = null;
+      asset.checkerEvidence.sourceFacts[0].unit = null;
+    }
+    const derivedNumericProjection = await client.query(
+      `SELECT auto_listing_rich_asset_evidence_matches(
+         $1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8,$9,$10,$11
+       ) AS asset_matches`,
+      [JSON.stringify(derivedNumericAssetEvidence), JSON.stringify(factEvidence),
+        accountId, jobId, itemId, planId, hash("1"), hash("2"), profileId, 1, "text-model"],
+    );
+    assert.deepEqual(derivedNumericProjection.rows[0], { asset_matches: true });
+    const mismatchedFactEvidence = structuredClone(factEvidence);
+    mismatchedFactEvidence[0].value = "700 мл";
+    mismatchedFactEvidence[0].numericValue = 700;
+    const mismatchedSharedFact = await client.query(
+      `SELECT auto_listing_rich_asset_evidence_matches(
+         $1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8,$9,$10,$11
+       ) AS asset_matches`,
+      [JSON.stringify(assetEvidence), JSON.stringify(mismatchedFactEvidence),
+        accountId, jobId, itemId, planId, hash("1"), hash("2"), profileId, 1, "text-model"],
+    );
+    assert.deepEqual(mismatchedSharedFact.rows[0], { asset_matches: false });
     const factBinding = {
       sourceFactId: "fact.capacity", field: "capacity", value: "500 мл", numericValue: 500, unit: "мл",
     };
@@ -623,6 +670,9 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       expiredLeaseReclaimed: reclaimedAfterExpiry.status === "RESERVED"
         && reclaimedAfterExpiry.attemptNo === 2 && expiredOwnerRejected,
       acceptedReplayUnique: replay.status === "EXISTING_ACCEPTED" && duplicateRejected,
+      historicalCheckerSupersetAccepted: historicalCheckerSuperset.rows[0].asset_matches,
+      derivedNumericProjectionAccepted: derivedNumericProjection.rows[0].asset_matches,
+      mismatchedSharedFactRejected: !mismatchedSharedFact.rows[0].asset_matches,
     };
   } finally {
     await client.query("RESET search_path").catch(() => {});

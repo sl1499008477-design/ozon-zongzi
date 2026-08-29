@@ -90,6 +90,7 @@ function jobs(processingStatus = "UPLOADING") {
   return [{
     jobId: "job-center",
     createdAt: "2026-08-25T00:00:00.000Z",
+    useCategoryStrategy: false,
     items: [
       item({
         id: "processing", title: "处理中商品", status: processingStatus, order: 1,
@@ -229,6 +230,8 @@ test("ordered collection creation switches to the task center with exact multipl
     assert.equal(createBody?.config?.priceMultiplierMicros, "1000000");
     assert.equal(new URL(page.url()).search, "?source=collect&ids=collect-b,collect-a");
     await page.getByRole("columnheader", { name: "任务用时" }).waitFor();
+    await page.getByRole("columnheader", { name: "策略来源" }).waitFor();
+    assert.ok(await page.getByText("默认模板", { exact: true }).count() >= 1);
     assert.ok(await page.getByRole("progressbar").count() >= 1);
     await page.getByText("正在使用「主通道」生成", { exact: true }).waitFor({ timeout: 2_000 });
     await page.getByText("等待可用 AI 通道", { exact: true }).waitFor({ timeout: 2_000 });

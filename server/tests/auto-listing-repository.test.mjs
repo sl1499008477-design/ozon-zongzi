@@ -1291,6 +1291,7 @@ function successfulCreationFixture({
       if (/INSERT INTO auto_listing_jobs/.test(sql)) {
         job = {
           id: params[0], account_id: params[1], source_type: params[2], status: "CREATED",
+          config_snapshot: JSON.parse(params[4]),
           strategy_version_id: params[6], warehouse_validation_evidence_id: params[12], correlation_id: params[11],
           created_at: new Date(0), updated_at: new Date(0),
         };
@@ -1392,6 +1393,7 @@ test("category strategy OFF persists the frozen generic selection even when a pu
 
   const created = await repository.createJobGraph(warehouseGraph({ useCategoryStrategy: false }));
 
+  assert.equal(created.useCategoryStrategy, false);
   assert.equal(created.items[0].style, "BALANCED_DEFAULT");
   assert.equal(created.items[0].matchedBy, "DEFAULT");
   assert.equal(calls.some(({ sql }) => /FROM ai_content_strategy_rules/.test(sql)), false);

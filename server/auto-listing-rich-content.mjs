@@ -8,11 +8,9 @@ const DETERMINISTIC_FALLBACK_PREFIX = "auto-listing-rich-fallback-";
 const MAX_PROMPT_BYTES = 256 * 1024;
 const HASH = /^[a-f0-9]{64}$/;
 const EXECUTION_LEASE_LOST = "AUTO_LISTING_AI_EXECUTION_LEASE_LOST";
-const SAFE_GATEWAY_FAILURE_CODES = new Set([
+const TRANSIENT_RICH_FALLBACK_CODES = new Set([
   "AI_GATEWAY_NETWORK_FAILED", "AI_GATEWAY_RATE_LIMITED", "AI_GATEWAY_IDLE_TIMEOUT",
-  "AI_GATEWAY_UNEXPECTED_EOF", "AI_GATEWAY_UNAUTHORIZED", "AI_GATEWAY_MODEL_NOT_FOUND",
-  "AI_GATEWAY_CAPABILITY_INVALID", "INVALID_GATEWAY_RESPONSE", "RETRYABLE_GATEWAY",
-  "GATEWAY_TIMEOUT", "NON_RETRYABLE_AUTH", "NON_RETRYABLE_GATEWAY",
+  "AI_GATEWAY_UNEXPECTED_EOF", "INVALID_GATEWAY_RESPONSE", "RETRYABLE_GATEWAY", "GATEWAY_TIMEOUT",
 ]);
 const SCOPE_KEYS = ["accountId", "jobId", "itemId", "planId"];
 const GATEWAY_EXECUTION_KEYS = new Set(["channelId", "connectionId", "connectionVersion", "idleTimeoutMs"]);
@@ -831,7 +829,7 @@ export async function generateRichContent(input = {}) {
   } catch (cause) {
     assertLeaseActive(input);
     if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
-    if (SAFE_GATEWAY_FAILURE_CODES.has(cause?.code)) {
+    if (!TRANSIENT_RICH_FALLBACK_CODES.has(cause?.code)) {
       await leaseBound(input, () => port.release({
         ...reservationInput, ...lease,
         errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
