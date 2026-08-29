@@ -1897,6 +1897,30 @@ test("real edit-page attributes keep safe textual and numeric facts but exclude 
   assert.ok(built.reasonCodes.includes("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED"));
 });
 
+test("planner keeps listing-only Ozon attributes out of every AI creative fact registry", () => {
+  const source = sourceCapture();
+  source.snapshot.attributes = [
+    { id: 9048, name: "Название модели (для объединения в одну карточку)", value: "019d2e6c74ed7ca59b6e879584910440", values: ["019d2e6c74ed7ca59b6e879584910440"], required: true, dictionaryId: 0, multiple: false },
+    { id: 7822, name: "Артикул", value: "3726236911", values: ["3726236911"], required: true, dictionaryId: 0, multiple: false },
+    { id: 11650, name: "Количество заводских упаковок", value: "1", values: ["1"], required: false, dictionaryId: 0, multiple: false },
+    { id: 23171, name: "Хештеги", value: "пожаротушение", values: ["пожаротушение"], required: false, dictionaryId: 0, multiple: true },
+    { id: 99001, name: "Телефон поддержки", value: "+7 999 123-45-67", values: ["+7 999 123-45-67"], required: false, dictionaryId: 0, multiple: false },
+    { id: 8145, name: "Мощность, Вт", value: "20", values: ["20"], required: false, dictionaryId: 0, multiple: false },
+  ];
+  source.snapshotHash = hash(source.snapshot);
+
+  const built = buildPlannerInput(plannerArgs({
+    sourceCapture: source,
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+  }));
+  const serialized = JSON.stringify(built.plannerInput.factRegistry);
+
+  assert.doesNotMatch(serialized, /fact\.attribute\.(?:9048|7822|11650|23171)\./u);
+  assert.doesNotMatch(serialized, /019d2e6c74ed7ca59b6e879584910440|3726236911|Хештеги|\+7 999 123-45-67/u);
+  assert.match(serialized, /Мощность, Вт: 20/u);
+  assert.ok(built.reasonCodes.includes("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED"));
+});
+
 test("multiline category attributes become one safe image-copy fact", () => {
   const source = sourceCapture();
   source.snapshot.attributes = [{

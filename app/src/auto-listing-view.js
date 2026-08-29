@@ -54,6 +54,7 @@ const FAILURE = Object.freeze({
   AUTO_LISTING_IMAGE_POLICY_REJECTED: "部分图片未通过检查，已保留其他通过检查的图片",
   AUTO_LISTING_IMAGE_FAILED: "图片生成阶段未完成，请重试；已通过的图片不会重复生成",
   AUTO_LISTING_CONTENT_PLAN_FAILED: "图片内容规划失败，可以重试",
+  AUTO_LISTING_RICH_CONTENT_INPUT_INVALID: "商品资料中的内部字段未正确排除，可以重试；已通过的图片不会重复生成",
   AUTO_LISTING_RICH_CONTENT_REPOSITORY_FAILED: "保存生成内容失败，可以重试；已通过的图片不会重复生成",
   AUTO_LISTING_UPLOAD_POLICY_BLOCKED: "上传前策略校验未通过，可以安全重试",
   AUTO_LISTING_UPLOAD_EVIDENCE_INVALID: "逐商品图片配置校验未通过，可以安全重试",

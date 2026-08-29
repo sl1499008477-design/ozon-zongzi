@@ -1,4 +1,5 @@
 import { sha256 } from "./auto-listing-asset-store.mjs";
+import { isAutoListingCreativeFact } from "./auto-listing-creative-facts.mjs";
 import { verifyAcceptedGeneratedAssetEnvelope } from "./auto-listing-image-generator.mjs";
 import { isCompatibleAiModelIdentity } from "./auto-listing-ai-model-identity.mjs";
 
@@ -42,9 +43,11 @@ const OUTPUT_RULES = Object.freeze({
 });
 const TECHNICAL_TOKENS = new Set(["usb", "usb-c", "led", "bpa", "ipx4", "ipx5", "ipx6", "ipx7", "ipx8", "wifi", "bluetooth"]);
 const wordPolicyRule = (source) => new RegExp(String.raw`(?:^|[^\p{L}\p{N}])(?:${source})`, "iu");
+const RUSSIAN_PHONE_RULE = /(?<![\p{L}\p{N}])(?:\+?7|8)[\s()-]*\d{3}[\s()-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?![\p{L}\p{N}])/u;
+const INTERNATIONAL_PHONE_RULE = /(?<![\p{L}\p{N}])(?:\+\d{1,3}|00\d{1,3})[\s().-]*\d(?:[\s().-]*\d){6,14}(?![\p{L}\p{N}])/u;
 const HARD_POLICY_RULES = [
   /https?:\/\//iu, /www\./iu, /\b[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[A-Za-z]{2,}\b/iu,
-  /(?:\+?7|8)[\s()-]*\d{3}[\s()-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/u,
+  RUSSIAN_PHONE_RULE,
   wordPolicyRule(String.raw`telegram|whatsapp|viber|телеграм|ватсап|позвон|пишите|свяжитесь|контакт[\p{L}-]*|телефон[\p{L}-]*|обрат[\p{L}-]*\s+к\s+продавц[\p{L}-]*`),
   wordPolicyRule(String.raw`остав(?:ьте|ить)\s+отзыв|оцените\s+(?:нас|товар)|отзыв`),
   wordPolicyRule(String.raw`(?:сертифицирован|сертификат|сертификац|лечебн|медицинск|исцел|гаранти|возврат|обмен)[\p{L}-]*`),
@@ -55,8 +58,8 @@ const PROMPT_PROJECTION_RULES = [
   /(?:https?|ftp|file|data):/iu,
   /www\./iu,
   /\b[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[A-Za-z]{2,}\b/iu,
-  /(?:\+?7|8)[\s()-]*\d{3}[\s()-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/u,
-  /(?:\+\d{1,3}|00\d{1,3})[\s().-]*\d(?:[\s().-]*\d){6,14}/u,
+  RUSSIAN_PHONE_RULE,
+  INTERNATIONAL_PHONE_RULE,
   /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|password|secret)\b\s*[:=]/iu,
   /\bbearer\b(?:\s+|\s*[:=]\s*)[A-Za-z0-9._~+/=-]{8,}/iu,
 ];
@@ -128,10 +131,11 @@ const canonicalUnit = (value) => {
 const numericTokens = (value) => [...value.matchAll(/(?<![\p{L}\p{N}])(-?\d+(?:[.,]\d+)?)(?:\s*([\p{L}%°]{1,16}))?/gu)]
   .map((match) => ({ value: Number(match[1].replace(",", ".")), unit: match[2] ? canonicalUnit(match[2]) : null }));
 
-function normalizeFact(fact) {
+function normalizeFact(fact, { promptSafe = true } = {}) {
+  const projectedText = promptSafe ? safePromptProjection : clean;
   if (!plainObject(fact)
     || !safeInternalMetadata(fact.factId, 240)
-    || !safePromptProjection(fact.kind, 120) || !safePromptProjection(fact.value, 2048)
+    || !projectedText(fact.kind, 120) || !projectedText(fact.value, 2048)
     || !safeInternalMetadata(fact.sourcePath, 1024)) return null;
   const field = fact.field ?? fact.sourcePath;
   if (!safeInternalMetadata(field, 512)) return null;
@@ -155,7 +159,7 @@ function normalizeFact(fact) {
   }
   if (!((numericValue === null && unit === null)
     || (typeof numericValue === "number" && Number.isFinite(numericValue)
-      && (unit === null || safePromptProjection(unit, 64))))) return null;
+      && (unit === null || projectedText(unit, 64))))) return null;
   return { ...fact, field, numericValue, unit };
 }
 
@@ -191,9 +195,9 @@ function validCanonicalAssetEvidence(asset) {
     && (asset.regeneration === null || plainObject(asset.regeneration));
 }
 
-function validateFacts(facts) {
+function validateFacts(facts, options = undefined) {
   if (!Array.isArray(facts) || facts.length < 1 || facts.length > 256) return null;
-  const normalized = facts.map(normalizeFact);
+  const normalized = facts.map((fact) => normalizeFact(fact, options));
   if (normalized.some((fact) => fact === null)) return null;
   const byId = new Map(normalized.map((fact) => [fact.factId, fact]));
   return byId.size === normalized.length ? byId : null;
@@ -228,7 +232,7 @@ function validateAssets(assets, scope, plan, profile) {
 }
 
 function factsForAcceptedAssets(plan, assets, facts) {
-  const factsById = validateFacts(facts);
+  const factsById = validateFacts(facts, { promptSafe: false });
   const groupKeys = Array.isArray(assets) ? new Set(assets.map((asset) => asset?.visualGroupKey)) : new Set();
   if (!factsById || groupKeys.size !== 1 || !Array.isArray(plan?.factRegistry)) return null;
   const [visualGroupKey] = groupKeys;
@@ -237,8 +241,15 @@ function factsForAcceptedAssets(plan, assets, facts) {
       && (!fact.visualGroupKeys.length || fact.visualGroupKeys.includes(visualGroupKey)))
     .map((fact) => fact?.factId);
   if (factIds.length < 1 || factIds.length !== new Set(factIds).size) return null;
-  const selected = factIds.map((factId) => factsById.get(factId));
-  return selected.some((fact) => !fact) ? null : selected;
+  const selected = [];
+  for (const factId of factIds) {
+    const fact = factsById.get(factId);
+    if (!fact) return null;
+    if (!isAutoListingCreativeFact(fact)) continue;
+    const projected = normalizeFact(fact);
+    if (projected) selected.push(projected);
+  }
+  return selected.length ? selected : null;
 }
 
 function validatePlan(plan, scope, facts) {
@@ -246,7 +257,10 @@ function validatePlan(plan, scope, facts) {
     && plan.id === scope.planId && plan.planId === scope.planId
     && HASH.test(plan.planHash || "") && HASH.test(plan.sourceHash || "")
     && Array.isArray(plan.factRegistry)
-    && same(factEvidence(plan.factRegistry), factEvidence(facts));
+    && same(
+      factEvidence(plan.factRegistry, { promptSafe: false }),
+      factEvidence(facts, { promptSafe: false }),
+    );
 }
 
 function bindingMatchesFact(binding, fact) {
@@ -404,8 +418,8 @@ export function validateRichContent(input = {}) {
   });
 }
 
-function factEvidence(facts) {
-  const normalized = facts.map(normalizeFact);
+function factEvidence(facts, options = undefined) {
+  const normalized = facts.map((fact) => normalizeFact(fact, options));
   if (normalized.some((fact) => fact === null)) throw richError("AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
   return normalized.map(({ factId, field, kind, value, numericValue, unit, sourcePath }) => ({
     factId, field, kind, value, numericValue, unit, ...(sourcePath === undefined ? {} : { sourcePath }),
@@ -583,7 +597,8 @@ export function buildRichContentEvidenceIdentity(input = {}) {
 
 export function buildRichContentPrompt(input = {}) {
   const scope = Object.fromEntries(SCOPE_KEYS.map((key) => [key, input[key]]));
-  if (!SCOPE_KEYS.every((key) => clean(scope[key], 240)) || !validateFacts(input.factRegistry)
+  if (!SCOPE_KEYS.every((key) => clean(scope[key], 240))
+    || !validateFacts(input.factRegistry, { promptSafe: false })
     || !validatePlan(input.plan, scope, input.factRegistry)
     || input.planHash !== input.plan.planHash || input.sourceHash !== input.plan.sourceHash
     || !validateAssets(input.acceptedAssets, scope, input.plan, input.profile)
@@ -695,7 +710,8 @@ function assertGenerationInput(input) {
     || !clean(input.profile.id, 240) || input.profile.accountId !== input.accountId
     || !Number.isInteger(input.profile.configVersion) || input.profile.configVersion < 1
     || !clean(input.profile.textModel, 240) || !clean(input.promptTemplateVersion, 240)
-    || !validateFacts(input.factRegistry) || !validatePlan(input.plan, scope, input.factRegistry)
+    || !validateFacts(input.factRegistry, { promptSafe: false })
+    || !validatePlan(input.plan, scope, input.factRegistry)
     || input.planHash !== input.plan.planHash || input.sourceHash !== input.plan.sourceHash
     || !validateAssets(input.acceptedAssets, scope, input.plan, input.profile)) {
     throw richError("AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");

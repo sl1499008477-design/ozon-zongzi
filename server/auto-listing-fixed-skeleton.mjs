@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { types } from "node:util";
+import { isAutoListingCreativeFact } from "./auto-listing-creative-facts.mjs";
 
 const ROLE_ORDER = Object.freeze(["MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION"]);
 const ROLE_KEYS = new Set(ROLE_ORDER);
@@ -312,7 +313,8 @@ export function buildFixedSkeleton({ plannerContext } = {}) {
   const slots = [];
   const allowedClaimsBySlot = Object.create(null);
   for (const { group, facts, referenceAssetIds } of groups) {
-    const claimableFacts = facts.map((fact) => ({ ...fact, claimText: claimTextForFact(fact) }))
+    const claimableFacts = facts.filter(isAutoListingCreativeFact)
+      .map((fact) => ({ ...fact, claimText: claimTextForFact(fact) }))
       .filter((fact) => fact.claimText && !prohibitedClaimText(fact.claimText));
     const identityAnchor = claimableFacts.find((fact) => fact.kind === "IDENTITY_NAME") || claimableFacts[0];
     let order = 1;

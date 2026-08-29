@@ -54,7 +54,7 @@ test("Task 11 delivery pins the executable composition suite and rollout invaria
   ]) assert.match(runbook, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   const migrations = (await readdir(migrationsDir)).filter((name) => /^\d{3}_.+\.sql$/u.test(name)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "099_auto_listing_ai_message_v2.sql");
+  assert.equal(migrations.at(-1), "100_auto_listing_rich_phone_boundary.sql");
   assert.equal(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version, "0.13.46.27-local");
 });
 
@@ -299,7 +299,7 @@ if (!enabled) {
       await admin.query(`SET search_path TO ${quote(schema)}, public`);
       const migrations = (await readdir(migrationsDir)).filter((name) => /^\d{3}_.+\.sql$/u.test(name)).sort();
       assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-      assert.equal(migrations.at(-1), "099_auto_listing_ai_message_v2.sql");
+      assert.equal(migrations.at(-1), "100_auto_listing_rich_phone_boundary.sql");
       for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       const accountId = `account-a-${suffix}`;
       const foreignAccountId = `account-b-${suffix}`;

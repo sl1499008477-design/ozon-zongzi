@@ -191,6 +191,46 @@ test("facts whose copy is prohibited never enter fixed-skeleton claim candidates
   assert.doesNotMatch(JSON.stringify(buildContentPlanFillSchema(skeleton)), /Гарантия|fact\.attribute\.warranty/iu);
 });
 
+test("historical planner contexts cannot expose Ozon listing-only fields as image claims", () => {
+  const plannerContext = context(roles.eight, {
+    factRegistry: [
+      ...context().plannerInput.factRegistry,
+      {
+        factId: "fact.attribute.9048.0",
+        kind: "ATTRIBUTE:internal-model",
+        value: "Название модели (для объединения в одну карточку): 019d2e6c74ed7ca59b6e879584910440",
+        sourcePath: "attributes[0].values[0]",
+        visualGroupKeys: [],
+      },
+      {
+        factId: "fact.attribute.7822.0",
+        kind: "ATTRIBUTE:article",
+        value: "Артикул: 3726236911",
+        sourcePath: "attributes[1].values[0]",
+        visualGroupKeys: [],
+      },
+      {
+        factId: "fact.attribute.8145.0",
+        kind: "ATTRIBUTE:power",
+        value: "Мощность, Вт: 20",
+        sourcePath: "attributes[2].values[0]",
+        visualGroupKeys: [],
+      },
+    ],
+  });
+  plannerContext.plannerInput.promptTemplateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  plannerContext.plannerInput.textDensityByRole = {
+    ...plannerContext.plannerInput.textDensityByRole,
+    MAIN: "HEAVY",
+  };
+
+  const skeleton = buildFixedSkeleton({ plannerContext });
+  const claimCandidates = JSON.stringify(skeleton.allowedClaimsBySlot);
+
+  assert.doesNotMatch(claimCandidates, /fact\.attribute\.(?:9048|7822)\.|019d2e6c74ed7ca59b6e879584910440|3726236911/u);
+  assert.match(claimCandidates, /fact\.attribute\.8145\.0|Мощность, Вт: 20/u);
+});
+
 test("fixed skeleton rejects zero visual groups but keeps a copy-free documentary slot without facts", () => {
   assert.throws(() => buildFixedSkeleton({ plannerContext: context(roles.eight, { visualGroups: [] }) }), {
     code: "AUTO_LISTING_FIXED_SKELETON_VISUAL_GROUP_UNSUPPORTED",

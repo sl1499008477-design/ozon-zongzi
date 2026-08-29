@@ -496,6 +496,50 @@ test("seller-contact policy does not match contact stems inside legitimate Russi
   assert.equal((await validation(content)).valid, true);
 });
 
+test("phone policy does not match phone-like digits inside a cited alphanumeric model ID", async () => {
+  const { validateRichContentDocument } = await richModule();
+  const modelFact = {
+    factId: "fact.model.alphanumeric",
+    field: "identity.model",
+    kind: "MODEL",
+    value: "Модель A87958491044Z",
+    numericValue: null,
+    unit: null,
+    sourcePath: "identity.model",
+  };
+  const documentAssets = Array.from({ length: 6 }, (_, index) => ({
+    id: `model-asset-${index + 1}`,
+    ...scope,
+    status: "ACCEPTED",
+    role: index === 0 ? "MAIN" : "SELLING_POINT",
+    visualGroupKey: "group-a",
+  }));
+  const factBinding = {
+    sourceFactId: modelFact.factId,
+    field: modelFact.field,
+    value: modelFact.value,
+    numericValue: null,
+    unit: null,
+  };
+
+  const result = validateRichContentDocument({
+    scope,
+    factRegistry: [modelFact],
+    acceptedAssets: documentAssets,
+    richContent: {
+      version: "AUTO_LISTING_RICH_CONTENT_V1",
+      language: "ru",
+      blocks: [
+        { type: "HERO_IMAGE", assetId: documentAssets[0].id },
+        { type: "HEADING", text: modelFact.value, sourceFactIds: [modelFact.factId], factBindings: [factBinding] },
+        { type: "TEXT", text: modelFact.value, sourceFactIds: [modelFact.factId], factBindings: [factBinding] },
+      ],
+    },
+  });
+
+  assert.equal(result.valid, true);
+});
+
 for (const phrase of ["Теплообменник", "безотзывный механизм", "немедицинский прибор"]) {
   test(`word policy does not match a prohibited stem inside the legitimate compound: ${phrase}`, async () => {
     const content = validContent();
@@ -913,6 +957,57 @@ test("rich content accepts the trusted derived dimensions source path produced b
   assert.doesNotThrow(() => buildRichContentPrompt(input));
 });
 
+test("rich content keeps a long alphanumeric model identifier that only contains phone-like digits", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const input = { ...context(), profile, promptTemplateVersion: "rich-v1" };
+  const modelValue = "019d2e6c74ed7ca59b6e879584910440";
+  input.factRegistry.find((fact) => fact.factId === "fact.model").value = modelValue;
+  input.plan.factRegistry.find((fact) => fact.factId === "fact.model").value = modelValue;
+  for (const acceptedAsset of input.acceptedAssets) {
+    acceptedAsset.checkerEvidence.sourceFacts.find((fact) => fact.factId === "fact.model").value = modelValue;
+  }
+
+  const { prompt } = buildRichContentPrompt(input);
+
+  assert.match(prompt, new RegExp(modelValue, "u"));
+});
+
+test("rich content omits Ozon operational and contact facts without invalidating accepted images", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const input = { ...context(), profile, promptTemplateVersion: "rich-v1" };
+  const internalModelFact = {
+    factId: "fact.attribute.9048.0",
+    field: "attributes[0].values[0]#dictionaryValueId=0",
+    kind: "ATTRIBUTE:internal-model",
+    value: "Название модели (для объединения в одну карточку): 019d2e6c74ed7ca59b6e879584910440",
+    numericValue: null,
+    unit: null,
+    sourcePath: "attributes[0].values[0]#dictionaryValueId=0",
+  };
+  const contactFact = {
+    factId: "fact.attribute.support.0",
+    field: "attributes[1].values[0]",
+    kind: "ATTRIBUTE:support",
+    value: "Телефон поддержки: +7 999 123-45-67",
+    numericValue: null,
+    unit: null,
+    sourcePath: "attributes[1].values[0]",
+  };
+  for (const fact of [internalModelFact, contactFact]) {
+    input.factRegistry.push(structuredClone(fact));
+    input.plan.factRegistry.push({ ...structuredClone(fact), visualGroupKeys: ["group-a"] });
+    for (const acceptedAsset of input.acceptedAssets) {
+      acceptedAsset.checkerEvidence.sourceFacts.push(structuredClone(fact));
+    }
+  }
+
+  const { prompt } = buildRichContentPrompt(input);
+
+  assert.match(prompt, /fact\.brand|нержавеющая сталь/u);
+  assert.doesNotMatch(prompt, /fact\.attribute\.9048|019d2e6c74ed7ca59b6e879584910440/u);
+  assert.doesNotMatch(prompt, /fact\.attribute\.support|\+7 999 123-45-67/u);
+});
+
 test("every prompt-projected fact and asset string rejects URL contact and credential-like values", async () => {
   const { buildRichContentPrompt } = await richModule();
   const cases = [
@@ -951,21 +1046,22 @@ function replaceProjectedMaterialValue(input, value) {
   }
 }
 
-for (const [label, mutate] of [
+for (const [label, mutate, forbidden] of [
   ["credential-shaped unit", (input) => {
     input.factRegistry.find((entry) => entry.factId === "fact.capacity").unit = "Bearer opaque-token-value";
     input.plan.factRegistry.find((entry) => entry.factId === "fact.capacity").unit = "Bearer opaque-token-value";
-  }],
-  ["bare domain", (input) => replaceProjectedMaterialValue(input, "private.example.com")],
-  ["international phone", (input) => replaceProjectedMaterialValue(input, "+44 20 7946 0958")],
-  ["Bearer token without a colon", (input) => replaceProjectedMaterialValue(input, "Bearer opaque-token-value")],
+  }, /fact\.capacity|Bearer opaque-token-value/u],
+  ["bare domain", (input) => replaceProjectedMaterialValue(input, "private.example.com"), /fact\.material|private\.example\.com/u],
+  ["international phone", (input) => replaceProjectedMaterialValue(input, "+44 20 7946 0958"), /fact\.material|\+44 20 7946 0958/u],
+  ["Bearer token without a colon", (input) => replaceProjectedMaterialValue(input, "Bearer opaque-token-value"), /fact\.material|Bearer opaque-token-value/u],
 ]) {
-  test(`prompt projection rejects ${label} before reservation`, async () => {
+  test(`prompt projection omits ${label} without blocking the remaining trusted facts`, async () => {
     const { buildRichContentPrompt } = await richModule();
     const input = { ...context(), profile, promptTemplateVersion: "rich-v1" };
     mutate(input);
-    assert.throws(() => buildRichContentPrompt(input),
-      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
+    const { prompt } = buildRichContentPrompt(input);
+    assert.match(prompt, /fact\.brand/u);
+    assert.doesNotMatch(prompt, forbidden);
   });
 }
 

@@ -10,7 +10,7 @@ const migrationPath = path.join(migrationsDir, "076_auto_listing_category_strate
 test("076 adds append-only AI/manual result provenance without changing 075", async () => {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "099_auto_listing_ai_message_v2.sql");
+  assert.equal(migrations.at(-1), "100_auto_listing_rich_phone_boundary.sql");
   const sql = await readFile(migrationPath, "utf8");
   for (const token of [
     "source_kind", "edited_by", "edited_at", "base_analysis_attempt_id", "AI", "MANUAL",

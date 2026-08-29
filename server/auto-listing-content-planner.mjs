@@ -6,6 +6,10 @@ import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.
 import { buildVisualGroups, verifyVisualGroupsCapture } from "./auto-listing-visual-groups.mjs";
 import { normalizeAutoListingTextDensityByRole } from "./auto-listing-text-density-contract.mjs";
 import {
+  isAutoListingCreativeAttributeId,
+  isAutoListingCreativeFact,
+} from "./auto-listing-creative-facts.mjs";
+import {
   AUTO_LISTING_CONTENT_PLAN_VALIDATOR_VERSION,
   createContentPlanDiagnoser,
 } from "./auto-listing-content-plan-validator.mjs";
@@ -62,9 +66,6 @@ const ATTRIBUTE_C_VALUE_KEYS = new Set(["value", "dictionary_value_id"]);
 const ATTRIBUTE_EDIT_KEYS = new Set(["id", "name", "value", "values", "required", "dictionaryId", "multiple"]);
 const ATTRIBUTE_VALUE_CAMEL_KEYS = new Set(["value", "dictionaryValueId"]);
 const ATTRIBUTE_VALUE_ONLY_KEYS = new Set(["value"]);
-const EXCLUDED_ATTRIBUTE_IDS = new Set([
-  "85", "4180", "4191", "4194", "4195", "4497", "9454", "9455", "9456", "11254",
-]);
 const MATCHED_BY = new Set(["EXACT_CATEGORY_TYPE_V2", "EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"]);
 const STRATEGY_DIAGNOSTICS = new Set([
   "CATEGORY_STRATEGY_COUNT_INSTRUCTION_IGNORED",
@@ -513,7 +514,7 @@ function factRegistry(snapshot, groups, productDimensions) {
   });
   snapshot.attributes.forEach((attribute, attributeIndex) => {
     const candidateId = attributeIdentifier(attribute?.attributeId ?? attribute?.key ?? attribute?.id);
-    if (EXCLUDED_ATTRIBUTE_IDS.has(candidateId)) {
+    if (candidateId && !isAutoListingCreativeAttributeId(candidateId)) {
       reasonCodes.push("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED");
       return;
     }
@@ -522,14 +523,21 @@ function factRegistry(snapshot, groups, productDimensions) {
       reasonCodes.push("UNSUPPORTED_ATTRIBUTE_EVIDENCE_IGNORED");
       return;
     }
-    projection.forEach(({ attributeId, dictionaryValueId, value, sourcePath }, valueIndex) => addFact(registry, {
-      factId: `fact.attribute.${attributeId}.${valueIndex}`,
-      kind: attributeFactKind(attributeId),
-      value,
-      sourcePath,
-      dictionaryValueId,
-      visualGroupKeys: [],
-    }));
+    projection.forEach(({ attributeId, dictionaryValueId, value, sourcePath }, valueIndex) => {
+      const fact = {
+        factId: `fact.attribute.${attributeId}.${valueIndex}`,
+        kind: attributeFactKind(attributeId),
+        value,
+        sourcePath,
+        dictionaryValueId,
+        visualGroupKeys: [],
+      };
+      if (!isAutoListingCreativeFact(fact)) {
+        reasonCodes.push("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED");
+        return;
+      }
+      addFact(registry, fact);
+    });
   });
   const combinedDimensions = combinedDimensionFact([...registry.values()]);
   if (combinedDimensions) addFact(registry, combinedDimensions);
