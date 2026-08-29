@@ -65,6 +65,21 @@ function hash(value) {
   return crypto.createHash("sha256").update(serialized).digest("hex");
 }
 
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === "object") {
+    if (typeof value.toJSON === "function") return canonicalJsonValue(value.toJSON());
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]),
+    );
+  }
+  return value;
+}
+
+function canonicalHash(value) {
+  return hash(canonicalJsonValue(value));
+}
+
 function stableId(prefix, ...parts) {
   return `${prefix}_${hash(parts.map((part) => String(part ?? "")).join("|" )).slice(0, 24)}`;
 }
@@ -463,7 +478,7 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
     const rawHash = clean(context.contentHash, 128) || hash(rawPayload);
     const rawId = stableId("raw", collectId, rawHash);
     const draft = buildCollectItemDraftV4(item);
-    const draftHash = hash(draftHashValue(draft));
+    const draftHash = canonicalHash(draftHashValue(draft));
     const draftId = stableId("draft", collectId);
     const accountExists = await client.query("SELECT 1 FROM accounts WHERE id=$1", [accountId]);
     if (!accountExists.rowCount) {
@@ -535,7 +550,10 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
       });
     }
 
-    const current = await client.query("SELECT version, data_hash FROM product_drafts WHERE id = $1 FOR UPDATE", [draftId]);
+    const current = await client.query(
+      "SELECT version, data_hash, data FROM product_drafts WHERE id = $1 FOR UPDATE",
+      [draftId],
+    );
     let version = Number(current.rows[0]?.version || 0);
     const expectedVersion = context.expectedVersion === undefined || context.expectedVersion === null
       ? null
@@ -546,7 +564,10 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
       error.status = 409;
       throw error;
     }
-    const changed = !current.rows[0] || current.rows[0].data_hash !== draftHash;
+    const changed = !current.rows[0] || (
+      current.rows[0].data_hash !== draftHash
+      && canonicalHash(draftHashValue(current.rows[0].data)) !== draftHash
+    );
     if (!current.rows[0]) {
       version = 1;
       await client.query(

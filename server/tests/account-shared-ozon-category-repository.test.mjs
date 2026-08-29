@@ -923,9 +923,10 @@ const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
 
 async function migrationFiles() {
   const files = (await readdir(migrationsDir))
-    .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= 72)
+    .filter((file) => /^\d{3}_.+\.sql$/u.test(file)
+      && (Number(file.slice(0, 3)) <= 72 || file === "101_manual_category_confirmation_product_revision.sql"))
     .sort();
-  assert.equal(files.at(-1), "072_account_shared_category_confirmation_audit_provenance.sql");
+  assert.equal(files.at(-1), "101_manual_category_confirmation_product_revision.sql");
   return files;
 }
 
@@ -1026,6 +1027,12 @@ if (!postgresEnabled) {
             (id,collect_item_id,source_payload_id,version,data_hash,data,updated_by)
            VALUES ($1,$2,$3,1,$4,'{}'::jsonb,$5)`,
           [unresolvedDraftId, unresolvedCollectItemId, unresolvedRawId, HASH_B, accountId],
+        );
+        await client.query(
+          `INSERT INTO product_draft_revisions
+            (id,draft_id,version,data_hash,data,changed_by,change_reason)
+           VALUES ($1,$2,1,$3,'{}'::jsonb,$4,'test source revision')`,
+          [`revision-unresolved-${suffix}`, unresolvedDraftId, HASH_B, accountId],
         );
         await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3",
           [unresolvedDraftId, accountId, unresolvedCollectItemId]);
@@ -1213,6 +1220,24 @@ if (!postgresEnabled) {
         [accountId],
       )).rows[0].count, 4, "each manual confirmation appends a distinct source observation");
 
+      await scoped.query(
+        `INSERT INTO product_draft_revisions
+          (id,draft_id,version,data_hash,data,changed_by,change_reason)
+         VALUES ($1,$2,2,$3,'{}'::jsonb,$4,'test later revision')`,
+        [`revision-unresolved-v2-${suffix}`, unresolvedDraftId, HASH_A, accountId],
+      );
+      await assert.doesNotReject(scoped.query(
+        "UPDATE product_drafts SET version=2,data_hash=$2 WHERE id=$1",
+        [unresolvedDraftId, HASH_A],
+      ));
+      assert.deepEqual((await scoped.query(
+        `SELECT trigger_product_draft_version
+           FROM collect_ozon_category_manual_confirmation_evidence
+          WHERE account_id=$1 AND collect_item_id=$2
+          ORDER BY captured_at,id`,
+        [accountId, unresolvedCollectItemId],
+      )).rows.map((row) => Number(row.trigger_product_draft_version)), [1, 1]);
+
       const lookup = await repository.recordSourceEvidence(lookupEvidence({
         accountId, collectItemId, sku: `SKU-${suffix}`,
         triggerProductDraftId: draftId, triggerProductDraftVersion: 7,
@@ -1319,6 +1344,12 @@ if (!postgresEnabled) {
           (id,collect_item_id,source_payload_id,version,data_hash,data,updated_by)
          VALUES ($1,$2,$3,1,$4,'{}'::jsonb,$5)`,
         [foreignDraftId, foreignCollectItemId, foreignRawId, HASH_B, foreignAccountId],
+      );
+      await scoped.query(
+        `INSERT INTO product_draft_revisions
+          (id,draft_id,version,data_hash,data,changed_by,change_reason)
+         VALUES ($1,$2,1,$3,'{}'::jsonb,$4,'test foreign source revision')`,
+        [`revision-foreign-${suffix}`, foreignDraftId, HASH_B, foreignAccountId],
       );
       await scoped.query("UPDATE collect_items SET current_draft_id=$1 WHERE id=$2",
         [foreignDraftId, foreignCollectItemId]);

@@ -309,8 +309,8 @@ test("PostgreSQL success transaction samples the terminal clock after connection
           if (normalized.startsWith("INSERT INTO collect_items")) {
             return { rows: [{ id: "collect-delayed-terminal" }], rowCount: 1 };
           }
-          if (normalized.startsWith("SELECT version, data_hash FROM product_drafts")) {
-            return { rows: [{ version: 3, data_hash: "old" }], rowCount: 1 };
+          if (normalized.startsWith("SELECT version, data_hash, data FROM product_drafts")) {
+            return { rows: [{ version: 3, data_hash: "old", data: {} }], rowCount: 1 };
           }
           if (
             normalized.startsWith("UPDATE product_drafts SET")
