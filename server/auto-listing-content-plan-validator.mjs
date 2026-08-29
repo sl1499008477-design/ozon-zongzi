@@ -16,7 +16,8 @@ const SLOT_KEYS_V1 = new Set([
 ]);
 const SLOT_KEYS_V2 = new Set([...SLOT_KEYS_V1, "requestedRole", "substitutionReasonCode"]);
 const CLAIM_KEYS = new Set(["text", "claimType", "sourceFactIds"]);
-const ROLE_ORDER = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
+const ROLE_ORDER = ["MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION"];
+const LEGACY_ROLE_ORDER = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
 const SECRET_LIKE = /(?:api[_-]?key|password|passwd|secret|bearer|authorization|cookie|credential|private[_-]?key|access[_-]?token|refresh[_-]?token|sk-(?:proj-)?)/iu;
 
 class CarrierInvalid extends Error {}
@@ -196,11 +197,17 @@ function textUsesEvidence(claim, facts) {
   });
 }
 
-function expectedSlots(input) {
+function roleOrderFor(input) {
+  return input?.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
+    ? ROLE_ORDER
+    : LEGACY_ROLE_ORDER;
+}
+
+function expectedSlots(input, roleOrder) {
   const slots = [];
   for (const group of input.visualGroups || []) {
     let order = 1;
-    for (const role of ROLE_ORDER) {
+    for (const role of roleOrder) {
       const count = Number.isSafeInteger(input.requestedRoleCounts?.[role]) ? input.requestedRoleCounts[role] : 0;
       const substitutions = Array.isArray(input.roleSubstitutions)
         ? input.roleSubstitutions.filter((entry) => entry?.actualRole === role) : [];
@@ -238,13 +245,14 @@ function collectIssues(plan, plannerContext) {
   if (plan.version === 1 && Array.isArray(input.roleSubstitutions) && input.roleSubstitutions.length) {
     addIssue(issues, { code: "CONTENT_PLAN_SHAPE_INVALID", field: "version", expected: 2, actual: plan.version });
   }
-  const expected = expectedSlots(input);
+  const roleOrder = roleOrderFor(input);
+  const expected = expectedSlots(input, roleOrder);
   if (plan.slots.length !== expected.length) addIssue(issues, {
     code: "SLOT_COUNT_MISMATCH", field: "slots", expected: expected.length, actual: plan.slots.length,
   });
   const facts = new Map(input.factRegistry.map((fact) => [fact?.factId, fact]));
   const groups = new Map(input.visualGroups.map((group) => [group?.visualGroupKey, group]));
-  const actualRoleCounts = new Map([...groups.keys()].map((key) => [key, Object.fromEntries(ROLE_ORDER.map((role) => [role, 0]))]));
+  const actualRoleCounts = new Map([...groups.keys()].map((key) => [key, Object.fromEntries(roleOrder.map((role) => [role, 0]))]));
   for (let index = 0; index < plan.slots.length && issues.length < MAX_ISSUES; index += 1) {
     const slot = plan.slots[index];
     const expectedSlot = expected[index];
@@ -273,7 +281,7 @@ function collectIssues(plan, plannerContext) {
     if (expectedSlot && (slot.slotKey !== expectedSlot.slotKey || slot.visualGroupKey !== expectedSlot.visualGroupKey)) {
       addIssue(issues, { code: "SLOT_IDENTITY_MISMATCH", slotKey, field: "slotKey", expected: expectedSlot.slotKey, actual: slot.slotKey });
     }
-    if (actualRoleCounts.has(slot.visualGroupKey) && ROLE_ORDER.includes(slot.role)) {
+    if (actualRoleCounts.has(slot.visualGroupKey) && roleOrder.includes(slot.role)) {
       actualRoleCounts.get(slot.visualGroupKey)[slot.role] += 1;
     }
     const group = groups.get(slot.visualGroupKey);
@@ -358,7 +366,7 @@ function collectIssues(plan, plannerContext) {
     });
   }
   for (const [groupKey, counts] of actualRoleCounts) {
-    for (const role of ROLE_ORDER) if (counts[role] !== input.requestedRoleCounts?.[role]) addIssue(issues, {
+    for (const role of roleOrder) if (counts[role] !== input.requestedRoleCounts?.[role]) addIssue(issues, {
       code: "ROLE_COUNT_MISMATCH", slotKey: null, field: "role", expected: `${groupKey}:${role}:${input.requestedRoleCounts?.[role]}`, actual: counts[role],
     });
   }

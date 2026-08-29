@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { isIP } from "node:net";
 
-export const AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION = "V1";
+export const AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION = "V2";
+const SUPPORTED_CONTRACT_VERSIONS = new Set(["V1", AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION]);
 export const AUTO_LISTING_AI_MESSAGE_MAX_UTF8_BYTES = 2_048;
 export const AUTO_LISTING_AI_PHASES = Object.freeze([
   "PLAN_CONTENT",
@@ -81,7 +82,7 @@ export function normalizeAutoListingAiMessage(input) {
     const value = snapshotOwnData(input);
     const contractVersion = value.contractVersion;
     const phase = value.phase;
-    if (contractVersion !== AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION || !Object.hasOwn(PHASE_KEY, phase)) throw invalid();
+    if (!SUPPORTED_CONTRACT_VERSIONS.has(contractVersion) || !Object.hasOwn(PHASE_KEY, phase)) throw invalid();
     const phaseKey = PHASE_KEY[phase];
     const keys = phaseKey ? [...COMMON_KEYS, phaseKey] : COMMON_KEYS;
     if (!exactKeys(value, keys)

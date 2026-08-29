@@ -341,7 +341,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
              FROM auto_listing_ai_outbox AS o
              JOIN auto_listing_job_items AS i
                ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id${frozenLegacyJoin}
-            WHERE o.account_id=$1 AND o.contract_version='V1' AND o.state='DEAD'
+            WHERE o.account_id=$1 AND o.contract_version IN ('V1','V2') AND o.state='DEAD'
               AND o.dispatch_contract_version IS NULL
               AND i.status_version=o.expected_status_version
               AND ((o.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','FINALIZE_MATERIALIZED_PLAN')
@@ -395,7 +395,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
          JOIN ai_gateway_profiles AS profile
            ON profile.account_id=job.account_id AND profile.id=job.ai_profile_id
           AND profile.config_version=job.ai_profile_version
-         WHERE outbox.contract_version='V1'
+         WHERE outbox.contract_version IN ('V1','V2')
            AND ($1::TEXT IS NULL OR outbox.account_id > $1)
            AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW()
                  AND (profile.connection_id IS NOT NULL
@@ -477,7 +477,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
               AND EXISTS (
                 SELECT 1 FROM auto_listing_ai_outbox AS done
                  WHERE done.account_id=i.account_id AND done.job_id=i.job_id AND done.item_id=i.id
-                   AND done.contract_version='V1' AND done.state='COMPLETED'
+                   AND done.contract_version IN ('V1','V2') AND done.state='COMPLETED'
                    AND done.dispatch_contract_version IS NULL
                    AND done.expected_status_version=i.status_version
                    AND done.published_at <= NOW()-INTERVAL '3 hours'
@@ -485,7 +485,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
               AND NOT EXISTS (
                 SELECT 1 FROM auto_listing_ai_outbox AS live
                  WHERE live.account_id=i.account_id AND live.job_id=i.job_id AND live.item_id=i.id
-                   AND live.contract_version='V1' AND live.expected_status_version=i.status_version
+                   AND live.contract_version IN ('V1','V2') AND live.expected_status_version=i.status_version
                    AND live.state IN ('PENDING','PROCESSING')
               )
             ORDER BY i.updated_at,i.id
@@ -560,7 +560,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
       let row = mapRow(inserted.rows?.[0]);
       if (!row) {
         const existing = await query(
-          "SELECT * FROM auto_listing_ai_outbox WHERE account_id=$1 AND dedupe_key=$2 AND contract_version='V1'",
+          "SELECT * FROM auto_listing_ai_outbox WHERE account_id=$1 AND dedupe_key=$2 AND contract_version IN ('V1','V2')",
           [message.accountId, dedupeKey],
         );
         row = mapRow(existing.rows?.[0]);
@@ -576,7 +576,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
       let cursor = null;
       if (request.afterId !== null) {
         const found = await query(
-          "SELECT created_at,id FROM auto_listing_ai_outbox WHERE account_id=$1 AND id=$2 AND contract_version='V1'",
+          "SELECT created_at,id FROM auto_listing_ai_outbox WHERE account_id=$1 AND id=$2 AND contract_version IN ('V1','V2')",
           [request.accountId, request.afterId],
         );
         cursor = found.rows?.[0] || null;
@@ -584,7 +584,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
       }
       const result = await query(
         `SELECT * FROM auto_listing_ai_outbox
-         WHERE account_id=$1 AND contract_version='V1'
+         WHERE account_id=$1 AND contract_version IN ('V1','V2')
            AND ($3::TIMESTAMPTZ IS NULL OR (created_at,id) > ($3::TIMESTAMPTZ,$4::TEXT))
          ORDER BY created_at,id LIMIT $2`,
         [request.accountId, request.limit, cursor?.created_at ?? null, cursor?.id ?? null],
@@ -617,7 +617,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
              UPDATE auto_listing_ai_outbox AS exhausted_outbox
                 SET state='DEAD',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
                     last_error_code='AUTO_LISTING_AI_LEASE_EXHAUSTED',dead_at=NOW(),next_retry_at=NULL,updated_at=NOW()
-              WHERE exhausted_outbox.account_id=$1 AND exhausted_outbox.contract_version='V1'
+              WHERE exhausted_outbox.account_id=$1 AND exhausted_outbox.contract_version IN ('V1','V2')
                 AND exhausted_outbox.dispatch_contract_version IS NULL
                 AND exhausted_outbox.state='PROCESSING'
                 AND exhausted_outbox.lease_expires_at <= NOW() AND exhausted_outbox.attempts >= $3
@@ -646,7 +646,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                  JOIN auto_listing_job_items AS item
                    ON item.account_id=outbox.account_id AND item.job_id=outbox.job_id AND item.id=outbox.item_id
                 WHERE outbox.account_id=job.account_id AND outbox.job_id=job.id
-                  AND outbox.contract_version='V1' AND outbox.dispatch_contract_version IS NULL
+                  AND outbox.contract_version IN ('V1','V2') AND outbox.dispatch_contract_version IS NULL
                   AND outbox.attempts < $3
                   AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW())
                     OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
@@ -659,7 +659,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                   AND NOT EXISTS (
                     SELECT 1 FROM auto_listing_ai_outbox AS live
                      WHERE live.account_id=outbox.account_id AND live.job_id=outbox.job_id
-                       AND live.id<>outbox.id AND live.contract_version='V1'
+                       AND live.id<>outbox.id AND live.contract_version IN ('V1','V2')
                        AND live.state='PROCESSING' AND live.lease_expires_at > NOW()
                   )
                 ORDER BY outbox.created_at,outbox.id
@@ -695,7 +695,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                       AND profile.config_version=frozen_job.ai_profile_version
                       AND profile.connection_id IS NULL
                     WHERE outbox.account_id=$1 AND outbox.job_id=locked.job_id
-                      AND outbox.contract_version='V1' AND outbox.dispatch_contract_version IS NULL
+                      AND outbox.contract_version IN ('V1','V2') AND outbox.dispatch_contract_version IS NULL
                       AND outbox.attempts < $5
                       AND ((outbox.state='PENDING' AND outbox.next_retry_at <= NOW())
                         OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
@@ -708,7 +708,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                       AND NOT EXISTS (
                         SELECT 1 FROM auto_listing_ai_outbox AS live
                          WHERE live.account_id=outbox.account_id AND live.job_id=outbox.job_id
-                           AND live.id<>outbox.id AND live.contract_version='V1'
+                           AND live.id<>outbox.id AND live.contract_version IN ('V1','V2')
                            AND live.state='PROCESSING' AND live.lease_expires_at > NOW()
                       )
                     ORDER BY outbox.created_at,outbox.id
@@ -810,7 +810,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                                  AND recoverable.job_id=assigned.assigned_job_id
                                  AND recoverable.item_id=assigned.assigned_item_id
                                  AND recoverable.expected_status_version=assigned.assigned_status_version
-                                 AND recoverable.contract_version='V1'
+                                 AND recoverable.contract_version IN ('V1','V2')
                                  AND recoverable.state IN ('PENDING','PROCESSING')
                             ))) AS stale
                    FROM auto_listing_ai_profile_channels AS assigned
@@ -868,7 +868,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                                    AND recoverable.job_id=candidate.assigned_job_id
                                    AND recoverable.item_id=candidate.assigned_item_id
                                    AND recoverable.expected_status_version=candidate.assigned_status_version
-                                   AND recoverable.contract_version='V1'
+                                   AND recoverable.contract_version IN ('V1','V2')
                                    AND recoverable.state IN ('PENDING','PROCESSING')
                               ))
                         )
@@ -883,7 +883,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                   LIMIT 1
                   FOR UPDATE OF candidate SKIP LOCKED
                ) AS channel ON TRUE
-              WHERE outbox.account_id=$1 AND outbox.contract_version='V1'
+              WHERE outbox.account_id=$1 AND outbox.contract_version IN ('V1','V2')
                 AND ((outbox.state='PENDING' AND COALESCE(outbox.next_retry_at,outbox.available_at) <= NOW())
                   OR (outbox.state='PROCESSING' AND outbox.lease_expires_at <= NOW()))
                 AND item.status_version=outbox.expected_status_version
@@ -895,7 +895,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                   SELECT 1 FROM auto_listing_ai_outbox AS live
                    WHERE live.account_id=outbox.account_id AND live.job_id=outbox.job_id
                      AND live.item_id=outbox.item_id AND live.id<>outbox.id
-                     AND live.contract_version='V1' AND live.state='PROCESSING'
+                     AND live.contract_version IN ('V1','V2') AND live.state='PROCESSING'
                      AND live.lease_expires_at > NOW()
                 )
               ORDER BY CASE WHEN channel.fixed THEN 0 ELSE 1 END,
@@ -935,7 +935,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
                        AND recoverable.job_id=stale.assigned_job_id
                        AND recoverable.item_id=stale.assigned_item_id
                        AND recoverable.expected_status_version=stale.assigned_status_version
-                       AND recoverable.contract_version='V1'
+                       AND recoverable.contract_version IN ('V1','V2')
                        AND recoverable.state IN ('PENDING','PROCESSING')
                   ))
                 RETURNING channel_id`,
@@ -1212,7 +1212,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
         `UPDATE auto_listing_ai_outbox
          SET lease_expires_at=NOW()+($6 * INTERVAL '1 millisecond'),updated_at=NOW()
          WHERE account_id=$1 AND id=$2 AND item_id=$3 AND lease_owner=$4 AND lease_token=$5
-           AND contract_version='V1' AND dispatch_contract_version IS NULL
+           AND contract_version IN ('V1','V2') AND dispatch_contract_version IS NULL
            AND state='PROCESSING' AND lease_expires_at > NOW()
            AND EXISTS (
              SELECT 1 FROM auto_listing_jobs AS frozen_job
@@ -1236,7 +1236,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
          SET state='COMPLETED',publication_id=dedupe_key,published_at=NOW(),next_retry_at=NULL,
            lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,last_error_code=NULL,last_error_safe=NULL,updated_at=NOW()
          WHERE account_id=$1 AND id=$2 AND item_id=$3 AND lease_owner=$4 AND lease_token=$5
-           AND contract_version='V1' AND dispatch_contract_version IS NULL
+           AND contract_version IN ('V1','V2') AND dispatch_contract_version IS NULL
            AND state='PROCESSING' AND lease_expires_at > NOW()
            AND EXISTS (
              SELECT 1 FROM auto_listing_jobs AS frozen_job
@@ -1263,7 +1263,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
              LEAST($8 * POWER(2,LEAST(GREATEST(attempts-1,0),30)),$9) * INTERVAL '1 millisecond') END,
            dead_at=CASE WHEN attempts >= $6 THEN NOW() ELSE NULL END,updated_at=NOW()
          WHERE account_id=$1 AND id=$2 AND item_id=$3 AND lease_owner=$4 AND lease_token=$5
-           AND contract_version='V1' AND dispatch_contract_version IS NULL
+           AND contract_version IN ('V1','V2') AND dispatch_contract_version IS NULL
            AND state='PROCESSING' AND lease_expires_at > NOW()
            AND EXISTS (
              SELECT 1 FROM auto_listing_jobs AS frozen_job
@@ -1287,7 +1287,7 @@ export function createPostgresAiOutboxRepository(rawOptions = {}) {
          SET state='DEAD',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
            last_error_code=$6,last_error_safe=NULL,next_retry_at=NULL,dead_at=NOW(),updated_at=NOW()
          WHERE account_id=$1 AND id=$2 AND item_id=$3 AND lease_owner=$4 AND lease_token=$5
-           AND contract_version='V1' AND dispatch_contract_version IS NULL
+           AND contract_version IN ('V1','V2') AND dispatch_contract_version IS NULL
            AND state='PROCESSING' AND lease_expires_at > NOW()
            AND EXISTS (
              SELECT 1 FROM auto_listing_jobs AS frozen_job

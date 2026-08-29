@@ -5,7 +5,7 @@ import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const BRAND_MODES = new Set(["PREFER_SOURCE", "FORCE_NO_BRAND"]);
-const CURRENT_IMAGE_DEFAULTS_VERSION = 2;
+const CURRENT_IMAGE_DEFAULTS_VERSION = 3;
 
 function preferenceError(code, status = 422, retryable = false) {
   const error = new Error(code === "AUTO_LISTING_PREFERENCES_PERSIST_FAILED"

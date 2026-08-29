@@ -33,7 +33,7 @@ const BRAND_MODES = new Set(["PREFER_SOURCE", "FORCE_NO_BRAND"]);
 
 const ROLE_RANGES = {
   main: [1, 1],
-  sellingPoint: [2, 5],
+  sellingPoint: [1, 5],
   detail: [1, 2],
   scene: [1, 2],
   specification: [0, 1],
@@ -47,10 +47,10 @@ const DEFAULT_IMAGE = {
   language: "ru",
   roles: {
     main: 1,
-    sellingPoint: 2,
+    sellingPoint: 1,
     detail: 1,
     scene: 1,
-    specification: 0,
+    specification: 1,
     infographic: 1,
   },
 };

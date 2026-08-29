@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import {
+  AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION,
   autoListingAiMessageDedupeKey,
   canonicalizeAutoListingAiMessage,
   isSafeAutoListingAiIdentifier,
@@ -110,7 +111,8 @@ function plannedSlots(raw) {
 function retryMessage(value, phase, expectedStatusVersion, target = null, correlationId) {
   const key = phase === "GENERATE_IMAGE_SLOT" ? "slotKey" : null;
   return normalizeAutoListingAiMessage({
-    contractVersion: "V1", accountId: value.accountId, itemId: value.itemId,
+    contractVersion: AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION,
+    accountId: value.accountId, itemId: value.itemId,
     phase, expectedStatusVersion, correlationId, ...(key ? { [key]: target } : {}),
   });
 }
@@ -142,7 +144,7 @@ async function replay(client, value, eventId, idempotencyHash) {
   const outbox = await safeQuery(client,
     `SELECT phase,phase_target_id FROM auto_listing_ai_outbox
       WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND correlation_id=$4
-        AND expected_status_version=$5 AND contract_version='V1'`,
+        AND expected_status_version=$5 AND contract_version IN ('V1','V2')`,
     [value.accountId, value.jobId, value.itemId, row.correlation_id, row.transition_version]);
   const evidence = (outbox.rows || []).map((entry) => ({ phase: entry.phase, target: entry.phase_target_id ?? null }));
   if (evidence.length < 1 || JSON.stringify([...evidence].sort((a, b) =>
@@ -224,11 +226,11 @@ async function insertOutbox(client, value, message) {
        id,account_id,job_id,item_id,slot_key,event_type,dedupe_key,payload,state,attempts,available_at,
        contract_version,phase,phase_target_id,expected_status_version,correlation_id,next_retry_at
      ) VALUES ($1,$2,$3,$4,CASE WHEN $5='GENERATE_IMAGE_SLOT' THEN $7 ELSE NULL END,
-       $5,$6,$8::JSONB,'PENDING',0,NOW(),'V1',$5,$7,$9,$10,NOW())
+       $5,$6,$8::JSONB,'PENDING',0,NOW(),$11,$5,$7,$9,$10,NOW())
      ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`,
     [deterministicId("ai-outbox", dedupeKey), value.accountId, value.jobId, value.itemId,
       message.phase, dedupeKey, target, canonicalizeAutoListingAiMessage(message),
-      message.expectedStatusVersion, message.correlationId]);
+      message.expectedStatusVersion, message.correlationId, message.contractVersion]);
   if (result?.rowCount !== 1) throw conflict();
 }
 

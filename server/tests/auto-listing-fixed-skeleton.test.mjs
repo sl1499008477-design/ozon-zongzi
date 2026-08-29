@@ -9,9 +9,18 @@ import {
 } from "../auto-listing-fixed-skeleton.mjs";
 
 const roles = Object.freeze({
-  six: { MAIN: 1, SELLING_POINT: 2, DETAIL: 1, SCENE: 1, SPECIFICATION: 0, INFOGRAPHIC: 1 },
+  six: { MAIN: 1, SELLING_POINT: 1, INFOGRAPHIC: 1, SCENE: 1, DETAIL: 1, SPECIFICATION: 1 },
   eight: { MAIN: 1, SELLING_POINT: 3, DETAIL: 1, SCENE: 1, SPECIFICATION: 1, INFOGRAPHIC: 1 },
   thirteen: { MAIN: 1, SELLING_POINT: 5, DETAIL: 2, SCENE: 2, SPECIFICATION: 1, INFOGRAPHIC: 2 },
+});
+const approvedRoleOrder = Object.freeze([
+  "MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION",
+]);
+
+test("the approved six-image baseline follows the conversion-impact sequence", () => {
+  const skeleton = buildFixedSkeleton({ plannerContext: context(roles.six) });
+
+  assert.deepEqual(skeleton.plan.slots.map(({ role }) => role), approvedRoleOrder);
 });
 
 const densities = Object.freeze({
@@ -84,8 +93,8 @@ for (const [name, requestedRoleCounts] of Object.entries(roles)) {
     assert.equal(first.plan.slots.length, Object.values(requestedRoleCounts).reduce((sum, value) => sum + value, 0));
     assert.equal(first.skeletonHash, second.skeletonHash);
     assert.deepEqual(first, second);
-    assert.deepEqual(first.plan.slots.map(({ role }) => role), Object.entries(requestedRoleCounts)
-      .flatMap(([role, count]) => Array.from({ length: count }, () => role)));
+    assert.deepEqual(first.plan.slots.map(({ role }) => role), approvedRoleOrder
+      .flatMap((role) => Array.from({ length: requestedRoleCounts[role] }, () => role)));
     assert.deepEqual(first.plan.slots.map(({ order }) => order), Array.from({ length: first.plan.slots.length }, (_, index) => index + 1));
   });
 }

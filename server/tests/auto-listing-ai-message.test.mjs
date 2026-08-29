@@ -10,7 +10,7 @@ import {
 } from "../auto-listing-ai-message.mjs";
 
 const message = (phase = "PLAN_CONTENT", overrides = {}) => ({
-  contractVersion: "V1",
+  contractVersion: "V2",
   accountId: "account-a",
   itemId: "item-a",
   phase,
@@ -21,8 +21,8 @@ const message = (phase = "PLAN_CONTENT", overrides = {}) => ({
   ...overrides,
 });
 
-test("normalizes each closed V1 phase without adding mutable listing data", () => {
-  assert.equal(AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION, "V1");
+test("normalizes current V2 work while keeping legacy V1 rows readable", () => {
+  assert.equal(AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION, "V2");
   assert.deepEqual(AUTO_LISTING_AI_PHASES, [
     "PLAN_CONTENT",
     "MATERIALIZE_SOURCE_ASSET",
@@ -35,6 +35,10 @@ test("normalizes each closed V1 phase without adding mutable listing data", () =
     assert.deepEqual(normalized, message(phase));
     assert.ok(Object.isFrozen(normalized));
   }
+  assert.deepEqual(
+    normalizeAutoListingAiMessage(message("PLAN_CONTENT", { contractVersion: "V1" })),
+    message("PLAN_CONTENT", { contractVersion: "V1" }),
+  );
 });
 
 test("rejects missing, extra, and wrong phase-specific keys", () => {
@@ -66,7 +70,7 @@ test("rejects non-plain objects, inherited payloads, invalid versions and unsafe
   }
   for (const value of [
     message("PLAN_CONTENT", { contractVersion: 1 }),
-    message("PLAN_CONTENT", { contractVersion: "V2" }),
+    message("PLAN_CONTENT", { contractVersion: "V3" }),
     message("UNKNOWN"),
     message("PLAN_CONTENT", { expectedStatusVersion: 0 }),
     message("PLAN_CONTENT", { expectedStatusVersion: 2 ** 31 }),
@@ -183,7 +187,7 @@ test("canonical serialization and dedupe are deterministic and never include for
   assert.equal(canonicalizeAutoListingAiMessage(first), canonicalizeAutoListingAiMessage(reordered));
   assert.equal(autoListingAiMessageDedupeKey(first), autoListingAiMessageDedupeKey(reordered));
   assert.match(autoListingAiMessageDedupeKey(first), /^[a-f0-9]{64}$/);
-  assert.equal(canonicalizeAutoListingAiMessage(first), '{"accountId":"account-a","contractVersion":"V1","correlationId":"correlation-a","expectedStatusVersion":2,"itemId":"item-a","phase":"GENERATE_IMAGE_SLOT","slotKey":"main-1"}');
+  assert.equal(canonicalizeAutoListingAiMessage(first), '{"accountId":"account-a","contractVersion":"V2","correlationId":"correlation-a","expectedStatusVersion":2,"itemId":"item-a","phase":"GENERATE_IMAGE_SLOT","slotKey":"main-1"}');
 });
 
 test("dedupe follows stable business identity while the normalized message keeps correlation trace data", () => {

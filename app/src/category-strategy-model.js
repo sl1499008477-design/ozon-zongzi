@@ -416,7 +416,7 @@ export function projectStrategyRequired(raw) {
 function formRoles(raw) {
   const keys = new Set(["main", "sellingPoint", "detail", "scene", "specification", "infographic"]);
   const value = closed(raw, keys);
-  const ranges = { main: [1, 1], sellingPoint: [2, 5], detail: [1, 2], scene: [1, 2], specification: [0, 1], infographic: [1, 2] };
+  const ranges = { main: [1, 1], sellingPoint: [1, 5], detail: [1, 2], scene: [1, 2], specification: [0, 1], infographic: [1, 2] };
   return Object.freeze(Object.fromEntries(Object.entries(ranges).map(([role, [minimum, maximum]]) => {
     const count = value[role];
     if (!Number.isInteger(count) || count < minimum || count > maximum) throw uiError();

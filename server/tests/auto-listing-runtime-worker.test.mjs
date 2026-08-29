@@ -162,9 +162,15 @@ test("enabled runtime lazily composes one dedicated worker and stops it graceful
   assert.equal(await runtime.startAiWorker(), true);
   assert.equal(dependencyFactories, 1);
   assert.equal(pools, 0);
-  assert.deepEqual(harness.calls, ["start", "createQueue", "createQueue", "work", "work"]);
+  assert.deepEqual(harness.calls, [
+    "start", "createQueue", "createQueue", "createQueue", "createQueue",
+    "work", "work", "work", "work",
+  ]);
   await runtime.stopAiWorker();
-  assert.deepEqual(harness.calls, ["start", "createQueue", "createQueue", "work", "work", "stop"]);
+  assert.deepEqual(harness.calls, [
+    "start", "createQueue", "createQueue", "createQueue", "createQueue",
+    "work", "work", "work", "work", "stop",
+  ]);
 });
 
 test("enabled runtime has a default production composition and missing configuration fails safely before database connection", async () => {
@@ -405,7 +411,7 @@ test("runtime defaults new collect-box items to the server-owned fixed skeleton"
   }), "FIXED_SKELETON_V1");
   assert.equal(serviceInput.selectPlanningContract({
     accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "collect-b",
-  }), "LEGACY_FULL_PLAN_V3");
+  }), "FIXED_SKELETON_V1");
 });
 
 test("runtime composes the RFBS verifier from tenant-scoped warehouse and credential ports", async () => {

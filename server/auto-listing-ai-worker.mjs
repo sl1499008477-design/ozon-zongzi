@@ -5,6 +5,10 @@ import path from "node:path";
 import {
   AUTO_LISTING_AI_QUEUE,
   AUTO_LISTING_AI_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+  AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+  AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS,
   AUTO_LISTING_AI_WORK_QUEUE,
   AUTO_LISTING_AI_WORK_QUEUE_OPTIONS,
 } from "./auto-listing-ai-queue.mjs";
@@ -562,6 +566,14 @@ export function createAutoListingAiWorker(config = {}) {
           await candidate.start();
           await candidate.createQueue(AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_QUEUE_OPTIONS);
           await candidate.createQueue(AUTO_LISTING_AI_WORK_QUEUE, AUTO_LISTING_AI_WORK_QUEUE_OPTIONS);
+          await candidate.createQueue(
+            AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+            AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS,
+          );
+          await candidate.createQueue(
+            AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+            AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS,
+          );
           await candidate.work(AUTO_LISTING_AI_QUEUE, {
             batchSize: 1,
             localConcurrency: Object.values(policies).reduce((sum, policy) => sum + policy.concurrency, 0),
@@ -570,6 +582,20 @@ export function createAutoListingAiWorker(config = {}) {
             perJobResults: true,
           }, (jobs) => handler(jobs, processLegacyJob));
           await candidate.work(AUTO_LISTING_AI_WORK_QUEUE, {
+            batchSize: 1,
+            localConcurrency: Object.values(policies).reduce((sum, policy) => sum + policy.concurrency, 0),
+            pollingIntervalSeconds: 1,
+            heartbeatRefreshSeconds: 10,
+            perJobResults: true,
+          }, (jobs) => handler(jobs, processWorkJob));
+          await candidate.work(AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE, {
+            batchSize: 1,
+            localConcurrency: Object.values(policies).reduce((sum, policy) => sum + policy.concurrency, 0),
+            pollingIntervalSeconds: 1,
+            heartbeatRefreshSeconds: 10,
+            perJobResults: true,
+          }, (jobs) => handler(jobs, processLegacyJob));
+          await candidate.work(AUTO_LISTING_AI_CURRENT_WORK_QUEUE, {
             batchSize: 1,
             localConcurrency: Object.values(policies).reduce((sum, policy) => sum + policy.concurrency, 0),
             pollingIntervalSeconds: 1,

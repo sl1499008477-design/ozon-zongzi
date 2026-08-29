@@ -90,7 +90,7 @@ function sourceCapture({
 }
 
 const roleSets = {
-  six: { main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1 },
+  six: { main: 1, sellingPoint: 1, infographic: 1, scene: 1, detail: 1, specification: 1 },
   eight: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 },
   thirteen: { main: 1, sellingPoint: 5, detail: 2, scene: 2, specification: 1, infographic: 2 },
 };
@@ -255,11 +255,13 @@ function validPlan(built) {
   return { version: 1, language: "ru", slots };
 }
 
-test("buildPlannerInput supports all five styles, every role, stable order, and 6/8/13 role totals", () => {
+test("buildPlannerInput preserves legacy role order and supports all five styles plus 6/8/13 totals", () => {
   for (const style of ["VISUAL_FIRST", "PARAMETER_FIRST", "DEMONSTRATION_FIRST", "SPECIFICATION_FIRST", "BALANCED_DEFAULT"]) {
     const built = planner({ style });
     assert.equal(built.plannerInput.strategy.style, style);
-    assert.deepEqual(Object.keys(built.plannerInput.requestedRoleCounts), ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
+    assert.deepEqual(Object.keys(built.plannerInput.requestedRoleCounts), [
+      "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+    ]);
   }
   for (const roles of Object.values(roleSets)) {
     const built = planner({ configCapture: configCapture(roles) });
@@ -322,6 +324,9 @@ test("V6 keeps category styling but raises the main image to a dense verified-fa
   assert.equal(built.plannerInput.strategy.roleGuidance.MAIN.textDensity, "HEAVY");
   assert.equal(built.plannerInput.strategy.roleGuidance.MAIN.composition, "MAIN composition");
   assert.equal(built.plannerInput.strategy.roleGuidance.MAIN.background, "MAIN background");
+  assert.deepEqual(Object.keys(built.plannerInput.requestedRoleCounts), [
+    "MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION",
+  ]);
 });
 
 test("separate trusted length width and height attributes become one concise dimension fact", () => {
@@ -424,7 +429,10 @@ test("planner structured-output schema only uses array keywords accepted by the 
 });
 
 test("missing documentary facts keeps a copy-free product documentary slot", () => {
-  const built = planner({ sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }) });
+  const built = buildPlannerInput({
+    ...plannerArgs({ sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }) }),
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+  });
   assert.deepEqual(built.plannerInput.requestedRoleCounts, {
     MAIN: 1,
     SELLING_POINT: 3,
@@ -445,9 +453,12 @@ test("missing documentary facts keeps a copy-free product documentary slot", () 
     plan: skeleton.plan,
     plannerContext: built,
   }));
-  assert.doesNotThrow(() => planner({
-    sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }),
-    configCapture: configCapture(roleSets.thirteen),
+  assert.doesNotThrow(() => buildPlannerInput({
+    ...plannerArgs({
+      sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }),
+      configCapture: configCapture(roleSets.thirteen),
+    }),
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
   }));
 });
 

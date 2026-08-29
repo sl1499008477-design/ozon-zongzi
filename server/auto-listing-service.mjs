@@ -24,7 +24,7 @@ import {
   listingWarehouseEligibility,
 } from "./listing-warehouse-eligibility.mjs";
 import { selectAutoListingUploadPolicyForNewJob } from "./auto-listing-upload-policy.mjs";
-import { assertPermission, hasPermission, PERMISSIONS } from "./permissions.mjs";
+import { assertPermission, PERMISSIONS } from "./permissions.mjs";
 
 const REQUEST_KEYS = new Set(["actor", "collectItemIds", "idempotencyKey", "config", "correlationId"]);
 const PRICE_STRING_FIELDS = ["blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "preMultiplierPriceKopecks", "priceMultiplierMicros", "finalPriceKopecks"];
@@ -231,21 +231,6 @@ function resolveForExactScope(published, scope) {
   } catch {
     throw error("AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", 500);
   }
-}
-
-function strategyRequired({ scope, sourceCollectItemId, control, actor }) {
-  const canManage = hasPermission(actor, PERMISSIONS.AI_CONTENT_MANAGE);
-  const draft = control.drafts.find((candidate) => scopeKey(candidate.scope) === scopeKey(scope));
-  const details = {
-    scope,
-    sourceCollectItemId,
-    status: draft?.status || "NOT_CONFIGURED",
-    canManage,
-    ...(canManage && draft ? { draftId: draft.draftId } : {}),
-  };
-  const failure = error("AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", 409);
-  failure.details = Object.freeze(details);
-  return failure;
 }
 
 function assertRequest(input) {
@@ -722,6 +707,7 @@ export function createAutoListingService({
         sources: Object.freeze(projectedSources.map(({ source }) => source)),
         authorizations: Object.freeze(projectedSources.map(({ authorization }) => authorization)),
         graph: undefined,
+        fallbackToGeneric: true,
       });
     }
     let rawControl;
@@ -739,43 +725,47 @@ export function createAutoListingService({
         throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
       }
       return Object.freeze({
-        published,
+        published: Object.freeze({ ...published, rules: Object.freeze([]) }),
         sources: Object.freeze(projectedSources.map(({ source }) => source)),
         authorizations: Object.freeze(projectedSources.map(({ authorization }) => authorization)),
-        graph: Object.freeze({ mode: control.mode, policyVersion: control.version, scopes: Object.freeze([]) }),
+        graph: undefined,
+        fallbackToGeneric: true,
       });
     }
     if (!published) {
-      await observe({ metric: "category_strategy_required_total", accountId, draftId: null,
-        sessionId: null, attemptId: null, strategyVersionId: null, scope: uniqueScopes[0],
-        correlationId, outcome: "blocked",
-        startedAt });
-      throw strategyRequired({ ...uniqueScopeSources[0], control, actor });
+      throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
     }
     const selectedScopes = [];
-    for (const { scope, sourceCollectItemId } of uniqueScopeSources) {
+    let usedGenericFallback = false;
+    for (const { scope } of uniqueScopeSources) {
       const resolved = resolveForExactScope(published, scope);
       const rawRule = findPublishedRule(published, resolved.ruleId);
       const accepted = resolved.matchedBy === "EXACT_CATEGORY_TYPE_V2"
         || (resolved.matchedBy === "EXACT_CATEGORY" && rawRule && exactV1TypeIdentity(rawRule, scope));
       if (!accepted) {
+        usedGenericFallback = true;
         await observe({ metric: "category_strategy_required_total", accountId, draftId: null,
           sessionId: null, attemptId: null, strategyVersionId: null, scope,
-          correlationId, outcome: "blocked",
+          correlationId, outcome: "fallback",
           startedAt });
-        throw strategyRequired({ scope, sourceCollectItemId, control, actor });
+        continue;
       }
       selectedScopes.push(Object.freeze({ ...scope, ruleId: resolved.ruleId }));
     }
+    const effectivePublished = usedGenericFallback ? Object.freeze({
+      ...published,
+      rules: Object.freeze([]),
+    }) : published;
     return Object.freeze({
-      published,
+      published: effectivePublished,
       sources: Object.freeze(projectedSources.map(({ source }) => source)),
       authorizations: Object.freeze(projectedSources.map(({ authorization }) => authorization)),
-      graph: Object.freeze({
+      graph: usedGenericFallback ? undefined : Object.freeze({
         mode: control.mode,
         policyVersion: control.version,
         scopes: Object.freeze(selectedScopes),
       }),
+      fallbackToGeneric: usedGenericFallback,
     });
   }
   async function createFromSources({
@@ -787,6 +777,14 @@ export function createAutoListingService({
         useCategoryStrategy: config.useCategoryStrategy !== false,
         correlationId, startedAt: observationStartedAt() });
     sources = categoryStrategyGate.sources;
+    if (categoryStrategyGate.fallbackToGeneric && config.useCategoryStrategy !== false) {
+      const frozenGenericConfig = normalizeAndHashAutoListingConfig({
+        ...config,
+        useCategoryStrategy: false,
+      });
+      config = frozenGenericConfig.config;
+      configHash = frozenGenericConfig.configHash;
+    }
     const store = suppliedStore || await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
     const targetStore = suppliedStore || validateTargetStoreRecord({ accountId, targetStoreId: config.targetStoreId, store });
     const targetStoreCurrency = normalizeAutoListingCurrency(targetStore.currencyCode);

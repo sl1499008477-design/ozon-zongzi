@@ -110,6 +110,39 @@ test("v3 queue publishes the fenced envelope with generation singleton identity 
   await queue.stop();
 });
 
+test("current V2 work publishes only to queues that pre-V2 workers do not consume", async () => {
+  const queueModule = await import("../auto-listing-ai-queue.mjs");
+  assert.equal(queueModule.AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE, "auto-listing-ai-v4-legacy");
+  assert.equal(queueModule.AUTO_LISTING_AI_CURRENT_WORK_QUEUE, "auto-listing-ai-v4-work");
+  assert.equal(typeof queueModule.createCurrentAutoListingAiWorkQueueAdapter, "function");
+  const calls = [];
+  const queue = queueModule.createCurrentAutoListingAiWorkQueueAdapter({
+    enabled: true,
+    bossFactory: () => ({
+      async start() {},
+      async createQueue(name) { calls.push(["create", name]); },
+      async send(name, payload, options) {
+        calls.push(["send", name, payload, options]);
+        return options.id;
+      },
+      async stop() {},
+    }),
+  });
+  const currentWork = {
+    ...workMessage,
+    message: { ...workMessage.message, contractVersion: "V2" },
+  };
+
+  await queue.publish(currentWork);
+
+  assert.deepEqual(calls.map((entry) => entry[1]), [
+    "auto-listing-ai-v4-work",
+    "auto-listing-ai-v4-work",
+  ]);
+  assert.deepEqual(calls[1][2], currentWork);
+  await queue.stop();
+});
+
 test("v3 queue reports startup failure as definitely not sent before any send attempt", async () => {
   const queue = createAutoListingAiQueueAdapter({
     enabled: true,

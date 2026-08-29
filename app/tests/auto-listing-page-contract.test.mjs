@@ -20,12 +20,12 @@ test("automatic listing page owns the complete review-mode ordinary-user workflo
     "图片语言",
     "图片分辨率",
     "图片质量",
-    "主图",
-    "卖点图",
-    "细节图",
-    "场景图",
-    "产品实拍图",
-    "信息图",
+    "产品主图",
+    "核心卖点图",
+    "参数信息图",
+    "使用场景图",
+    "细节证据图",
+    "尺寸包装图",
     "任务进度",
     "生成结果审核",
     "重新生成",
@@ -224,6 +224,12 @@ test("automatic listing shows the AI model settings entry only to administrators
   assert.match(page, /account\?\.role === "admin"/);
   assert.match(page, /navigate\("\/ozon\/tools\/auto-listing\/ai-settings"\)/);
   assert.match(page, /AI 模型配置/);
+});
+
+test("category strategy copy explains the non-blocking universal fallback boundary", () => {
+  assert.match(page, /精确策略只增强配色、字体和版式/u);
+  assert.match(page, /未命中自动使用通用方案/u);
+  assert.match(page, /不改变商品事实、六图顺序或 Ozon 必要校验/u);
 });
 
 test("administrators can inspect planning failures without exposing a retry action", () => {

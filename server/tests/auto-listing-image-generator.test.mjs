@@ -242,32 +242,75 @@ test("V5 detail generation receives a concrete close-up brief instead of only a 
   assert.match(checkerPrompt, /局部微距特写/u);
 });
 
-test("V6 prompt uses the universal product-led edge-label contract and configured output size", async () => {
+test("V6 prompt uses the adaptive conversion hierarchy and configured output size", async () => {
   const fixture = await setup();
+  const performanceFact = {
+    factId: "f2",
+    field: "attributes[0].values[0]",
+    kind: "ATTRIBUTE:current",
+    value: "20 А",
+    numericValue: 20,
+    unit: "А",
+    sourcePath: "attributes[0].values[0]",
+    visualGroupKeys: ["main"],
+  };
+  const performanceClaim = {
+    text: performanceFact.value,
+    sourceFactId: performanceFact.factId,
+    field: performanceFact.field,
+    value: performanceFact.value,
+    numericValue: performanceFact.numericValue,
+    unit: performanceFact.unit,
+  };
   fixture.input.templateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
   fixture.input.plan.promptTemplateVersion = fixture.input.templateVersion;
   fixture.input.slot.claims = [{
-    text: fixture.fact.value,
-    claimType: fixture.fact.kind,
-    sourceFactIds: [fixture.fact.factId],
+    text: performanceFact.value,
+    claimType: performanceFact.kind,
+    sourceFactIds: [performanceFact.factId],
   }];
-  fixture.input.slot.sourceFactIds = [fixture.fact.factId];
+  fixture.input.slot.sourceFactIds = [fixture.fact.factId, performanceFact.factId];
+  fixture.input.plan.factRegistry.push(performanceFact);
   fixture.input.plan.plan.slots[0] = structuredClone(fixture.input.slot);
   fixture.input.size = "960x1280";
   fixture.input.repository.reserveGenerationAttempt = async () => reserved(1, fixture.input.size);
   let payload;
   let prompt;
+  let checkerPrompt;
+  let checkerSchema;
   const generate = fixture.input.gateway.generateImage;
   fixture.input.gateway.generateImage = async (request) => {
     prompt = request.prompt;
     payload = JSON.parse(request.prompt.split("\n").find((line) => line.startsWith("{")));
     return generate(request);
   };
+  fixture.input.gateway.inspectImage = async (request) => {
+    checkerPrompt = request.prompt;
+    checkerSchema = request.jsonSchema;
+    return checkerResponse(fixture, {}, {
+      claims: [performanceClaim],
+      detectedTexts: [fixture.fact.value, performanceFact.value],
+    });
+  };
 
   await generateImageSlot(fixture.input);
 
-  assert.equal(payload.visualBrief.layoutMode, "EDGE_GLASS_LABELS");
+  assert.equal(payload.visualBrief.layoutMode, "ADAPTIVE_CONVERSION_HERO");
   assert.deepEqual(payload.visualBrief.subject.frameSharePercent, [55, 68]);
+  assert.equal(payload.visualBrief.identityText, fixture.fact.value);
+  assert.deepEqual(payload.visualBrief.informationHierarchy, {
+    primaryClaimText: performanceFact.value,
+    secondaryClaimTexts: [],
+    productNameTreatment: "PROMINENT_BOLD_TITLE",
+    primaryClaimTreatment: "OVERSIZED_BOLD_ACCENT",
+    secondaryClaimTreatment: "COMPACT_ICON_LABELS",
+  });
+  assert.deepEqual(payload.visualBrief.adaptiveLayout, {
+    layoutBasis: "PRODUCT_SILHOUETTE_AND_AVAILABLE_FACTS",
+    accentColorBasis: "PRODUCT_OR_CATEGORY_STYLE",
+    fixedPalette: false,
+    fixedPlacement: false,
+  });
   assert.deepEqual(payload.visualBrief.labels, {
     anchor: "EDGE_SAFE_ZONE",
     maxCards: 4,
@@ -283,7 +326,11 @@ test("V6 prompt uses the universal product-led edge-label contract and configure
     targetSize: "960x1280",
   });
   assert.match(prompt, /同组图片.*构图、视角和信息任务必须不同/u);
-  assert.match(prompt, /主图最多 4 个图标\+短文字卖点/u);
+  assert.match(prompt, /商品名称.*首要卖点.*放大、加粗/u);
+  assert.match(prompt, /逐字白名单：\["20 А","Красный товар"\]/u);
+  assert.deepEqual(checkerSchema.properties.evidence.properties.claims.items.properties.sourceFactId.enum,
+    [performanceFact.factId, fixture.fact.factId]);
+  assert.match(checkerPrompt, /商品名称.*首要卖点.*更大字号、加粗或强调色/u);
 });
 
 test("V6 image generation limits checker claim evidence to the slot's planned facts", async () => {

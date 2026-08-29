@@ -3,12 +3,15 @@ import { assertPermission, PERMISSIONS } from "./permissions.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-const CURRENT_IMAGE_DEFAULTS_VERSION = 2;
-const LEGACY_DEFAULT_IMAGE_ROLES = Object.freeze({
+const CURRENT_IMAGE_DEFAULTS_VERSION = 3;
+const LEGACY_V1_DEFAULT_IMAGE_ROLES = Object.freeze({
   main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1,
 });
-const CURRENT_DEFAULT_IMAGE_ROLES = Object.freeze({
+const LEGACY_V2_DEFAULT_IMAGE_ROLES = Object.freeze({
   main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1,
+});
+const CURRENT_DEFAULT_IMAGE_ROLES = Object.freeze({
+  main: 1, sellingPoint: 1, detail: 1, scene: 1, specification: 1, infographic: 1,
 });
 
 function workflowError(code) {
@@ -48,10 +51,13 @@ function safeImport(row, accountId) {
 
 function migrateLegacyDefaultImage(config, imageDefaultsVersion) {
   const image = config.image;
-  const exactLegacyDefault = imageDefaultsVersion !== CURRENT_IMAGE_DEFAULTS_VERSION
+  const legacyRoles = imageDefaultsVersion === 2
+    ? LEGACY_V2_DEFAULT_IMAGE_ROLES
+    : imageDefaultsVersion === CURRENT_IMAGE_DEFAULTS_VERSION ? null : LEGACY_V1_DEFAULT_IMAGE_ROLES;
+  const exactLegacyDefault = legacyRoles !== null
     && image.ratio === "3:4" && image.resolution === "1K"
     && image.quality === "Medium" && image.language === "ru"
-    && Object.entries(LEGACY_DEFAULT_IMAGE_ROLES)
+    && Object.entries(legacyRoles)
       .every(([role, count]) => image.roles[role] === count);
   if (!exactLegacyDefault) return config;
   return normalizeAutoListingConfig({

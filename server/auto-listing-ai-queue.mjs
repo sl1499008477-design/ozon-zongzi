@@ -16,6 +16,8 @@ export const AUTO_LISTING_AI_LEGACY_QUEUE = AUTO_LISTING_AI_QUEUE;
 export const AUTO_LISTING_AI_QUEUE_V2 = AUTO_LISTING_AI_QUEUE;
 export const AUTO_LISTING_AI_WORK_QUEUE = "auto-listing-ai-v3";
 export const AUTO_LISTING_AI_QUEUE_V3 = AUTO_LISTING_AI_WORK_QUEUE;
+export const AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE = "auto-listing-ai-v4-legacy";
+export const AUTO_LISTING_AI_CURRENT_WORK_QUEUE = "auto-listing-ai-v4-work";
 
 export const AUTO_LISTING_AI_QUEUE_OPTIONS = Object.freeze({
   retryLimit: 5,
@@ -28,6 +30,8 @@ export const AUTO_LISTING_AI_QUEUE_OPTIONS = Object.freeze({
 });
 export const AUTO_LISTING_AI_LEGACY_QUEUE_OPTIONS = AUTO_LISTING_AI_QUEUE_OPTIONS;
 export const AUTO_LISTING_AI_WORK_QUEUE_OPTIONS = Object.freeze({ ...AUTO_LISTING_AI_QUEUE_OPTIONS });
+export const AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS = AUTO_LISTING_AI_QUEUE_OPTIONS;
+export const AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS = AUTO_LISTING_AI_WORK_QUEUE_OPTIONS;
 const MAX_BATCH_SIZE = 50;
 const MAX_LEASE_MS = 5 * 60 * 1000;
 const MAX_PUBLISH_TIMEOUT_MS = 60_000;
@@ -86,7 +90,7 @@ function validPublicationEvidence(value, singletonKey, queueName = AUTO_LISTING_
   }
 }
 
-function validWorkPublicationEvidence(value, singletonKey) {
+function validWorkPublicationEvidence(value, singletonKey, queueName = AUTO_LISTING_AI_WORK_QUEUE) {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)
       || Object.getPrototypeOf(value) !== Object.prototype) return false;
@@ -94,7 +98,7 @@ function validWorkPublicationEvidence(value, singletonKey) {
     const keys = Reflect.ownKeys(value).sort();
     return keys.length === 3 && keys.join(",") === "duplicate,publicationId,singletonKey"
       && keys.every((key) => typeof key === "string" && descriptors[key]?.enumerable && "value" in descriptors[key])
-      && value.publicationId === publicationId(AUTO_LISTING_AI_WORK_QUEUE, singletonKey)
+      && value.publicationId === publicationId(queueName, singletonKey)
       && value.singletonKey === singletonKey
       && typeof value.duplicate === "boolean";
   } catch {
@@ -249,11 +253,29 @@ export function createAutoListingAiWorkQueueAdapter(rawOptions = {}) {
   });
 }
 
+export function createCurrentLegacyAutoListingAiQueueAdapter(rawOptions = {}) {
+  return createQueueAdapter(rawOptions, {
+    queueName: AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+    queueOptions: AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS,
+    normalize: normalizeAutoListingAiMessage,
+    singleton: autoListingAiMessageDedupeKey,
+  });
+}
+
+export function createCurrentAutoListingAiWorkQueueAdapter(rawOptions = {}) {
+  return createQueueAdapter(rawOptions, {
+    queueName: AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+    queueOptions: AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS,
+    normalize: normalizeAutoListingAiWorkMessage,
+    singleton: autoListingAiWorkSingletonKey,
+  });
+}
+
 export function createAutoListingAiQueueAdapter(rawOptions = {}) {
   return createAutoListingAiWorkQueueAdapter(rawOptions);
 }
 
-function createOutboxPublisher(rawOptions, { work }) {
+function createOutboxPublisher(rawOptions, { work, queueName }) {
   const options = closedFactoryOptions(rawOptions, PUBLISHER_FACTORY_KEYS, "AUTO_LISTING_AI_PUBLISHER_INVALID");
   const enabled = options.enabled;
   if (typeof enabled !== "boolean") throw queueError("AUTO_LISTING_AI_PUBLISHER_INVALID");
@@ -435,7 +457,7 @@ function createOutboxPublisher(rawOptions, { work }) {
             failed += 1;
             continue;
           }
-          if (!validWorkPublicationEvidence(publication, singletonKey)) {
+          if (!validWorkPublicationEvidence(publication, singletonKey, queueName)) {
             throw queueError("AUTO_LISTING_AI_PUBLISHER_FAILED", true);
           }
           try {
@@ -499,7 +521,7 @@ function createOutboxPublisher(rawOptions, { work }) {
           failed += 1;
           continue;
         }
-        if (!validPublicationEvidence(publication, row.dedupeKey)) {
+        if (!validPublicationEvidence(publication, row.dedupeKey, queueName)) {
           throw queueError("AUTO_LISTING_AI_PUBLISHER_FAILED", true);
         }
         try {
@@ -584,11 +606,25 @@ function createOutboxPublisher(rawOptions, { work }) {
 }
 
 export function createLegacyAutoListingAiOutboxPublisher(rawOptions = {}) {
-  return createOutboxPublisher(rawOptions, { work: false });
+  return createOutboxPublisher(rawOptions, { work: false, queueName: AUTO_LISTING_AI_QUEUE });
 }
 
 export function createAutoListingAiWorkPublisher(rawOptions = {}) {
-  return createOutboxPublisher(rawOptions, { work: true });
+  return createOutboxPublisher(rawOptions, { work: true, queueName: AUTO_LISTING_AI_WORK_QUEUE });
+}
+
+export function createCurrentLegacyAutoListingAiOutboxPublisher(rawOptions = {}) {
+  return createOutboxPublisher(rawOptions, {
+    work: false,
+    queueName: AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+  });
+}
+
+export function createCurrentAutoListingAiWorkPublisher(rawOptions = {}) {
+  return createOutboxPublisher(rawOptions, {
+    work: true,
+    queueName: AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+  });
 }
 
 export function createAutoListingAiOutboxPublisher(rawOptions = {}) {

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { types } from "node:util";
 
-const ROLE_ORDER = Object.freeze(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
+const ROLE_ORDER = Object.freeze(["MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION"]);
 const ROLE_KEYS = new Set(ROLE_ORDER);
 const OUTPUT_KEYS = new Set(["plan", "skeletonHash", "allowedClaimsBySlot"]);
 const PLAN_KEYS = new Set(["version", "language", "slots"]);
@@ -348,8 +348,11 @@ export function buildFixedSkeleton({ plannerContext } = {}) {
         if (!(role === "MAIN" && input.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6")) {
           allowed.sort((left, right) => compareText(left.factId, right.factId));
         }
+        const allowedFactIds = allowed.map(({ factId }) => factId);
         const sourceFactIds = allowed.length
-          ? allowed.map(({ factId }) => factId)
+          ? role === "MAIN" && input.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
+            ? [...new Set([identityAnchor?.factId, ...allowedFactIds].filter(Boolean))]
+            : allowedFactIds
           : [identityAnchor?.factId].filter(Boolean);
         if (!sourceFactIds.length) throw skeletonInvalid();
         allowedClaimsBySlot[slotKey] = allowed;
@@ -494,6 +497,12 @@ export function mergeContentPlanFill({ skeleton: rawSkeleton, fill: rawFill, pla
       const derivedKind = [...citedFacts].sort((left, right) => compareText(left.factId, right.factId))[0].kind;
       return { text: claim.text, claimType: derivedKind, sourceFactIds: [...claim.sourceFactIds] };
     });
+    if (slot.role === "MAIN"
+      && plannerContext?.plannerInput?.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6") {
+      const importance = new Map(allowed.map(({ factId }, index) => [factId, index]));
+      const claimRank = (claim) => Math.min(...claim.sourceFactIds.map((factId) => importance.get(factId)));
+      claims.sort((left, right) => claimRank(left) - claimRank(right));
+    }
     const requiredDocumentaryFact = slot.role === "SPECIFICATION" ? allowed.find(documentaryFact) : null;
     if (requiredDocumentaryFact
       && !claims.some((claim) => claim.sourceFactIds.some((factId) => documentaryFact(allowedById.get(factId))))) {

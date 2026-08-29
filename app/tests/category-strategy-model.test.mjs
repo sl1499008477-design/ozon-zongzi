@@ -214,13 +214,13 @@ test("strategy-required and resume projections preserve only the exact safe crea
       targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
       priceAdjustmentAmount: "0", priceMultiplier: "1.25", ratio: "3:4", resolution: "1K", quality: "Medium",
       language: "ru", useCollectedBrand: false, useCategoryStrategy: true,
-      roles: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 },
+      roles: { main: 1, sellingPoint: 1, infographic: 1, scene: 1, detail: 1, specification: 1 },
     },
     currency: "CNY",
     required,
     state: "CONFIGURING",
   });
-  assert.equal(resume.form.roles.sellingPoint, 3);
+  assert.equal(resume.form.roles.sellingPoint, 1);
   assert.equal(resume.form.useCollectedBrand, false);
   assert.equal(resume.form.useCategoryStrategy, true);
   assert.equal(resume.form.priceMultiplier, "1.25");

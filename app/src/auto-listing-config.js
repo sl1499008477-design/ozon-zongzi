@@ -5,7 +5,7 @@ const LANGUAGES = new Set(["ru"]);
 const BRAND_MODES = new Set(["PREFER_SOURCE", "FORCE_NO_BRAND"]);
 const ROLE_RANGES = Object.freeze({
   main: [1, 1],
-  sellingPoint: [2, 5],
+  sellingPoint: [1, 5],
   detail: [1, 2],
   scene: [1, 2],
   specification: [0, 1],
@@ -14,10 +14,10 @@ const ROLE_RANGES = Object.freeze({
 
 const DEFAULT_ROLES = Object.freeze({
   main: 1,
-  sellingPoint: 2,
+  sellingPoint: 1,
   detail: 1,
   scene: 1,
-  specification: 0,
+  specification: 1,
   infographic: 1,
 });
 
@@ -123,12 +123,11 @@ function option(value, fallback, allowed) {
   return result;
 }
 
-function rolesFor(requested = {}, hasReliableProductDimensions) {
+function rolesFor(requested = {}) {
   if (!onlyKeys(requested, new Set(Object.keys(ROLE_RANGES)))) throw configError();
   const output = {};
   for (const [role, [minimum, maximum]] of Object.entries(ROLE_RANGES)) {
     let count = requested[role] ?? DEFAULT_ROLES[role];
-    if (role === "specification" && !hasReliableProductDimensions) count = 0;
     if (!Number.isInteger(count) || count < minimum || count > maximum) throw configError();
     output[role] = count;
   }
@@ -136,7 +135,7 @@ function rolesFor(requested = {}, hasReliableProductDimensions) {
 }
 
 export function deriveAutoListingConfig(input = {}, {
-  hasReliableProductDimensions = true,
+  hasReliableProductDimensions: _hasReliableProductDimensions = true,
 } = {}) {
   if (!onlyKeys(input, new Set([
     "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplier", "brandMode",
@@ -147,7 +146,7 @@ export function deriveAutoListingConfig(input = {}, {
   if (!onlyKeys(imageInput, new Set(["ratio", "resolution", "quality", "language", "roles"]))) {
     throw configError();
   }
-  const roles = rolesFor(imageInput.roles ?? {}, hasReliableProductDimensions === true);
+  const roles = rolesFor(imageInput.roles ?? {});
   const total = Object.values(roles).reduce((sum, count) => sum + count, 0);
   if (total < 6 || total > 13) throw configError();
   return Object.freeze({

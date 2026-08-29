@@ -95,10 +95,10 @@ test("freezes the ordinary user defaults into a hashable JSON contract", () => {
       language: "ru",
       roles: {
         main: 1,
-        sellingPoint: 2,
+        sellingPoint: 1,
         detail: 1,
         scene: 1,
-        specification: 0,
+        specification: 1,
         infographic: 1,
       },
       total: 6,
@@ -239,7 +239,10 @@ test("requires an exact SHA-256 hash for every frozen config verification", () =
 });
 
 test("keeps the requested specification count frozen independently of source evidence", () => {
-  const normalized = normalizeAutoListingConfig(baseConfig({ image: { roles: { specification: 0 } } }));
+  const normalized = normalizeAutoListingConfig(baseConfig({ image: { roles: {
+    sellingPoint: 2,
+    specification: 0,
+  } } }));
   assert.equal(normalized.image.roles.specification, 0);
   assert.equal(normalized.image.total, 6);
 });
@@ -250,7 +253,7 @@ test("rejects unsupported image options, role ranges, and derived totals outside
   expectConfigError(baseConfig({ image: { quality: "Maximum" } }), "AUTO_LISTING_CONFIG_INVALID");
   expectConfigError(baseConfig({ image: { language: "en" } }), "AUTO_LISTING_CONFIG_INVALID");
   expectConfigError(baseConfig({ image: { roles: { main: 2 } } }), "AUTO_LISTING_CONFIG_INVALID");
-  expectConfigError(baseConfig({ image: { roles: { sellingPoint: 1 } } }), "AUTO_LISTING_CONFIG_INVALID");
+  expectConfigError(baseConfig({ image: { roles: { sellingPoint: 0 } } }), "AUTO_LISTING_CONFIG_INVALID");
 });
 
 test("requires identifiers and validates integer stock and signed integer adjustment", () => {
