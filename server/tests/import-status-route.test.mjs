@@ -109,6 +109,9 @@ globalThis.fetch = async (url) => {
 
 process.env.QH_LOCAL_DATA_DIR = dataDir;
 process.env.QH_LOCAL_NO_LISTEN = "1";
+process.env.QH_LOCAL_NO_DOTENV = "1";
+delete process.env.DATABASE_URL;
+delete process.env.POSTGRES_HOST;
 
 try {
   const { handle } = await import("../index.mjs");

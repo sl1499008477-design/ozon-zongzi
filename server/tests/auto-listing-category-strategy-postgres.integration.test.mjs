@@ -23,7 +23,7 @@ const adminAuditId = (action, accountId, idempotencyKey) => `audit_ai_admin_${sh
 async function applyMigrations(client) {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
+  assert.equal(migrations.at(-1), "101_manual_category_confirmation_product_revision.sql");
   for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
 }
 
@@ -47,6 +47,12 @@ async function seedSource(client, { accountId, suffix, descriptionCategoryId = 1
     `INSERT INTO product_drafts (id,collect_item_id,source_payload_id,version,data_hash,data)
      VALUES ($1,$2,$3,7,$4,'{}'::JSONB)`,
     [productDraftId, collectItemId, rawId, sha(productDraftId)],
+  );
+  await client.query(
+    `INSERT INTO product_draft_revisions
+       (id,draft_id,version,data_hash,data,changed_by,change_reason)
+     VALUES ($1,$2,7,$3,'{}'::JSONB,$4,'category strategy repository test seed')`,
+    [`product-draft-revision-${accountId}-${suffix}`, productDraftId, sha(productDraftId), accountId],
   );
   await client.query("UPDATE collect_items SET current_draft_id=$2 WHERE account_id=$1 AND id=$3", [
     accountId, productDraftId, collectItemId,

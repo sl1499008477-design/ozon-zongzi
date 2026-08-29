@@ -212,13 +212,17 @@ pnpm package-extension
 
 ## Verify
 
-Run the focused local verification suite:
+Install the independent desktop workspace before running the root suite. The parity gates also require an explicitly reviewed upstream extension directory; the current repository `.env` supplies the local Compose interpolation values.
 
 ```bash
+pnpm --dir desktop install --frozen-lockfile
+export QH_SOURCE_EXTENSION_DIR=/absolute/path/to/reviewed/0.13.46.1
 pnpm verify
 ```
 
-It checks the app build, source-extension parity, extension zip parity, server/bridge syntax, manifest JSON, follow-sell bridge smoke, batch-upload smoke, popup smoke, diff whitespace, and secret scanning.
+On macOS, run the suite in a terminal that is allowed to launch the installed Chrome application; a restricted GUI sandbox terminates Chrome before browser tests can create a page. Ensure `/usr/local/bin` is present in `PATH` when Docker Desktop installs its CLI there.
+
+The suite checks the app build, source-extension parity, extension zip parity, server/bridge syntax, manifest JSON, follow-sell bridge smoke, batch-upload smoke, popup smoke, Docker Compose interpolation, desktop parser coverage, browser flows, diff whitespace, and secret scanning. It fails closed when a required external prerequisite is missing.
 
 ## Current Local URL
 

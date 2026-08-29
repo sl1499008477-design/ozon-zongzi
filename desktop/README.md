@@ -38,19 +38,18 @@
 ## 本地验证
 
 ```bash
-npm run verify
+pnpm install --frozen-lockfile
+pnpm verify
 ```
 
-先在 `desktop/` 安装锁文件声明的依赖。验证会执行：
+`desktop/` 是独立 pnpm workspace，必须先按自己的锁文件安装依赖。验证会执行：
 
 1. 扫描旧服务域名、双登录 token、旧业务路径和直接发布入口；
 2. 对桌面主进程、preload 和已编译 renderer 做语法检查；
 3. 测试 Seller Analytics 字段归一、请求体、重试分类、任务状态与并发契约。
 
-当前保护性基线的桌面验证为 41 项中 40 项通过；剩余
-`parse-modern-ozon.test.mjs` 因本机未安装已声明的 `cheerio` 依赖而失败。这个结果属于环境阻塞，
-不能写成全部通过。当前也没有启动 Electron GUI、连接 PostgreSQL、登录 Seller/Ozon/1688，
-或执行真实平台调用。
+当前本地静态与单元验证为 42 项全部通过，其中包含真实 `cheerio` 解析器测试。当前没有启动
+Electron GUI、连接 PostgreSQL、登录 Seller/Ozon/1688，或执行真实平台调用。
 
 主窗口当前启用了 sandbox、context isolation 和导航限制，但 IPC handler 的 sender/origin
 校验以及 renderer 可接触本地 token contract 的防御加固尚未完成真实 GUI 验证。

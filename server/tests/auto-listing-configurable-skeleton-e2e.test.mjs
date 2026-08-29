@@ -477,13 +477,13 @@ if (!enabled) {
     }
   });
 
-  test("the selector defaults collect-box items to fixed while Excel stays legacy", () => {
+  test("the selector defaults collect-box and Excel items to the fixed skeleton", () => {
     for (const candidate of [
       { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a" },
       { accountId: "account-b", sourceType: "COLLECT_BOX", collectItemId: "collect-b" },
     ]) assert.equal(selectAutoListingPlanningContract(candidate), "FIXED_SKELETON_V1");
     assert.equal(selectAutoListingPlanningContract({
       accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "excel-a",
-    }), "LEGACY_FULL_PLAN_V3");
+    }), "FIXED_SKELETON_V1");
   });
 }
