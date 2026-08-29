@@ -9,9 +9,18 @@ import {
 } from "../auto-listing-fixed-skeleton.mjs";
 
 const roles = Object.freeze({
-  six: { MAIN: 1, SELLING_POINT: 2, DETAIL: 1, SCENE: 1, SPECIFICATION: 0, INFOGRAPHIC: 1 },
+  six: { MAIN: 1, SELLING_POINT: 1, INFOGRAPHIC: 1, SCENE: 1, DETAIL: 1, SPECIFICATION: 1 },
   eight: { MAIN: 1, SELLING_POINT: 3, DETAIL: 1, SCENE: 1, SPECIFICATION: 1, INFOGRAPHIC: 1 },
   thirteen: { MAIN: 1, SELLING_POINT: 5, DETAIL: 2, SCENE: 2, SPECIFICATION: 1, INFOGRAPHIC: 2 },
+});
+const approvedRoleOrder = Object.freeze([
+  "MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION",
+]);
+
+test("the approved six-image baseline follows the conversion-impact sequence", () => {
+  const skeleton = buildFixedSkeleton({ plannerContext: context(roles.six) });
+
+  assert.deepEqual(skeleton.plan.slots.map(({ role }) => role), approvedRoleOrder);
 });
 
 const densities = Object.freeze({
@@ -84,8 +93,8 @@ for (const [name, requestedRoleCounts] of Object.entries(roles)) {
     assert.equal(first.plan.slots.length, Object.values(requestedRoleCounts).reduce((sum, value) => sum + value, 0));
     assert.equal(first.skeletonHash, second.skeletonHash);
     assert.deepEqual(first, second);
-    assert.deepEqual(first.plan.slots.map(({ role }) => role), Object.entries(requestedRoleCounts)
-      .flatMap(([role, count]) => Array.from({ length: count }, () => role)));
+    assert.deepEqual(first.plan.slots.map(({ role }) => role), approvedRoleOrder
+      .flatMap((role) => Array.from({ length: requestedRoleCounts[role] }, () => role)));
     assert.deepEqual(first.plan.slots.map(({ order }) => order), Array.from({ length: first.plan.slots.length }, (_, index) => index + 1));
   });
 }
@@ -180,6 +189,46 @@ test("facts whose copy is prohibited never enter fixed-skeleton claim candidates
 
   assert.equal(candidates.some(({ factId }) => factId === "fact.attribute.warranty"), false);
   assert.doesNotMatch(JSON.stringify(buildContentPlanFillSchema(skeleton)), /Гарантия|fact\.attribute\.warranty/iu);
+});
+
+test("historical planner contexts cannot expose Ozon listing-only fields as image claims", () => {
+  const plannerContext = context(roles.eight, {
+    factRegistry: [
+      ...context().plannerInput.factRegistry,
+      {
+        factId: "fact.attribute.9048.0",
+        kind: "ATTRIBUTE:internal-model",
+        value: "Название модели (для объединения в одну карточку): 019d2e6c74ed7ca59b6e879584910440",
+        sourcePath: "attributes[0].values[0]",
+        visualGroupKeys: [],
+      },
+      {
+        factId: "fact.attribute.7822.0",
+        kind: "ATTRIBUTE:article",
+        value: "Артикул: 3726236911",
+        sourcePath: "attributes[1].values[0]",
+        visualGroupKeys: [],
+      },
+      {
+        factId: "fact.attribute.8145.0",
+        kind: "ATTRIBUTE:power",
+        value: "Мощность, Вт: 20",
+        sourcePath: "attributes[2].values[0]",
+        visualGroupKeys: [],
+      },
+    ],
+  });
+  plannerContext.plannerInput.promptTemplateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  plannerContext.plannerInput.textDensityByRole = {
+    ...plannerContext.plannerInput.textDensityByRole,
+    MAIN: "HEAVY",
+  };
+
+  const skeleton = buildFixedSkeleton({ plannerContext });
+  const claimCandidates = JSON.stringify(skeleton.allowedClaimsBySlot);
+
+  assert.doesNotMatch(claimCandidates, /fact\.attribute\.(?:9048|7822)\.|019d2e6c74ed7ca59b6e879584910440|3726236911/u);
+  assert.match(claimCandidates, /fact\.attribute\.8145\.0|Мощность, Вт: 20/u);
 });
 
 test("fixed skeleton rejects zero visual groups but keeps a copy-free documentary slot without facts", () => {

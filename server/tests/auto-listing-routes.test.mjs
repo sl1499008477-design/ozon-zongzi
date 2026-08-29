@@ -264,8 +264,8 @@ test("route bounds target identifiers while preserving repeated collect IDs for 
 test("list and detail are actor-scoped, validate input, and never leak events or secrets", async () => {
   const calls = [];
   const service = {
-    listAutoListingJobs: async (input) => { calls.push(["list", input]); return [{ id: "job_1", accountId: "account_b", events: [{ details: { rawResponse: "no" } }], items: [] }]; },
-    getAutoListingJob: async (input) => { calls.push(["get", input]); return { id: "job_1", accountId: "account_b", sub2apiKey: "no", items: [{ id: "item_1", status: "READY_FOR_REVIEW", statusVersion: 3, rawResponseRef: "no", actions: { review: true, approve: true, retry: false, regenerate: true, cancel: true } }] }; },
+    listAutoListingJobs: async (input) => { calls.push(["list", input]); return [{ id: "job_1", accountId: "account_b", useCategoryStrategy: false, events: [{ details: { rawResponse: "no" } }], items: [] }]; },
+    getAutoListingJob: async (input) => { calls.push(["get", input]); return { id: "job_1", accountId: "account_b", useCategoryStrategy: true, sub2apiKey: "no", items: [{ id: "item_1", status: "READY_FOR_REVIEW", statusVersion: 3, rawResponseRef: "no", actions: { review: true, approve: true, retry: false, regenerate: true, cancel: true } }] }; },
   };
   const { handler, replies } = harness({ runtime: { getService: async () => service } });
   await handler(request({ path: "/auto-listing/jobs?limit=20" }), {}, new URL("http://local/auto-listing/jobs?limit=20"));
@@ -275,8 +275,8 @@ test("list and detail are actor-scoped, validate input, and never leak events or
     ["get", { actor: { id: "account_a", role: "user" }, jobId: "job_1" }],
   ]);
   assert.deepEqual(replies.map((reply) => reply.payload.data), [
-    [{ jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", items: [] }],
-    { jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", items: [{ itemId: "item_1", status: "READY_FOR_REVIEW", statusVersion: 3, actions: { review: true, approve: true, retry: false, regenerate: true, cancel: true } }] },
+    [{ jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", useCategoryStrategy: false, items: [] }],
+    { jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", useCategoryStrategy: true, items: [{ itemId: "item_1", status: "READY_FOR_REVIEW", statusVersion: 3, actions: { review: true, approve: true, retry: false, regenerate: true, cancel: true } }] },
   ]);
 
   const invalid = harness({ runtime: { getService: async () => service } });

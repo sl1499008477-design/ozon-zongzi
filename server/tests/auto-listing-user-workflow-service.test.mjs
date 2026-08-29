@@ -42,7 +42,7 @@ function harness({ preference = null } = {}) {
   return { service, calls };
 }
 
-test("preference overview migrates only the unversioned legacy eight-image default", async () => {
+test("preference overview migrates only recognized legacy defaults to the approved six-image baseline", async () => {
   const legacy = {
     accountId: "account-a",
     ...config,
@@ -50,7 +50,7 @@ test("preference overview migrates only the unversioned legacy eight-image defau
   };
   const migrated = await harness({ preference: legacy }).service.getOverview({ actor, importLimit: 50 });
   assert.deepEqual(migrated.preference.image.roles, {
-    main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1,
+    main: 1, sellingPoint: 1, detail: 1, scene: 1, specification: 1, infographic: 1,
   });
   assert.equal(migrated.preference.image.total, 6);
   assert.equal(migrated.preference.useCategoryStrategy, true);
@@ -59,6 +59,21 @@ test("preference overview migrates only the unversioned legacy eight-image defau
     preference: { ...legacy, imageDefaultsVersion: 2 },
   }).service.getOverview({ actor, importLimit: 50 });
   assert.equal(current.preference.image.total, 8);
+
+  const versionTwoDefault = await harness({
+    preference: {
+      ...legacy,
+      imageDefaultsVersion: 2,
+      image: {
+        ...legacy.image,
+        roles: { main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1 },
+      },
+    },
+  }).service.getOverview({ actor, importLimit: 50 });
+  assert.deepEqual(versionTwoDefault.preference.image.roles, {
+    main: 1, sellingPoint: 1, detail: 1, scene: 1, specification: 1, infographic: 1,
+  });
+  assert.equal(versionTwoDefault.preference.image.total, 6);
 
   const custom = await harness({
     preference: {

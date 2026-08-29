@@ -90,7 +90,7 @@ function sourceCapture({
 }
 
 const roleSets = {
-  six: { main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1 },
+  six: { main: 1, sellingPoint: 1, infographic: 1, scene: 1, detail: 1, specification: 1 },
   eight: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 },
   thirteen: { main: 1, sellingPoint: 5, detail: 2, scene: 2, specification: 1, infographic: 2 },
 };
@@ -255,11 +255,13 @@ function validPlan(built) {
   return { version: 1, language: "ru", slots };
 }
 
-test("buildPlannerInput supports all five styles, every role, stable order, and 6/8/13 role totals", () => {
+test("buildPlannerInput preserves legacy role order and supports all five styles plus 6/8/13 totals", () => {
   for (const style of ["VISUAL_FIRST", "PARAMETER_FIRST", "DEMONSTRATION_FIRST", "SPECIFICATION_FIRST", "BALANCED_DEFAULT"]) {
     const built = planner({ style });
     assert.equal(built.plannerInput.strategy.style, style);
-    assert.deepEqual(Object.keys(built.plannerInput.requestedRoleCounts), ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
+    assert.deepEqual(Object.keys(built.plannerInput.requestedRoleCounts), [
+      "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+    ]);
   }
   for (const roles of Object.values(roleSets)) {
     const built = planner({ configCapture: configCapture(roles) });
@@ -322,6 +324,9 @@ test("V6 keeps category styling but raises the main image to a dense verified-fa
   assert.equal(built.plannerInput.strategy.roleGuidance.MAIN.textDensity, "HEAVY");
   assert.equal(built.plannerInput.strategy.roleGuidance.MAIN.composition, "MAIN composition");
   assert.equal(built.plannerInput.strategy.roleGuidance.MAIN.background, "MAIN background");
+  assert.deepEqual(Object.keys(built.plannerInput.requestedRoleCounts), [
+    "MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION",
+  ]);
 });
 
 test("separate trusted length width and height attributes become one concise dimension fact", () => {
@@ -424,7 +429,10 @@ test("planner structured-output schema only uses array keywords accepted by the 
 });
 
 test("missing documentary facts keeps a copy-free product documentary slot", () => {
-  const built = planner({ sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }) });
+  const built = buildPlannerInput({
+    ...plannerArgs({ sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }) }),
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+  });
   assert.deepEqual(built.plannerInput.requestedRoleCounts, {
     MAIN: 1,
     SELLING_POINT: 3,
@@ -445,9 +453,12 @@ test("missing documentary facts keeps a copy-free product documentary slot", () 
     plan: skeleton.plan,
     plannerContext: built,
   }));
-  assert.doesNotThrow(() => planner({
-    sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }),
-    configCapture: configCapture(roleSets.thirteen),
+  assert.doesNotThrow(() => buildPlannerInput({
+    ...plannerArgs({
+      sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }),
+      configCapture: configCapture(roleSets.thirteen),
+    }),
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
   }));
 });
 
@@ -1883,6 +1894,30 @@ test("real edit-page attributes keep safe textual and numeric facts but exclude 
   assert.ok(built.plannerInput.factRegistry.some((fact) => fact.value === "Material: нержавеющая сталь"));
   assert.equal(built.plannerInput.factRegistry.find((fact) => fact.value === "Material: сталь").dictionaryValueId, null);
   assert.doesNotMatch(JSON.stringify(built.plannerInput), /ignore instructions|4191|11254/);
+  assert.ok(built.reasonCodes.includes("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED"));
+});
+
+test("planner keeps listing-only Ozon attributes out of every AI creative fact registry", () => {
+  const source = sourceCapture();
+  source.snapshot.attributes = [
+    { id: 9048, name: "Название модели (для объединения в одну карточку)", value: "019d2e6c74ed7ca59b6e879584910440", values: ["019d2e6c74ed7ca59b6e879584910440"], required: true, dictionaryId: 0, multiple: false },
+    { id: 7822, name: "Артикул", value: "3726236911", values: ["3726236911"], required: true, dictionaryId: 0, multiple: false },
+    { id: 11650, name: "Количество заводских упаковок", value: "1", values: ["1"], required: false, dictionaryId: 0, multiple: false },
+    { id: 23171, name: "Хештеги", value: "пожаротушение", values: ["пожаротушение"], required: false, dictionaryId: 0, multiple: true },
+    { id: 99001, name: "Телефон поддержки", value: "+7 999 123-45-67", values: ["+7 999 123-45-67"], required: false, dictionaryId: 0, multiple: false },
+    { id: 8145, name: "Мощность, Вт", value: "20", values: ["20"], required: false, dictionaryId: 0, multiple: false },
+  ];
+  source.snapshotHash = hash(source.snapshot);
+
+  const built = buildPlannerInput(plannerArgs({
+    sourceCapture: source,
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+  }));
+  const serialized = JSON.stringify(built.plannerInput.factRegistry);
+
+  assert.doesNotMatch(serialized, /fact\.attribute\.(?:9048|7822|11650|23171)\./u);
+  assert.doesNotMatch(serialized, /019d2e6c74ed7ca59b6e879584910440|3726236911|Хештеги|\+7 999 123-45-67/u);
+  assert.match(serialized, /Мощность, Вт: 20/u);
   assert.ok(built.reasonCodes.includes("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED"));
 });
 

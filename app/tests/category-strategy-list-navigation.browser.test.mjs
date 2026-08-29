@@ -78,7 +78,13 @@ function resumeDraft() {
       roles: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 },
     },
     currency: "CNY",
-    required: { scope: SCOPE, status: "COLLECTING", canManage: true, draftId: DRAFT_ID },
+    required: {
+      scope: SCOPE,
+      sourceCollectItemId: "collect-category-navigation",
+      status: "COLLECTING",
+      canManage: true,
+      draftId: DRAFT_ID,
+    },
     state: "CONFIGURING",
   };
 }

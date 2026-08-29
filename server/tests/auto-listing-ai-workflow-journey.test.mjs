@@ -225,7 +225,7 @@ test("durable workflow wires the complete staged five-phase journey to READY_FOR
   ].sort());
   assert.equal(messages.some((message) => /UPLOAD/u.test(message.phase)), false);
   for (const message of messages) {
-    assert.equal(message.contractVersion, "V1");
+    assert.equal(message.contractVersion, "V2");
     assert.equal(Object.hasOwn(message, "execution"), false,
       "durable business messages must not embed a leased channel or credential material");
     assert.doesNotMatch(JSON.stringify(message), /api[_-]?key|authorization|bearer|ciphertext/iu);

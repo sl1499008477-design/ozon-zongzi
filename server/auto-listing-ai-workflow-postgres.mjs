@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import {
+  AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION,
   autoListingAiMessageDedupeKey,
   canonicalizeAutoListingAiMessage,
   isSafeAutoListingAiIdentifier,
@@ -144,7 +145,7 @@ function stageInput(raw) {
 
 function planMessage(input, expectedStatusVersion) {
   return normalizeAutoListingAiMessage({
-    contractVersion: "V1",
+    contractVersion: AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION,
     accountId: input.accountId,
     itemId: input.itemId,
     phase: "PLAN_CONTENT",
@@ -157,7 +158,8 @@ function phaseMessage(input, phase, expectedStatusVersion, target = null) {
   const targetKey = phase === "MATERIALIZE_SOURCE_ASSET" ? "sourceAssetId"
     : phase === "GENERATE_IMAGE_SLOT" ? "slotKey" : null;
   return normalizeAutoListingAiMessage({
-    contractVersion: "V1", accountId: input.accountId, itemId: input.itemId, phase,
+    contractVersion: AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION,
+    accountId: input.accountId, itemId: input.itemId, phase,
     expectedStatusVersion, correlationId: input.correlationId,
     ...(targetKey ? { [targetKey]: target } : {}),
   });
@@ -364,7 +366,7 @@ async function insertOutbox(client, jobId, message) {
          lease_owner,lease_token,lease_expires_at,publication_id,published_at,dead_at,last_error_code,last_error_safe
        ) VALUES (
          $1,$2,$3,$4,CASE WHEN $5='GENERATE_IMAGE_SLOT' THEN $7 ELSE NULL END,
-         $5,$6,$8::JSONB,'PENDING',0,NOW(),'V1',$5,$7,$9,$10,NOW(),
+         $5,$6,$8::JSONB,'PENDING',0,NOW(),$11,$5,$7,$9,$10,NOW(),
          NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
        ) ON CONFLICT (dedupe_key) DO NOTHING RETURNING id
      )
@@ -372,12 +374,12 @@ async function insertOutbox(client, jobId, message) {
      UNION ALL
      SELECT id FROM auto_listing_ai_outbox
       WHERE dedupe_key=$6 AND id=$1 AND account_id=$2 AND job_id=$3 AND item_id=$4
-        AND event_type=$5 AND payload=$8::JSONB AND contract_version='V1' AND phase=$5
+        AND event_type=$5 AND payload=$8::JSONB AND contract_version=$11 AND phase=$5
         AND phase_target_id IS NOT DISTINCT FROM $7 AND expected_status_version=$9
         AND correlation_id=$10 AND NOT EXISTS (SELECT 1 FROM inserted)`,
     [deterministicId("ai-outbox", dedupeKey), message.accountId, jobId, message.itemId,
       message.phase, dedupeKey, target, canonicalizeAutoListingAiMessage(message),
-      message.expectedStatusVersion, message.correlationId],
+      message.expectedStatusVersion, message.correlationId, message.contractVersion],
   );
 }
 
@@ -411,7 +413,7 @@ export async function stageInitialPlanWork(rawInput = {}) {
               AND transition_version=$5 AND correlation_id=$6 AND details=$9::JSONB
          ) AND EXISTS (
            SELECT 1 FROM auto_listing_ai_outbox
-            WHERE id=$10 AND account_id=$1 AND job_id=$2 AND item_id=$3 AND contract_version='V1'
+            WHERE id=$10 AND account_id=$1 AND job_id=$2 AND item_id=$3 AND contract_version=$12
               AND phase='PLAN_CONTENT' AND expected_status_version=$5 AND correlation_id=$6
               AND event_type='PLAN_CONTENT' AND phase_target_id IS NULL
               AND dedupe_key=$7 AND payload=$11::JSONB
@@ -420,7 +422,8 @@ export async function stageInitialPlanWork(rawInput = {}) {
       [input.accountId, input.jobId, input.itemId, input.actorAccountId,
         nextVersion, input.correlationId, dedupeKey,
         deterministicId("ai-event", eventIdentity), JSON.stringify(eventDetails),
-        deterministicId("ai-outbox", dedupeKey), canonicalizeAutoListingAiMessage(message)],
+        deterministicId("ai-outbox", dedupeKey), canonicalizeAutoListingAiMessage(message),
+        message.contractVersion],
     );
     if (staged?.rowCount === 1 && staged.rows?.[0]?.staged === true) {
       return Object.freeze({ status: "PLANNING", statusVersion: nextVersion });

@@ -477,7 +477,7 @@ function acceptedGeneratedAssetContext(input) {
         ? record.sourceAssetEvidence : record.sourceAssetEvidence.slice(0, 1),
       textRequired: slotTextRequired(slot, templateVersion),
       textForbidden: slotTextForbidden(slot, templateVersion),
-      claimEvidenceFactIds: slotClaimEvidenceFactIds(slot),
+      claimEvidenceFactIds: slotClaimEvidenceFactIds(slot, facts),
       dimensionAnnotationsRequired: dimensionAnnotationsRequiredFor(slot, templateVersion),
     };
   } catch {
@@ -526,7 +526,7 @@ function verifyExistingAccepted(record, scope, inputHash, { attemptIdentityHash,
       record, profile, templateVersion,
       references: record.checkerEvidence?.sourceAssets?.length === references.length ? references : references.slice(0, 1),
       facts, textRequired, textForbidden, categoryStyle, categoryStyleReferences,
-      claimEvidenceFactIds: slotClaimEvidenceFactIds(slot),
+      claimEvidenceFactIds: slotClaimEvidenceFactIds(slot, facts),
       dimensionAnnotationsRequired: dimensionAnnotationsRequiredFor(slot, templateVersion),
     });
 }
@@ -677,9 +677,17 @@ function promptSlot(slot) {
   return projected;
 }
 
-function slotClaimEvidenceFactIds(slot) {
-  return [...new Set((Array.isArray(slot?.claims) ? slot.claims : [])
-    .flatMap((claim) => Array.isArray(claim?.sourceFactIds) ? claim.sourceFactIds : []))];
+function mainIdentityFact(slot, facts = []) {
+  if (slot?.role !== "MAIN" || !Array.isArray(slot?.sourceFactIds) || !Array.isArray(facts)) return null;
+  const allowed = new Set(slot.sourceFactIds);
+  return facts.find((fact) => allowed.has(fact?.factId) && fact?.kind === "IDENTITY_NAME") || null;
+}
+
+function slotClaimEvidenceFactIds(slot, facts = []) {
+  const claimFactIds = (Array.isArray(slot?.claims) ? slot.claims : [])
+    .flatMap((claim) => Array.isArray(claim?.sourceFactIds) ? claim.sourceFactIds : []);
+  const identityFactId = mainIdentityFact(slot, facts)?.factId;
+  return [...new Set([...claimFactIds, ...(identityFactId ? [identityFactId] : [])])];
 }
 
 function slotOccurrence(slot) {
@@ -694,14 +702,14 @@ function productFrameShare(role) {
   return [62, 70];
 }
 
-function visualBriefFor(slot, output = null) {
+function visualBriefFor(slot, output = null, facts = []) {
   const occurrence = slotOccurrence(slot);
   const requiredClaimTexts = Array.isArray(slot.claims) ? slot.claims.map(({ text: value }) => value) : [];
   const shared = {
     role: slot.role,
     requiredClaimTexts,
     ...(output ? {
-      layoutMode: "EDGE_GLASS_LABELS",
+      layoutMode: slot.role === "MAIN" ? "ADAPTIVE_CONVERSION_HERO" : "EDGE_GLASS_LABELS",
       subject: {
         priority: "DOMINANT",
         frameSharePercent: productFrameShare(slot.role),
@@ -789,7 +797,25 @@ function visualBriefFor(slot, output = null) {
     productView: "完整商品三分之四主视角，建立本组视觉基准",
     subjectScale: "商品主体占画面 55% 至 68%，为最多四个高价值卖点保留边缘信息区",
     annotationMode: "HERO_HIERARCHY",
-    factPresentation: "每条 requiredClaimTexts 都使用简洁线性图标加短文字的醒目信息标签；商品仍是第一视觉焦点",
+    ...(output ? {
+      ...(mainIdentityFact(slot, facts) ? { identityText: mainIdentityFact(slot, facts).value } : {}),
+      informationHierarchy: {
+        primaryClaimText: requiredClaimTexts[0] || null,
+        secondaryClaimTexts: requiredClaimTexts.slice(1),
+        productNameTreatment: "PROMINENT_BOLD_TITLE",
+        primaryClaimTreatment: "OVERSIZED_BOLD_ACCENT",
+        secondaryClaimTreatment: "COMPACT_ICON_LABELS",
+      },
+      adaptiveLayout: {
+        layoutBasis: "PRODUCT_SILHOUETTE_AND_AVAILABLE_FACTS",
+        accentColorBasis: "PRODUCT_OR_CATEGORY_STYLE",
+        fixedPalette: false,
+        fixedPlacement: false,
+      },
+      factPresentation: "商品名称作为醒目加粗标题；首要卖点使用最大字号、加粗或强调色；其余 requiredClaimTexts 使用简洁线性图标加短文字标签；商品仍是第一视觉焦点",
+    } : {
+      factPresentation: "每条 requiredClaimTexts 都使用简洁线性图标加短文字的醒目信息标签；商品仍是第一视觉焦点",
+    }),
   };
 }
 
@@ -957,18 +983,27 @@ export async function generateImageSlot(input = {}) {
         : reservationProvenance;
     attempt.gatewayConnectionId = boundProducer.gatewayConnectionId;
     attempt.gatewayConnectionVersion = boundProducer.gatewayConnectionVersion;
-    const allowedMarketingCopy = Array.isArray(slot.claims) ? slot.claims.map((claim) => claim.text) : [];
     const visualBrief = ROLE_BRIEF_TEMPLATES.has(templateVersion) ? visualBriefFor(
       slot,
       templateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
         ? { ratio, resolution, targetSize: validated.size } : null,
+      facts,
     ) : null;
+    const exactIdentityCopy = templateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
+      ? mainIdentityFact(slot, facts)?.value || "" : "";
+    const allowedMarketingCopy = [...new Set([
+      ...(Array.isArray(slot.claims) ? slot.claims.map((claim) => claim.text) : []),
+      ...(exactIdentityCopy ? [exactIdentityCopy] : []),
+    ])];
+    const copyAuthorityRule = exactIdentityCopy
+      ? "文案只能逐字使用 slot.claims[].text 或 visualBrief.identityText；不得改写、拆分或新增其他文案。facts 未明确提供的品牌、功能、功率、兼容性、认证和配件信息，不得通过文字或新道具暗示。"
+      : "文案只能逐字使用 slot.claims[].text；不得改写、拆分或新增其他文案。facts 或 slot.claims 未明确提供的品牌、功能、功率、兼容性、认证和配件信息，不得通过文字或新道具暗示。";
     const promptRules = FIXED_COPY_TEMPLATES.has(templateVersion)
       ? [
           "REFERENCE IMAGE IS PHYSICAL-PRODUCT EVIDENCE ONLY. Preserve the physical product and markings printed on the product itself. Do not copy promotional text, warranty, discount, gift, phone UI or compatibility icons from the surrounding source artwork.",
           "只允许调整背景、构图、场景、俄语文案、版式和整体视觉风格。",
           "商品主体的形状、颜色、结构、材质和本体屏幕必须与来源参考图一致。来源图中的促销文案、手机界面、礼盒、赠品和包装不能被复制成商品事实。允许使用能辅助展示商品功能的环境物品，但必须与商品在空间和版式上明确区分，不得把环境物品排成随附套装、包装内容或赠品。",
-          "文案只能逐字使用 slot.claims[].text；不得改写、拆分或新增其他文案。facts 或 slot.claims 未明确提供的品牌、功能、功率、兼容性、认证和配件信息，不得通过文字或新道具暗示。",
+          copyAuthorityRule,
           "类目风格只决定背景、构图和版式；其中出现的功能、配件、手机、语音助手、兼容性图标、数字或营销示例不是当前商品事实。可以借鉴不造成套装误解的环境物品，但不得复制未被 facts 支持的功能、配件关系、图标、数字或营销结论。",
           `允许出现的全部营销文案逐字白名单：${JSON.stringify(allowedMarketingCopy)}。白名单之外的来源图文字、促销数字、徽章和营销文案必须删除，不得沿用、改写或补充。`,
           "为适应最终比例裁切和缩放，成图四周至少保留 10% 的安全边距；商品主体和全部文案必须完整位于安全区内，不得接触或超出画面边缘，不得切断任何文字或商品部位。",
@@ -994,7 +1029,7 @@ export async function generateImageSlot(input = {}) {
       : null;
     const productLedRule = templateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
       ? slot.role === "MAIN"
-        ? "同组图片必须共享类目策略的色彩、字体、光影和标签语言，但构图、视角和信息任务必须不同；主图要有强对比和醒目的商品英雄构图，商品主体优先；主图最多 4 个图标+短文字卖点，必须逐项使用 requiredClaimTexts，不得遮挡商品。"
+        ? "同组图片必须共享类目策略的色彩、字体、光影和标签语言，但构图、视角和信息任务必须不同；主图要有强对比和醒目的商品英雄构图，商品主体优先。商品名称和首要卖点必须形成两级重点：商品名称使用醒目加粗标题，首要卖点必须放大、加粗并可使用与商品或类目风格协调的强调色；其余卖点使用紧凑图标标签。主图最多 4 个卖点，必须逐项使用 requiredClaimTexts，不得遮挡商品；构图位置和强调色根据商品轮廓与现有事实自适应，不得套用固定配色或固定位置。"
         : slot.role === "SPECIFICATION"
           ? "产品实拍图统一使用纯白 #FFFFFF 背景，不得沿用类目策略中的场景背景、渐变、纹理或道具；类目策略只用于字体、强调色、间距和信息层级。"
           : "同组图片必须共享类目策略的色彩、字体、光影和标签语言，但构图、视角和信息任务必须不同；商品主体优先，卖点或产品信息尽量使用图标+短文字，半透明信息标签只能位于边缘安全区，最多 3 个且不得遮挡商品。"
@@ -1072,7 +1107,7 @@ export async function generateImageSlot(input = {}) {
           correlationId: input.correlationId || `auto-listing:${scope.jobId}:${scope.itemId}`,
           requestKey: `auto-listing-check-${inputHash}-attempt-${attempt.attemptNo}`,
         }, templateVersion, ratio, resolution, textRequired, textForbidden, visualBrief,
-        claimEvidenceFactIds: slotClaimEvidenceFactIds(slot),
+        claimEvidenceFactIds: slotClaimEvidenceFactIds(slot, facts),
         dimensionAnnotationsRequired: dimensionAnnotationsRequiredFor(slot, templateVersion),
         gatewayExecution,
         ...(typeof input.assertLeaseActive === "function" ? { assertLeaseActive: input.assertLeaseActive } : {}) });

@@ -16,6 +16,7 @@ export async function applyAutoListingAiChannelPoolBaseMigrations(client) {
 
 export async function applyAutoListingAiChannelPoolMigration(client) {
   await client.query(await readFile(path.join(migrationsDir, "098_auto_listing_ai_channel_pool.sql"), "utf8"));
+  await client.query(await readFile(path.join(migrationsDir, "099_auto_listing_ai_message_v2.sql"), "utf8"));
 }
 
 async function rejectedCode(operation, code = "23514") {

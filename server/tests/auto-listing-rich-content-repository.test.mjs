@@ -369,6 +369,33 @@ test("reservation keeps accepted checker facts immutable when rich facts add der
   assert.deepEqual(input.assetEvidence[0].checkerEvidence.sourceFacts, [legacyFact]);
 });
 
+test("reservation reuses accepted images whose frozen checker facts include excluded operational facts", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const operationalFact = {
+    factId: "fact.attribute.9048.0",
+    field: "attributes[0].values[0]",
+    kind: "ATTRIBUTE:internal-model",
+    value: "Название модели (для объединения в одну карточку): 019d2e6c74ed7ca59b6e879584910440",
+    numericValue: null,
+    unit: null,
+    sourcePath: "attributes[0].values[0]",
+  };
+  const historicalAssets = Array.from({ length: 6 }, (_, index) => assetEvidence(index, {
+    checkerFacts: [fact, operationalFact],
+    claimEvidenceFactIds: [fact.factId],
+  }));
+  const input = reservationInput({
+    sourceFactEvidence: [structuredClone(fact)],
+    assetEvidence: historicalAssets,
+  });
+
+  const result = await createMemoryRichContentRepository({ token: () => "lease-operational-superset" })
+    .reserveRichContentAttempt(input);
+
+  assert.equal(result.status, "RESERVED");
+  assert.deepEqual(input.assetEvidence[0].checkerEvidence.sourceFacts, [fact, operationalFact]);
+});
+
 test("V6 reservation canonicalizes only redundant checker claim projection", async () => {
   const { createMemoryRichContentRepository } = await repositoryModule();
   const v6Assets = Array.from({ length: 6 }, (_, index) => assetEvidence(index, index === 0 ? {

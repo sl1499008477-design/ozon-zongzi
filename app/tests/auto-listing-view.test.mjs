@@ -141,6 +141,14 @@ test("uses safe user-facing copy for known and unknown row failures", () => {
     itemId: "item-a", status: "RETRYABLE_ERROR",
     failureCode: "AUTO_LISTING_RICH_CONTENT_REPOSITORY_FAILED",
   }).failureLabel, "保存生成内容失败，可以重试；已通过的图片不会重复生成");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "RETRYABLE_ERROR",
+    failureCode: "AUTO_LISTING_AI_RESULT_UNCERTAIN",
+  }).failureLabel, "AI 服务返回结果不确定，可以重试；已通过的图片不会重复生成");
+  assert.equal(autoListingItemPresentation({
+    itemId: "item-a", status: "BLOCKED",
+    failureCode: "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID",
+  }).failureLabel, "商品资料中的内部字段未正确排除，可以重试；已通过的图片不会重复生成");
   const imageFailures = [
     ["PRODUCT_IDENTITY_MISMATCH", "生成图片中的商品与采集来源不一致，请重新生成"],
     ["UNVERIFIED_CLAIM", "生成图片含有商品资料未支持的文案或功能信息，请重新生成"],
@@ -194,11 +202,13 @@ test("flattens list DTOs with only the owning job identity and canonical real cr
   const rows = autoListingTaskRows([{
     jobId: "job-new",
     createdAt: "2026-08-12T01:02:03.456Z",
+    useCategoryStrategy: false,
     secret: "must-not-copy",
     items: [item],
   }, {
     jobId: "job-invalid-time",
     createdAt: "not-a-time",
+    useCategoryStrategy: true,
     items: [{ itemId: "item-b", status: "BLOCKED" }],
   }]);
   assert.deepEqual(rows, [{
@@ -214,9 +224,10 @@ test("flattens list DTOs with only the owning job identity and canonical real cr
       greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0",
       finalPriceKopecks: "14500",
     },
-    jobId: "job-new", jobCreatedAt: "2026-08-12T01:02:03.456Z",
+    jobId: "job-new", jobCreatedAt: "2026-08-12T01:02:03.456Z", useCategoryStrategy: false,
   }, {
     itemId: "item-b", status: "BLOCKED", jobId: "job-invalid-time", jobCreatedAt: null,
+    useCategoryStrategy: true,
   }]);
   assert.equal(rows.some((row) => "secret" in row), false);
 });

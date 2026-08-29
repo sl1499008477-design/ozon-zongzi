@@ -6,10 +6,11 @@ import {
   selectAutoListingPlanningContract,
 } from "../auto-listing-planning-contract.mjs";
 
-test("new collect-box items use the server-owned fixed skeleton by default", () => {
+test("all new collect-box and Excel items use the server-owned fixed skeleton by default", () => {
   for (const candidate of [
     { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a" },
     { accountId: "account-b", sourceType: "COLLECT_BOX", collectItemId: "collect-b" },
+    { accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "excel-a" },
   ]) {
     assert.equal(
       selectAutoListingPlanningContract(candidate),
@@ -18,11 +19,11 @@ test("new collect-box items use the server-owned fixed skeleton by default", () 
   }
 });
 
-test("Excel and invalid selectors keep the legacy contract", () => {
+test("invalid selectors keep the legacy contract", () => {
   for (const candidate of [
-    { accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "collect-a" },
     { accountId: "", sourceType: "COLLECT_BOX", collectItemId: "collect-a" },
     { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "" },
+    { accountId: "account-a", sourceType: "UNKNOWN", collectItemId: "collect-a" },
     {},
   ]) {
     assert.equal(

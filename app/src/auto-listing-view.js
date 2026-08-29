@@ -54,7 +54,9 @@ const FAILURE = Object.freeze({
   AUTO_LISTING_IMAGE_POLICY_REJECTED: "部分图片未通过检查，已保留其他通过检查的图片",
   AUTO_LISTING_IMAGE_FAILED: "图片生成阶段未完成，请重试；已通过的图片不会重复生成",
   AUTO_LISTING_CONTENT_PLAN_FAILED: "图片内容规划失败，可以重试",
+  AUTO_LISTING_RICH_CONTENT_INPUT_INVALID: "商品资料中的内部字段未正确排除，可以重试；已通过的图片不会重复生成",
   AUTO_LISTING_RICH_CONTENT_REPOSITORY_FAILED: "保存生成内容失败，可以重试；已通过的图片不会重复生成",
+  AUTO_LISTING_AI_RESULT_UNCERTAIN: "AI 服务返回结果不确定，可以重试；已通过的图片不会重复生成",
   AUTO_LISTING_UPLOAD_POLICY_BLOCKED: "上传前策略校验未通过，可以安全重试",
   AUTO_LISTING_UPLOAD_EVIDENCE_INVALID: "逐商品图片配置校验未通过，可以安全重试",
   OZON_RICH_CONTENT_REJECTED_REQUIRES_REVIEW: "商品和库存已提交，但 Ozon 拒绝了富文本内容，请检查后重试",
@@ -471,10 +473,15 @@ export function autoListingTaskRows(jobs) {
     const jobId = boundedString(descriptors.jobId?.value, { required: true });
     const items = descriptors.items?.value;
     if (!jobId || !Array.isArray(items)) continue;
+    const useCategoryStrategy = descriptors.useCategoryStrategy?.value;
+    if (descriptors.useCategoryStrategy && typeof useCategoryStrategy !== "boolean") continue;
     const jobCreatedAt = canonicalTimestamp(descriptors.createdAt?.value);
     for (const item of items) {
       const projected = projectItem(item, { allowJobFields: false });
-      if (projected) rows.push(Object.freeze({ ...projected, jobId, jobCreatedAt }));
+      if (projected) rows.push(Object.freeze({
+        ...projected, jobId, jobCreatedAt,
+        ...(typeof useCategoryStrategy === "boolean" ? { useCategoryStrategy } : {}),
+      }));
     }
   }
   return Object.freeze(rows);

@@ -8,10 +8,10 @@ import { createAutoListingAiCredentialResolver } from "./auto-listing-ai-credent
 import { createAutoListingAiSettingsPostgres } from "./auto-listing-ai-settings-postgres.mjs";
 import { createPostgresAiOutboxRepository } from "./auto-listing-ai-outbox-postgres.mjs";
 import {
-  createAutoListingAiWorkPublisher,
-  createAutoListingAiWorkQueueAdapter,
-  createLegacyAutoListingAiOutboxPublisher,
-  createLegacyAutoListingAiQueueAdapter,
+  createCurrentAutoListingAiWorkPublisher,
+  createCurrentAutoListingAiWorkQueueAdapter,
+  createCurrentLegacyAutoListingAiOutboxPublisher,
+  createCurrentLegacyAutoListingAiQueueAdapter,
 } from "./auto-listing-ai-queue.mjs";
 import { orchestrateAutoListingAiPhase } from "./auto-listing-ai-orchestrator.mjs";
 import { autoListingAiMessageDedupeKey } from "./auto-listing-ai-message.mjs";
@@ -275,10 +275,10 @@ const DEFAULT_RELAY_INFRASTRUCTURE = Object.freeze({
 
 const DEFAULT_RELAY_PORTS = Object.freeze({
   ...DEFAULT_RELAY_INFRASTRUCTURE,
-  createQueueAdapter: (options) => createLegacyAutoListingAiQueueAdapter(options),
-  createPublisher: (options) => createLegacyAutoListingAiOutboxPublisher(options),
-  createWorkQueueAdapter: (options) => createAutoListingAiWorkQueueAdapter(options),
-  createWorkPublisher: (options) => createAutoListingAiWorkPublisher(options),
+  createQueueAdapter: (options) => createCurrentLegacyAutoListingAiQueueAdapter(options),
+  createPublisher: (options) => createCurrentLegacyAutoListingAiOutboxPublisher(options),
+  createWorkQueueAdapter: (options) => createCurrentAutoListingAiWorkQueueAdapter(options),
+  createWorkPublisher: (options) => createCurrentAutoListingAiWorkPublisher(options),
 });
 
 function defaultRelayPorts(infrastructure) {

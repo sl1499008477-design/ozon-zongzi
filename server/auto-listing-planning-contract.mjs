@@ -30,7 +30,7 @@ export function selectAutoListingPlanningContract(raw = {}) {
   if (!SAFE_ID.test(accountId) || !SAFE_ID.test(collectItemId)) {
     return AUTO_LISTING_PLANNING_CONTRACTS.LEGACY;
   }
-  return sourceType === "COLLECT_BOX"
+  return ["COLLECT_BOX", "EXCEL_SKU"].includes(sourceType)
     ? AUTO_LISTING_PLANNING_CONTRACTS.FIXED
     : AUTO_LISTING_PLANNING_CONTRACTS.LEGACY;
 }

@@ -6,6 +6,10 @@ import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.
 import { buildVisualGroups, verifyVisualGroupsCapture } from "./auto-listing-visual-groups.mjs";
 import { normalizeAutoListingTextDensityByRole } from "./auto-listing-text-density-contract.mjs";
 import {
+  isAutoListingCreativeAttributeId,
+  isAutoListingCreativeFact,
+} from "./auto-listing-creative-facts.mjs";
+import {
   AUTO_LISTING_CONTENT_PLAN_VALIDATOR_VERSION,
   createContentPlanDiagnoser,
 } from "./auto-listing-content-plan-validator.mjs";
@@ -33,13 +37,14 @@ const V2_GUIDANCE_KEYS = new Set(["composition", "background", "textDensity", "l
 const PROFILE_KEYS = new Set(["id", "configVersion", "textModel"]);
 const GATEWAY_EXECUTION_KEYS = new Set(["channelId", "connectionId", "connectionVersion", "idleTimeoutMs"]);
 const REGENERATION_KEYS = new Set(["requestId", "reason"]);
-const ROLE_ORDER = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
+const ROLE_ORDER = ["MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION"];
+const LEGACY_ROLE_ORDER = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"];
 const ROLE_LOWER = {
   MAIN: "main", SELLING_POINT: "sellingPoint", DETAIL: "detail", SCENE: "scene",
   SPECIFICATION: "specification", INFOGRAPHIC: "infographic",
 };
 const ROLE_LIMITS = {
-  MAIN: [1, 1], SELLING_POINT: [2, 5], DETAIL: [1, 2], SCENE: [1, 2], SPECIFICATION: [0, 1], INFOGRAPHIC: [1, 2],
+  MAIN: [1, 1], SELLING_POINT: [1, 5], DETAIL: [1, 2], SCENE: [1, 2], SPECIFICATION: [0, 1], INFOGRAPHIC: [1, 2],
 };
 const STYLES = new Set(["VISUAL_FIRST", "PARAMETER_FIRST", "DEMONSTRATION_FIRST", "SPECIFICATION_FIRST", "BALANCED_DEFAULT"]);
 const DENSITIES = new Set(["NONE", "LIGHT", "MEDIUM", "HEAVY"]);
@@ -61,9 +66,6 @@ const ATTRIBUTE_C_VALUE_KEYS = new Set(["value", "dictionary_value_id"]);
 const ATTRIBUTE_EDIT_KEYS = new Set(["id", "name", "value", "values", "required", "dictionaryId", "multiple"]);
 const ATTRIBUTE_VALUE_CAMEL_KEYS = new Set(["value", "dictionaryValueId"]);
 const ATTRIBUTE_VALUE_ONLY_KEYS = new Set(["value"]);
-const EXCLUDED_ATTRIBUTE_IDS = new Set([
-  "85", "4180", "4191", "4194", "4195", "4497", "9454", "9455", "9456", "11254",
-]);
 const MATCHED_BY = new Set(["EXACT_CATEGORY_TYPE_V2", "EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"]);
 const STRATEGY_DIAGNOSTICS = new Set([
   "CATEGORY_STRATEGY_COUNT_INSTRUCTION_IGNORED",
@@ -310,12 +312,12 @@ function dimensionKind(key) {
   throw plannerError();
 }
 
-function effectiveRoleCounts(config) {
-  const counts = Object.fromEntries(ROLE_ORDER.map((role) => [role, config.image.roles[ROLE_LOWER[role]]]));
+function effectiveRoleCounts(config, roleOrder) {
+  const counts = Object.fromEntries(roleOrder.map((role) => [role, config.image.roles[ROLE_LOWER[role]]]));
   const requestedTotal = Object.values(counts).reduce((sum, value) => sum + value, 0);
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
   if (total < 6 || total > 13 || total > requestedTotal) throw plannerError();
-  for (const role of ROLE_ORDER) {
+  for (const role of roleOrder) {
     const [minimum, maximum] = ROLE_LIMITS[role];
     if (!Number.isInteger(counts[role]) || counts[role] < minimum || counts[role] > maximum) throw plannerError();
   }
@@ -512,7 +514,7 @@ function factRegistry(snapshot, groups, productDimensions) {
   });
   snapshot.attributes.forEach((attribute, attributeIndex) => {
     const candidateId = attributeIdentifier(attribute?.attributeId ?? attribute?.key ?? attribute?.id);
-    if (EXCLUDED_ATTRIBUTE_IDS.has(candidateId)) {
+    if (candidateId && !isAutoListingCreativeAttributeId(candidateId)) {
       reasonCodes.push("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED");
       return;
     }
@@ -521,14 +523,21 @@ function factRegistry(snapshot, groups, productDimensions) {
       reasonCodes.push("UNSUPPORTED_ATTRIBUTE_EVIDENCE_IGNORED");
       return;
     }
-    projection.forEach(({ attributeId, dictionaryValueId, value, sourcePath }, valueIndex) => addFact(registry, {
-      factId: `fact.attribute.${attributeId}.${valueIndex}`,
-      kind: attributeFactKind(attributeId),
-      value,
-      sourcePath,
-      dictionaryValueId,
-      visualGroupKeys: [],
-    }));
+    projection.forEach(({ attributeId, dictionaryValueId, value, sourcePath }, valueIndex) => {
+      const fact = {
+        factId: `fact.attribute.${attributeId}.${valueIndex}`,
+        kind: attributeFactKind(attributeId),
+        value,
+        sourcePath,
+        dictionaryValueId,
+        visualGroupKeys: [],
+      };
+      if (!isAutoListingCreativeFact(fact)) {
+        reasonCodes.push("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED");
+        return;
+      }
+      addFact(registry, fact);
+    });
   });
   const combinedDimensions = combinedDimensionFact([...registry.values()]);
   if (combinedDimensions) addFact(registry, combinedDimensions);
@@ -594,8 +603,8 @@ export function buildPlannerInput(input = {}) {
       reasonCodes: [...group.reasonCodes],
     };
   });
-  const roles = effectiveRoleCounts(config.config);
   const productLedV6 = promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  const roles = effectiveRoleCounts(config.config, productLedV6 ? ROLE_ORDER : LEGACY_ROLE_ORDER);
   const effectiveDensities = productLedV6
     ? { ...strategy.densities, MAIN: "HEAVY" }
     : strategy.densities;

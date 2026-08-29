@@ -787,7 +787,7 @@ test("loads finalizable Excel source rows with account and ready-state boundarie
   assert.equal(result.sources[0].collectItemId, "collect-1");
   assert.equal(
     result.sources[0].sourceVersion,
-    "raw:hash-1:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
+    "raw:hash-1:category:shared-a:1:AUTO_LISTING_SOURCE_SNAPSHOT_V3",
   );
   assert.match(calls[1].sql, /r\.status='READY'/u);
   assert.match(calls[1].sql, /r\.account_id=\$1/u);
@@ -914,6 +914,7 @@ test("category lease release is persistently idempotent only for the exact repla
 });
 
 test("loads Collect Box source rows with versioned draft and raw identities", async () => {
+  let sharedCategoryVersion = 2;
   const repository = createAutoListingRepository({
     pool: {
       connect: async () => assert.fail("read path must not open a transaction"),
@@ -925,7 +926,8 @@ test("loads Collect Box source rows with versioned draft and raw identities", as
             raw_payload: { normalized: {} }, payload_hash: "payload-draft", collected_at: "2026-08-07T00:00:00.000Z",
             evidence_id: "evidence-draft", evidence_account_id: "account-a", source_description_category_id: 123,
             source_type_id: 456, taxonomy_scope: "OZON:DEFAULT", shared_category_id: "shared-a",
-            shared_category_account_id: "account-a", shared_category_version: 2, shared_category_evidence_id: "evidence-draft",
+            shared_category_account_id: "account-a", shared_category_version: sharedCategoryVersion,
+            shared_category_evidence_id: "evidence-draft",
             shared_category_status: "ACTIVE", shared_category_source: "SOURCE_DIRECT",
             current_description_category_id: 123, current_type_id: 456, taxonomy_fingerprint: null,
           },
@@ -935,7 +937,8 @@ test("loads Collect Box source rows with versioned draft and raw identities", as
             raw_payload: { normalized: {} }, payload_hash: "payload-raw", collected_at: "2026-08-07T00:00:00.000Z",
             evidence_id: "evidence-raw", evidence_account_id: "account-a", source_description_category_id: 123,
             source_type_id: 456, taxonomy_scope: "OZON:DEFAULT", shared_category_id: "shared-a",
-            shared_category_account_id: "account-a", shared_category_version: 2, shared_category_evidence_id: "evidence-raw",
+            shared_category_account_id: "account-a", shared_category_version: sharedCategoryVersion,
+            shared_category_evidence_id: "evidence-raw",
             shared_category_status: "ACTIVE", shared_category_source: "SOURCE_DIRECT",
             current_description_category_id: 123, current_type_id: 456, taxonomy_fingerprint: null,
           },
@@ -949,10 +952,17 @@ test("loads Collect Box source rows with versioned draft and raw identities", as
   });
 
   assert.deepEqual(result.map(({ sourceVersion }) => sourceVersion), [
-    "draft:7:payload-draft:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
-    "raw:payload-raw:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
+    "draft:7:payload-draft:category:shared-a:2:AUTO_LISTING_SOURCE_SNAPSHOT_V3",
+    "raw:payload-raw:category:shared-a:2:AUTO_LISTING_SOURCE_SNAPSHOT_V3",
   ]);
   assert.deepEqual(result.map((entry) => entry.sharedCategory.version), [2, 2]);
+
+  sharedCategoryVersion = 3;
+  const refreshed = await repository.loadCollectSources({
+    accountId: "account-a", collectItemIds: ["collect-draft", "collect-raw"],
+  });
+  assert.notEqual(refreshed[0].sourceVersion, result[0].sourceVersion);
+  assert.match(refreshed[0].sourceVersion, /:category:shared-a:3:AUTO_LISTING_SOURCE_SNAPSHOT_V3$/u);
 });
 
 test("Collect Box category source query is account scoped, store independent, and fail closed", async () => {
@@ -1281,6 +1291,7 @@ function successfulCreationFixture({
       if (/INSERT INTO auto_listing_jobs/.test(sql)) {
         job = {
           id: params[0], account_id: params[1], source_type: params[2], status: "CREATED",
+          config_snapshot: JSON.parse(params[4]),
           strategy_version_id: params[6], warehouse_validation_evidence_id: params[12], correlation_id: params[11],
           created_at: new Date(0), updated_at: new Date(0),
         };
@@ -1382,6 +1393,7 @@ test("category strategy OFF persists the frozen generic selection even when a pu
 
   const created = await repository.createJobGraph(warehouseGraph({ useCategoryStrategy: false }));
 
+  assert.equal(created.useCategoryStrategy, false);
   assert.equal(created.items[0].style, "BALANCED_DEFAULT");
   assert.equal(created.items[0].matchedBy, "DEFAULT");
   assert.equal(calls.some(({ sql }) => /FROM ai_content_strategy_rules/.test(sql)), false);

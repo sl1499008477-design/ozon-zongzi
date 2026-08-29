@@ -65,12 +65,12 @@ import {
 import "./auto-listing-page.css";
 
 const ROLE_FIELDS = Object.freeze([
-  ["main", "主图", 1, 1],
-  ["sellingPoint", "卖点图", 2, 5],
-  ["detail", "细节图", 1, 2],
-  ["scene", "场景图", 1, 2],
-  ["specification", "产品实拍图", 0, 1],
-  ["infographic", "信息图", 1, 2],
+  ["main", "产品主图", 1, 1],
+  ["sellingPoint", "核心卖点图", 1, 5],
+  ["infographic", "参数信息图", 1, 2],
+  ["scene", "使用场景图", 1, 2],
+  ["detail", "细节证据图", 1, 2],
+  ["specification", "尺寸包装图", 0, 1],
 ]);
 
 function ProtectedReviewImage({ image, onStateChange }) {
@@ -848,6 +848,9 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         {item.failureLabel ? <span>{item.failureLabel}</span> : null}
       </Space>;
     } },
+    { title: "策略来源", dataIndex: "useCategoryStrategy", render: (value) => (
+      <Tag color={value === false ? undefined : "blue"}>{value === false ? "默认模板" : "类目策略"}</Tag>
+    ) },
     { title: "上架店铺", dataIndex: "targetStoreId", render: (value) => storeLabels.get(String(value || "")) || "—" },
     { title: "任务用时", key: "duration", render: (_value, row) => {
       const duration = autoListingTaskDuration(row, displayNowMs);
@@ -951,7 +954,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
               />
             </Form.Item> : null}
             <Form.Item name="useCategoryStrategy" label="类目策略" valuePropName="checked"
-              extra="开启：使用精确类目策略；关闭：使用通用图片和内容规划">
+              extra="开启：精确策略只增强配色、字体和版式，未命中自动使用通用方案；关闭：直接使用通用方案。两者都不改变商品事实、六图顺序或 Ozon 必要校验。">
               <Switch aria-label="使用类目策略" checkedChildren="使用策略" unCheckedChildren="通用规划" />
             </Form.Item>
           </div>
@@ -990,7 +993,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         })}</div> : null}
         <Tabs className="auto-listing-task-filters" activeKey={taskFilter} onChange={setTaskFilter} items={TASK_FILTER_ITEMS} />
         <div className="auto-listing-task-table"><Table rowKey="itemId" dataSource={filteredTaskRows} columns={taskColumns}
-          pagination={{ pageSize: 10 }} scroll={{ x: 1120 }} locale={{ emptyText: "暂无自动上架任务" }} /></div>
+          pagination={{ pageSize: 10 }} scroll={{ x: 1240 }} locale={{ emptyText: "暂无自动上架任务" }} /></div>
       </Card> },
       ]} />
     </Spin>

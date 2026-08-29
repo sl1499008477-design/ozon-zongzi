@@ -50,7 +50,7 @@ test("stageInitialPlanWork atomically locks a frozen-profile item, transitions S
   const outboxValues = client.calls[3].values;
   const payload = JSON.parse(outboxValues.find((value) => typeof value === "string" && value.startsWith("{")));
   assert.deepEqual(payload, {
-    contractVersion: "V1", accountId: "account-a", itemId: "item-a", phase: "PLAN_CONTENT",
+    contractVersion: "V2", accountId: "account-a", itemId: "item-a", phase: "PLAN_CONTENT",
     expectedStatusVersion: 2, correlationId: "correlation-a",
   });
   assert.doesNotMatch(JSON.stringify(client.calls), /https?:|prompt|api.?key|secret|raw.?error/iu);

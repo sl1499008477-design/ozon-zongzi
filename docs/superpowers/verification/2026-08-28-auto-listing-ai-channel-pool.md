@@ -45,12 +45,13 @@ Task 11 的本地无费用验收通过：独立受控假网关、一次性 Postg
 | `AUTO_LISTING_CONFIGURABLE_SKELETON_PG_TESTS=1 ... auto-listing-configurable-skeleton-e2e.test.mjs` | RED 暴露 guarded fixture 漂移；经逐项授权的 test-only contract 更新后 exit 0：6/6，0 skipped；未改生产代码 |
 | 类目策略真实组合 PostgreSQL E2E | exit 0：真实 route/runtime 组合通过，未调用生产外部服务 |
 | `node --test --test-concurrency=1 server/tests/auto-listing-runtime-worker.test.mjs server/tests/auto-listing-web-runtime.test.mjs` | mandatory execution repository/v3 queue 和 archive publication port 的 stale fixture 更新后 exit 0：38/38，0 skipped；未改生产代码 |
-| `pnpm run db:migrate`（一次性 PostgreSQL） | exit 0：98 条迁移，最新 `098_auto_listing_ai_channel_pool` |
+| `pnpm run db:migrate`（Task 11 当时的一次性 PostgreSQL） | exit 0：当时共 98 条迁移，最新 `098_auto_listing_ai_channel_pool`；后续清理复验已将完整链推进至 101 |
 | `pnpm run build` | exit 0：4851 modules；仅有既存的 >500 kB chunk 提示 |
-| `pnpm run verify` | 2026-08-29 标准环境复跑 exit 1；详见“项目级验证边界”，不把阻塞项称为通过 |
+| `pnpm run verify` | 2026-08-29 首次标准环境复跑 exit 1；这是下方保留的历史环境诊断，已由同日“项目级清理复验”结果取代 |
+| `scripts/verify.mjs`（准备 desktop、扩展基线、Docker PATH 和沙箱外 Chrome 后） | 2026-08-29 项目级清理复验 exit 0：3892 total、3809 pass、0 fail、83 explicit skip；所有 verifier checks 通过 |
 | `git diff --check` | exit 0，无空白错误 |
 
-### 项目级验证边界
+### 首次项目级验证边界（历史诊断）
 
 标准 `pnpm run verify` 的应用构建、开发入口、扩展 zip、一致性 smoke、插件就绪、安全扫描等阶段执行；最终命令仍因环境和非 Task 11 基线门禁返回 1：
 
@@ -62,7 +63,17 @@ Task 11 的本地无费用验收通过：独立受控假网关、一次性 Postg
 
 本次活动套件相对前次记录移除了 1 个手工顺序 journey PASS，并新增 3 个 gated PostgreSQL cases；因此统计为 3854 total、3747 pass、21 fail、86 explicit skip。完整 verifier 共 5 个 check 非零。21 个失败全部可归入环境门禁：19 个测试在 Chrome 启动阶段即失败、1 个 desktop parser 缺少已声明的 `cheerio` 安装、1 个 UI parity 测试缺少 `QH_SOURCE_EXTENSION_DIR`。没有剩余的 runtime/category 或 Task 11 行为失败。
 
-因此本记录只声明 Task 11 聚焦验收、计划内非目标回归、构建和一次性迁移通过，不声明当前机器的完整 `pnpm run verify` 通过，也不把任何 skip 计为通过。
+以上是清理前的历史结论：当时只声明 Task 11 聚焦验收、计划内非目标回归、构建和一次性迁移通过，不把任何 skip 计为通过。该环境阻塞结论已由下面的同日清理复验取代。
+
+### 2026-08-29 项目级清理复验
+
+- 按 `desktop/pnpm-lock.yaml` 安装独立 desktop workspace 后，真实 `cheerio` 解析器及 desktop 套件通过。
+- 使用经审查的 `0.13.46.1` 上游扩展目录、Docker Desktop CLI 和沙箱外本机 Chrome，扩展 source/UI/diff/zip、Compose 插值及真实浏览器门禁全部通过。
+- 修正本地 JSON/auth/import/pricing 测试对继承 `DATABASE_URL` / `POSTGRES_HOST` 的环境泄漏；只隔离测试进程，不改变生产持久化选择。
+- 类目刷新门禁证明旧来源版本没有绑定账号共享类目 ID/版本；来源身份契约升级为 `AUTO_LISTING_SOURCE_SNAPSHOT_V3`，避免原始商品字节不变时复用旧类目快照。
+- 对本轮涉及的 7 个显式 PostgreSQL 门禁应用完整迁移链至 `101_manual_category_confirmation_product_revision.sql`，结果 24/24、0 skipped、0 fail；其中包含类目策略、固定骨架、核心 repository 和 RFBS 首次上架流程。
+- 完整 active suite 为 3892 total、3809 pass、0 fail、83 explicit skip。83 项仍是需要各自外部 disposable 环境的显式门禁，不计作通过；本轮相关门禁已如上单独启用并通过。
+- 最终 verifier 的应用构建、开发入口、扩展校验、Docker Compose、插件就绪、浏览器流程、差异空白以及个人数据/凭据扫描全部退出 0，最终输出 `All verification checks passed.`
 
 ## 浏览器验收
 
@@ -85,7 +96,7 @@ Task 11 的本地无费用验收通过：独立受控假网关、一次性 Postg
 - runtime composition 明确断言 v2/v3 队列和 worker options 的精确映射。
 - workflow journey 对每个业务 Outbox message 断言只有 V1 业务载荷，不含 execution、`apiKey`、Authorization、Bearer 或 ciphertext。
 - 定价、库存、幂等上传、账号隔离由计划列出的上传 service/worker、settings 和类目策略回归覆盖；72/72 全部通过。
-- 数据库公开 schema 的迁移登记为 `98 | 098_auto_listing_ai_channel_pool`；未读取或复制真实账号、商品、密钥或上游响应。
+- Task 11 当时的数据库登记为 `98 | 098_auto_listing_ai_channel_pool`；本轮 disposable PostgreSQL 复验已应用完整迁移链至 101。未读取或复制真实账号、商品、密钥或上游响应。
 
 ## 未执行范围
 
@@ -97,6 +108,6 @@ Task 11 的本地无费用验收通过：独立受控假网关、一次性 Postg
 ## 回滚与恢复
 
 - 容量异常时先在管理员配置中停用附加通道，恢复单通道容量；已有业务 Outbox 和证据继续保留。
-- 代码可回滚 Task 11 测试/展示记录及前序实现提交，但迁移 098、通道版本、lease 和审计证据不得通过删表或删除历史数据回滚。
-- 若迁移 098 已在某环境应用，回退应用前先停止 AI worker/relay；恢复兼容版本后再逐步启用主通道。需要 schema 变化时使用新的 forward-only 迁移。
+- 代码可回滚 Task 11 测试/展示记录及前序实现提交，但已应用的迁移 098–101、通道版本、lease 和审计证据不得通过删表或删除历史数据回滚。
+- 若迁移 098–101 已在某环境应用，回退应用前先停止 AI worker/relay；恢复兼容版本后再逐步启用主通道。需要 schema 变化时使用新的 forward-only 迁移。
 - 本次 disposable 容器删除后无持久数据需要恢复；没有外部调用需要补偿。

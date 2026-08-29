@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import {
+  AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION,
   autoListingAiMessageDedupeKey,
   canonicalizeAutoListingAiMessage,
   isSafeAutoListingAiIdentifier,
@@ -113,7 +114,8 @@ function replay(row, value, action, requestHash) {
 
 function planMessage(value, expectedStatusVersion) {
   return normalizeAutoListingAiMessage({
-    contractVersion: "V1", accountId: value.accountId, itemId: value.itemId,
+    contractVersion: AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION,
+    accountId: value.accountId, itemId: value.itemId,
     phase: "PLAN_CONTENT", expectedStatusVersion, correlationId: value.correlationId,
   });
 }
@@ -198,10 +200,11 @@ async function execute(pool, raw, action) {
            available_at,contract_version,phase,phase_target_id,expected_status_version,
            correlation_id,next_retry_at
          ) VALUES ($1,$2,$3,$4,NULL,'PLAN_CONTENT',$5,$6::JSONB,'PENDING',0,NOW(),
-           'V1','PLAN_CONTENT',NULL,$7,$8,NOW())
+           $9,'PLAN_CONTENT',NULL,$7,$8,NOW())
          RETURNING id`,
         [`auto-listing-outbox-${dedupeKey}`, value.accountId, value.jobId, value.itemId,
-          dedupeKey, canonicalizeAutoListingAiMessage(message), nextVersion, value.correlationId]);
+          dedupeKey, canonicalizeAutoListingAiMessage(message), nextVersion, value.correlationId,
+          message.contractVersion]);
       if (outbox?.rowCount !== 1) throw conflict();
     }
     if (action === "APPROVE_UPLOAD") {

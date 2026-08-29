@@ -1191,10 +1191,14 @@ test("uses the frozen shared category ID and never display labels for strategy m
   const item = source("collect-ancestor");
   item.collectItem.listingDraft.categoryResolution.target.ancestorCategoryIds = ["ancestor-id"];
   item.collectItem.listingDraft.categoryResolution.source.path = ["Display only"];
-  const repository = fakeRepository({ sources: [item] });
+  const repository = fakeRepository({
+    sources: [item],
+    categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 2, drafts: [] },
+  });
   repository.loadPublishedStrategy = async (input) => ({
     strategyVersion: { strategyId: "strategy-a", strategyVersionId: "version-a" },
-    rules: [{ ruleId: "exact", ruleOrder: 1, matchType: "EXACT_CATEGORY", categoryId: "123", style: "PARAMETER_FIRST", textDensityByRole: {} }],
+    rules: [{ ruleId: "exact", ruleOrder: 1, matchType: "EXACT_CATEGORY", categoryId: "123",
+      exactScope, style: "PARAMETER_FIRST", textDensityByRole: {} }],
   });
   const result = await createAutoListingService({ repository }).createAutoListingJob({ actor, collectItemIds: ["collect-ancestor"], idempotencyKey: "ancestor-key", correlationId: "corr", config });
   const persisted = repository.calls.find(([name]) => name === "createJobGraph")[1].items[0];
@@ -1206,7 +1210,7 @@ test("uses the frozen shared category ID and never display labels for strategy m
   assert.equal(Object.hasOwn(result.items[0], "strategyVersionId"), false);
 });
 
-test("strict account mode rejects a missing exact category strategy before every task side effect", async () => {
+test("enabled category strategy uses a non-blocking universal fallback when no exact rule exists", async () => {
   const repository = fakeRepository({
     categoryStrategyControl: {
       mode: "REQUIRE_EXACT_STRATEGY",
@@ -1214,42 +1218,72 @@ test("strict account mode rejects a missing exact category strategy before every
       drafts: [{ scope: exactScope, draftId: "same-account-draft", status: "SAMPLES_READY" }],
     },
   });
-  let preparerCalls = 0;
-  let freshnessCalls = 0;
-  const service = createAutoListingService({
-    repository,
-    listingBasePreparer: async () => { preparerCalls += 1; throw new Error("must not prepare"); },
-    ensureCategoryFresh: async () => { freshnessCalls += 1; throw new Error("must not refresh"); },
+
+  await createAutoListingService({ repository }).createAutoListingJob({
+    actor: { id: "account-a", role: "admin" },
+    collectItemIds: ["collect-1"],
+    idempotencyKey: "missing-exact-falls-back",
+    correlationId: "corr-fallback",
+    config,
   });
 
-  await assert.rejects(
-    service.createAutoListingJob({
-      actor: { id: "account-a", role: "admin" },
-      collectItemIds: ["collect-1"], idempotencyKey: "missing-exact", correlationId: "corr", config,
-    }),
-    (caught) => {
-      assert.equal(caught?.code, "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED");
-      assert.equal(caught?.status, 409);
-      assert.deepEqual(caught?.details, {
-        scope: exactScope,
-        sourceCollectItemId: "collect-1",
-        status: "SAMPLES_READY",
-        canManage: true,
-        draftId: "same-account-draft",
-      });
-      return true;
-    },
-  );
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.categoryStrategyGate, undefined);
+  assert.equal(graph.configSnapshot.useCategoryStrategy, false);
+  assert.deepEqual(graph.items.map(({ sourceRecordId, matchedBy }) => ({ sourceRecordId, matchedBy })), [
+    { sourceRecordId: "collect-1", matchedBy: "DEFAULT" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(graph), /same-account-draft/iu);
+});
 
-  assert.deepEqual({ preparerCalls, freshnessCalls }, { preparerCalls: 0, freshnessCalls: 0 });
-  for (const forbidden of [
-    "loadTargetStore", "acquireCategoryPreparationLease", "loadTargetWarehouse",
-    "loadPublishedUploadPolicies", "createJobGraph",
-  ]) {
-    assert.equal(repository.calls.some(([name]) => name === forbidden), false, `${forbidden} must stay zero`);
-  }
-  assert.deepEqual(repository.calls.map(([name]) => name), [
-    "getJobByIdempotencyKey", "loadCollectSources", "loadCategoryStrategyControl", "loadPublishedStrategy",
+test("one missing exact category makes the whole task use the same universal fallback", async () => {
+  const unmatchedScope = Object.freeze({
+    taxonomyScope: "OZON:DEFAULT",
+    descriptionCategoryId: 789,
+    typeId: 987,
+  });
+  const unmatched = source("collect-2");
+  unmatched.categoryEvidence = {
+    ...unmatched.categoryEvidence,
+    id: "evidence-collect-2-unmatched",
+    sourceDescriptionCategoryId: unmatchedScope.descriptionCategoryId,
+    sourceTypeId: unmatchedScope.typeId,
+  };
+  unmatched.sharedCategory = {
+    ...unmatched.sharedCategory,
+    id: "shared-789-987",
+    evidenceId: unmatched.categoryEvidence.id,
+    sourceDescriptionCategoryId: unmatchedScope.descriptionCategoryId,
+    sourceTypeId: unmatchedScope.typeId,
+    currentDescriptionCategoryId: unmatchedScope.descriptionCategoryId,
+    currentTypeId: unmatchedScope.typeId,
+  };
+  const repository = fakeRepository({
+    sources: [source("collect-1"), unmatched],
+    categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 2, drafts: [] },
+  });
+  repository.loadPublishedStrategy = async (input) => {
+    repository.calls.push(["loadPublishedStrategy", input]);
+    return {
+      strategyVersion: { strategyId: "default", strategyVersionId: "published-first-only" },
+      rules: [exactV2Rule()],
+    };
+  };
+
+  await createAutoListingService({ repository }).createAutoListingJob({
+    actor,
+    collectItemIds: ["collect-1", "collect-2"],
+    idempotencyKey: "missing-second-scope-falls-back",
+    correlationId: "corr-missing-second-scope",
+    config,
+  });
+
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.categoryStrategyGate, undefined);
+  assert.equal(graph.configSnapshot.useCategoryStrategy, false);
+  assert.deepEqual(graph.items.map(({ sourceRecordId, matchedBy }) => ({ sourceRecordId, matchedBy })), [
+    { sourceRecordId: "collect-1", matchedBy: "DEFAULT" },
+    { sourceRecordId: "collect-2", matchedBy: "DEFAULT" },
   ]);
 });
 
@@ -1282,35 +1316,27 @@ test("a task with category strategy disabled uses the generic plan without the s
   assert.equal(repository.calls.some(([name]) => name === "loadCategoryStrategyControl"), false);
 });
 
-test("strict create emits required and continue-create observations without exposing source facts", async () => {
+test("generic category fallback is observable without exposing source facts", async () => {
   const events = [];
-  let published = { strategyVersion: { strategyId: "default", strategyVersionId: "before-publish" }, rules: [] };
   const repository = fakeRepository({
     categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 9, drafts: [] },
   });
   repository.loadPublishedStrategy = async (input) => {
     repository.calls.push(["loadPublishedStrategy", input]);
-    return published;
+    return { strategyVersion: { strategyId: "default", strategyVersionId: "generic-fallback" }, rules: [] };
   };
   const service = createAutoListingService({ repository,
     observability: { async observe(event) { events.push(event); } } });
-  await assert.rejects(service.createAutoListingJob({ actor, collectItemIds: ["collect-1"],
-    idempotencyKey: "missing-observed", correlationId: "correlation-missing", config }), {
-    code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", status: 409,
-  });
-  published = { strategyVersion: { strategyId: "default", strategyVersionId: "published-observed" },
-    rules: [exactV2Rule({ ruleId: "published-observed-rule" })] };
   await service.createAutoListingJob({ actor, collectItemIds: ["collect-1"],
-    idempotencyKey: "continue-observed", correlationId: "correlation-continue", config });
+    idempotencyKey: "fallback-observed", correlationId: "correlation-fallback", config });
 
   assert.deepEqual(events.map(({ metric, outcome }) => ({ metric, outcome })), [
-    { metric: "category_strategy_required_total", outcome: "blocked" },
-    { metric: "category_strategy_continue_create_total", outcome: "success" },
+    { metric: "category_strategy_required_total", outcome: "fallback" },
   ]);
   assert.equal(JSON.stringify(events).includes("Product collect-1"), false);
   assert.equal(JSON.stringify(events).includes("source.example.test"), false);
-  assert.equal(events[1].strategyVersionId, "published-observed");
-  assert.equal(events[1].correlationId, "correlation-continue");
+  assert.equal(events[0].strategyVersionId, null);
+  assert.equal(events[0].correlationId, "correlation-fallback");
 });
 
 test("strict collect and Excel idempotent replays emit continue observations without revalidation", async () => {
@@ -1453,7 +1479,7 @@ test("a refreshed strict create observes the exact second gate frozen into the j
   }]);
 });
 
-test("strict missing-strategy details hide same-account draft identity from ordinary users", async () => {
+test("generic fallback never carries same-account draft identity into the job", async () => {
   const repository = fakeRepository({
     categoryStrategyControl: {
       mode: "REQUIRE_EXACT_STRATEGY",
@@ -1461,25 +1487,16 @@ test("strict missing-strategy details hide same-account draft identity from ordi
       drafts: [{ scope: exactScope, draftId: "admin-only-draft", status: "COLLECTING" }],
     },
   });
-  await assert.rejects(
-    createAutoListingService({ repository }).createAutoListingJob({
-      actor, collectItemIds: ["collect-1"], idempotencyKey: "ordinary-missing", correlationId: "corr", config,
-    }),
-    (caught) => {
-      assert.deepEqual(caught?.details, {
-        scope: exactScope,
-        sourceCollectItemId: "collect-1",
-        status: "COLLECTING",
-        canManage: false,
-      });
-      assert.doesNotMatch(JSON.stringify(caught), /admin-only-draft|account-a|sourceUrl|objectKey/iu);
-      return caught?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED";
-    },
-  );
-  assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
+  const result = await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "ordinary-missing", correlationId: "corr", config,
+  });
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.categoryStrategyGate, undefined);
+  assert.equal(graph.items[0].matchedBy, "DEFAULT");
+  assert.doesNotMatch(JSON.stringify({ result, graph }), /admin-only-draft|sourceUrl|objectKey/iu);
 });
 
-test("strict missing-strategy details identify the source item for the unmatched scope", async () => {
+test("a mixed-category task freezes the generic baseline for every item when one exact rule is missing", async () => {
   const unmatchedScope = Object.freeze({
     taxonomyScope: "OZON:DEFAULT",
     descriptionCategoryId: 789,
@@ -1513,27 +1530,23 @@ test("strict missing-strategy details identify the source item for the unmatched
     };
   };
 
-  await assert.rejects(
-    createAutoListingService({ repository }).createAutoListingJob({
-      actor,
-      collectItemIds: ["collect-1", "collect-2"],
-      idempotencyKey: "missing-second-scope",
-      correlationId: "corr-missing-second-scope",
-      config,
-    }),
-    (caught) => {
-      assert.deepEqual(caught?.details, {
-        scope: unmatchedScope,
-        sourceCollectItemId: "collect-2",
-        status: "NOT_CONFIGURED",
-        canManage: false,
-      });
-      return caught?.code === "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED";
-    },
-  );
+  await createAutoListingService({ repository }).createAutoListingJob({
+    actor,
+    collectItemIds: ["collect-1", "collect-2"],
+    idempotencyKey: "missing-second-scope",
+    correlationId: "corr-missing-second-scope",
+    config,
+  });
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.categoryStrategyGate, undefined);
+  assert.equal(graph.configSnapshot.useCategoryStrategy, false);
+  assert.deepEqual(graph.items.map(({ sourceRecordId, matchedBy }) => ({ sourceRecordId, matchedBy })), [
+    { sourceRecordId: "collect-1", matchedBy: "DEFAULT" },
+    { sourceRecordId: "collect-2", matchedBy: "DEFAULT" },
+  ]);
 });
 
-test("strict mode accepts only exact V2 or V1 rules with a complete exact type identity", async () => {
+test("category enhancement accepts exact V2 or typed V1 rules and ignores weaker matches", async () => {
   const cases = [
     ["v2", [exactV2Rule()], true, "EXACT_CATEGORY_TYPE_V2"],
     ["typed-v1", [{
@@ -1560,24 +1573,18 @@ test("strict mode accepts only exact V2 or V1 rules with a complete exact type i
     const creation = createAutoListingService({ repository }).createAutoListingJob({
       actor, collectItemIds: ["collect-1"], idempotencyKey: `strict-${label}`, correlationId: "corr", config,
     });
-    if (!accepted) {
-      await assert.rejects(creation, { code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", status: 409 });
-      assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
-      continue;
-    }
     await creation;
     const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
     assert.equal(graph.strategyVersionId, `version-${label}`);
-    assert.equal(graph.items[0].matchedBy, matchedBy);
-    assert.deepEqual(graph.categoryStrategyGate, {
-      mode: "REQUIRE_EXACT_STRATEGY",
-      policyVersion: 3,
+    assert.equal(graph.items[0].matchedBy, accepted ? matchedBy : "DEFAULT");
+    assert.deepEqual(graph.categoryStrategyGate, accepted ? {
+      mode: "REQUIRE_EXACT_STRATEGY", policyVersion: 3,
       scopes: [{ ...exactScope, ruleId: rules[0].ruleId }],
-    });
+    } : undefined);
   }
 });
 
-test("legacy fallback keeps BALANCED_DEFAULT and still freezes the account policy version", async () => {
+test("legacy account mode uses the task-wide universal fallback instead of legacy category rules", async () => {
   const repository = fakeRepository();
   await createAutoListingService({ repository }).createAutoListingJob({
     actor, collectItemIds: ["collect-1"], idempotencyKey: "legacy-fallback", correlationId: "corr", config,
@@ -1585,12 +1592,11 @@ test("legacy fallback keeps BALANCED_DEFAULT and still freezes the account polic
   const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
   assert.equal(graph.items[0].matchedBy, "DEFAULT");
   assert.equal(graph.items[0].style, "BALANCED_DEFAULT");
-  assert.deepEqual(graph.categoryStrategyGate, {
-    mode: "LEGACY_FALLBACK", policyVersion: 1, scopes: [],
-  });
+  assert.equal(graph.configSnapshot.useCategoryStrategy, false);
+  assert.equal(graph.categoryStrategyGate, undefined);
 });
 
-test("continue-create re-reads a refreshed source and current publication before acquiring a lease", async () => {
+test("source refresh re-evaluates category guidance and falls back before acquiring a lease", async () => {
   let currentSources = [source("collect-1")];
   const repository = fakeRepository({
     sources: currentSources,
@@ -1618,16 +1624,18 @@ test("continue-create re-reads a refreshed source and current publication before
     },
   });
 
-  await assert.rejects(service.createAutoListingJob({
+  await service.createAutoListingJob({
     actor, collectItemIds: ["collect-1"], idempotencyKey: "continue-new-key", correlationId: "corr", config,
-  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", status: 409 });
+  });
   assert.equal(repository.calls.filter(([name]) => name === "loadCategoryStrategyControl").length, 2);
   assert.equal(repository.calls.filter(([name]) => name === "loadPublishedStrategy").length, 2);
-  assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), false);
-  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+  assert.equal(repository.calls.some(([name]) => name === "acquireCategoryPreparationLease"), true);
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.items[0].matchedBy, "DEFAULT");
+  assert.equal(graph.categoryStrategyGate, undefined);
 });
 
-test("continue-create after publication uses a new key and freezes the current exact rule with original requested counts", async () => {
+test("a later task uses newly published exact guidance while the earlier fallback stays frozen", async () => {
   let published = { strategyVersion: { strategyId: "default", strategyVersionId: "before-publish" }, rules: [] };
   const repository = fakeRepository({
     categoryStrategyControl: { mode: "REQUIRE_EXACT_STRATEGY", version: 5, drafts: [{
@@ -1638,22 +1646,32 @@ test("continue-create after publication uses a new key and freezes the current e
     repository.calls.push(["loadPublishedStrategy", input]);
     return published;
   };
+  let graphSequence = 0;
+  repository.createJobGraph = async (input) => {
+    repository.calls.push(["createJobGraph", input]);
+    graphSequence += 1;
+    return { ...input, id: `job-${graphSequence}`, createdAt: "2026-08-04T00:00:00.000Z" };
+  };
   const service = createAutoListingService({ repository });
-  await assert.rejects(service.createAutoListingJob({
+  await service.createAutoListingJob({
     actor, collectItemIds: ["collect-1"], idempotencyKey: "failed-before-publish", correlationId: "corr-1", config,
-  }), { code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", status: 409 });
+  });
   published = { strategyVersion: { strategyId: "default", strategyVersionId: "published-current" },
     rules: [exactV2Rule({ ruleId: "published-exact" })] };
   const created = await service.createAutoListingJob({
     actor, collectItemIds: ["collect-1"], idempotencyKey: "continue-new-key", correlationId: "corr-2", config,
   });
-  assert.equal(created.jobId, "job-1");
+  assert.equal(created.jobId, "job-2");
+  const fallbackGraph = repository.calls.find(([name, input]) => name === "createJobGraph"
+    && input.idempotencyKey === "failed-before-publish")[1];
+  assert.equal(fallbackGraph.items[0].matchedBy, "DEFAULT");
+  assert.equal(fallbackGraph.categoryStrategyGate, undefined);
   const graph = repository.calls.find(([name, input]) => name === "createJobGraph"
     && input.idempotencyKey === "continue-new-key")[1];
   assert.equal(graph.strategyVersionId, "published-current");
   assert.equal(graph.items[0].ruleId, "published-exact");
   assert.deepEqual(graph.configSnapshot.image, normalizeAndHashAutoListingConfig(config).config.image);
-  assert.equal(repository.calls.filter(([name]) => name === "createJobGraph").length, 1);
+  assert.equal(repository.calls.filter(([name]) => name === "createJobGraph").length, 2);
 });
 
 test("hostile category-strategy control results fail closed before source preparation", async () => {
@@ -1798,12 +1816,13 @@ test("legacy all-blocked creation never executes hostile published strategy-vers
 
 test("ordinary job DTOs omit internal strategy selection metadata", async () => {
   const repository = fakeRepository({ existing: {
-    id: "job-internal-strategy", items: [{
+    id: "job-internal-strategy", useCategoryStrategy: false, items: [{
       id: "item-a", status: "SOURCE_READY", strategyId: "strategy-a",
       strategyVersionId: "version-a", style: "PARAMETER_FIRST", matchedBy: "CATEGORY",
     }],
   } });
   const result = await createAutoListingService({ repository }).getAutoListingJob({ actor, jobId: "job-internal-strategy" });
+  assert.equal(result.useCategoryStrategy, false);
   assert.deepEqual(Object.keys(result.items[0]).filter((key) => /strategy|style|matched/i.test(key)), []);
 });
 

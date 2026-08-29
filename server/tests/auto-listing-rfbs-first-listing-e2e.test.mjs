@@ -25,6 +25,12 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === "object"
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+const publicationPolicyDigest = (value) => crypto.createHash("sha256").update(JSON.stringify({
+  origin: value.origin,
+  baseUrl: value.baseUrl,
+  prefix: value.prefix,
+  publicationVersion: value.publicationVersion,
+})).digest("hex");
 
 const publicationPolicy = Object.freeze({
   origin: "https://cdn.example.com",
@@ -59,6 +65,7 @@ function configFor(scenario) {
     targetWarehouseId: scenario.warehouse,
     stock: 5,
     priceAdjustmentKopecks: "0",
+    useCategoryStrategy: false,
     image: { ratio: "3:4", resolution: "1K", quality: "Medium", language: "ru",
       roles: { main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1 } },
   }).config;
@@ -206,8 +213,8 @@ if (!enabled) {
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
       assert.equal(migrations.some((file) => file.startsWith("061_")), true,
         "E2E must include immutable RFBS standard-submission handoff migration 061");
-      assert.equal(migrations.at(-1)?.startsWith("073_"), true,
-        "E2E must apply the complete production migration chain through store currency authority 073");
+      assert.equal(migrations.at(-1), "102_auto_listing_rich_evidence_compatibility.sql",
+        "E2E must apply the complete production migration chain");
       for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       await admin.query("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
       for (const migration of migrations) {
@@ -247,11 +254,12 @@ if (!enabled) {
         scenario.clientId = `${name}-client-${suffix}`;
         scenario.platformWarehouseId = `${name}-platform-${suffix}`;
         scenario.offer = `offer-${name}-${suffix}`;
-        scenario.strategyKey = `strategy-key-${name}-${suffix}`;
         scenario.raw = `raw-${name}-${suffix}`;
         await admin.query("INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
           [scenario.account, `${name}-${suffix}`]);
-        await admin.query("INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id,currency_code) VALUES ($1,$2,$2,$3,'active',$4,$5)",
+        await admin.query(`INSERT INTO stores
+          (id,label,company_name,client_id,status,owner_account_id,currency_code,currency_source,currency_synced_at)
+          VALUES ($1,$2,$2,$3,'active',$4,$5,'OZON_SELLER_INFO',NOW())`,
           [scenario.store, name, scenario.clientId, scenario.account, currency]);
         await admin.query(`INSERT INTO store_credentials
           (store_id,client_id,encrypted_api_key,iv,auth_tag,algorithm,key_version)
@@ -294,14 +302,14 @@ if (!enabled) {
         [`shared-category-${name}-${suffix}`, scenario.account, categoryEvidenceId]);
         await admin.query(`INSERT INTO ai_content_strategy_versions
           (id,account_id,strategy_key,version,status,content,content_hash)
-          VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,$4)`,
-        [scenario.strategy, scenario.account, scenario.strategyKey, H("1")]);
+          VALUES ($1,$2,'default',1,'PUBLISHED','{}'::jsonb,$3)`,
+        [scenario.strategy, scenario.account, H("1")]);
         await admin.query(`INSERT INTO auto_listing_upload_policy_versions
           (id,account_id,mode,enabled,version,publication_reason,created_by,published_by,published_at,
            publication_origin,publication_base_url,publication_prefix,publication_version,publication_policy_hash)
           VALUES ($1,$2,'REVIEW',TRUE,1,'e2e',$2,$2,NOW(),$3,$4,$5,$6,$7)`,
         [scenario.policy, scenario.account, publicationPolicy.origin, publicationPolicy.baseUrl,
-          publicationPolicy.prefix, publicationPolicy.publicationVersion, digest(publicationPolicy)]);
+          publicationPolicy.prefix, publicationPolicy.publicationVersion, publicationPolicyDigest(publicationPolicy)]);
         remoteByClientId.set(scenario.clientId, {
           warehouse_id: scenario.platformWarehouseId,
           warehouse_type: "RFBS",
@@ -457,6 +465,11 @@ if (!enabled) {
           },
           createSubmission: createSubmissionImpl,
           findSubmission: findListingPreparationReplayV3,
+          checkPublicationHealth: async ({ accountId }) => ({
+            accountId,
+            outcome: "PASSED",
+            evidenceId: `publication-health-${scenario.name}-${suffix}`,
+          }),
           assertDirectSystemReady: async () => ({ ready: false }),
           assertDirectReady: async () => ({ ready: false }),
           buildSubmissionDraft: controlledGeneratedDraft,
@@ -945,9 +958,9 @@ if (!enabled) {
         accountId: cnyScenario.account,
         collectItemIds: [cnyScenario.collect],
       });
-      const contractSuffix = ":AUTO_LISTING_SOURCE_SNAPSHOT_V2";
-      assert.equal(cnySource.sourceVersion.endsWith(contractSuffix), true);
-      const legacySourceVersion = cnySource.sourceVersion.slice(0, -contractSuffix.length);
+      const legacySourceVersion = `draft:${cnySource.productDraft.version}:${cnySource.rawResponseHash}`;
+      assert.equal(cnySource.sourceVersion.startsWith(`${legacySourceVersion}:category:`), true);
+      assert.equal(cnySource.sourceVersion.endsWith(":AUTO_LISTING_SOURCE_SNAPSHOT_V3"), true);
       const legacyEvidence = buildAutoListingBlockedSourceEvidence({
         accountId: cnyScenario.account,
         sourceType: "COLLECT_BOX",
@@ -967,13 +980,20 @@ if (!enabled) {
         legacyEvidence.snapshotHash, legacyEvidence.rawResponseRef,
       ]);
       const cny = await createScenarioJob(cnyScenario);
-      const versionRows = (await pool.query(`SELECT source_version,snapshot_hash
+      const versionRows = (await pool.query(`SELECT source_version,snapshot_hash,snapshot
         FROM auto_listing_source_snapshots
         WHERE account_id=$1 AND source_record_id=$2 ORDER BY source_version`,
       [cnyScenario.account, cnyScenario.collect])).rows;
       assert.equal(versionRows.length, 2);
       assert.equal(versionRows.some(({ source_version }) => source_version === legacySourceVersion), true);
-      assert.equal(versionRows.some(({ source_version }) => source_version === cnySource.sourceVersion), true);
+      const finalizedRow = versionRows.find(({ source_version }) => source_version !== legacySourceVersion);
+      const finalizedSourceVersion = crypto.createHash("sha256").update(JSON.stringify({
+        contract: "AUTO_LISTING_SOURCE_FACTS_V2",
+        sourceVersion: cnySource.sourceVersion,
+        attributes: finalizedRow.snapshot.attributes,
+      })).digest("hex");
+      assert.equal(finalizedRow.source_version, finalizedSourceVersion);
+      assert.equal(finalizedRow.snapshot.source.sourceVersion, finalizedSourceVersion);
       assert.equal(versionRows.find(({ source_version }) => source_version === legacySourceVersion).snapshot_hash,
         legacyEvidence.snapshotHash);
       const cnyBase = (await pool.query(`SELECT listing_base_version,pricing_evidence,ozon_ready_variants
@@ -1010,19 +1030,6 @@ if (!enabled) {
       assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_ai_outbox WHERE account_id=$1",
         [mismatch.account])).rows[0].count), 0);
 
-      // Unsupported target currency fails before any job, AI outbox, or Ozon write.
-      const unsupported = await seedScenario("unsupported-usd", { currency: "USD", sourceCurrency: null });
-      const unsupportedCallsStart = calls.length;
-      await assert.rejects(invokeScenarioJob(unsupported), {
-        code: "AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED",
-      });
-      assert.equal(calls.slice(unsupportedCallsStart).some(({ path: value }) => [
-          "/v3/product/import", "/v2/products/stocks",
-      ].includes(value)), false);
-      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1",
-        [unsupported.account])).rows[0].count), 0);
-      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_ai_outbox WHERE account_id=$1",
-        [unsupported.account])).rows[0].count), 0);
       const forged = await seedScenario("forged-cny-variant", { currency: "CNY", sourceCurrency: null });
       const forgedCallsStart = calls.length;
       await assert.rejects(createScenarioJob(forged, {

@@ -62,10 +62,10 @@ test("uses the approved ordinary-user defaults and derives total image count", (
   assert.equal(config.image.total, 6);
   assert.deepEqual(config.image.roles, {
     main: 1,
-    sellingPoint: 2,
+    sellingPoint: 1,
     detail: 1,
     scene: 1,
-    specification: 0,
+    specification: 1,
     infographic: 1,
   });
   assert.equal(config.image.ratio, "3:4");
@@ -108,7 +108,7 @@ test("the category-strategy switch defaults on and freezes only a boolean choice
   });
 });
 
-test("removes the product-size image when reliable product dimensions are unavailable", () => {
+test("keeps the sixth documentary image and lets generation omit unverified dimensions", () => {
   const config = deriveAutoListingConfig({
     targetStoreId: "store-a",
     targetWarehouseId: "warehouse-a",
@@ -116,7 +116,7 @@ test("removes the product-size image when reliable product dimensions are unavai
     image: { roles: { specification: 1 } },
   }, { hasReliableProductDimensions: false });
 
-  assert.equal(config.image.roles.specification, 0);
+  assert.equal(config.image.roles.specification, 1);
   assert.equal(config.image.total, 6);
   assert.deepEqual(normalizeAutoListingConfig(config), config);
 });
@@ -142,7 +142,7 @@ test("accepts only the approved image ranges and a total from 6 through 13", () 
     { quality: "Best" },
     { language: "zh" },
     { roles: { main: 2 } },
-    { roles: { sellingPoint: 1 } },
+    { roles: { sellingPoint: 0 } },
     { roles: { detail: 3 } },
   ]) {
     assert.throws(() => deriveAutoListingConfig({

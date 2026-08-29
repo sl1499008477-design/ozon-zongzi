@@ -100,6 +100,30 @@ test("PostgreSQL outbox enqueue is deterministic, account scoped and returns the
   assert.doesNotMatch(JSON.stringify(pool.calls), /https?:|sourceRef|apiKey|secret/i);
 });
 
+test("PostgreSQL outbox persists current V2 messages so legacy V1 relays cannot claim new work", async () => {
+  const currentMessage = Object.freeze({ ...message, contractVersion: "V2", correlationId: "current-v2" });
+  const currentDedupeKey = crypto.createHash("sha256").update(JSON.stringify({
+    accountId: "account-a",
+    contractVersion: "V2",
+    expectedStatusVersion: 3,
+    itemId: "item-a",
+    phase: "PLAN_CONTENT",
+  }), "utf8").digest("hex");
+  const pool = scriptedPool([{ rows: [outboxRow({
+    dedupe_key: currentDedupeKey,
+    contract_version: "V2",
+    correlation_id: "current-v2",
+    payload: currentMessage,
+  })] }]);
+  const repository = createPostgresAiOutboxRepository({ pool, id: () => "ai-outbox-1" });
+
+  const stored = await repository.enqueueAutoListingAiMessage(currentMessage);
+
+  assert.equal(stored.dedupeKey, currentDedupeKey);
+  assert.deepEqual(stored.message, currentMessage);
+  assert.equal(pool.calls[0].parameters.includes("V2"), true);
+});
+
 test("PostgreSQL outbox claims with account scope, SKIP LOCKED, database lease time and a fresh ABA token", async () => {
   const claimed = outboxRow({
     state: "PROCESSING", attempts: 1, lease_owner: "worker-a", lease_token: "nonce-a:1",
@@ -198,7 +222,7 @@ test("claim rolls back and releases its dedicated client when the fresh-snapshot
   assert.equal(pool.releaseCount, 1);
 });
 
-test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1 accounts with bounded keyset pagination", async () => {
+test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1/V2 accounts with bounded keyset pagination", async () => {
   const pool = scriptedPool([{ rows: [{ account_id: "account-b" }, { account_id: "account-c" }] }]);
   const repository = createPostgresAiOutboxRepository({ pool, maxAttempts: 4 });
 
@@ -207,7 +231,7 @@ test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1 account
     limit: 2,
   }), ["account-b", "account-c"]);
 
-  assert.match(pool.calls[0].sql, /contract_version='V1'/iu);
+  assert.match(pool.calls[0].sql, /contract_version IN \('V1','V2'\)/iu);
   assert.match(pool.calls[0].sql, /outbox\.state='PENDING'[\s\S]*?outbox\.next_retry_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL[\s\S]*?outbox\.dispatch_contract_version IS NULL AND outbox\.attempts < \$3/iu);
   assert.match(pool.calls[0].sql, /outbox\.state='PROCESSING'[\s\S]*?outbox\.lease_expires_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL[\s\S]*?outbox\.dispatch_contract_version IS NULL AND outbox\.attempts < \$3/iu);
   assert.match(pool.calls[0].sql, /profile\.connection_id IS NULL AND outbox\.state='DEAD'[\s\S]*?outbox\.dispatch_contract_version IS NULL[\s\S]*?i\.status_version=outbox\.expected_status_version/iu);

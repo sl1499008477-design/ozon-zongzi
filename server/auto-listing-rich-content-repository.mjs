@@ -147,7 +147,7 @@ function validTask4CheckerEvidence(asset, facts, reservation) {
   if (!plainObject(evidence) || !plainObject(evidence.checkerResult)
     || typeof evidence.textRequired !== "boolean"
     || (evidence.textForbidden !== undefined && typeof evidence.textForbidden !== "boolean")
-    || !sameFactRegistry(facts, checkerFacts)
+    || !(sameFactRegistry(facts, checkerFacts) || sameFactRegistry(checkerFacts, facts))
     || !Array.isArray(evidence.sourceFactIds)
     || evidence.sourceFactIds.length !== new Set(evidence.sourceFactIds).size
     || evidence.sourceFactIds.some((factId) => !clean(factId)

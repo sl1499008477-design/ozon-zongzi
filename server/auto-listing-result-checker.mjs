@@ -694,7 +694,7 @@ export async function checkGeneratedAsset(input = {}) {
       : "";
     const v6MainInstruction = templateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
       && input.visualBrief?.role === "MAIN"
-      ? "主图中的每条 requiredClaimTexts 都必须清晰可读，并分别配有语义相符的简洁图标；不得用图标暗示未验证功能，卖点标签不得遮挡商品，商品必须保持第一视觉焦点。违反时 quality=FAIL，并写入 ROLE_MISMATCH 或 LABEL_READABILITY_LOW。"
+      ? "主图中的商品名称必须与 identityText 一致并醒目可读；首要卖点必须比其他卖点更突出，使用更大字号、加粗或强调色。每条 requiredClaimTexts 都必须清晰可读；次要卖点分别配有语义相符的简洁图标，不得用图标暗示未验证功能。标签不得遮挡商品，商品必须保持第一视觉焦点。违反时 quality=FAIL，并写入 ROLE_MISMATCH 或 LABEL_READABILITY_LOW。"
       : "";
     const v6DocumentaryInstruction = templateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
       && input.visualBrief?.role === "SPECIFICATION"

@@ -33,7 +33,7 @@ const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canoni
 test("configurable fixed-skeleton migration suite tracks the latest migration without weakening its 074 upgrade coverage", async () => {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "098_auto_listing_ai_channel_pool.sql");
+  assert.equal(migrations.at(-1), "102_auto_listing_rich_evidence_compatibility.sql");
 });
 
 const roles = Object.freeze({
@@ -300,7 +300,7 @@ if (!enabled) {
       await client.query(`SET search_path TO ${quote(schema)}, public`);
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
       assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-      assert.equal(migrations.at(-1), "098_auto_listing_ai_channel_pool.sql");
+      assert.equal(migrations.at(-1), "102_auto_listing_rich_evidence_compatibility.sql");
       for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       const schemaRows = await client.query(
         `SELECT table_name,column_name FROM information_schema.columns
@@ -477,13 +477,13 @@ if (!enabled) {
     }
   });
 
-  test("the selector defaults collect-box items to fixed while Excel stays legacy", () => {
+  test("the selector defaults collect-box and Excel items to the fixed skeleton", () => {
     for (const candidate of [
       { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a" },
       { accountId: "account-b", sourceType: "COLLECT_BOX", collectItemId: "collect-b" },
     ]) assert.equal(selectAutoListingPlanningContract(candidate), "FIXED_SKELETON_V1");
     assert.equal(selectAutoListingPlanningContract({
       accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "excel-a",
-    }), "LEGACY_FULL_PLAN_V3");
+    }), "FIXED_SKELETON_V1");
   });
 }

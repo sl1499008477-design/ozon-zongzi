@@ -8,6 +8,10 @@ import {
 import {
   AUTO_LISTING_AI_QUEUE,
   AUTO_LISTING_AI_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+  AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+  AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS,
   AUTO_LISTING_AI_WORK_QUEUE,
   AUTO_LISTING_AI_WORK_QUEUE_OPTIONS,
 } from "../auto-listing-ai-queue.mjs";
@@ -639,6 +643,8 @@ test("dedicated worker creates the v2 drain and v3 queue and reloads exact conte
   assert.deepEqual(harness.calls.filter((entry) => entry[0] === "createQueue"), [
     ["createQueue", AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_QUEUE_OPTIONS],
     ["createQueue", AUTO_LISTING_AI_WORK_QUEUE, AUTO_LISTING_AI_WORK_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE, AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_CURRENT_WORK_QUEUE, AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS],
   ]);
   const work = harness.calls.find((entry) => entry[0] === "work");
   assert.equal(work[1], AUTO_LISTING_AI_QUEUE);
@@ -1017,9 +1023,13 @@ test("v3 adopts before business work while the same boss continues serving the v
   assert.deepEqual(harness.calls.filter(([name]) => name === "createQueue"), [
     ["createQueue", AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_QUEUE_OPTIONS],
     ["createQueue", AUTO_LISTING_AI_WORK_QUEUE, AUTO_LISTING_AI_WORK_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE, AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_CURRENT_WORK_QUEUE, AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS],
   ]);
   assert.equal(typeof harness.handler(AUTO_LISTING_AI_QUEUE), "function");
   assert.equal(typeof harness.handler(AUTO_LISTING_AI_WORK_QUEUE), "function");
+  assert.equal(typeof harness.handler(AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE), "function");
+  assert.equal(typeof harness.handler(AUTO_LISTING_AI_CURRENT_WORK_QUEUE), "function");
   const wrongQueue = await harness.handler(AUTO_LISTING_AI_QUEUE)([{ id: "wrong-queue", data: workMessage() }]);
   assert.equal(wrongQueue[0].output.code, "AUTO_LISTING_AI_MESSAGE_INVALID");
   assert.deepEqual(events, []);
