@@ -116,7 +116,7 @@ test("a successful Ozon import with erased rich content is blocked for review", 
       offerId: "offer-a",
       status: "SUCCESS",
       productId: "101",
-      errorCode: "OZON_RICH_CONTENT_REJECTED",
+      errorCode: "ZONGZI_RICH_CONTENT_REJECTED",
     }],
   });
 
@@ -125,10 +125,10 @@ test("a successful Ozon import with erased rich content is blocked for review", 
   assert.equal(result.status, "BLOCKED");
   const applied = calls.find(([kind]) => kind === "apply")[1];
   assert.equal(applied.linkStatus, "BLOCKED");
-  assert.equal(applied.failureCode, "OZON_RICH_CONTENT_REJECTED_REQUIRES_REVIEW");
+  assert.equal(applied.failureCode, "ZONGZI_RICH_CONTENT_REJECTED_REQUIRES_REVIEW");
   assert.equal(applied.allowResubmission, false);
   assert.equal(applied.enqueueNextCheck, false);
-  assert.equal(applied.summary.variants[0].errorCode, "OZON_RICH_CONTENT_REJECTED");
+  assert.equal(applied.summary.variants[0].errorCode, "ZONGZI_RICH_CONTENT_REJECTED");
 });
 
 test("reconciliation carries only safe category recovery identity on the original link", async () => {
@@ -260,8 +260,8 @@ test("reconciliation rejects hostile or inconsistent recovery audit DTOs without
 
 test("partial success and uncertain reconciliation block resubmission instead of creating another product", async () => {
   for (const [status, failureCode] of [
-    ["PARTIAL_SUCCESS", "OZON_PARTIAL_SUCCESS_REQUIRES_REVIEW"],
-    ["RECONCILING", "OZON_RECONCILIATION_REQUIRED"],
+    ["PARTIAL_SUCCESS", "ZONGZI_PARTIAL_SUCCESS_REQUIRES_REVIEW"],
+    ["RECONCILING", "ZONGZI_RECONCILIATION_REQUIRED"],
   ]) {
     const { reconciler, calls } = harness({ status, successCount: 1, failedCount: 1 });
     const result = await reconciler.reconcile(request);
@@ -279,7 +279,7 @@ test("a reconciliation link stays blocked while the standard submission resumes 
     const { reconciler, calls } = harness({ status }, {
       itemStatus: "BLOCKED",
       itemStatusVersion: 9,
-      failureCode: "OZON_RECONCILIATION_REQUIRED",
+      failureCode: "ZONGZI_RECONCILIATION_REQUIRED",
       submissionLinkStatus: "RECONCILING",
     });
     const result = await reconciler.reconcile(request);
@@ -288,7 +288,7 @@ test("a reconciliation link stays blocked while the standard submission resumes 
     assert.equal(applied.expectedLinkStatus, "RECONCILING");
     assert.equal(applied.linkStatus, "RECONCILING");
     assert.equal(applied.itemStatus, "BLOCKED");
-    assert.equal(applied.failureCode, "OZON_RECONCILIATION_REQUIRED");
+    assert.equal(applied.failureCode, "ZONGZI_RECONCILIATION_REQUIRED");
     assert.equal(applied.advanceItemVersion, false);
     assert.equal(applied.enqueueNextCheck, true);
   }
@@ -298,12 +298,12 @@ test("a terminal failure replaces the temporary reconciliation failure code and 
   const { reconciler, calls } = harness({ status: "PARTIAL_SUCCESS", successCount: 1, failedCount: 1 }, {
     itemStatus: "BLOCKED",
     itemStatusVersion: 9,
-    failureCode: "OZON_RECONCILIATION_REQUIRED",
+    failureCode: "ZONGZI_RECONCILIATION_REQUIRED",
     submissionLinkStatus: "RECONCILING",
   });
   assert.equal((await reconciler.reconcile(request)).status, "BLOCKED");
   const applied = calls.find(([kind]) => kind === "apply")[1];
-  assert.equal(applied.failureCode, "OZON_PARTIAL_SUCCESS_REQUIRES_REVIEW");
+  assert.equal(applied.failureCode, "ZONGZI_PARTIAL_SUCCESS_REQUIRES_REVIEW");
   assert.equal(applied.advanceItemVersion, true);
 });
 
@@ -312,11 +312,11 @@ test("a bound FAILED submission is blocked even when never-sent is proven becaus
   assert.equal((await safe.reconciler.reconcile(request)).status, "BLOCKED");
   const safeApplied = safe.calls.find(([kind]) => kind === "apply")[1];
   assert.equal(safeApplied.linkStatus, "BLOCKED");
-  assert.equal(safeApplied.failureCode, "OZON_SUBMISSION_NOT_SENT_REQUIRES_ADMIN_RECOVERY");
+  assert.equal(safeApplied.failureCode, "ZONGZI_SUBMISSION_NOT_SENT_REQUIRES_ADMIN_RECOVERY");
   assert.equal(safeApplied.allowResubmission, false);
 
   for (const submission of [
-    { status: "FAILED", errorCode: "OZON_ITEM_RESULT", ozonTaskId: "123" },
+    { status: "FAILED", errorCode: "ZONGZI_ITEM_RESULT", ozonTaskId: "123" },
     { status: "FAILED", errorCode: "ECONNRESET", ozonTaskId: null },
   ]) {
     const blocked = harness(submission);
@@ -331,7 +331,7 @@ test("cancelled before Ozon acceptance is CANCELLED; accepted cancellation remai
 
   const uncertain = harness({ status: "CANCELLED", ozonTaskId: "task-1" });
   assert.equal((await uncertain.reconciler.reconcile(request)).status, "BLOCKED");
-  assert.equal(uncertain.calls.find(([kind]) => kind === "apply")[1].failureCode, "OZON_RECONCILIATION_REQUIRED");
+  assert.equal(uncertain.calls.find(([kind]) => kind === "apply")[1].failureCode, "ZONGZI_RECONCILIATION_REQUIRED");
 });
 
 test("terminal replay is idempotent and a later confirmed result may resolve a reconciliation block", async () => {
@@ -345,7 +345,7 @@ test("terminal replay is idempotent and a later confirmed result may resolve a r
 
   const resolved = harness({ status: "SUCCEEDED" }, {
     itemStatus: "BLOCKED", itemStatusVersion: 9, submissionLinkStatus: "RECONCILING",
-    failureCode: "OZON_RECONCILIATION_REQUIRED",
+    failureCode: "ZONGZI_RECONCILIATION_REQUIRED",
   });
   assert.equal((await resolved.reconciler.reconcile(request)).status, "SUCCEEDED");
   assert.equal(resolved.calls.find(([kind]) => kind === "apply")[1].resolveReconciliationBlock, true);

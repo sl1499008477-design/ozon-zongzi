@@ -13,6 +13,9 @@
  */
 
 (() => {
+  // Recovery may inject this script into an already open Seller page.
+  if (globalThis.__JZ_SELLER_BRIDGE_INSTALLED__) return;
+  globalThis.__JZ_SELLER_BRIDGE_INSTALLED__ = true;
   const SELLER_CONTEXT_MARKER = '__jzSellerCompanyContext';
   const SELLER_CONTEXT_TYPE = 'JZ_SELLER_COMPANY_CONTEXT';
   const SELLER_CONTEXT_QUERY_TYPE = 'JZ_SELLER_COMPANY_CONTEXT_QUERY';
@@ -21,7 +24,7 @@
     if (
       event.source !== window
       || event.origin !== window.location.origin
-      || window.location.origin !== 'https://seller.ozon.ru'
+      || !['https://seller.ozon.ru', 'https://seller.ozonru.cn'].includes(window.location.origin)
       || event.data?.[SELLER_CONTEXT_MARKER] !== 1
       || event.data?.type !== SELLER_CONTEXT_TYPE
       || !/^\d{4,15}$/.test(String(event.data?.companyId || ''))
@@ -150,10 +153,16 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== 'sellerPortalFetch') return false;
 
+    if (!['https://seller.ozon.ru', 'https://seller.ozonru.cn'].includes(window.location.origin) || message.sellerOrigin !== window.location.origin) {
+      sendResponse({ ok: false, error: 'SELLER_CONTEXT_CHANGED' });
+      return false;
+    }
     const { apiPath, reqBody, fallbackCompanyId, timeoutMs } = message;
     // 兼容新调用：可选 urlPrefix / pageType；缺省退回原跟卖默认值
     const urlPrefix = message.urlPrefix !== undefined ? message.urlPrefix : '/api/v1';
     const pageType = message.pageType || 'products-other';
+    const productCapture = ['/api/v1/search', '/api/site/seller-prototype/create-bundle-by-variant-id'].includes(urlPrefix + apiPath);
+    const language = productCapture ? 'ru' : (message.language || 'zh-Hans');
 
     (async () => {
       try {
@@ -164,15 +173,15 @@
           ?.split('=')[1] || fallbackCompanyId || '';
 
         if (!companyId) {
-          sendResponse({ ok: false, error: 'sc_company_id cookie 未找到，请确保已登录 seller.ozon.ru' });
+          sendResponse({ ok: false, error: 'sc_company_id cookie 未找到，请确保已登录当前 Seller 线路' });
           return;
         }
 
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const timer = !productCapture && timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
         try {
-          const resp = await fetch('https://seller.ozon.ru' + urlPrefix + apiPath, {
+          const resp = await fetch(window.location.origin + urlPrefix + apiPath, {
             method: 'POST',
             signal: controller.signal,
             credentials: 'include',
@@ -181,7 +190,7 @@
               'content-type': 'application/json',
               'x-o3-app-name': 'seller-ui',
               'x-o3-company-id': companyId,
-              'x-o3-language': 'zh-Hans',
+              'x-o3-language': language,
               'x-o3-page-type': pageType,
             },
             body: JSON.stringify(reqBody),

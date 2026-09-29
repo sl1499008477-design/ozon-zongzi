@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "version": "9.0.1",
+  "sourceLock": "media-tools.sources.json",
+  "targets": {
+    "mac-arm64": {
+      "publisher": "ozon local source build",
+      "archives": [
+        {
+          "file": "ffmpeg-9.0.1-mac-arm64.zip",
+          "sha256": "bba507d2200a3b0b7a5f4d119a77e684d971065e73ec7d215965fc1021d4eece",
+          "bytes": 21939997,
+          "sourceLock": "media-tools.sources.json",
+          "files": [
+            {
+              "member": "ffmpeg",
+              "name": "ffmpeg",
+              "bytes": 23270552
+            },
+            {
+              "member": "ffprobe",
+              "name": "ffprobe",
+              "bytes": 23078840
+            }
+          ]
+        }
+      ]
+    },
+    "mac-x64": {
+      "publisher": "ozon local source build",
+      "archives": [
+        {
+          "file": "ffmpeg-9.0.1-mac-x64.zip",
+          "sha256": "9da7f9bd06af06a9ec7939a609898b73d5a8d8043588a2df0ecced29a9d2a033",
+          "bytes": 23843941,
+          "sourceLock": "media-tools.sources.json",
+          "files": [
+            {
+              "member": "ffmpeg",
+              "name": "ffmpeg",
+              "bytes": 27662880
+            },
+            {
+              "member": "ffprobe",
+              "name": "ffprobe",
+              "bytes": 27468120
+            }
+          ]
+        }
+      ]
+    },
+    "win-x64": {
+      "publisher": "ozon local source build",
+      "archives": [
+        {
+          "file": "ffmpeg-9.0.1-win-x64.zip",
+          "sha256": "e0e1edc01cc9ca5baed7d6b38b5b0705d5b338f66f2d5179c3d338fc3710c1c3",
+          "bytes": 26643796,
+          "sourceLock": "media-tools.sources.json",
+          "files": [
+            {
+              "member": "ffmpeg.exe",
+              "name": "ffmpeg.exe",
+              "bytes": 31366144
+            },
+            {
+              "member": "ffprobe.exe",
+              "name": "ffprobe.exe",
+              "bytes": 31158272
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

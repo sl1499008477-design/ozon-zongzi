@@ -13,6 +13,7 @@ export function buildAutoListingCollectPush({
   selectedIds = [],
   visibleItems = [],
   accountId = "",
+  destination = "ai-listing",
 } = {}) {
   if (!Array.isArray(selectedIds) || selectedIds.length === 0) {
     throw pushError("AUTO_LISTING_COLLECT_SELECTION_EMPTY");
@@ -40,8 +41,10 @@ export function buildAutoListingCollectPush({
     }
   }
   if (!ids.length || ids.length > 100) throw pushError("AUTO_LISTING_COLLECT_SELECTION_INVALID");
+  const targetPath = destination === "ai-listing" ? "/ozon/tools/ai-listing" : "";
+  if (!targetPath) throw pushError("AUTO_LISTING_COLLECT_SELECTION_INVALID");
   return Object.freeze({
     ids: Object.freeze(ids),
-    path: `/ozon/tools/auto-listing?source=collect&ids=${encodeURIComponent(ids.join(","))}`,
+    path: `${targetPath}?source=collect&ids=${encodeURIComponent(ids.join(","))}`,
   });
 }

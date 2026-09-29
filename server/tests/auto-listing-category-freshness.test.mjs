@@ -46,7 +46,7 @@ test("refreshes one uniquely relocated exact Ozon type with versioned shared tra
       async invalidateSharedCategory(input) {
         calls.push(["invalidate", input]);
         return { ...source.sharedCategory, status: "INVALIDATED", version: 2,
-          safeFailureCode: "OZON_CATEGORY_INVALIDATED" };
+          safeFailureCode: "ZONGZI_CATEGORY_INVALIDATED" };
       },
       async activateRefreshedCategory(input) {
         calls.push(["activate", input]);
@@ -70,7 +70,7 @@ test("refreshes one uniquely relocated exact Ozon type with versioned shared tra
   assert.equal(calls[4][1].currentTypeId, 94453);
 });
 
-test("keeps a current exact pair read-only and rejects ambiguous relocation before transitions", async () => {
+test("keeps a current exact pair read-only and isolates ambiguous relocation before transitions", async () => {
   for (const [items, expected] of [
     [[{ description_category_id: 17033252, disabled: false,
       children: [{ type_id: 94453, disabled: false }] }], { status: "CURRENT" }],
@@ -79,7 +79,7 @@ test("keeps a current exact pair read-only and rejects ambiguous relocation befo
         children: [{ type_id: 94453, disabled: false }] },
       { description_category_id: 17033252, disabled: false,
         children: [{ type_id: 94453, disabled: false }] },
-    ], { code: "AUTO_LISTING_CATEGORY_NEEDS_REVIEW" }],
+    ], { status: "CURRENT", blockedSharedCategoryIds: ["shared-a"] }],
   ]) {
     let writes = 0;
     const fresh = createAutoListingCategoryFreshness({
@@ -94,8 +94,7 @@ test("keeps a current exact pair read-only and rejects ambiguous relocation befo
         activateRefreshedCategory: async () => { writes += 1; },
       },
     });
-    if (expected.status) assert.deepEqual(await fresh({ accountId, targetStoreId: "store-a", sources: [source] }), expected);
-    else await assert.rejects(fresh({ accountId, targetStoreId: "store-a", sources: [source] }), expected);
+    assert.deepEqual(await fresh({ accountId, targetStoreId: "store-a", sources: [source] }), expected);
     assert.equal(writes, 0);
   }
 });

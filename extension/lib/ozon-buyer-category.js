@@ -11,8 +11,8 @@
   const OZON_SHARE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
   function invalid() {
-    return Object.assign(new Error('OZON_BUYER_CATEGORY_URL_INVALID'), {
-      code: 'OZON_BUYER_CATEGORY_URL_INVALID',
+    return Object.assign(new Error('ZONGZI_BUYER_CATEGORY_URL_INVALID'), {
+      code: 'ZONGZI_BUYER_CATEGORY_URL_INVALID',
     });
   }
 

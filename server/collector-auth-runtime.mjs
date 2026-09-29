@@ -1,5 +1,4 @@
 import {
-  activeAccount,
   bearerToken,
   findSession,
   requireAuth,
@@ -16,6 +15,7 @@ import {
 import { createCollectorAuthService } from "./collector-auth-service.mjs";
 import { createCollectorAuthHttpHandler } from "./collector-auth-routes.mjs";
 import { getPostgresPool } from "./db/connection.mjs";
+import { ensureFormalSchema } from "./formal-persistence.mjs";
 import { revokePersistedSessions } from "./persistence.mjs";
 
 export function collectorParentSessionTokens(state, accountId) {
@@ -159,25 +159,38 @@ export function createCollectorAuthRuntime({
 
   const service = createCollectorAuthService({ repository, audit });
 
-  async function withAccount(result = {}) {
-    const state = await loadState();
-    const account = activeAccount(state, result.accountId);
-    return {
-      ...result,
-      account: {
-        id: String(account?.id || result.accountId || ""),
-        displayName: String(account?.displayName || account?.username || ""),
-      },
-    };
-  }
-
   const httpService = Object.freeze({
     issueTicket: (input) => service.issueTicket(input),
     exchangeTicket: (input) => service.exchangeTicket(input),
-    authenticate: async (input) => withAccount(await service.authenticate(input)),
+    authenticate: (input) => service.authenticate(input),
   });
+  async function requireWebAuth(req) {
+    if (persistenceMode() !== "postgres") return requireAuth(req, await loadState());
+    const token = bearerToken(req);
+    const state = { accounts: [], sessions: {} };
+    if (token) {
+      const pool = await resolvePostgresPool();
+      await ensureFormalSchema(pool);
+      const result = await pool.query(
+        `SELECT a.id, a.username, a.display_name, a.role, a.status, a.expires_at
+         FROM sessions s JOIN accounts a ON a.id=s.account_id
+         WHERE s.token=$1 AND s.revoked_at IS NULL
+           AND (s.expires_at IS NULL OR s.expires_at > NOW())`,
+        [token],
+      );
+      const row = result.rows[0];
+      if (row) {
+        state.accounts.push({
+          id: row.id, username: row.username, displayName: row.display_name,
+          role: row.role, status: row.status, expiresAt: row.expires_at,
+        });
+        state.sessions[token] = { accountId: row.id };
+      }
+    }
+    return requireAuth(req, state);
+  }
   const handleHttpRoute = createCollectorAuthHttpHandler({
-    requireWebAuth: async (req) => requireAuth(req, await loadState()),
+    requireWebAuth,
     findParentSession: (req) => bearerToken(req),
     authService: httpService,
     readJson,

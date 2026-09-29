@@ -22,6 +22,32 @@ export function getAccountPartition(scope = 'ozon', explicitAccountKey = '') {
     return `persist:sonli-${digest}-${normalizeScope(scope)}`;
 }
 
+// The same preference used by Ozon's language/currency dialog. The displayed CNY
+// amount is Ozon's reference conversion; Seller Analytics keeps its RUB figures.
+export async function ensureOzonCny(webContents) {
+    const result = await webContents.executeJavaScript(`
+        (async () => {
+            const response = await fetch('/api/composer-api.bx/_action/changeCurrency', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ currency_code: 'CNY' }),
+                signal: AbortSignal.timeout(15000),
+            });
+            if (!response.ok) return { ok: false, status: response.status };
+            const payload = await response.json();
+            return { ok: payload?.result === 'OK', status: response.status };
+        })()
+    `);
+    if (!result?.ok) {
+        throw Object.assign(new Error('Ozon 人民币显示设置失败；本次价格将按页面实际币种记录，请在网页货币设置中选择人民币'), {
+            code: 'ZONGZI_CURRENCY_SETUP_FAILED', status: result?.status || 0,
+        });
+    }
+    await webContents.session.cookies.flushStore();
+    return 'CNY';
+}
+
 export async function clearAccountSessions(explicitAccountKey = '') {
     await Promise.all([...SESSION_SCOPES].map(async (scope) => {
         const accountSession = session.fromPartition(getAccountPartition(scope, explicitAccountKey));

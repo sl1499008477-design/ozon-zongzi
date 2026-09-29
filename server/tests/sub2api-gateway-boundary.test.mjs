@@ -7,6 +7,7 @@ import {
   requireSub2ApiGatewayPolicy,
   verifySub2ApiGatewayDnsBoundary,
 } from "../sub2api-gateway-boundary.mjs";
+import { createSub2ApiAdapter } from "../sub2api-ai-adapter.mjs";
 
 test("deployment gateway policy is exact and defaults closed", () => {
   const profile = { baseUrl: "https://gateway.example/v1", apiKeyEnvName: "SUB2API_PRIMARY_KEY" };
@@ -128,4 +129,45 @@ test("DNS verification obeys the caller abort fence even when resolution never s
   });
   controller.abort(new DOMException("timeout", "TimeoutError"));
   await assert.rejects(pending, (error) => error?.name === "TimeoutError");
+});
+
+test("adapter idle timeout aborts a stalled DNS boundary before fetch and marks the call NOT_SENT", async () => {
+  let fetches = 0;
+  const controller = new AbortController();
+  const gateway = createSub2ApiAdapter({
+    fetchImpl: async () => { fetches += 1; throw new Error("fetch must not start"); },
+    readSecret: () => "safe-test-secret",
+    resolveHostname: () => new Promise(() => {}),
+  });
+  const pending = gateway.createTextResponse({
+    profile: {
+      id: "profile-1",
+      accountId: "account-a",
+      configVersion: 1,
+      baseUrl: "https://gateway.example/v1",
+      apiKeyEnvName: "SUB2API_TEST_KEY",
+      textProtocol: "SUB2API_RESPONSES",
+      imageProtocol: "SUB2API_OPENAI_IMAGES",
+      textModel: "gpt-text",
+      imageModel: "gpt-image",
+      enabled: true,
+    },
+    model: "gpt-text",
+    correlationId: "corr-idle-dns",
+    requestKey: "request-idle-dns",
+    idleTimeoutMs: 5,
+    signal: controller.signal,
+    prompt: "return valid JSON",
+    jsonSchema: {
+      type: "object",
+      properties: { ok: { type: "boolean" } },
+      required: ["ok"],
+      additionalProperties: false,
+    },
+  });
+  const fallback = setTimeout(() => controller.abort(), 100);
+  await assert.rejects(pending, (error) => error?.code === "AI_GATEWAY_IDLE_TIMEOUT"
+    && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null);
+  clearTimeout(fallback);
+  assert.equal(fetches, 0);
 });

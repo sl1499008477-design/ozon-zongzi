@@ -1,4 +1,5 @@
 import { types } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { callOzonSellerApi as defaultCallOzonSellerApi } from "./ozon-client.mjs";
 import {
@@ -7,6 +8,7 @@ import {
 } from "./ozon-taxonomy-category-policy.mjs";
 
 export const DEFAULT_CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const CATEGORY_READ_RETRY_DELAYS_MS = Object.freeze([250, 750]);
 
 const CATEGORY_UNAVAILABLE_MESSAGE = "未能从 Ozon 获取真实类目数据，请重试";
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -33,22 +35,42 @@ function unavailableError(operation, source) {
     : null;
   const rawCode = String(source?.code || "").trim().toUpperCase();
   const sourceCode = /^[A-Z][A-Z0-9_]{0,79}$/u.test(rawCode) ? rawCode : "UPSTREAM_ERROR";
-  const status = source?.code === "OZON_TIMEOUT"
+  const status = source?.code === "ZONGZI_TIMEOUT"
     ? 504
     : source?.status === 429
       ? 503
       : 502;
   const code = {
-    TREE: "OZON_CATEGORY_TREE_UNAVAILABLE",
-    ATTRIBUTES: "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
-    VALUES: "OZON_CATEGORY_VALUES_UNAVAILABLE",
+    TREE: "ZONGZI_CATEGORY_TREE_UNAVAILABLE",
+    ATTRIBUTES: "ZONGZI_CATEGORY_ATTRIBUTES_UNAVAILABLE",
+    VALUES: "ZONGZI_CATEGORY_VALUES_UNAVAILABLE",
   }[operation];
   return categoryError(operation, status, code, {
     operation,
     sourceCode,
     sourceStatus,
-    retryable: sourceCode === "OZON_TIMEOUT" || sourceStatus === 429 || Number(sourceStatus) >= 500,
+    retryable: retryableCategoryReadFailure(source),
   });
+}
+
+function retryableCategoryReadFailure(source) {
+  const status = Number(source?.status);
+  const code = String(source?.code || "").trim().toUpperCase();
+  return code === "ZONGZI_TIMEOUT" || code === "ZONGZI_NETWORK_ERROR"
+    || status === 429 || (Number.isInteger(status) && status >= 500 && status <= 599);
+}
+
+async function readCategoryWithRetry(read, signal) {
+  for (let attempt = 0; ; attempt += 1) {
+    signal?.throwIfAborted();
+    try {
+      return await read();
+    } catch (source) {
+      if (!retryableCategoryReadFailure(source)
+        || attempt >= CATEGORY_READ_RETRY_DELAYS_MS.length) throw source;
+      await delay(CATEGORY_READ_RETRY_DELAYS_MS[attempt], undefined, signal ? { signal } : undefined);
+    }
+  }
 }
 
 function normalizedLanguageOf(language) {
@@ -92,7 +114,7 @@ function positiveIntegerIdOf(value) {
 function requiredPositiveIdOf(value) {
   const id = positiveIntegerIdOf(value);
   if (!id) {
-    throw categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID");
+    throw categoryError("INPUT", 400, "ZONGZI_CATEGORY_DATA_INVALID");
   }
   return id;
 }
@@ -110,7 +132,7 @@ const sourceCategoryMetadataError = () => autoListingCategoryError("AUTO_LISTING
 const attributeMetadataError = () => autoListingCategoryError("AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", 422);
 const dictionaryMetadataError = () => autoListingCategoryError("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED", 422);
 
-function dataRecord(value, errorFactory = () => categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID")) {
+function dataRecord(value, errorFactory = () => categoryError("INPUT", 400, "ZONGZI_CATEGORY_DATA_INVALID")) {
   if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
     throw errorFactory();
@@ -124,7 +146,7 @@ function dataRecord(value, errorFactory = () => categoryError("INPUT", 400, "OZO
   return descriptors;
 }
 
-function dataArray(value, maximum, errorFactory = () => categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID")) {
+function dataArray(value, maximum, errorFactory = () => categoryError("INPUT", 400, "ZONGZI_CATEGORY_DATA_INVALID")) {
   if (!Array.isArray(value) || types.isProxy(value) || value.length > maximum) {
     throw errorFactory();
   }
@@ -289,6 +311,38 @@ function findDescriptionCategoryIdByTypeId(tree, typeId) {
   return 0;
 }
 
+function normalizedTypeName(value) {
+  if (typeof value !== "string" || value.length > 240
+    || /[\u0000-\u001f\u007f]/u.test(value)) return "";
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+function exactTypeMatches(tree, typeName) {
+  const wanted = normalizedTypeName(typeName).toLocaleLowerCase("ru-RU");
+  if (!wanted) return [];
+  const matches = new Map();
+  const visit = (node, inheritedDescriptionCategoryId = 0, inheritedEnabled = true) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return;
+    const descriptionCategoryId = descriptionCategoryIdOf(node) || inheritedDescriptionCategoryId;
+    const typeId = typeIdOf(node);
+    const enabled = inheritedEnabled && nodeEnabled(node);
+    const name = normalizedTypeName(node.type_name ?? node.typeName);
+    if (enabled && descriptionCategoryId && typeId
+      && name.toLocaleLowerCase("ru-RU") === wanted) {
+      matches.set(`${descriptionCategoryId}:${typeId}`, {
+        descriptionCategoryId,
+        typeId,
+        typeName: name,
+      });
+    }
+    for (const child of Array.isArray(node.children) ? node.children : []) {
+      visit(child, descriptionCategoryId, enabled);
+    }
+  };
+  for (const root of Array.isArray(tree) ? tree : []) visit(root);
+  return [...matches.values()];
+}
+
 function nodeEnabled(node) {
   return node?.disabled !== true
     && node?.is_disabled !== true
@@ -348,10 +402,29 @@ function targetInTree(tree, descriptionCategoryId, typeId) {
 }
 
 export function createOzonCategoryService({
-  callOzonSellerApi = defaultCallOzonSellerApi,
+  callOzonSellerApi: callCategoryApi = defaultCallOzonSellerApi,
   now = () => Date.now(),
   cacheTtlMs = DEFAULT_CATEGORY_CACHE_TTL_MS,
 } = {}) {
+  // Only official category reads use the alternate route. The caller's
+  // credential and configured route remain intact for every other operation.
+  async function callOzonSellerApi(store, apiPath, body, timeout, options = {}) {
+    if(store?.ozonRoute!=='CN')return callCategoryApi(store,apiPath,body,timeout,options);
+    const read=async target=>{
+      const data=await callCategoryApi(target,apiPath,body,timeout,options);
+      const values=apiPath.endsWith('/values')&&!Array.isArray(data?.result)?data?.result?.values:data?.result;
+      if(!Array.isArray(values)||(!values.length&&(apiPath.endsWith('/tree')||apiPath.endsWith('/attribute'))))
+        throw categoryError('READ',502,'ZONGZI_CATEGORY_DATA_INVALID');
+      return data;
+    };
+    try{return await read(store);}
+    catch(error){
+      options.signal?.throwIfAborted();
+      if(!retryableCategoryReadFailure(error))throw error;
+      try{return await read({...store,ozonRoute:'RU'});}
+      catch {options.signal?.throwIfAborted();throw error;}
+    }
+  }
   const cache = new Map();
   const snapshotCache = new Map();
   const scopeEpochs = new Map();
@@ -363,7 +436,7 @@ export function createOzonCategoryService({
   function scopeOf({ accountId, store }) {
     const ownerAccountId = String(store?.ownerAccountId || store?.accountId || "");
     if (!accountId || !store?.id || ownerAccountId !== String(accountId)) {
-      throw categoryError("SCOPE", 403, "OZON_CATEGORY_STORE_FORBIDDEN");
+      throw categoryError("SCOPE", 403, "ZONGZI_CATEGORY_STORE_FORBIDDEN");
     }
     return [String(accountId), String(store.id)];
   }
@@ -470,7 +543,7 @@ export function createOzonCategoryService({
 
   async function getCategoryTree({ accountId, store, language, signal } = {}) {
     if (signal !== undefined && !(signal instanceof AbortSignal)) {
-      throw categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID");
+      throw categoryError("INPUT", 400, "ZONGZI_CATEGORY_DATA_INVALID");
     }
     signal?.throwIfAborted();
     const normalizedLanguage = normalizedLanguageOf(language);
@@ -482,18 +555,18 @@ export function createOzonCategoryService({
 
     let data;
     try {
-      data = await callOzonSellerApi(
+      data = await readCategoryWithRetry(() => callOzonSellerApi(
         store,
         "/v1/description-category/tree",
         { language: normalizedLanguage },
         120000,
         signal ? { signal } : {},
-      );
+      ), signal);
     } catch (source) {
       throw unavailableError("TREE", source);
     }
     if (!Array.isArray(data?.result) || data.result.length === 0) {
-      throw categoryError("TREE", 502, "OZON_CATEGORY_DATA_INVALID");
+      throw categoryError("TREE", 502, "ZONGZI_CATEGORY_DATA_INVALID");
     }
     return writeCache(key, data.result, { scope, epoch });
   }
@@ -507,7 +580,7 @@ export function createOzonCategoryService({
     signal,
   } = {}) {
     if (signal !== undefined && !(signal instanceof AbortSignal)) {
-      throw categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID");
+      throw categoryError("INPUT", 400, "ZONGZI_CATEGORY_DATA_INVALID");
     }
     signal?.throwIfAborted();
     const normalizedDescriptionCategoryId = requiredPositiveIdOf(descriptionCategoryId);
@@ -527,24 +600,52 @@ export function createOzonCategoryService({
 
     let data;
     try {
-      data = await callOzonSellerApi(
-        store,
-        "/v1/description-category/attribute",
-        {
-          description_category_id: normalizedDescriptionCategoryId,
-          type_id: normalizedTypeId,
-          language: normalizedLanguage,
-        },
-        60000,
-        signal ? { signal } : {},
-      );
+      data = await readCategoryWithRetry(async () => {
+        const response = await callOzonSellerApi(
+          store,
+          "/v1/description-category/attribute",
+          {
+            description_category_id: normalizedDescriptionCategoryId,
+            type_id: normalizedTypeId,
+            language: normalizedLanguage,
+          },
+          60000,
+          signal ? { signal } : {},
+        );
+        if (!Array.isArray(response?.result) || response.result.length === 0) {
+          throw categoryError("ATTRIBUTES", 502, "ZONGZI_CATEGORY_DATA_INVALID");
+        }
+        return response;
+      }, signal);
     } catch (source) {
+      if (source?.code === "ZONGZI_CATEGORY_DATA_INVALID") throw source;
       throw unavailableError("ATTRIBUTES", source);
     }
-    if (!Array.isArray(data?.result)) {
-      throw categoryError("ATTRIBUTES", 502, "OZON_CATEGORY_DATA_INVALID");
-    }
     return writeCache(key, data.result, { scope, epoch });
+  }
+
+  // Targeted official search is deliberately separate from editor dictionary
+  // pagination: search results are fuzzy and are not a complete dictionary.
+  async function searchCategoryAttributeValuesExact({accountId,store,descriptionCategoryId,typeId,attributeId,value,signal} = {}) {
+    const text = typeof value === "string" ? value.replace(/\s+/gu," ").trim() : "";
+    if(text.length < 2 || (signal !== undefined && !(signal instanceof AbortSignal))) throw dictionaryMetadataError();
+    signal?.throwIfAborted();
+    const body = {description_category_id:requiredPositiveIdOf(descriptionCategoryId),type_id:requiredPositiveIdOf(typeId),attribute_id:requiredPositiveIdOf(attributeId),limit:100,value:text};
+    const scope=scopeOf({accountId,store});
+    const epoch=scopeEpoch(scope);
+    const key=cacheKey(scope,"values-search-exact",body.description_category_id,body.type_id,body.attribute_id,text.toLocaleLowerCase("ru-RU"));
+    const cached=readCache(key);if(cached)return cached;
+    let data;
+    try { data=await readCategoryWithRetry(()=>callOzonSellerApi(store,"/v1/description-category/attribute/values/search",body,60000,signal?{signal}:{}),signal); }
+    catch(source){throw unavailableError("VALUES",source);}
+    if(!Array.isArray(data?.result))throw categoryError("VALUES",502,"ZONGZI_CATEGORY_DATA_INVALID");
+    const matches=[];const seen=new Set();
+    for(const row of data.result){
+      const id=positiveIntegerIdOf(row?.id);
+      if(!id || typeof row?.value !== "string" || row.value.replace(/\s+/gu," ").trim().toLocaleLowerCase("ru-RU")!==text.toLocaleLowerCase("ru-RU") || seen.has(id))continue;
+      seen.add(id);matches.push({id,value:row.value,info:row.info??"",picture:row.picture??""});
+    }
+    return writeCache(key,matches,{scope,epoch});
   }
 
   async function getCategoryAttributeValues({
@@ -559,7 +660,7 @@ export function createOzonCategoryService({
     signal,
   } = {}) {
     if (signal !== undefined && !(signal instanceof AbortSignal)) {
-      throw categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID");
+      throw categoryError("INPUT", 400, "ZONGZI_CATEGORY_DATA_INVALID");
     }
     signal?.throwIfAborted();
     const normalizedDescriptionCategoryId = requiredPositiveIdOf(descriptionCategoryId);
@@ -601,7 +702,7 @@ export function createOzonCategoryService({
       const pageLimit = Math.min(1000, candidates ? scanLimit - scannedValues : safeLimit - values.length);
       let data;
       try {
-        data = await callOzonSellerApi(
+        data = await readCategoryWithRetry(() => callOzonSellerApi(
           store,
           "/v1/description-category/attribute/values",
           {
@@ -614,7 +715,7 @@ export function createOzonCategoryService({
           },
           60000,
           signal ? { signal } : {},
-        );
+        ), signal);
       } catch (source) {
         throw unavailableError("VALUES", source);
       }
@@ -623,7 +724,7 @@ export function createOzonCategoryService({
         : Array.isArray(data?.result?.values)
           ? data.result.values
           : null;
-      if (!page) throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
+      if (!page) throw categoryError("VALUES", 502, "ZONGZI_CATEGORY_DATA_INVALID");
       if (page.length === 0) break;
       scannedValues += page.length;
 
@@ -657,7 +758,7 @@ export function createOzonCategoryService({
       const hasNext = Boolean(data?.has_next || data?.result?.has_next);
       if (hasNext) {
         if (!nextCursor || seenCursors.has(nextCursor)) {
-          throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
+          throw categoryError("VALUES", 502, "ZONGZI_CATEGORY_DATA_INVALID");
         }
         if (exactIdSearch && (values.length === candidateIds.size || nextCursor >= exactIdCeiling)) break;
         seenCursors.add(nextCursor);
@@ -665,7 +766,7 @@ export function createOzonCategoryService({
       }
       if (!hasNext || (!candidates && values.length === safeLimit)) break;
       if (candidates && scannedValues >= scanLimit) {
-        throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
+        throw categoryError("VALUES", 502, "ZONGZI_CATEGORY_DATA_INVALID");
       }
     }
     return writeCache(key, values, { scope, epoch });
@@ -676,9 +777,19 @@ export function createOzonCategoryService({
     const { items } = await getCategoryTree({ accountId, store, language });
     const descriptionCategoryId = findDescriptionCategoryIdByTypeId(items, normalizedTypeId);
     if (!descriptionCategoryId) {
-      throw categoryError("TYPE", 422, "OZON_CATEGORY_TYPE_NOT_FOUND");
+      throw categoryError("TYPE", 422, "ZONGZI_CATEGORY_TYPE_NOT_FOUND");
     }
     return descriptionCategoryId;
+  }
+
+  async function resolveExactTypeByName({ accountId, store, typeName, language } = {}) {
+    const normalizedName = normalizedTypeName(typeName);
+    if (!normalizedName) throw categoryError("INPUT", 400, "ZONGZI_CATEGORY_DATA_INVALID");
+    const { items } = await getCategoryTree({ accountId, store, language });
+    const matches = exactTypeMatches(items, normalizedName);
+    if (matches.length === 0) throw categoryError("TYPE", 422, "ZONGZI_CATEGORY_TYPE_NOT_FOUND");
+    if (matches.length !== 1) throw categoryError("TYPE", 422, "ZONGZI_CATEGORY_TYPE_AMBIGUOUS");
+    return matches[0];
   }
 
   async function getCategorySnapshot(storeOrInput, language = "ZH_HANS") {
@@ -702,8 +813,8 @@ export function createOzonCategoryService({
         return snapshotResult(
           previous,
           true,
-          String(error?.code || "OZON_CATEGORY_TREE_UNAVAILABLE").trim()
-            || "OZON_CATEGORY_TREE_UNAVAILABLE",
+          String(error?.code || "ZONGZI_CATEGORY_TREE_UNAVAILABLE").trim()
+            || "ZONGZI_CATEGORY_TREE_UNAVAILABLE",
         );
       }
       throw error;
@@ -761,7 +872,7 @@ export function createOzonCategoryService({
     } catch (error) {
       return validationResult({
         valid: false,
-        reasonCode: error?.code === "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE"
+        reasonCode: error?.code === "ZONGZI_CATEGORY_ATTRIBUTES_UNAVAILABLE"
           ? "ATTRIBUTES_UNAVAILABLE"
           : "ATTRIBUTES_INVALID",
         taxonomyFingerprint: snapshot.taxonomyFingerprint,
@@ -778,7 +889,9 @@ export function createOzonCategoryService({
     getCategoryTree,
     getCategoryAttributes,
     getCategoryAttributeValues,
+    searchCategoryAttributeValuesExact,
     resolveDescriptionCategoryId,
+    resolveExactTypeByName,
     getCategorySnapshot,
     validateTarget,
     invalidateStore,

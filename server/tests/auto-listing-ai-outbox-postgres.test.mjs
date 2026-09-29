@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import { createPostgresAiOutboxRepository } from "../auto-listing-ai-outbox-postgres.mjs";
 import { autoListingAiMessageDedupeKey } from "../auto-listing-ai-message.mjs";
+import {
+  applyAutoListingAiChannelPoolBaseMigrations,
+  applyAutoListingAiChannelPoolMigration,
+} from "./auto-listing-ai-runtime-postgres-fixture.mjs";
+
+const postgresEnabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1"
+  && Boolean(process.env.SONLI_MIGRATION_TEST_DATABASE_URL);
+const postgresConnectionString = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
+const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
+const hash = (character) => character.repeat(64);
 
 const message = Object.freeze({
   contractVersion: "V1",
@@ -42,6 +53,41 @@ function outboxRow(overrides = {}) {
   };
 }
 
+function channelWorkRow(phase, targetKey, targetValue, overrides = {}, contractVersion = "V3") {
+  const businessMessage = Object.freeze({
+    contractVersion,
+    accountId: "account-a",
+    itemId: "item-a",
+    phase,
+    expectedStatusVersion: 3,
+    correlationId: `correlation-${phase.toLowerCase()}`,
+    ...(["CLEAN_SOURCE_IMAGE_OVERLAY", "CHECK_SOURCE_IMAGE_CLEANUP"].includes(phase)
+      ? { analysisRunId: "analysis-run-a" }
+      : {}),
+    ...(targetKey ? { [targetKey]: targetValue } : {}),
+  });
+  return outboxRow({
+    dedupe_key: autoListingAiMessageDedupeKey(businessMessage),
+    contract_version: contractVersion,
+    phase,
+    phase_target_id: targetValue,
+    correlation_id: businessMessage.correlationId,
+    payload: businessMessage,
+    state: "PROCESSING",
+    attempts: 1,
+    lease_owner: "worker-a",
+    lease_token: "lease-a",
+    lease_expires_at: new Date("2099-08-04T00:01:00Z"),
+    dispatch_generation: 1,
+    publication_id: `${autoListingAiMessageDedupeKey(businessMessage)}:1`,
+    channel_id: "channel-a",
+    connection_id: "connection-a",
+    connection_version: 1,
+    claim_lease_expires_at: new Date("2099-08-04T00:01:00Z"),
+    ...overrides,
+  });
+}
+
 function scriptedPool(steps) {
   const calls = [];
   let connectCount = 0;
@@ -49,6 +95,9 @@ function scriptedPool(steps) {
   const execute = async (sql, parameters) => {
     calls.push({ sql, parameters });
     if (/^(?:BEGIN|COMMIT|ROLLBACK)/u.test(sql)) return { rows: [] };
+    if (/auto-listing-retire-superseded-ai-work/u.test(sql)) {
+      return { rows: [{ retired_count: 0, released_count: 0 }] };
+    }
     const next = steps.shift();
     if (next instanceof Error) throw next;
     return next ?? { rows: [] };
@@ -89,6 +138,136 @@ test("PostgreSQL outbox enqueue is deterministic, account scoped and returns the
   assert.doesNotMatch(JSON.stringify(pool.calls), /https?:|sourceRef|apiKey|secret/i);
 });
 
+test("PostgreSQL outbox persists current V2 messages so legacy V1 relays cannot claim new work", async () => {
+  const currentMessage = Object.freeze({ ...message, contractVersion: "V2", correlationId: "current-v2" });
+  const currentDedupeKey = crypto.createHash("sha256").update(JSON.stringify({
+    accountId: "account-a",
+    contractVersion: "V2",
+    expectedStatusVersion: 3,
+    itemId: "item-a",
+    phase: "PLAN_CONTENT",
+  }), "utf8").digest("hex");
+  const pool = scriptedPool([{ rows: [outboxRow({
+    dedupe_key: currentDedupeKey,
+    contract_version: "V2",
+    correlation_id: "current-v2",
+    payload: currentMessage,
+  })] }]);
+  const repository = createPostgresAiOutboxRepository({ pool, id: () => "ai-outbox-1" });
+
+  const stored = await repository.enqueueAutoListingAiMessage(currentMessage);
+
+  assert.equal(stored.dedupeKey, currentDedupeKey);
+  assert.deepEqual(stored.message, currentMessage);
+  assert.equal(pool.calls[0].parameters.includes("V2"), true);
+});
+
+test("production channel claim accepts exact V3 analysis, reconcile and group targets while retaining V1/V2", async () => {
+  const cases = [
+    ["ANALYZE_SOURCE_IMAGE_BATCH", "analysisBatchId", "batch-a", "V3"],
+    ["RECONCILE_SOURCE_IMAGE_ANALYSIS", "analysisRunId", "run-a", "V3"],
+    ["CLEAN_SOURCE_IMAGE_OVERLAY", "derivativeAttemptId", "derivative-a", "V3"],
+    ["CHECK_SOURCE_IMAGE_CLEANUP", "derivativeAttemptId", "derivative-a", "V3"],
+    ["CHECK_IMAGE_GROUP", "visualGroupKey", "group-a", "V3"],
+    ["PLAN_CONTENT", null, null, "V1"],
+    ["PLAN_CONTENT", null, null, "V2"],
+  ];
+  for (const [phase, targetKey, targetValue, contractVersion] of cases) {
+    const selected = channelWorkRow(phase, targetKey, targetValue, {}, contractVersion);
+    const claimed = { ...selected, lease_token: "lease-a", lease_expires_at: selected.claim_lease_expires_at };
+    const pool = scriptedPool([
+      { rows: [selected] },
+      { rows: [{ channel_id: "channel-a", connection_id: "connection-a", connection_version: 1 }] },
+      { rows: [{ id: "item-a" }] },
+      { rows: [claimed] },
+    ]);
+    const repository = createPostgresAiOutboxRepository({ pool, token: () => "lease-a" });
+
+    const work = await repository.claimAutoListingAiWork({
+      accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 60_000,
+    });
+
+    assert.equal(work.length, 1);
+    assert.equal(work[0].workMessage.message.contractVersion, contractVersion);
+    if (targetKey) assert.equal(work[0].workMessage.message[targetKey], targetValue);
+    const claimSql = pool.calls.find(({ sql }) => /SELECT outbox\.\*,job\.ai_profile_id/iu.test(sql)).sql;
+    assert.match(claimSql, /contract_version IN \('V1','V2','V3'\)/iu);
+    assert.match(claimSql, /ANALYZE_SOURCE_IMAGE_BATCH/iu);
+    assert.match(claimSql, /RECONCILE_SOURCE_IMAGE_ANALYSIS/iu);
+    assert.match(claimSql, /CLEAN_SOURCE_IMAGE_OVERLAY/iu);
+    assert.match(claimSql, /CHECK_SOURCE_IMAGE_CLEANUP/iu);
+    assert.match(claimSql, /CHECK_IMAGE_GROUP/iu);
+  }
+});
+
+test("a V3 charged phase with no eligible channel stays pending without consuming an attempt", async () => {
+  const pool = scriptedPool([{ rows: [] }]);
+  const repository = createPostgresAiOutboxRepository({ pool, token: () => "lease-a" });
+
+  assert.deepEqual(await repository.claimAutoListingAiWork({
+    accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 60_000,
+  }), []);
+
+  assert.equal(pool.calls.some(({ sql }) => /UPDATE auto_listing_ai_outbox/iu.test(sql)
+    && !/auto-listing-retire-superseded-ai-work/u.test(sql)), false);
+  assert.equal(pool.calls.some(({ sql }) => /attempts=attempts\+1/iu.test(sql)), false);
+  const selection = pool.calls.find(({ sql }) => /SELECT outbox\.\*,job\.ai_profile_id/iu.test(sql));
+  assert.match(selection.sql, /ANALYZE_SOURCE_IMAGE_BATCH/iu);
+  assert.match(selection.sql, /CLEAN_SOURCE_IMAGE_OVERLAY/iu);
+  assert.match(selection.sql, /CHECK_SOURCE_IMAGE_CLEANUP/iu);
+  assert.match(selection.sql, /CHECK_IMAGE_GROUP/iu);
+});
+
+test("a retry cannot take a reserved channel while its fixed item still has runnable work", async () => {
+  const pool = scriptedPool([{ rows: [] }]);
+  const repository = createPostgresAiOutboxRepository({ pool, token: () => "lease-a" });
+
+  assert.deepEqual(await repository.claimAutoListingAiWork({
+    accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 60_000,
+  }), []);
+
+  const selection = pool.calls.find(({ sql }) => /SELECT outbox\.\*,job\.ai_profile_id/iu.test(sql));
+  assert.match(selection.sql, /candidate\.assigned_item_id IS DISTINCT FROM outbox\.item_id/iu);
+  assert.match(selection.sql,
+    /NOT EXISTS \(\s*SELECT 1 FROM auto_listing_ai_outbox AS assigned_continuation[\s\S]*assigned_continuation\.state IN \('PENDING','PROCESSING'\)/iu);
+});
+
+test("production channel claim retires superseded work before scanning for runnable work", async () => {
+  const pool = scriptedPool([{ rows: [] }]);
+  const repository = createPostgresAiOutboxRepository({ pool, token: () => "lease-a" });
+
+  assert.deepEqual(await repository.claimAutoListingAiWork({
+    accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 60_000,
+  }), []);
+
+  const retirement = pool.calls.find(({ sql }) => /auto-listing-retire-superseded-ai-work/u.test(sql));
+  assert.ok(retirement);
+  assert.match(retirement.sql, /item\.status_version<>outbox\.expected_status_version/iu);
+  assert.match(retirement.sql, /item\.status NOT IN \('PLANNING','GENERATING'\)/iu);
+  assert.match(retirement.sql,
+    /outbox\.state='PENDING'[\s\S]*outbox\.state='PROCESSING' AND outbox\.lease_expires_at <= NOW\(\)/iu);
+  assert.match(retirement.sql, /SET state='COMPLETED'/iu);
+  assert.match(retirement.sql, /FOR UPDATE OF outbox SKIP LOCKED/iu);
+  assert.deepEqual(retirement.parameters, ["account-a", 1000]);
+});
+
+test("production claim rejects a V3 row whose persisted target does not match its exact message target", async () => {
+  const selected = channelWorkRow("ANALYZE_SOURCE_IMAGE_BATCH", "analysisBatchId", "batch-a", {
+    phase_target_id: "batch-wrong",
+  });
+  const pool = scriptedPool([
+    { rows: [selected] },
+    { rows: [{ channel_id: "channel-a", connection_id: "connection-a", connection_version: 1 }] },
+    { rows: [{ id: "item-a" }] },
+    { rows: [selected] },
+  ]);
+  const repository = createPostgresAiOutboxRepository({ pool, token: () => "lease-a" });
+
+  await assert.rejects(repository.claimAutoListingAiWork({
+    accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 60_000,
+  }), { code: "AUTO_LISTING_AI_OUTBOX_REPOSITORY_FAILED" });
+});
+
 test("PostgreSQL outbox claims with account scope, SKIP LOCKED, database lease time and a fresh ABA token", async () => {
   const claimed = outboxRow({
     state: "PROCESSING", attempts: 1, lease_owner: "worker-a", lease_token: "nonce-a:1",
@@ -119,6 +298,55 @@ test("PostgreSQL outbox claims with account scope, SKIP LOCKED, database lease t
   assert.deepEqual(pool.calls.map((call) => call.sql.split(/\s/u, 1)[0]), [
     "BEGIN", "WITH", "WITH", "COMMIT", "BEGIN", "WITH", "WITH", "COMMIT",
   ]);
+});
+
+test("legacy PostgreSQL claim excludes every job whose frozen profile has a connection", async () => {
+  const pool = scriptedPool([{ rows: [] }]);
+  const repository = createPostgresAiOutboxRepository({ pool, token: () => "legacy-fence" });
+
+  assert.deepEqual(await repository.claimLegacyAutoListingAiMessages({
+    accountId: "account-a", workerId: "worker-a", limit: 5, leaseMs: 60_000,
+  }), []);
+
+  const sql = pool.calls.map((call) => call.sql).join("\n");
+  assert.match(sql, /JOIN ai_gateway_profiles AS profile/iu);
+  assert.match(sql, /profile\.account_id=job\.account_id/iu);
+  assert.match(sql, /profile\.id=job\.ai_profile_id/iu);
+  assert.match(sql, /profile\.config_version=job\.ai_profile_version/iu);
+  assert.match(sql, /profile\.connection_id IS NULL/iu);
+  assert.match(sql, /exhausted_outbox\.dispatch_contract_version IS NULL/iu);
+  assert.match(sql, /outbox\.dispatch_contract_version IS NULL/iu);
+  assert.equal([...sql.matchAll(/contract_version IN \('V1','V2','V3'\)/giu)].length, 3);
+  assert.match(sql, /UPDATE auto_listing_ai_outbox AS exhausted_outbox[\s\S]*?exhausted_profile\.account_id=exhausted_job\.account_id[\s\S]*?exhausted_profile\.id=exhausted_job\.ai_profile_id[\s\S]*?exhausted_profile\.config_version=exhausted_job\.ai_profile_version[\s\S]*?exhausted_profile\.connection_id IS NULL/iu);
+  assert.doesNotMatch(sql, /INSERT INTO auto_listing_ai_channels|dispatch_contract_version='CHANNEL_WORK_V1'/iu);
+});
+
+test("null-connection production claim drains exact V3 source-image targets through the legacy profile", async () => {
+  const cases = [
+    ["MATERIALIZE_SOURCE_ASSET", "sourceAssetId", "source-a"],
+    ["ANALYZE_SOURCE_IMAGE_BATCH", "analysisBatchId", "batch-a"],
+    ["RECONCILE_SOURCE_IMAGE_ANALYSIS", "analysisRunId", "run-a"],
+    ["CHECK_IMAGE_GROUP", "visualGroupKey", "group-a"],
+  ];
+  for (const [phase, targetKey, targetValue] of cases) {
+    const claimed = channelWorkRow(phase, targetKey, targetValue, {
+      dispatch_generation: null, publication_id: null,
+    });
+    const pool = scriptedPool([{ rows: [{ job_id: "job-a" }] }, { rows: [claimed] }]);
+    const repository = createPostgresAiOutboxRepository({ pool, token: () => "legacy-v3" });
+
+    const rows = await repository.claimLegacyAutoListingAiMessages({
+      accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 60_000,
+    });
+
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].message.contractVersion, "V3");
+    assert.equal(rows[0].message[targetKey], targetValue);
+    const sql = pool.calls.map(({ sql: statement }) => statement).join("\n");
+    assert.match(sql, /contract_version IN \('V1','V2','V3'\)/iu);
+    assert.match(sql, /profile\.connection_id IS NULL/iu);
+    assert.doesNotMatch(sql, /dispatch_contract_version='CHANNEL_WORK_V1'/iu);
+  }
 });
 
 test("claim locks jobs before a fresh-snapshot update selects one eligible outbox per batch", async () => {
@@ -167,7 +395,7 @@ test("claim rolls back and releases its dedicated client when the fresh-snapshot
   assert.equal(pool.releaseCount, 1);
 });
 
-test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1 accounts with bounded keyset pagination", async () => {
+test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1/V2/V3 accounts with bounded keyset pagination", async () => {
   const pool = scriptedPool([{ rows: [{ account_id: "account-b" }, { account_id: "account-c" }] }]);
   const repository = createPostgresAiOutboxRepository({ pool, maxAttempts: 4 });
 
@@ -176,15 +404,17 @@ test("PostgreSQL outbox dynamically discovers runnable or exhaustible V1 account
     limit: 2,
   }), ["account-b", "account-c"]);
 
-  assert.match(pool.calls[0].sql, /contract_version='V1'/iu);
-  assert.match(pool.calls[0].sql, /state='PENDING'[\s\S]*?attempts < \$3[\s\S]*?next_retry_at <= NOW\(\)/iu);
-  assert.match(pool.calls[0].sql, /state='PROCESSING'[\s\S]*?lease_expires_at <= NOW\(\)/iu);
-  assert.match(pool.calls[0].sql, /state='DEAD' AND EXISTS[\s\S]*?i\.status_version=auto_listing_ai_outbox\.expected_status_version/iu);
+  assert.match(pool.calls[0].sql, /contract_version IN \('V1','V2','V3'\)/iu);
+  assert.match(pool.calls[0].sql, /outbox\.state='PENDING'[\s\S]*?outbox\.next_retry_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL[\s\S]*?outbox\.dispatch_contract_version IS NULL AND outbox\.attempts < \$3/iu);
+  assert.match(pool.calls[0].sql, /outbox\.state='PROCESSING'[\s\S]*?outbox\.lease_expires_at <= NOW\(\)[\s\S]*?profile\.connection_id IS NOT NULL[\s\S]*?outbox\.dispatch_contract_version IS NULL AND outbox\.attempts < \$3/iu);
+  assert.match(pool.calls[0].sql, /profile\.connection_id IS NULL AND outbox\.state='DEAD'[\s\S]*?outbox\.dispatch_contract_version IS NULL[\s\S]*?i\.status_version=outbox\.expected_status_version/iu);
+  assert.match(pool.calls[0].sql, /CLEAN_SOURCE_IMAGE_OVERLAY/iu);
+  assert.match(pool.calls[0].sql, /CHECK_SOURCE_IMAGE_CLEANUP/iu);
   assert.match(pool.calls[0].sql, /i\.status='PLANNING'[\s\S]*?i\.status='GENERATING'/iu);
-  assert.match(pool.calls[0].sql, /state='COMPLETED'[\s\S]*?INTERVAL '3 hours'[\s\S]*?NOT EXISTS/iu);
-  assert.doesNotMatch(pool.calls[0].sql, /contract_version='V1' AND attempts < \$3/iu);
-  assert.match(pool.calls[0].sql, /account_id > \$1/iu);
-  assert.match(pool.calls[0].sql, /GROUP BY account_id[\s\S]*?ORDER BY account_id[\s\S]*?LIMIT \$2/iu);
+  assert.match(pool.calls[0].sql, /profile\.connection_id IS NULL AND outbox\.state='COMPLETED'[\s\S]*?outbox\.dispatch_contract_version IS NULL[\s\S]*?INTERVAL '3 hours'[\s\S]*?NOT EXISTS/iu);
+  assert.doesNotMatch(pool.calls[0].sql, /outbox\.contract_version='V1' AND outbox\.attempts < \$3/iu);
+  assert.match(pool.calls[0].sql, /outbox\.account_id > \$1/iu);
+  assert.match(pool.calls[0].sql, /GROUP BY outbox\.account_id[\s\S]*?ORDER BY outbox\.account_id[\s\S]*?LIMIT \$2/iu);
   assert.deepEqual(pool.calls[0].parameters, ["account-a", 2, 4]);
 
   await assert.rejects(
@@ -207,7 +437,15 @@ test("DEAD reconciliation is account scoped, status-version fenced, audited and 
 
   const sql = pool.calls[0].sql;
   assert.match(sql, /o\.account_id=\$1[\s\S]*?o\.state='DEAD'/iu);
+  assert.match(sql, /o\.dispatch_contract_version IS NULL/iu);
+  assert.match(sql, /profile\.id=job\.ai_profile_id[\s\S]*?profile\.config_version=job\.ai_profile_version[\s\S]*?profile\.connection_id IS NULL/iu);
   assert.match(sql, /i\.status_version=o\.expected_status_version/iu);
+  assert.match(sql, /o\.contract_version IN \('V1','V2','V3'\)/iu);
+  assert.match(sql, /ANALYZE_SOURCE_IMAGE_BATCH/iu);
+  assert.match(sql, /RECONCILE_SOURCE_IMAGE_ANALYSIS/iu);
+  assert.match(sql, /CLEAN_SOURCE_IMAGE_OVERLAY/iu);
+  assert.match(sql, /CHECK_SOURCE_IMAGE_CLEANUP/iu);
+  assert.match(sql, /CHECK_IMAGE_GROUP/iu);
   assert.match(sql, /FOR UPDATE OF i SKIP LOCKED/iu);
   assert.match(sql, /SET status='RETRYABLE_ERROR'[\s\S]*?recovery_point=CASE/iu);
   assert.match(sql, /INSERT INTO auto_listing_events/iu);
@@ -216,6 +454,25 @@ test("DEAD reconciliation is account scoped, status-version fenced, audited and 
   await assert.rejects(repository.reconcileDeadAutoListingAiMessages({
     accountId: "account-b", limit: 10, unexpected: true,
   }), { code: "AUTO_LISTING_AI_OUTBOX_INVALID" });
+});
+
+test("legacy DEAD reconciliation uses the exact frozen null-connection profile fence", async () => {
+  const pool = scriptedPool([{ rows: [{ item_id: "item-a" }] }]);
+  const repository = createPostgresAiOutboxRepository({ pool });
+
+  assert.deepEqual(await repository.reconcileDeadLegacyAutoListingAiMessages({
+    accountId: "account-a", limit: 10,
+  }), { recovered: 1 });
+
+  const sql = pool.calls[0].sql;
+  assert.match(sql, /JOIN auto_listing_jobs AS job/iu);
+  assert.match(sql, /job\.account_id=o\.account_id AND job\.id=o\.job_id/iu);
+  assert.match(sql, /JOIN ai_gateway_profiles AS profile/iu);
+  assert.match(sql, /profile\.account_id=job\.account_id/iu);
+  assert.match(sql, /profile\.id=job\.ai_profile_id/iu);
+  assert.match(sql, /profile\.config_version=job\.ai_profile_version/iu);
+  assert.match(sql, /profile\.connection_id IS NULL/iu);
+  assert.match(sql, /UPDATE auto_listing_job_items/iu);
 });
 
 test("interrupted worker reconciliation waits beyond the queue budget, excludes live work and advances the status fence", async () => {
@@ -231,7 +488,10 @@ test("interrupted worker reconciliation waits beyond the queue budget, excludes 
   assert.match(sql, /i\.account_id=\$1[\s\S]*?i\.status IN \('PLANNING','GENERATING'\)/iu);
   assert.match(sql, /i\.updated_at <= NOW\(\)-INTERVAL '3 hours'/iu);
   assert.match(sql, /done\.state='COMPLETED'[\s\S]*?done\.expected_status_version=i\.status_version/iu);
+  assert.match(sql, /done\.contract_version IN \('V1','V2','V3'\)/iu);
+  assert.match(sql, /done\.dispatch_contract_version IS NULL/iu);
   assert.match(sql, /live\.state IN \('PENDING','PROCESSING'\)/iu);
+  assert.match(sql, /live\.contract_version IN \('V1','V2','V3'\)/iu);
   assert.match(sql, /FOR UPDATE OF i SKIP LOCKED/iu);
   assert.match(sql, /status='RETRYABLE_ERROR'[\s\S]*?AUTO_LISTING_AI_WORKER_INTERRUPTED/iu);
   assert.match(sql, /INSERT INTO auto_listing_events/iu);
@@ -261,6 +521,9 @@ test("renew, complete and failure transitions require the unexpired exact accoun
     assert.match(call.sql, /account_id=\$1/i);
     assert.match(call.sql, /item_id=\$3[\s\S]*?lease_owner=\$4 AND lease_token=\$5/i);
     assert.match(call.sql, /lease_expires_at > NOW\(\)/i);
+    assert.match(call.sql, /dispatch_contract_version IS NULL/iu);
+    assert.match(call.sql, /contract_version IN \('V1','V2','V3'\)/iu);
+    assert.match(call.sql, /frozen_profile\.id=frozen_job\.ai_profile_id[\s\S]*?frozen_profile\.config_version=frozen_job\.ai_profile_version[\s\S]*?frozen_profile\.connection_id IS NULL/iu);
   }
 });
 
@@ -309,6 +572,11 @@ test("public inputs are closed and identifiers use the 240 UTF-8 byte boundary",
   for (const execute of [
     () => repository.listAutoListingAiOutbox({ accountId: "account-a", unexpected: true }),
     () => repository.claimAutoListingAiMessages({ accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 1_000, unexpected: true }),
+    () => repository.claimAutoListingAiWork({ accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 1_000, unexpected: true }),
+    () => repository.markAutoListingAiWorkPublished({ accountId: "account-a", itemId: "item-a", id: "outbox-a", workerId: "relay-a", leaseToken: "lease-a", publicationId: "publication-a", unexpected: true }),
+    () => repository.releaseUnpublishedAutoListingAiWork({ accountId: "account-a", itemId: "item-a", id: "outbox-a", workerId: "relay-a", leaseToken: "lease-a", publicationId: "publication-a", unexpected: true }),
+    () => repository.adoptAutoListingAiWork({ accountId: "account-a", itemId: "item-a", id: "outbox-a", publicationId: "publication-a", dispatchGeneration: 1, relayOwner: "relay-a", relayToken: "lease-a", workerId: "worker-a", workerLeaseToken: "worker-lease-a", leaseMs: 1_000, unexpected: true }),
+    () => repository.renewAutoListingAiWorkLease({ accountId: "account-a", itemId: "item-a", id: "outbox-a", publicationId: "publication-a", dispatchGeneration: 1, workerId: "worker-a", leaseToken: "worker-lease-a", leaseMs: 1_000, unexpected: true }),
     () => repository.completeAutoListingAiMessage({ accountId: "account-a", itemId: "界".repeat(81), id: "ai-outbox-1", workerId: "worker-a", leaseToken: "lease-a" }),
     () => repository.failAutoListingAiMessage({ accountId: "account-a", itemId: "item-a", id: "ai-outbox-1", workerId: "worker-a", leaseToken: "lease-a", errorCode: "API_KEY_EXPOSED" }),
   ]) await assert.rejects(execute(), { code: "AUTO_LISTING_AI_OUTBOX_INVALID" });
@@ -342,4 +610,258 @@ test("factory options are closed and proxy traps cannot leak raw configuration f
     () => createPostgresAiOutboxRepository({ pool: { query() {} } }),
     { code: "AUTO_LISTING_AI_OUTBOX_INVALID" },
   );
+});
+
+test("real PostgreSQL legacy claim follows the exact frozen null-connection profile and account fence", {
+  skip: postgresEnabled ? false : "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
+  timeout: 90_000,
+}, async () => {
+  const { Pool } = await import("pg");
+  const suffix = crypto.randomUUID().replaceAll("-", "");
+  const schema = `auto_listing_ai_legacy_claim_${suffix}`;
+  const pool = new Pool({ connectionString: postgresConnectionString, max: 1 });
+  const client = await pool.connect();
+  const accountA = `account-a-${suffix}`;
+  const accountB = `account-b-${suffix}`;
+  const legacyProfileA = `profile-legacy-a-${suffix}`;
+  const currentProfileA = `profile-current-a-${suffix}`;
+  const profileB = `profile-b-${suffix}`;
+  const connectionA = `connection-a-${suffix}`;
+  const resources = new Map();
+
+  try {
+    await client.query(`CREATE SCHEMA ${quote(schema)}`);
+    await client.query(`SET search_path TO ${quote(schema)}, public`);
+    await applyAutoListingAiChannelPoolBaseMigrations(client);
+    await applyAutoListingAiChannelPoolMigration(client);
+
+    for (const [accountId, marker] of [[accountA, "a"], [accountB, "b"]]) {
+      const storeId = `store-${marker}-${suffix}`;
+      const warehouseId = `warehouse-${marker}-${suffix}`;
+      const snapshotId = `snapshot-${marker}-${suffix}`;
+      const strategyId = `strategy-${marker}-${suffix}`;
+      resources.set(accountId, { storeId, warehouseId, snapshotId, strategyId });
+      await client.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
+        [accountId, `user-${marker}-${suffix}`],
+      );
+      await client.query(
+        "INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,$1,$1,$2,'active',$3)",
+        [storeId, `client-${marker}-${suffix}`, accountId],
+      );
+      await client.query(
+        "INSERT INTO warehouses (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived) VALUES ($1,$2,$1,'FBS','active',TRUE,FALSE)",
+        [warehouseId, storeId],
+      );
+      await client.query(
+        "INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash) VALUES ($1,$2,$3,1,'PUBLISHED','{}'::JSONB,$4)",
+        [strategyId, accountId, `strategy-${marker}`, hash(marker)],
+      );
+      await client.query(
+        "INSERT INTO auto_listing_source_snapshots (id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash) VALUES ($1,$2,'COLLECT_BOX',$3,'1','{}'::JSONB,$4)",
+        [snapshotId, accountId, `record-${marker}`, hash(marker)],
+      );
+    }
+
+    await client.query(
+      `INSERT INTO ai_gateway_connection_versions (
+         account_id,id,version,display_name,base_url,ciphertext,iv,auth_tag,algorithm,key_version,
+         fingerprint,status,idempotency_key,request_hash,correlation_id,created_by
+       ) VALUES ($1,$2,1,'Connection A','https://gateway.invalid','ciphertext','iv','tag','aes-256-gcm','local-v1',
+         'fingerprint-a','PENDING',$3,$4,$5,$1)`,
+      [accountA, connectionA, `connection-${suffix}`, hash("c"), `connection-correlation-${suffix}`],
+    );
+    await client.query(
+      `UPDATE ai_gateway_connection_versions
+          SET status='VALIDATED',status_version=2,validation_result='{"outcome":"PASSED"}'::JSONB,
+              validation_hash=$3,validated_at=NOW(),validated_by=$1
+        WHERE account_id=$1 AND id=$2 AND version=1`,
+      [accountA, connectionA, hash("d")],
+    );
+    await client.query(
+      `UPDATE ai_gateway_connection_versions
+          SET status='ACTIVE',status_version=3,activated_at=NOW(),activated_by=$1
+        WHERE account_id=$1 AND id=$2 AND version=1`,
+      [accountA, connectionA],
+    );
+
+    const insertProfile = (values) => client.query(
+      `INSERT INTO ai_gateway_profiles (
+         id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+         text_model,image_model,config_version,enabled,connection_id,connection_version
+       ) VALUES ($1,$2,$3,'https://gateway.invalid',$4,'SUB2API_RESPONSES','SUB2API_OPENAI_IMAGES',
+         'text-model','image-model',$5,$6,$7,$8)`,
+      values,
+    );
+    await insertProfile([legacyProfileA, accountA, "Frozen legacy v1", "ACCOUNT_A_AI_KEY", 1, false, null, null]);
+    await insertProfile([currentProfileA, accountA, "Current connection v2", "SUB2API_ENCRYPTED_KEY", 2, true, connectionA, 1]);
+    await insertProfile([profileB, accountB, "Account B legacy", "ACCOUNT_B_AI_KEY", 1, true, null, null]);
+
+    const cases = [
+      { key: "legacy-a", accountId: accountA, marker: "a", profileId: legacyProfileA, profileVersion: 1 },
+      { key: "current-connected-a", accountId: accountA, marker: "a", profileId: currentProfileA, profileVersion: 2 },
+      { key: "legacy-b", accountId: accountB, marker: "b", profileId: profileB, profileVersion: 1 },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      const ids = resources.get(entry.accountId);
+      const jobId = `job-${entry.key}-${suffix}`;
+      const itemId = `item-${entry.key}-${suffix}`;
+      const outboxId = `outbox-${entry.key}-${suffix}`;
+      const correlationId = `correlation-${entry.key}-${suffix}`;
+      const businessMessage = {
+        contractVersion: "V1",
+        accountId: entry.accountId,
+        itemId,
+        phase: "PLAN_CONTENT",
+        expectedStatusVersion: 3,
+        correlationId,
+      };
+      await client.query(
+        `INSERT INTO auto_listing_jobs (
+           id,account_id,source_type,idempotency_key,config_hash,strategy_version_id,ai_profile_id,ai_profile_version
+         ) VALUES ($1,$2,'COLLECT_BOX',$3,$4,$5,$6,$7)`,
+        [jobId, entry.accountId, `job-key-${entry.key}-${suffix}`, hash(String(index + 1)), ids.strategyId,
+          entry.profileId, entry.profileVersion],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_job_items (
+           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order
+         ) VALUES ($1,$2,$3,$4,$5,$6,'SOURCE_READY',3,1)`,
+        [itemId, jobId, entry.accountId, ids.snapshotId, ids.storeId, ids.warehouseId],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_ai_outbox (
+           id,account_id,job_id,item_id,event_type,dedupe_key,state,contract_version,phase,
+           expected_status_version,correlation_id,payload,next_retry_at
+         ) VALUES ($1,$2,$3,$4,'PLAN_CONTENT',$5,'PENDING','V1','PLAN_CONTENT',3,$6,$7::JSONB,NOW())`,
+        [outboxId, entry.accountId, jobId, itemId, autoListingAiMessageDedupeKey(businessMessage),
+          correlationId, JSON.stringify(businessMessage)],
+      );
+      entry.jobId = jobId;
+      entry.itemId = itemId;
+      entry.outboxId = outboxId;
+      entry.message = businessMessage;
+    }
+
+    const expiredCases = [
+      { key: "expired-legacy-a", accountId: accountA, marker: "a", profileId: legacyProfileA, profileVersion: 1 },
+      { key: "expired-connected-a", accountId: accountA, marker: "a", profileId: currentProfileA, profileVersion: 2 },
+      { key: "expired-legacy-b", accountId: accountB, marker: "b", profileId: profileB, profileVersion: 1 },
+    ];
+    for (const [index, entry] of expiredCases.entries()) {
+      const ids = resources.get(entry.accountId);
+      const jobId = `job-${entry.key}-${suffix}`;
+      const itemId = `item-${entry.key}-${suffix}`;
+      const outboxId = `outbox-${entry.key}-${suffix}`;
+      const correlationId = `correlation-${entry.key}-${suffix}`;
+      const businessMessage = {
+        contractVersion: "V1",
+        accountId: entry.accountId,
+        itemId,
+        phase: "PLAN_CONTENT",
+        expectedStatusVersion: 3,
+        correlationId,
+      };
+      await client.query(
+        `INSERT INTO auto_listing_jobs (
+           id,account_id,source_type,idempotency_key,config_hash,strategy_version_id,ai_profile_id,ai_profile_version
+         ) VALUES ($1,$2,'COLLECT_BOX',$3,$4,$5,$6,$7)`,
+        [jobId, entry.accountId, `job-key-${entry.key}-${suffix}`, hash(String(index + 4)), ids.strategyId,
+          entry.profileId, entry.profileVersion],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_job_items (
+           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order
+         ) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',3,1)`,
+        [itemId, jobId, entry.accountId, ids.snapshotId, ids.storeId, ids.warehouseId],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_ai_outbox (
+           id,account_id,job_id,item_id,event_type,dedupe_key,state,attempts,contract_version,phase,
+           expected_status_version,correlation_id,payload,lease_owner,lease_token,lease_expires_at,next_retry_at
+         ) VALUES ($1,$2,$3,$4,'PLAN_CONTENT',$5,'PROCESSING',5,'V1','PLAN_CONTENT',3,$6,$7::JSONB,
+           $8,$9,NOW()-INTERVAL '1 minute',NOW())`,
+        [outboxId, entry.accountId, jobId, itemId, autoListingAiMessageDedupeKey(businessMessage),
+          correlationId, JSON.stringify(businessMessage), `owner-${entry.key}`, `token-${entry.key}`],
+      );
+      entry.jobId = jobId;
+      entry.itemId = itemId;
+      entry.outboxId = outboxId;
+    }
+
+    const protectedExpiredIds = [expiredCases[1].outboxId, expiredCases[2].outboxId];
+    const protectedBefore = (await client.query(
+      `SELECT o.id,o.state,o.attempts,o.lease_owner,o.lease_token,o.lease_expires_at,
+              i.status AS item_status,i.status_version AS item_status_version
+         FROM auto_listing_ai_outbox AS o
+         JOIN auto_listing_job_items AS i
+           ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id
+        WHERE o.id=ANY($1::TEXT[]) ORDER BY o.id`,
+      [protectedExpiredIds],
+    )).rows;
+
+    const repositoryPool = {
+      query: (...args) => client.query(...args),
+      async connect() {
+        return { query: (...args) => client.query(...args), release() {} };
+      },
+    };
+    const repository = createPostgresAiOutboxRepository({ pool: repositoryPool, token: () => "legacy-real-token" });
+    const claimed = await repository.claimLegacyAutoListingAiMessages({
+      accountId: accountA, workerId: "legacy-real-worker", limit: 10, leaseMs: 60_000,
+    });
+
+    assert.equal(claimed.length, 1);
+    assert.equal(claimed[0].id, cases[0].outboxId);
+    assert.deepEqual(claimed[0].message, cases[0].message);
+    assert.equal(claimed[0].status, "PROCESSING");
+    assert.equal(Object.hasOwn(claimed[0], "workMessage"), false);
+    assert.equal(Object.hasOwn(claimed[0].message, "execution"), false);
+    assert.equal(Object.hasOwn(claimed[0].message, "channelId"), false);
+
+    const legacyExpiredAfterClaim = (await client.query(
+      "SELECT state,attempts,lease_owner,lease_token,lease_expires_at FROM auto_listing_ai_outbox WHERE id=$1",
+      [expiredCases[0].outboxId],
+    )).rows[0];
+    assert.deepEqual(legacyExpiredAfterClaim, {
+      state: "DEAD", attempts: 5, lease_owner: null, lease_token: null, lease_expires_at: null,
+    });
+    assert.deepEqual(await repository.reconcileDeadLegacyAutoListingAiMessages({
+      accountId: accountA, limit: 10,
+    }), { recovered: 1 });
+
+    const legacyItemAfterReconciliation = (await client.query(
+      "SELECT status,status_version,failure_code FROM auto_listing_job_items WHERE id=$1",
+      [expiredCases[0].itemId],
+    )).rows[0];
+    assert.deepEqual(legacyItemAfterReconciliation, {
+      status: "RETRYABLE_ERROR", status_version: 4, failure_code: "AUTO_LISTING_AI_OUTBOX_DEAD",
+    });
+
+    const protectedAfter = (await client.query(
+      `SELECT o.id,o.state,o.attempts,o.lease_owner,o.lease_token,o.lease_expires_at,
+              i.status AS item_status,i.status_version AS item_status_version
+         FROM auto_listing_ai_outbox AS o
+         JOIN auto_listing_job_items AS i
+           ON i.account_id=o.account_id AND i.job_id=o.job_id AND i.id=o.item_id
+        WHERE o.id=ANY($1::TEXT[]) ORDER BY o.id`,
+      [protectedExpiredIds],
+    )).rows;
+    assert.deepEqual(protectedAfter, protectedBefore);
+
+    const untouched = await client.query(
+      "SELECT id,state,attempts FROM auto_listing_ai_outbox WHERE id=ANY($1::TEXT[]) ORDER BY id",
+      [[cases[1].outboxId, cases[2].outboxId]],
+    );
+    assert.equal(untouched.rows.length, 2);
+    assert.equal(untouched.rows.every((row) => row.state === "PENDING" && row.attempts === 0), true);
+  } finally {
+    try {
+      await client.query("RESET search_path");
+      await client.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  }
 });

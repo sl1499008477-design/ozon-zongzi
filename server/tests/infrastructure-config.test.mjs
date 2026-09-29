@@ -54,13 +54,7 @@ assert.match(compose, /AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: \$\{AUTO_LISTI
 assert.match(compose, /AUTO_LISTING_CREDENTIAL_MASTER_KEY: \$\{AUTO_LISTING_CREDENTIAL_MASTER_KEY:-\}/u);
 assert.match(compose, /AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE: \$\{AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:\+\/run\/secrets\/auto-listing-credential-master\.key\}/u);
 assert.match(compose, /AUTO_LISTING_CREDENTIAL_KEY_VERSION: \$\{AUTO_LISTING_CREDENTIAL_KEY_VERSION:-local-v1\}/u);
-for (const service of ["api", "worker", "auto-listing-ai-worker"]) {
-  assert.match(
-    compose,
-    new RegExp(`${service}:[\\s\\S]*?AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:-/dev/null\\}:/run/secrets/auto-listing-credential-master\\.key:ro`, "u"),
-    `${service} must mount only a placeholder when no credential key file is configured`,
-  );
-}
+// Credential mounts are validated by executing Compose in scripts/compose-config.test.mjs.
 assert.match(example, /^AUTO_LISTING_CREDENTIAL_MASTER_KEY=$/mu);
 assert.match(example, /^AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE=server-data\/sub2api-local\/credential-master\.key$/mu);
 assert.match(example, /^AUTO_LISTING_CREDENTIAL_KEY_VERSION=local-v1$/mu);

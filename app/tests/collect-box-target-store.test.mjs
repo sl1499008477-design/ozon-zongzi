@@ -20,6 +20,7 @@ test("collection add only requires input and an authenticated account, not a bou
     ok: true,
     input: "https://www.ozon.ru/product/account-owned-7004/",
     isUrl: true,
+    sku: "7004",
   });
 
   assert.deepEqual(collectAddReadiness({
@@ -30,6 +31,7 @@ test("collection add only requires input and an authenticated account, not a bou
     ok: true,
     input: "7005",
     isUrl: false,
+    sku: "7005",
   });
 });
 
@@ -361,4 +363,20 @@ test("known client and contract failures clear the listing submission key", () =
   assert.equal(listingSubmissionErrorIsDefinitive({ status: 409, code: "TARGET_STORE_DISABLED" }), true);
   assert.equal(listingSubmissionErrorIsDefinitive({ status: 422, code: "TARGET_STORE_REQUIRED" }), true);
   assert.equal(settleListingSubmissionIntent({ requestId: "request-a" }, { definitive: true }), null);
+});
+
+test("collection URL resolves the product SKU without tracking parameters", () => {
+  for (const value of [
+    "https://www.ozon.ru/product/derzhatel-dlya-fena-1-sht-1657312896/?_bctx=CAYQ3Yk5&at=abc",
+    "https://www.ozon.ru/product/1657312896/",
+    "1657312896",
+  ]) assert.equal(collectAddReadiness({ value, token: "session" }).sku, "1657312896");
+  for (const value of ["https://evil.test/product/1657312896/", "https://ozon.ru/search/?text=1657312896", "not-a-sku"])
+    assert.equal(collectAddReadiness({ value, token: "session" }).ok, false);
+});
+
+test('editor exposes pending RFBS but excludes disabled and other-store warehouses', () => {
+  const warehouse = { id: 'w1', storeId: 's1', warehouse_id: '123', listingEligibility: { eligible: false, code: 'RFBS_VALIDATION_REQUIRED', fulfillmentType: 'RFBS', evidenceRequired: true } };
+  const model = listingPreparationModel({ targetStoreId: 's1', localData: { stores: [{ id: 's1', credentialsSaved: true }], caches: { warehouses: [warehouse, { ...warehouse, id: 'w2', storeId: 's2' }, { ...warehouse, id: 'w3', listingEligibility: { eligible: false, code: 'WAREHOUSE_DISABLED' } }] } } });
+  assert.deepEqual(model.warehouses.map(w => w.id), ['w1']);
 });

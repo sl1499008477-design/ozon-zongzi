@@ -20,6 +20,7 @@ test("repository finds publications only when exact immutable evidence remains a
   assert.equal(result.publicationVersion, "LISTING_MEDIA_V2");
   assert.deepEqual(calls[0].values, ["account-a", "item-a", "asset-a", "LISTING_MEDIA_V2"]);
   assert.match(calls[0].sql, /JOIN ai_generation_assets AS asset/iu);
+  assert.doesNotMatch(calls[0].sql, /auto_listing_source_(?:materializations|image_derivatives)/iu);
   assert.match(calls[0].sql, /asset\.plan_id=item\.active_content_plan_id/iu);
   assert.match(calls[0].sql, /asset\.status='ACCEPTED'/iu);
   for (const field of ["visual_group_key", "slot_key", "role", "content_hash", "content_type", "size_bytes", "width", "height", "private_object_key"]) {
@@ -66,6 +67,7 @@ test("record uses one atomic INSERT SELECT from current accepted source and relo
   const result = await repo.recordPublication(input);
   assert.equal(result.assetId, "asset-a");
   assert.match(calls[0].sql, /INSERT INTO auto_listing_asset_publications[\s\S]*SELECT[\s\S]*FROM ai_generation_assets AS asset/iu);
+  assert.doesNotMatch(calls[0].sql, /auto_listing_source_(?:materializations|image_derivatives)/iu);
   assert.match(calls[0].sql, /asset\.plan_id=item\.active_content_plan_id/iu);
   assert.match(calls[0].sql, /asset\.status='ACCEPTED'/iu);
   assert.match(calls[0].sql, /ON CONFLICT \(account_id,asset_id,content_hash,publication_version\) DO NOTHING/iu);

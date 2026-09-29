@@ -5,7 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildGeneratedAssetObjectKey, sha256 } from "../auto-listing-asset-store.mjs";
 import { evaluateGeneratedCheckerEvidence } from "../auto-listing-result-checker.mjs";
-import { buildRichContentEvidenceIdentity } from "../auto-listing-rich-content.mjs";
+import {
+  buildRichContentAttemptInputHash,
+  buildRichContentEvidenceIdentity,
+} from "../auto-listing-rich-content.mjs";
 import { createPostgresRichContentRepository } from "../auto-listing-rich-content-repository.mjs";
 
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
@@ -105,6 +108,20 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     const migration078 = await readFile(path.join(migrationsDir, "078_auto_listing_rich_embedded_numeric_evidence.sql"), "utf8");
     await client.query(migration078);
     await client.query(migration078);
+    const migration086 = await readFile(path.join(migrationsDir, "086_auto_listing_rich_numeric_boundary.sql"), "utf8");
+    await client.query(migration086);
+    await client.query(migration086);
+    const migration102 = await readFile(path.join(migrationsDir, "102_auto_listing_rich_evidence_compatibility.sql"), "utf8");
+    await client.query(migration102);
+    await client.query(migration102);
+    await client.query("ALTER TABLE auto_listing_job_items ADD COLUMN IF NOT EXISTS active_content_plan_id TEXT");
+    await client.query(
+      "ALTER TABLE ai_rich_content_results ADD COLUMN IF NOT EXISTS gateway_connection_id TEXT, ADD COLUMN IF NOT EXISTS gateway_connection_version INTEGER",
+    );
+    await client.query(
+      "UPDATE auto_listing_job_items SET status='GENERATING',status_version=1,active_content_plan_id=$4 WHERE account_id=$1 AND job_id=$2 AND id=$3",
+      [accountId, jobId, itemId, planId],
+    );
     const after = await client.query("SELECT * FROM ai_rich_content_results WHERE id=$1", [legacyId]);
     const legacyTerminalPreserved = before.rows[0].status === after.rows[0].status
       && JSON.stringify(before.rows[0].rich_content) === JSON.stringify(after.rows[0].rich_content)
@@ -238,6 +255,47 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     assert.deepEqual(evidenceValidation.rows[0], {
       fact_valid: true, asset_valid: true, asset_matches: true,
     });
+    const operationalFact = {
+      factId: "fact.internal.model", field: "attributes.internalModel", kind: "ATTRIBUTE:internal-model",
+      value: "Внутренний идентификатор", numericValue: null, unit: null,
+      sourcePath: "attributes.internalModel",
+    };
+    const historicalAssetEvidence = structuredClone(assetEvidence);
+    for (const asset of historicalAssetEvidence) {
+      asset.checkerEvidence.sourceFacts.push(structuredClone(operationalFact));
+    }
+    const historicalCheckerSuperset = await client.query(
+      `SELECT auto_listing_rich_asset_evidence_matches(
+         $1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8,$9,$10,$11
+       ) AS asset_matches`,
+      [JSON.stringify(historicalAssetEvidence), JSON.stringify(factEvidence),
+        accountId, jobId, itemId, planId, hash("1"), hash("2"), profileId, 1, "text-model"],
+    );
+    assert.deepEqual(historicalCheckerSuperset.rows[0], { asset_matches: true });
+    const derivedNumericAssetEvidence = structuredClone(historicalAssetEvidence);
+    for (const asset of derivedNumericAssetEvidence) {
+      asset.checkerEvidence.sourceFacts[0].numericValue = null;
+      asset.checkerEvidence.sourceFacts[0].unit = null;
+    }
+    const derivedNumericProjection = await client.query(
+      `SELECT auto_listing_rich_asset_evidence_matches(
+         $1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8,$9,$10,$11
+       ) AS asset_matches`,
+      [JSON.stringify(derivedNumericAssetEvidence), JSON.stringify(factEvidence),
+        accountId, jobId, itemId, planId, hash("1"), hash("2"), profileId, 1, "text-model"],
+    );
+    assert.deepEqual(derivedNumericProjection.rows[0], { asset_matches: true });
+    const mismatchedFactEvidence = structuredClone(factEvidence);
+    mismatchedFactEvidence[0].value = "700 мл";
+    mismatchedFactEvidence[0].numericValue = 700;
+    const mismatchedSharedFact = await client.query(
+      `SELECT auto_listing_rich_asset_evidence_matches(
+         $1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8,$9,$10,$11
+       ) AS asset_matches`,
+      [JSON.stringify(assetEvidence), JSON.stringify(mismatchedFactEvidence),
+        accountId, jobId, itemId, planId, hash("1"), hash("2"), profileId, 1, "text-model"],
+    );
+    assert.deepEqual(mismatchedSharedFact.rows[0], { asset_matches: false });
     const factBinding = {
       sourceFactId: "fact.capacity", field: "capacity", value: "500 мл", numericValue: 500, unit: "мл",
     };
@@ -261,9 +319,10 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       planHash: hash("1"), sourceHash: hash("2"), sourceFactEvidence: factEvidence, assetEvidence,
       profileId, profileVersion: 1, modelName: "text-model", promptTemplateVersion: "rich-v1",
     });
-    const inputHash = reservationIdentity.inputHash;
+    const inputHash = buildRichContentAttemptInputHash(reservationIdentity.inputHash, 1);
     const reservation = {
       accountId, jobId, itemId, planId, inputHash,
+      expectedStatusVersion: 1,
       planHash: hash("1"), sourceHash: hash("2"), factRegistryHash: reservationIdentity.factRegistryHash,
       assetHash: reservationIdentity.assetHash, promptHash: reservationIdentity.promptHash, profileId, profileVersion: 1,
       modelName: "text-model", promptTemplateVersion: "rich-v1",
@@ -272,9 +331,13 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       requestEvidence: { requestKey: `auto-listing-rich-${inputHash}`, schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1" },
       maxAttempts: 3,
     };
+    let richTokenSequence = 0;
+    let richIdSequence = 0;
     const repository = createPostgresRichContentRepository({
       pool: { query: (...args) => client.query(...args) },
-      token: () => `lease-${suffix}`, id: () => `rich-${suffix}`,
+      leaseMs: 60_000,
+      token: () => `lease-${++richTokenSequence}-${suffix}`,
+      id: () => `rich-${++richIdSequence}-${suffix}`,
     });
     const lease = await repository.reserveRichContentAttempt(reservation);
     const concurrent = await repository.reserveRichContentAttempt(reservation);
@@ -288,8 +351,26 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     } catch (error) {
       wrongScopeRejected = error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID";
     }
+    const expiredRichLease = await client.query(
+      `UPDATE ai_rich_content_results SET lease_expires_at=NOW()-INTERVAL '1 second'
+        WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4
+          AND input_hash=$5 AND attempt_no=$6 AND lease_token=$7`,
+      [accountId, jobId, itemId, planId, inputHash, lease.attemptNo, lease.leaseToken],
+    );
+    assert.equal(expiredRichLease.rowCount, 1);
+    const reclaimedAfterExpiry = await repository.reserveRichContentAttempt(reservation);
+    let expiredOwnerRejected = false;
+    try {
+      await repository.completeRichContentAttempt({
+        ...reservation, ...lease,
+        richContent,
+        outputHash: sha256(richContent), checkerResult, gatewayRequestId: "gateway-rich", modelEvidence,
+      });
+    } catch (error) {
+      expiredOwnerRejected = error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID";
+    }
     const accepted = await repository.completeRichContentAttempt({
-      ...reservation, ...lease,
+      ...reservation, ...reclaimedAfterExpiry,
       richContent,
       outputHash: sha256(richContent), checkerResult, gatewayRequestId: "gateway-rich", modelEvidence,
     });
@@ -589,7 +670,12 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       legacyTerminalPreserved,
       nullAcceptedRejected,
       fullScopeLeaseCas: lease.status === "RESERVED" && concurrent.status === "IN_PROGRESS" && wrongScopeRejected,
+      expiredLeaseReclaimed: reclaimedAfterExpiry.status === "RESERVED"
+        && reclaimedAfterExpiry.attemptNo === 2 && expiredOwnerRejected,
       acceptedReplayUnique: replay.status === "EXISTING_ACCEPTED" && duplicateRejected,
+      historicalCheckerSupersetAccepted: historicalCheckerSuperset.rows[0].asset_matches,
+      derivedNumericProjectionAccepted: derivedNumericProjection.rows[0].asset_matches,
+      mismatchedSharedFactRejected: !mismatchedSharedFact.rows[0].asset_matches,
     };
   } finally {
     await client.query("RESET search_path").catch(() => {});

@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"ozon 粽子","productName":"ozon 粽子","primaryColor":"#1268FF","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/ozon-zongzi-symbol.svg") : null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"ozon 粽子","productName":"ozon 粽子","primaryColor":"#1268FF","apiHost":"www.ozonzongzi.com/api","webHost":"www.ozonzongzi.com","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/ozon-zongzi-symbol.svg") : null};
 // Shared utility functions for 极掌 (JiZhang) Extension
 // This file is loaded before other content scripts via manifest.json
 
@@ -18,8 +18,8 @@ const __JZ_BRAND_DEFAULTS__ = {
   displayName: BRAND_DISPLAY_NAME_FALLBACK,
   productName: BRAND_PRODUCT_NAME_FALLBACK,
   primaryColor: "#1268FF",
-  apiHost: "127.0.0.1:3000/api",
-  webHost: "127.0.0.1:3000",
+  apiHost: "www.ozonzongzi.com/api",
+  webHost: "www.ozonzongzi.com",
   logoUrl: null,
 };
 if (!globalThis.__JZ_BRAND__) {
@@ -959,17 +959,18 @@ if (!globalThis.__JZ_BRAND__) {
       'followSell', 'importBySku', 'uploadFollowSellVideo', 'importFromPublic', 'followFromPublic',
       'CATEGORY_STRATEGY_SAMPLES_CONFIRM',
     ];
-    const timeoutMs = LONG_ACTIONS.includes(action) ? 600000 : 60000;
+    const collectionAction = ['searchVariants','searchProductBySku','fetchProductPageState','enrichOzonCollect','enrichOzonCollectBatch','pushSourceCollect'].includes(action);
+    const timeoutMs = collectionAction ? 0 : LONG_ACTIONS.includes(action) ? 600000 : 60000;
     console.log(`[sendMessage] sending action=${action}`);
     return new Promise((resolve, reject) => {
       let settled = false;
-      const timer = setTimeout(() => {
+      const timer = timeoutMs > 0 ? setTimeout(() => {
         if (!settled) {
           settled = true;
           console.error(`[sendMessage] TIMEOUT action=${action} after ${timeoutMs/1000}s`);
           reject(new Error(`sendMessage("${action}") 超时 (${timeoutMs / 1000}s)`));
         }
-      }, timeoutMs);
+      }, timeoutMs) : null;
       chrome.runtime.sendMessage({ action, ...params }, (response) => {
         clearTimeout(timer);
         if (settled) { console.warn(`[sendMessage] LATE response for action=${action} (already timed out)`); return; }
@@ -997,34 +998,23 @@ if (!globalThis.__JZ_BRAND__) {
             ? response.missingFields.map((field) => String(field || '')).filter(Boolean)
             : [];
           error.retryable = response?.retryable === true;
+          if (response?.diagnostic) error.diagnostic = response.diagnostic;
           reject(error);
         }
       });
     });
   };
 
-  // ─── 数据卡会员门控 ─────────────────────────
-  // 数据卡(搜索页面板 + 详情页侧栏卡)先检查账号级 Collector 会话，再查会员功能。
-  // Web 未登录时 fail-closed；已登录但会员接口暂时不可达时才 fail-open，避免把后端
-  // 抖动误判成退出登录。
-  // 后端 usage-summary 的 canUse.DATA_CARD === false(FREE 档)→ 锁定卡。
-  // 页面级缓存一次(promise 复用),搜索页几十张卡只做一次会话与 usage-summary 检查。
+  // 数据卡使用 Collector 会话权限；数据接口仍在后端校验账号及权限。
   let _dataCardGatePromise = null;
   window.jzDataCardAllowed = function () {
     if (!_dataCardGatePromise) {
       _dataCardGatePromise = Promise.resolve()
         .then(() => window.checkAuth())
-        .then((auth) => {
-          if (!auth?.loggedIn) return { allowed: false, reason: 'WEB_AUTH_REQUIRED' };
-          return window.sendMessage('getMembershipSummary', {})
-            .then((s) => {
-              if (s && s.canUse && s.canUse.DATA_CARD === false) {
-                return { allowed: false, reason: 'MEMBERSHIP_REQUIRED' };
-              }
-              return { allowed: true };
-            })
-            .catch(() => ({ allowed: true }));
-        })
+        .then((auth) => ({
+          allowed: Boolean(auth?.loggedIn && auth.permissions?.includes('collector.ozon.read')),
+          reason: 'WEB_AUTH_REQUIRED',
+        }))
         .catch(() => ({ allowed: false, reason: 'WEB_AUTH_REQUIRED' }));
     }
     return _dataCardGatePromise;
@@ -1259,17 +1249,19 @@ if (!globalThis.__JZ_BRAND__) {
         const wait = Math.max(0, _staggerMs - sinceLast);
         lastLaunchAt = Date.now() + wait;
         setTimeout(() => {
-          let timer = setTimeout(() => {
-            if (timer == null) return;
+          let finished = false;
+          let timer = taskTimeoutMs > 0 ? setTimeout(() => {
+            if (finished) return;
+            finished = true;
             timer = null;
             next.reject(new Error('queue task timeout'));
             inFlight--; pump();
-          }, taskTimeoutMs);
+          }, taskTimeoutMs) : null;
           Promise.resolve()
             .then(next.task)
             .then(
-              (v) => { if (timer == null) return; clearTimeout(timer); timer = null; next.resolve(v); inFlight--; pump(); },
-              (e) => { if (timer == null) return; clearTimeout(timer); timer = null; next.reject(e); inFlight--; pump(); },
+              (v) => { if (finished) return; finished = true; clearTimeout(timer); timer = null; next.resolve(v); inFlight--; pump(); },
+              (e) => { if (finished) return; finished = true; clearTimeout(timer); timer = null; next.reject(e); inFlight--; pump(); },
             );
         }, wait);
       }
@@ -1819,7 +1811,7 @@ if (!globalThis.__JZ_BRAND__) {
       <div class="ozon-helper-sidebar-brand">
         ${mark}
         <span class="ozon-helper-sidebar-brand-copy">
-          <strong class="ozon-helper-sidebar-brand-title">${_v2Escape(displayName)} · 选品助手</strong>
+          <strong class="ozon-helper-sidebar-brand-title">${_v2Escape(displayName)}</strong>
           <small class="ozon-helper-sidebar-brand-status" data-state="${_v2Escape(statusState)}">${_v2Escape(status)}</small>
         </span>
       </div>
@@ -2025,9 +2017,6 @@ if (!globalThis.__JZ_BRAND__) {
     //   第二行 编辑上架 + 采集(各占一半)
     // 三按钮一行宽度太挤(每按 ~85px),占满信息折叠成两字"采集"也不舒服。
     const actionsHtml = opts.showActions ? `<div class="ozon-helper-sidebar-card-actions">
-      <button class="ozon-helper-sidebar-card-btn is-primary" data-action="follow-sell">
-        <span class="oh-btn-icon">${_ohSvg(_OH_ICONS.link)}</span>一键跟卖
-      </button>
       <div class="ozon-helper-sidebar-card-actions-row">
         <button class="ozon-helper-sidebar-card-btn" data-action="edit-list">
           <span class="oh-btn-icon">${_ohSvg(_OH_ICONS.pencil)}</span>编辑上架
@@ -2055,6 +2044,29 @@ if (!globalThis.__JZ_BRAND__) {
     window.jzBindPanelBrandFallback(panel);
     window.jzLoadFieldVisibility().then((v) => window.jzApplyFieldVisibility(panel, v));
   };
+
+  function _jzFollowSellMinimum(data) {
+    if (data?.followSellMinPrice != null) {
+      return {
+        value: window.jzParseOzonPriceNumber(data.followSellMinPrice),
+        currency: window.jzDetectOzonMoneyCurrency(data.followSellMinPriceCurrency || data.followSellMinPrice),
+      };
+    }
+    const prices = (Array.isArray(data?.sellers) ? data.sellers : [])
+      .map((seller) => ({
+        value: window.jzParseOzonPriceNumber(seller?.price),
+        currency: window.jzDetectOzonMoneyCurrency(seller?.price),
+      }))
+      .filter((price) => price.value != null);
+    // 未知/混合币种不能直接比较裸数值，也不能借用另一卖家的币种。
+    if (!prices.length || prices.some((price) => !price.currency || price.currency !== prices[0].currency)) return null;
+    return prices.reduce((min, price) => price.value < min.value ? price : min);
+  }
+
+  function _jzFormatFollowSellMinimum(minimum) {
+    const symbol = { CNY: '¥', RUB: '₽' }[minimum?.currency];
+    return symbol && minimum.value != null ? `${symbol}${window.formatNumber(minimum.value, 2)}` : '-';
+  }
 
   window.jzMergeCardPanelData = function(marketData, productData, variantData, publicData, productId, publicWeightDims) {
     const stats = productData?.statistics || {};
@@ -2095,19 +2107,10 @@ if (!globalThis.__JZ_BRAND__) {
 
     const followSellCount =
       publicData?.followSellCount ?? productData?.followSellCount ?? null;
-    const followSellers = Array.isArray(publicData?.sellers) ? publicData.sellers : [];
-    const parseFollowPrice = (price) => {
-      if (price == null) return null;
-      const normalized = String(price).replace(/[^\d.,-]/g, '').replace(/\s/g, '').replace(',', '.');
-      const num = parseFloat(normalized);
-      return Number.isFinite(num) ? num : null;
-    };
-    const followSellPrices = followSellers
-      .map((seller) => parseFollowPrice(seller?.price))
-      .filter((price) => price !== null);
-    const followSellMinPrice =
-      publicData?.followSellMinPrice ?? productData?.followSellMinPrice ??
-      (followSellPrices.length ? Math.min(...followSellPrices) : null);
+    // 保持来源优先级，价格和币种必须成对来自同一份数据。
+    const followPriceSource = publicData?.followSellMinPrice != null ? publicData
+      : productData?.followSellMinPrice != null ? productData : publicData;
+    const followMinimum = _jzFollowSellMinimum(followPriceSource);
     const brandAttr = attrMap?.get('85') || null;
     const brand =
       md.brand ??
@@ -2144,7 +2147,8 @@ if (!globalThis.__JZ_BRAND__) {
       rating: productData?.rating ?? null,
       brand,
       followSellCount,
-      followSellMinPrice,
+      followSellMinPrice: followMinimum?.value ?? null,
+      followSellMinPriceCurrency: followMinimum?.currency ?? null,
       canFollow: Boolean(matchedItem || productData?.canFollow),
       createDate: md.nullableCreateDate ?? null,
       descriptionCategoryId:
@@ -2186,10 +2190,10 @@ if (!globalThis.__JZ_BRAND__) {
       // 走 SW 开 tab(content script 无 chrome.tabs;SW 能复用已有 tab);失败兜底 window.open。
       try {
         window.sendMessage('openSellerPortal', {}).catch(() => {
-          window.open('https://seller.ozon.ru/app/products', '_blank');
+          console.warn('[Seller] 登录入口暂不可用，请从扩展弹窗打开 Seller 登录');
         });
       } catch {
-        window.open('https://seller.ozon.ru/app/products', '_blank');
+        console.warn('[Seller] 登录入口暂不可用，请从扩展弹窗打开 Seller 登录');
       }
     });
     hint.append(text, btn);
@@ -2219,13 +2223,17 @@ if (!globalThis.__JZ_BRAND__) {
       weightG: null, depthMm: null, widthMm: null, heightMm: null, gtin: '',
     };
     if (!sv || !Array.isArray(sv.attributes)) return { ...empty };
-    const attrMap = new Map(sv.attributes.map((a) => [String(a.key), a]));
-    const sval = (k) => {
-      const v = attrMap.get(String(k))?.value;
-      return v != null && String(v).trim() ? String(v).trim() : '';
+    const attrMap = new Map(sv.attributes.map((a) => [String(a.key ?? a.id ?? a.attribute_id), a]));
+    const svalues = (k) => {
+      const attr = attrMap.get(String(k));
+      const values = Array.isArray(attr?.values) ? attr.values
+        : Array.isArray(attr?.collection) ? attr.collection : [attr?.value];
+      return values.map(value => typeof value === 'object' && value ? value.value : value)
+        .filter(value => value != null && String(value).trim()).map(value => String(value).trim());
     };
+    const sval = (k) => svalues(k)[0] || '';
     const sint = (k) => {
-      const n = Number(attrMap.get(String(k))?.value);
+      const n = Number(sval(k));
       return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
     };
 
@@ -2240,14 +2248,14 @@ if (!globalThis.__JZ_BRAND__) {
       images.push(u);
     };
     pushUrl(sval('4194'));
-    const gallery = attrMap.get('4195')?.collection;
+    const gallery = svalues('4195');
     if (Array.isArray(gallery)) for (const u of gallery) pushUrl(u);
 
     // 重量:4497(packaged g)优先,缺则 4383 kg 浮点(<100 视为 kg→*1000,
     // 跟后端 product.service.ts 启发式 + 跟卖 readSourceWeightKgAsG 对齐)
     let weightG = sint('4497');
     if (weightG == null) {
-      const kg = Number(attrMap.get('4383')?.value);
+      const kg = Number(sval('4383'));
       if (Number.isFinite(kg) && kg > 0) weightG = kg < 100 ? Math.round(kg * 1000) : Math.round(kg);
     }
 
@@ -2293,11 +2301,11 @@ if (!globalThis.__JZ_BRAND__) {
     const sv = svName ? String(svName).replace(/\s+/g, ' ').trim() : '';
     const rawDom = domName ? String(domName).replace(/\s+/g, ' ').trim() : '';
     const dom = window.jzCleanOzonCardTitle ? window.jzCleanOzonCardTitle(rawDom) : rawDom;
-    const isCN = (s) => /[一-龥]/.test(s);
+    const isCN = (s) => /\p{Script=Han}/u.test(s);
     const domLooksPolluted = !!sv && !!rawDom && !!dom && rawDom !== dom;
-    if (domLooksPolluted) return sv;
+    if (domLooksPolluted && !isCN(sv)) return sv;
     if (sv && isCN(dom) && !isCN(sv)) return sv;
-    return dom || sv;
+    return (!isCN(dom) ? dom : '') || (!isCN(sv) ? sv : '');
   };
 
   // ─── 抓标题时剔除 Ozon 卡片角标 / 营销促销词 ──────────────────────────
@@ -3058,13 +3066,6 @@ if (!globalThis.__JZ_BRAND__) {
     return trimmed ? trimmed.slice(0, 1).toUpperCase() : "?";
   }
 
-  function _fsColor(name) {
-    let h = 0;
-    const s = String(name || "");
-    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-    return `hsl(${h % 360}, 60%, 55%)`;
-  }
-
   function _fsFormatReviews(n) {
     const num = Number(n);
     if (!Number.isFinite(num) || num <= 0) return "";
@@ -3122,13 +3123,38 @@ if (!globalThis.__JZ_BRAND__) {
     };
   }
 
+  function _fsDeliveryLabel(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '配送信息未返回';
+    if (/[\u3400-\u9fff]/.test(raw) && !/[a-zа-яё]/i.test(raw)) return raw;
+    if (/^(?:доставка\s+)?недоступна$|^delivery unavailable$/i.test(raw)) return '暂不支持配送';
+    const months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+    const relativeDays = { сегодня: '今天', завтра: '明天', послезавтра: '后天', today: '今天', tomorrow: '明天', 'day after tomorrow': '后天' };
+    let value = raw.replace(/^(?:доставим|доставка|delivery|delivered(?: by)?)\s+/i, '').trim();
+    const datePattern = new RegExp(`(\\d{1,2})(?:\\s*[-–—]\\s*(\\d{1,2}))?\\s+(${months.join('|')})(?:\\s+(20\\d{2})(?:\\s*г\\.?)?)?`, 'gi');
+    value = value.replace(datePattern, (_match, first, last, month, year) =>
+      `${year ? year + '年' : ''}${months.indexOf(month.toLowerCase()) + 1}月${Number(first)}${last ? '–' + Number(last) : ''}日`);
+    const relative = value.match(/^(day after tomorrow|послезавтра|сегодня|завтра|today|tomorrow)(?:\s*[,，]?\s*)(.*)$/i);
+    const date = '(?:20\\d{2}年)?\\d{1,2}月\\d{1,2}(?:–\\d{1,2})?日';
+    if (relative && (!relative[2] || new RegExp(`^${date}$`).test(relative[2]))) {
+      return `${relativeDays[relative[1].toLowerCase()]}${relative[2] ? '（' + relative[2] + '）' : ''}送达`;
+    }
+    if (new RegExp(`^${date}$`).test(value)) return `${value}送达`;
+    const range = value.match(new RegExp(`^(?:с\\s+)?(${date})\\s*(?:по|[-–—])\\s*(${date})$`, 'i'));
+    if (range) return `${range[1]}–${range[2]}送达`;
+    const days = value.match(/^(через|в течение|in|within)\s+(\d+)\s*(?:день|дня|дней|days?)$/i);
+    if (days) return `${days[2]}天${/в течение|within/i.test(days[1]) ? '内' : '后'}送达`;
+    // Keep unrecognized source details in the cell tooltip instead of guessing a date.
+    return '查看配送详情';
+  }
+
   function _fsRenderSellerRow(seller, flags = {}) {
     const sellerUrl = seller.link
       ? (seller.link.startsWith("http") ? seller.link : "https://www.ozon.ru" + seller.link)
       : "";
     const avatarHtml = seller.avatar
       ? `<img class="oh-seller-avatar" src="${_ohEsc(seller.avatar)}" alt="" loading="lazy" />`
-      : `<span class="oh-seller-avatar oh-seller-avatar-fallback" style="background:${_fsColor(seller.name)}">${_ohEsc(_fsInitial(seller.name))}</span>`;
+      : `<span class="oh-seller-avatar oh-seller-avatar-fallback">${_ohEsc(_fsInitial(seller.name))}</span>`;
     const nameHtml = sellerUrl
       ? `<a class="oh-seller-name oh-seller-link" href="${_ohEsc(sellerUrl)}" target="_blank" rel="noopener">${_ohEsc(seller.name || "\u672a\u77e5\u5356\u5bb6")}</a>`
       : `<span class="oh-seller-name">${_ohEsc(seller.name || "\u672a\u77e5\u5356\u5bb6")}</span>`;
@@ -3142,21 +3168,19 @@ if (!globalThis.__JZ_BRAND__) {
     const priceHtml = seller.price
       ? `<span class="oh-seller-price${flags.isMinPrice ? " is-min" : ""}">${_ohEsc(seller.price)}${flags.isMinPrice ? ' <span class="oh-seller-tag is-price">\u6700\u4f4e</span>' : ""}</span>`
       : `<span class="oh-seller-price oh-seller-price-empty">-</span>`;
-    const deliveryHtml = seller.deliveryText
-      ? `<span class="oh-seller-delivery-main">${_ohEsc(seller.deliveryText)}</span>`
-      : `<span class="oh-seller-delivery-main is-muted">\u914d\u9001\u4fe1\u606f\u672a\u8fd4\u56de</span>`;
+    const deliveryHtml = `<span class="oh-seller-delivery-main${seller.deliveryText ? '' : ' is-muted'}" title="${_ohEsc(seller.deliveryText || '')}">${_ohEsc(_fsDeliveryLabel(seller.deliveryText))}</span>`;
     const fastestTag = flags.isFastest
       ? `<span class="oh-seller-tag is-delivery">\u6700\u5feb</span>`
       : "";
+    const salesText = seller.salesStatus === 'loading' ? '加载中' : seller.salesCount == null ? '—' : `${seller.salesCount.toLocaleString('zh-CN')} 件`;
     return `
-      <div class="oh-seller-row${flags.isMinPrice ? " is-min" : ""}${flags.isFastest ? " is-fastest" : ""}">
-        <div class="oh-seller-cell oh-seller-avatar-cell">${avatarHtml}</div>
-        <div class="oh-seller-cell oh-seller-name-cell">
-          ${nameHtml}
+      <div role="row" data-seller-sku="${_ohEsc(seller.sku || '')}" class="oh-seller-row${flags.isMinPrice ? " is-min" : ""}${flags.isFastest ? " is-fastest" : ""}">
+        <div role="cell" class="oh-seller-cell oh-seller-identity">${avatarHtml}<div class="oh-seller-name-cell">${nameHtml}
           <div class="oh-seller-meta">${ratingHtml}${reviewsHtml}${regionHtml}${skuHtml}</div>
-        </div>
-        <div class="oh-seller-cell oh-seller-price-cell">${priceHtml}</div>
-        <div class="oh-seller-cell oh-seller-delivery-cell">
+        </div></div>
+        <div role="cell" class="oh-seller-cell oh-seller-price-cell">${priceHtml}</div>
+        <div role="cell" class="oh-seller-cell oh-seller-sales-cell" title="${_ohEsc(seller.salesHint || '')}">${salesText}</div>
+        <div role="cell" class="oh-seller-cell oh-seller-delivery-cell">
           <span class="oh-seller-delivery-icon">${window.lucideIcon ? window.lucideIcon("truck", 14) : ""}</span>
           <span class="oh-seller-delivery-text">${deliveryHtml}${fastestTag}</span>
         </div>
@@ -3164,11 +3188,12 @@ if (!globalThis.__JZ_BRAND__) {
     `;
   }
 
-  function _fsRenderSellerList(sellers, mode, totalCount) {
+  function _fsRenderSellerList(sellers, mode, totalCount, periodLabel) {
     const stats = _fsSellerStats(sellers);
     const sorted = _fsSortSellers(sellers, mode);
     return `
-      <div class="oh-seller-list">
+      <div class="oh-seller-list oh-seller-table" role="table" aria-label="跟卖商家列表">
+        <div class="oh-seller-row oh-seller-table-head" role="row"><span role="columnheader">商家</span><span role="columnheader" class="oh-seller-price-cell">商品价格</span><span role="columnheader" class="oh-seller-sales-cell">销量<span class="oh-seller-period">${periodLabel}</span></span><span role="columnheader">配送</span></div>
         ${sorted.map((seller) => {
           const price = _fsParsePrice(seller.price);
           const rank = _fsDeliveryRank(seller);
@@ -3189,12 +3214,12 @@ if (!globalThis.__JZ_BRAND__) {
     for (let i = 0; i < n; i++) {
       html += `
         <div class="oh-seller-row oh-seller-row-skeleton">
-          <div class="oh-seller-cell oh-seller-avatar-cell"><span class="oh-skeleton oh-skeleton-circle"></span></div>
-          <div class="oh-seller-cell oh-seller-name-cell">
+          <div class="oh-seller-cell oh-seller-identity"><span class="oh-skeleton oh-skeleton-circle"></span><div class="oh-seller-name-cell">
             <span class="oh-skeleton oh-skeleton-line" style="width:55%"></span>
             <span class="oh-skeleton oh-skeleton-line oh-skeleton-line-sm" style="width:30%;margin-top:6px"></span>
-          </div>
+          </div></div>
           <div class="oh-seller-cell oh-seller-price-cell"><span class="oh-skeleton oh-skeleton-line" style="width:60px"></span></div>
+          <div class="oh-seller-cell oh-seller-sales-cell"><span class="oh-skeleton oh-skeleton-line" style="width:36px"></span></div>
           <div class="oh-seller-cell oh-seller-delivery-cell"><span class="oh-skeleton oh-skeleton-line" style="width:132px"></span></div>
         </div>`;
     }
@@ -3242,6 +3267,8 @@ if (!globalThis.__JZ_BRAND__) {
     let activeSellerMode = "price";
     let loadedSellers = [];
     let loadedTotalCount = totalCount;
+    const salesPeriod = window.jzGetSalesPeriod?.() === 'weekly' ? 'weekly' : 'monthly';
+    const salesPeriodLabel = salesPeriod === 'weekly' ? '近 7 天' : '近 28 天';
     let closeTimer = null;
     const cleanups = [];
 
@@ -3253,7 +3280,7 @@ if (!globalThis.__JZ_BRAND__) {
           <span class="oh-modal-title-text">\u8ddf\u5356\u5546\u5bb6\u5217\u8868</span>
           <span class="oh-modal-title-count">${totalCount}</span>
         </div>
-        <button class="oh-modal-close" type="button" aria-label="\u3000\u95ed">&times;</button>
+        <button class="oh-modal-close" type="button" aria-label="关闭">&times;</button>
       </div>
       <div class="oh-modal-tabs" role="tablist" aria-label="\u8ddf\u5356\u5546\u5bb6\u5206\u7c7b">
         <button class="oh-modal-tab" type="button" data-seller-mode="delivery" role="tab" aria-selected="false">
@@ -3264,7 +3291,7 @@ if (!globalThis.__JZ_BRAND__) {
         </button>
       </div>
       <div class="oh-modal-body" data-state="loading">
-        <div class="oh-seller-list">${_fsRenderSkeletonRows(5)}</div>
+        <div class="oh-seller-list oh-seller-table">${_fsRenderSkeletonRows(5)}</div>
       </div>
       <div class="oh-modal-footer">
         ${ozonModalUrl
@@ -3275,7 +3302,7 @@ if (!globalThis.__JZ_BRAND__) {
 
     const rect = anchor.getBoundingClientRect();
     modal.style.position = "fixed";
-    const modalWidth = Math.min(720, window.innerWidth - 24);
+    const modalWidth = Math.min(900, window.innerWidth - 24);
     let left = rect.left + rect.width / 2 - modalWidth / 2;
     if (left < 10) left = 10;
     if (left + modalWidth > window.innerWidth - 10) left = window.innerWidth - modalWidth - 10;
@@ -3338,7 +3365,7 @@ if (!globalThis.__JZ_BRAND__) {
       const body = modal.querySelector(".oh-modal-body");
       if (!body || loadedSellers.length === 0) return;
       body.dataset.state = "ready";
-      body.innerHTML = _fsRenderSellerList(loadedSellers, activeSellerMode, loadedTotalCount);
+      body.innerHTML = _fsRenderSellerList(loadedSellers, activeSellerMode, loadedTotalCount, salesPeriodLabel);
     };
 
     modal.addEventListener("click", (e) => {
@@ -3379,9 +3406,33 @@ if (!globalThis.__JZ_BRAND__) {
       return modal;
     }
 
-    loadedSellers = sellers;
+    loadedSellers = sellers.map(seller => ({ ...seller, salesCount: null, salesStatus: /^\d+$/.test(seller.sku || '') ? 'loading' : 'unavailable' }));
     updateTabs();
     renderLoadedSellers();
+    // Use each seller's exact offer SKU, with the existing Seller request gate.
+    // Keep requests inside this open modal; sorting never refetches its results.
+    const salesSkus = [...new Set(loadedSellers.filter(seller => seller.salesStatus === 'loading').map(seller => seller.sku))];
+    let salesCursor = 0;
+    const loadSales = async () => {
+      while (modal.isConnected && salesCursor < salesSkus.length) {
+        const sellerSku = salesSkus[salesCursor++];
+        let count = null, hint = 'Ozon 暂未提供该商家此 SKU 的销量';
+        try {
+          const data = await window.sendMessage('getMarketStats', { sku: sellerSku, period: salesPeriod });
+          const value = data?.soldCount;
+          if (data?.__needSellerLogin) hint = '请登录 Ozon 卖家中心后重新打开列表';
+          else if (String(data?.sku ?? '') === String(sellerSku) && value != null && value !== '' && Number.isSafeInteger(Number(value)) && Number(value) >= 0) {
+            count = Number(value);hint = `该商家此 SKU ${salesPeriodLabel}的销量`;
+          }
+        } catch { hint = '销量读取失败，重新打开列表可重试'; }
+        if (!modal.isConnected) return;
+        loadedSellers.filter(seller => seller.sku === sellerSku).forEach(seller => {
+          seller.salesCount = count;seller.salesStatus = 'ready';seller.salesHint = hint;
+        });
+        renderLoadedSellers();
+      }
+    };
+    void Promise.all(Array.from({ length: Math.min(3, salesSkus.length) }, loadSales));
     return modal;
   };
 
@@ -3749,9 +3800,7 @@ if (!globalThis.__JZ_BRAND__) {
         id: 'follow', icon: _v2Icon('link'), title: '跟卖信息', accent: 'pink', rows: [
           {
             field: 'followMinPrice', label: '跟卖最低价',
-            value: initial.followSellMinPrice != null && Number.isFinite(Number(initial.followSellMinPrice))
-              ? `₽${window.formatNumber(Number(initial.followSellMinPrice), 2)}`
-              : '-',
+            value: _jzFormatFollowSellMinimum(_jzFollowSellMinimum(initial)),
             color: 'green', tip: '商品的跟卖最低价',
           },
           {
@@ -3765,9 +3814,6 @@ if (!globalThis.__JZ_BRAND__) {
     ];
 
     const actionsHtml = showActions ? `<div class="ozon-helper-sidebar-card-actions">
-      <button class="ozon-helper-sidebar-card-btn is-primary" data-action="follow-sell">
-        <span class="oh-btn-icon">${_v2Icon('link', 14)}</span>一键跟卖
-      </button>
       <div class="ozon-helper-sidebar-card-actions-row">
         <button class="ozon-helper-sidebar-card-btn" data-action="edit-list">编辑上架</button>
         <button class="ozon-helper-sidebar-card-btn" data-action="collect-one">采集</button>
@@ -3861,6 +3907,17 @@ if (!globalThis.__JZ_BRAND__) {
   // 页内结果，不再创建第二次 Seller 请求；仍在加载或失败时返回空证据，
   // 交给采集箱现有的缺失项补全任务处理。
   const _jzCollectVariantStates = new Map();
+  const _jzPackagingPanels = new Set();
+  chrome.runtime.onMessage.addListener((message, sender) => {
+    if (sender?.id !== chrome.runtime.id || message?.action !== 'ozonPackagingUpdated') return false;
+    for (const panel of _jzPackagingPanels) {
+      if (!panel.isConnected) { _jzPackagingPanels.delete(panel); continue; }
+      if (panel._jzPackagingReader?.sku === String(message.sku)) {
+        void panel._jzPackagingReader.refresh();
+      }
+    }
+    return false;
+  });
 
   const _jzTrackCollectVariant = (sku, source) => {
     const key = String(sku || '').trim();
@@ -3908,6 +3965,9 @@ if (!globalThis.__JZ_BRAND__) {
     if (!panel || !sku) return;
     const skuStr = String(sku);
     window.jzSetPanelBrandStatus(panel, '正在加载商品数据', 'loading');
+    let confirmedPackaging = null;
+    let packagingSourceResult = null;
+    let panelSourceResults = null;
 
     const updateField = (name, value, color, persistent, opts = {}) => {
       const el = panel.querySelector(`[data-field="${name}"]`);
@@ -3946,7 +4006,55 @@ if (!globalThis.__JZ_BRAND__) {
       if (!el) return false;
       const small = el.querySelector(':scope > small');
       const text = (el.textContent || '').replace(small ? (small.textContent || '') : '', '');
-      return window.jzIsPanelEmptyText(text);
+      return window.jzIsPanelEmptyText(text) || ['读取失败', '读取中'].includes(text.trim());
+    };
+
+    const applyPackaging = ({ weightG: w, lengthMm: dp, widthMm: wd, heightMm: ht }) => {
+      if (w > 0) {
+        updateField('weight', `${w}g`);
+        updateField('heroSize', `${w}g`);
+      }
+      if (dp > 0 && wd > 0 && ht > 0) {
+        updateField('dimensions', `${dp} × ${wd} × ${ht}mm`);
+        updateHeroSub('heroSize', `${dp}×${wd}×${ht}mm`, true);
+        const vol = window.jzVolumeLiters(dp, wd, ht);
+        if (vol != null) updateField('volume', `${vol} L`);
+      }
+    };
+    const setPackagingNotice = (state) => {
+      let notice = panel.querySelector('.oh-packaging-notice');
+      if (!notice) {
+        notice = document.createElement('div');
+        notice.className = 'oh-packaging-notice';
+        notice.innerHTML = '<span></span><button type="button" class="oh-packaging-retry">重试包装资料</button>';
+        const anchor = panel.querySelector('.oh-size-summary');
+        if (anchor) anchor.insertAdjacentElement('afterend', notice);
+        else panel.appendChild(notice);
+        notice.querySelector('button').addEventListener('click', (event) => {
+          event.preventDefault(); event.stopPropagation();
+          void panel._jzRetryPackaging?.();
+        });
+      }
+      notice.dataset.state = state;
+      notice.hidden = state === 'ready';
+      notice.querySelector('span').textContent = {
+        loading: '正在读取包装资料…',
+        failed: '包装资料读取失败，可重试',
+        missing: '部分包装资料未返回，可重试',
+      }[state] || '';
+      notice.querySelector('button').disabled = state === 'loading';
+      for (const field of ['weight', 'heroSize', 'dimensions', 'volume']) {
+        if (fieldEmpty(field)) updateField(field, state === 'failed' ? '读取失败' : state === 'loading' ? '读取中' : '-');
+      }
+    };
+    setPackagingNotice('loading');
+    const updatePanelStatus = () => {
+      if (!panelSourceResults) return;
+      const sourceResults = [...panelSourceResults, packagingSourceResult];
+      const rejectedCount = sourceResults.filter((result) => result?.status === 'rejected').length;
+      window.jzSetPanelBrandStatus(panel,
+        rejectedCount === 0 ? '商品数据已更新' : rejectedCount === sourceResults.length ? '商品数据加载失败' : '部分商品数据加载失败',
+        rejectedCount === 0 ? 'ready' : rejectedCount === sourceResults.length ? 'error' : 'partial');
     };
 
 
@@ -4306,19 +4414,8 @@ if (!globalThis.__JZ_BRAND__) {
       const sellers = followPayload && typeof followPayload === 'object' && Array.isArray(followPayload.sellers)
         ? followPayload.sellers
         : [];
-      const prices = sellers
-        .map((seller) => {
-          const normalized = String(seller?.price ?? '')
-            .replace(/[^\d.,-]/g, '')
-            .replace(/\s/g, '')
-            .replace(',', '.');
-          const price = parseFloat(normalized);
-          return Number.isFinite(price) ? price : null;
-        })
-        .filter((price) => price !== null);
-      if (prices.length) {
-        // sellers[].price 来自 Ozon 页面/composer,币种是卢布 —— 标 ₽ 不标 ¥。
-        updateField('followMinPrice', `₽${window.formatNumber(Math.min(...prices), 2)}`, 'green');
+      if (sellers.length) {
+        updateField('followMinPrice', _jzFormatFollowSellMinimum(_jzFollowSellMinimum(followPayload)), 'green');
       }
     }
     };
@@ -4338,16 +4435,7 @@ if (!globalThis.__JZ_BRAND__) {
         const dp = Number(attrMap.get('9454')?.value);
         const wd = Number(attrMap.get('9455')?.value);
         const ht = Number(attrMap.get('9456')?.value);
-        if (w > 0) {
-          updateField('weight', `${w}g`);
-          updateField('heroSize', `${w}g`);
-        }
-        if (dp > 0 && wd > 0 && ht > 0) {
-          updateField('dimensions', `${dp} × ${wd} × ${ht}mm`);
-          updateHeroSub('heroSize', `${dp}×${wd}×${ht}mm`, true);
-          const vol = window.jzVolumeLiters(dp, wd, ht);
-          if (vol != null) updateField('volume', `${vol} L`);
-        }
+        applyPackaging({ weightG: w, lengthMm: dp, widthMm: wd, heightMm: ht });
         // PDP(persistDims):sv 真值写 chrome.storage 本地缓存(全站其他卡直接命中)
         // + 回写服务端 ozon_sku_dims 平台缓存。列表卡不传 —— 它们经
         // jzMergeCardPanelData 已上报,避免双份。
@@ -4395,6 +4483,42 @@ if (!globalThis.__JZ_BRAND__) {
     }
     };
 
+    const finishPackagingRead = (result) => {
+      packagingSourceResult = confirmedPackaging ? { status: 'fulfilled' } : result;
+      if (confirmedPackaging) applyPackaging(confirmedPackaging);
+      const complete = !fieldEmpty('weight') && !fieldEmpty('dimensions');
+      setPackagingNotice(packagingSourceResult?.status === 'rejected' ? 'failed' : complete ? 'ready' : 'missing');
+      updatePanelStatus();
+    };
+    const packagingReader = {
+      sku: skuStr,
+      refresh: async () => {
+        try {
+          const packaging = await window.sendMessage('getConfirmedPackaging', { sku: skuStr });
+          if (!packaging || panel._jzPackagingReader !== packagingReader) return false;
+          confirmedPackaging = packaging;
+          finishPackagingRead({ status: 'fulfilled' });
+          return true;
+        } catch { return false; }
+      },
+    };
+    for (const previous of _jzPackagingPanels) {
+      if (!previous.isConnected) _jzPackagingPanels.delete(previous);
+    }
+    _jzPackagingPanels.add(panel);
+    panel._jzPackagingReader = packagingReader;
+    panel._jzRetryPackaging = async () => {
+      if (panel.querySelector('.oh-packaging-retry')?.disabled) return;
+      setPackagingNotice('loading');
+      const result = await toSettled(window.sendMessage('searchVariants', { sku: skuStr, forceRefresh: true }));
+      if (panel._jzPackagingReader !== packagingReader) return;
+      try { fillVariantSection(result); } catch {}
+      if (result.status === 'fulfilled') _jzTrackCollectVariant(skuStr, Promise.resolve(result.value));
+      finishPackagingRead(result);
+      window.jzMarkEmptyFieldsNoData(panel);
+    };
+    void packagingReader.refresh();
+
     // 慢车道并行收尾:两段到货即填;函数整体仍等两路都落定才 resolve,调用方
     // (列表卡落桶 collectSaleIfMatched / PDP autoCollapseEmptySections)时序不变。
     const [followResult, variantResult] = await Promise.all([
@@ -4429,6 +4553,8 @@ if (!globalThis.__JZ_BRAND__) {
       }),
     ]);
 
+    finishPackagingRead(variantResult);
+
     // 收口:所有数据源都落定后,仍是占位 '-' 的字段统一改成「暂无数据」。
     // 加载中保持 '-'(短、不抢镜);落定后明确告知"查过了,确实没有"。
     // is-dim class 保留(autoCollapseEmptySections 等按 class 判空),仅换文案+加 is-nodata。
@@ -4436,19 +4562,12 @@ if (!globalThis.__JZ_BRAND__) {
       window.jzMarkEmptyFieldsNoData(panel);
     } catch {}
 
-    const sourceResults = [statsResult, marketResult, variantResult];
+    panelSourceResults = [statsResult, marketResult];
     const followWasRequested = info?.preFetched
       ? Object.prototype.hasOwnProperty.call(info.preFetched, 'followCount')
       : !(info.noFollowFetch || !window.jzFetchPublicFollowSellCount);
-    if (followWasRequested) sourceResults.push(followResult);
-    const rejectedCount = sourceResults.filter((result) => result?.status === 'rejected').length;
-    if (rejectedCount === 0) {
-      window.jzSetPanelBrandStatus(panel, '商品数据已更新', 'ready');
-    } else if (rejectedCount === sourceResults.length) {
-      window.jzSetPanelBrandStatus(panel, '商品数据加载失败', 'error');
-    } else {
-      window.jzSetPanelBrandStatus(panel, '部分商品数据加载失败', 'partial');
-    }
+    if (followWasRequested) panelSourceResults.push(followResult);
+    updatePanelStatus();
   };
 
   /**

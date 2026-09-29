@@ -21,7 +21,6 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     import {
       appendCollectorRunEvent,
       appendCollectorRunItem,
-      calculateCollectorPricing,
       cancelCollectorRun,
       completeCollectorRun,
       createCollectorTask,
@@ -43,6 +42,25 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     ];
     for (const method of required)
       assert.equal(typeof collection?.[method], 'function', method + ' must be wired');
+
+    const otherCollection = manager.createCollection({ _id: 'other', taskName: 'other', categoryIds: [] });
+    const videoStarts = [];
+    let releaseVideo;
+    const firstVideo = collection.runVideoWork(async () => {
+      videoStarts.push('first');
+      await new Promise(resolve => { releaseVideo = resolve; });
+    }, { signal: collection.cancellationController.signal });
+    const waitingVideo = otherCollection.runVideoWork(async () => {
+      videoStarts.push('cancelled');
+    }, { signal: otherCollection.cancellationController.signal });
+    await new Promise(setImmediate);
+    assert.deepEqual(videoStarts, ['first']);
+    otherCollection.cancellationController.abort();
+    await assert.rejects(waitingVideo, { name: 'AbortError' });
+    releaseVideo();
+    await firstVideo;
+    assert.deepEqual(videoStarts, ['first']);
+    assert.deepEqual(manager.videoWorkQueue.snapshot(), { active: 0, pending: 0 });
 
     collection.restoreRun({
       id: 'run-1',
@@ -110,7 +128,6 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     await appendCollectorRunEvent('run-1', { eventType: 'TEST', payload: poisoned });
     await completeCollectorRun('run-1', 'lease-1', poisoned);
     await cancelCollectorRun('run-1', 'lease-1', poisoned);
-    await calculateCollectorPricing({ payload: poisoned });
 
     globalThis.__SELLER_ANALYTICS_ITEMS__ = [{
       id: 'sku-production',
@@ -252,10 +269,13 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     );
     manager.filePathList.delete('exact-task');
 
-    let prepared = 0;
+    let prepared = 0, queuedCancelled = 0, queuedCleared = 0;
     const queuedTask = {
       getTaskInfo: () => ({ taskStatus: 'noExecuted' }),
+      getRunId: () => 'queued-run',
       prepareRun: async () => { prepared += 1; },
+      cancel: async () => { queuedCancelled += 1; },
+      clearStatus: () => { queuedCleared += 1; },
       updateStatus: async () => {},
       outputLog: () => {},
     };
@@ -297,6 +317,8 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
 
     writeFileSync(cachedPath, 'xlsx');
     await manager.stopAllTasks();
+    assert.equal(queuedCancelled, 1);
+    assert.ok(queuedCleared >= 1);
     await assert.rejects(
       () => manager.downloadExcel({ taskId: 'lifecycle' }),
       /任务|受控|Excel/,

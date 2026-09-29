@@ -160,3 +160,21 @@ test("stale pre-retry polling cannot clear overrides or stop list and edit polli
     ), true, `${surface} must continue polling after the stale response resolves`);
   }
 });
+
+test('invalidating a pending configuration prevents later application and stale errors', async()=>{
+ const gate=createLatestRequestGate();let resolve;let applied=false;
+ const pending=gate.run({request:()=>new Promise(r=>{resolve=r}),apply:()=>{applied=true}});
+ gate.invalidate();resolve({store:'A'});assert.equal((await pending).applied,false);assert.equal(applied,false);
+ let reject;const failed=gate.run({request:()=>new Promise((_,r)=>{reject=r}),apply:()=>{}});
+ gate.invalidate();reject(new Error('old store failure'));assert.equal((await failed).applied,false);
+});
+
+test('navigation selects full state for cache-dependent pages and only selected collection details', async()=>{
+ const {localStatePathForPage}=await import('../src/local-runtime-state.js');
+ assert.equal(localStatePathForPage('/ozon/products/stocks',''),'/local/state');
+ assert.equal(localStatePathForPage('/ozon/dashboard/',''),'/local/state');
+ assert.equal(localStatePathForPage('/ozon/templates',''),'/local/state?view=bootstrap');
+ assert.equal(localStatePathForPage('/ozon/tools/ai-listing','?source=collect&ids=one'),'/local/state?view=bootstrap&collectIds=one');
+ assert.equal(localStatePathForPage('/ozon/tools/ai-listing',''),'/local/state?view=bootstrap');
+ assert.equal(localStatePathForPage('/ozon/settings/stores',''),'/local/state?view=bootstrap');
+});

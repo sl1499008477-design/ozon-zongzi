@@ -4,19 +4,34 @@ import {
   isSafeAutoListingAiIdentifier,
   normalizeAutoListingAiMessage,
 } from "./auto-listing-ai-message.mjs";
+import {
+  autoListingAiWorkSingletonKey,
+  normalizeAutoListingAiWorkMessage,
+} from "./auto-listing-ai-work-message.mjs";
 
-export const AUTO_LISTING_AI_QUEUE = "auto-listing-ai-v1";
+// V2 fences jobs that carry the category-strategy switch from workers which
+// loaded the older frozen-config contract before that field existed.
+export const AUTO_LISTING_AI_QUEUE = "auto-listing-ai-v2";
+export const AUTO_LISTING_AI_LEGACY_QUEUE = AUTO_LISTING_AI_QUEUE;
+export const AUTO_LISTING_AI_QUEUE_V2 = AUTO_LISTING_AI_QUEUE;
+export const AUTO_LISTING_AI_WORK_QUEUE = "auto-listing-ai-v3";
+export const AUTO_LISTING_AI_QUEUE_V3 = AUTO_LISTING_AI_WORK_QUEUE;
+export const AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE = "auto-listing-ai-v4-legacy";
+export const AUTO_LISTING_AI_CURRENT_WORK_QUEUE = "auto-listing-ai-v4-work";
 
 export const AUTO_LISTING_AI_QUEUE_OPTIONS = Object.freeze({
   retryLimit: 5,
   retryDelay: 30,
   retryBackoff: true,
-  expireInSeconds: 86_399,
   retentionSeconds: 1_209_600,
   deleteAfterSeconds: 604_800,
   heartbeatSeconds: 30,
   notify: true,
 });
+export const AUTO_LISTING_AI_LEGACY_QUEUE_OPTIONS = AUTO_LISTING_AI_QUEUE_OPTIONS;
+export const AUTO_LISTING_AI_WORK_QUEUE_OPTIONS = Object.freeze({ ...AUTO_LISTING_AI_QUEUE_OPTIONS });
+export const AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS = AUTO_LISTING_AI_QUEUE_OPTIONS;
+export const AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS = AUTO_LISTING_AI_WORK_QUEUE_OPTIONS;
 const MAX_BATCH_SIZE = 50;
 const MAX_LEASE_MS = 5 * 60 * 1000;
 const MAX_PUBLISH_TIMEOUT_MS = 60_000;
@@ -27,15 +42,16 @@ const PUBLISHER_FACTORY_KEYS = new Set([
   "batchSize", "leaseMs", "publishTimeoutMs", "intervalMs", "accountConcurrency", "logger",
 ]);
 
-function queueError(code, retryable = false) {
+function queueError(code, retryable = false, deliveryStateValue = null) {
   const error = new Error("自动上架 AI 队列操作失败");
   error.code = code;
   error.retryable = retryable;
+  if (deliveryStateValue !== null) error.deliveryState = deliveryStateValue;
   return error;
 }
 
-function publicationId(singletonKey) {
-  const value = crypto.createHash("sha256").update(`${AUTO_LISTING_AI_QUEUE}:${singletonKey}`, "utf8").digest("hex");
+function publicationId(queueName, singletonKey) {
+  const value = crypto.createHash("sha256").update(`${queueName}:${singletonKey}`, "utf8").digest("hex");
   return [
     value.slice(0, 8),
     value.slice(8, 12),
@@ -57,7 +73,7 @@ function singletonConflict(error) {
   }
 }
 
-function validPublicationEvidence(value, singletonKey) {
+function validPublicationEvidence(value, singletonKey, queueName = AUTO_LISTING_AI_QUEUE) {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)
       || Object.getPrototypeOf(value) !== Object.prototype) return false;
@@ -66,11 +82,37 @@ function validPublicationEvidence(value, singletonKey) {
     if (keys.some((key) => typeof key !== "string" || !descriptors[key]?.enumerable || !("value" in descriptors[key]))) return false;
     keys.sort();
     return keys.length === 3 && keys.join(",") === "duplicate,publicationId,singletonKey"
-      && value.publicationId === publicationId(singletonKey)
+      && value.publicationId === publicationId(queueName, singletonKey)
       && value.singletonKey === singletonKey
       && typeof value.duplicate === "boolean";
   } catch {
     return false;
+  }
+}
+
+function validWorkPublicationEvidence(value, singletonKey, queueName = AUTO_LISTING_AI_WORK_QUEUE) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Object.prototype) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value).sort();
+    return keys.length === 3 && keys.join(",") === "duplicate,publicationId,singletonKey"
+      && keys.every((key) => typeof key === "string" && descriptors[key]?.enumerable && "value" in descriptors[key])
+      && value.publicationId === publicationId(queueName, singletonKey)
+      && value.singletonKey === singletonKey
+      && typeof value.duplicate === "boolean";
+  } catch {
+    return false;
+  }
+}
+
+function deliveryState(error) {
+  try {
+    if (!error || typeof error !== "object") return null;
+    const descriptor = Object.getOwnPropertyDescriptor(error, "deliveryState");
+    return descriptor && "value" in descriptor ? descriptor.value : null;
+  } catch {
+    return null;
   }
 }
 
@@ -114,7 +156,7 @@ function withTimeout(operation, timeoutMs, timers) {
   });
 }
 
-export function createAutoListingAiQueueAdapter(rawOptions = {}) {
+function createQueueAdapter(rawOptions, { queueName, queueOptions, normalize, singleton }) {
   const { enabled, bossFactory } = closedFactoryOptions(rawOptions, QUEUE_FACTORY_KEYS, "AUTO_LISTING_AI_QUEUE_INVALID");
   if (typeof enabled !== "boolean" || (enabled && typeof bossFactory !== "function")) {
     throw queueError("AUTO_LISTING_AI_QUEUE_INVALID");
@@ -136,7 +178,7 @@ export function createAutoListingAiQueueAdapter(rawOptions = {}) {
           }
           await candidate.start();
           started = true;
-          await candidate.createQueue(AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_QUEUE_OPTIONS);
+          await candidate.createQueue(queueName, queueOptions);
           boss = candidate;
           return true;
         } catch {
@@ -145,7 +187,7 @@ export function createAutoListingAiQueueAdapter(rawOptions = {}) {
           }
           boss = null;
           startPromise = null;
-          throw queueError("AUTO_LISTING_AI_QUEUE_UNAVAILABLE", true);
+          throw queueError("AUTO_LISTING_AI_QUEUE_UNAVAILABLE", true, "NOT_SENT");
         }
       })();
     }
@@ -159,16 +201,16 @@ export function createAutoListingAiQueueAdapter(rawOptions = {}) {
       let message;
       let singletonKey;
       try {
-        message = normalizeAutoListingAiMessage(input);
-        singletonKey = autoListingAiMessageDedupeKey(message);
+        message = normalize(input);
+        singletonKey = singleton(message);
       } catch {
         throw queueError("AUTO_LISTING_AI_QUEUE_INVALID");
       }
-      const id = publicationId(singletonKey);
+      const id = publicationId(queueName, singletonKey);
       await start();
       let queueJobId;
       try {
-        queueJobId = await boss.send(AUTO_LISTING_AI_QUEUE, message, { id, singletonKey });
+        queueJobId = await boss.send(queueName, message, { id, singletonKey });
       } catch (error) {
         if (!singletonConflict(error)) throw queueError("AUTO_LISTING_AI_QUEUE_PUBLISH_FAILED", true);
         queueJobId = null;
@@ -193,7 +235,47 @@ export function createAutoListingAiQueueAdapter(rawOptions = {}) {
   });
 }
 
-export function createAutoListingAiOutboxPublisher(rawOptions = {}) {
+export function createLegacyAutoListingAiQueueAdapter(rawOptions = {}) {
+  return createQueueAdapter(rawOptions, {
+    queueName: AUTO_LISTING_AI_QUEUE,
+    queueOptions: AUTO_LISTING_AI_QUEUE_OPTIONS,
+    normalize: normalizeAutoListingAiMessage,
+    singleton: autoListingAiMessageDedupeKey,
+  });
+}
+
+export function createAutoListingAiWorkQueueAdapter(rawOptions = {}) {
+  return createQueueAdapter(rawOptions, {
+    queueName: AUTO_LISTING_AI_WORK_QUEUE,
+    queueOptions: AUTO_LISTING_AI_WORK_QUEUE_OPTIONS,
+    normalize: normalizeAutoListingAiWorkMessage,
+    singleton: autoListingAiWorkSingletonKey,
+  });
+}
+
+export function createCurrentLegacyAutoListingAiQueueAdapter(rawOptions = {}) {
+  return createQueueAdapter(rawOptions, {
+    queueName: AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+    queueOptions: AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS,
+    normalize: normalizeAutoListingAiMessage,
+    singleton: autoListingAiMessageDedupeKey,
+  });
+}
+
+export function createCurrentAutoListingAiWorkQueueAdapter(rawOptions = {}) {
+  return createQueueAdapter(rawOptions, {
+    queueName: AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+    queueOptions: AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS,
+    normalize: normalizeAutoListingAiWorkMessage,
+    singleton: autoListingAiWorkSingletonKey,
+  });
+}
+
+export function createAutoListingAiQueueAdapter(rawOptions = {}) {
+  return createAutoListingAiWorkQueueAdapter(rawOptions);
+}
+
+function createOutboxPublisher(rawOptions, { work, queueName }) {
   const options = closedFactoryOptions(rawOptions, PUBLISHER_FACTORY_KEYS, "AUTO_LISTING_AI_PUBLISHER_INVALID");
   const enabled = options.enabled;
   if (typeof enabled !== "boolean") throw queueError("AUTO_LISTING_AI_PUBLISHER_INVALID");
@@ -208,7 +290,7 @@ export function createAutoListingAiOutboxPublisher(rawOptions = {}) {
   const queueAdapter = options.queueAdapter;
   const accountIds = options.accountIds;
   const timers = options.timers;
-  const workerId = options.workerId ?? "auto-listing-ai-outbox-publisher-v1";
+  const workerId = options.workerId ?? (work ? "auto-listing-ai-work-publisher-v3" : "auto-listing-ai-outbox-publisher-v1");
   const batchSize = options.batchSize ?? 20;
   // Claim one row per account visit. Claimed leases start together, so a
   // larger serial batch can expire behind a slow first publish even when each
@@ -221,12 +303,20 @@ export function createAutoListingAiOutboxPublisher(rawOptions = {}) {
   const logger = options.logger ?? Object.freeze({
     log(record) { console.log(JSON.stringify(record)); },
   });
+  const legacyClaim = outboxRepository?.claimLegacyAutoListingAiMessages
+    ?? outboxRepository?.claimAutoListingAiMessages;
   if (!outboxRepository || !queueAdapter
     || typeof accountIds !== "function" || !timers
-    || typeof outboxRepository.claimAutoListingAiMessages !== "function"
-    || typeof outboxRepository.renewAutoListingAiMessageLease !== "function"
-    || typeof outboxRepository.completeAutoListingAiMessage !== "function"
-    || typeof outboxRepository.failAutoListingAiMessage !== "function"
+    || (work ? (
+      typeof outboxRepository.claimAutoListingAiWork !== "function"
+      || typeof outboxRepository.markAutoListingAiWorkPublished !== "function"
+      || typeof outboxRepository.releaseUnpublishedAutoListingAiWork !== "function"
+    ) : (
+      typeof legacyClaim !== "function"
+      || typeof outboxRepository.renewAutoListingAiMessageLease !== "function"
+      || typeof outboxRepository.completeAutoListingAiMessage !== "function"
+      || typeof outboxRepository.failAutoListingAiMessage !== "function"
+    ))
     || typeof queueAdapter.publish !== "function" || typeof queueAdapter.stop !== "function"
     || !["setTimeout", "clearTimeout", "setInterval", "clearInterval"].every((key) => typeof timers[key] === "function")
     || !isSafeAutoListingAiIdentifier(workerId)
@@ -313,7 +403,8 @@ export function createAutoListingAiOutboxPublisher(rawOptions = {}) {
       }
       let rows;
       try {
-        rows = await withTimeout(outboxRepository.claimAutoListingAiMessages({
+        const claim = work ? outboxRepository.claimAutoListingAiWork : legacyClaim;
+        rows = await withTimeout(claim.call(outboxRepository, {
           accountId: input.accountId,
           workerId,
           limit: perAccountClaimLimit,
@@ -327,6 +418,64 @@ export function createAutoListingAiOutboxPublisher(rawOptions = {}) {
       let duplicates = 0;
       let failed = 0;
       for (const row of rows) {
+        if (work) {
+          let workMessage;
+          let singletonKey;
+          try {
+            workMessage = normalizeAutoListingAiWorkMessage(row?.workMessage);
+            singletonKey = autoListingAiWorkSingletonKey(workMessage);
+            if (row.accountId !== input.accountId || row.accountId !== workMessage.message.accountId
+              || row.itemId !== workMessage.message.itemId
+              || row.id !== workMessage.execution.outboxId || row.leaseOwner !== workerId
+              || row.leaseOwner !== workMessage.execution.leaseOwner
+              || row.leaseToken !== workMessage.execution.leaseToken
+              || row.publicationId !== singletonKey
+              || !isSafeAutoListingAiIdentifier(row.accountId)
+              || !isSafeAutoListingAiIdentifier(row.itemId)) throw new Error("invalid work claim");
+          } catch {
+            throw queueError("AUTO_LISTING_AI_PUBLISHER_FAILED", true);
+          }
+          let publication;
+          try {
+            publication = await withTimeout(queueAdapter.publish(workMessage), publishTimeoutMs, timers);
+          } catch (error) {
+            if (deliveryState(error) !== "NOT_SENT") {
+              throw queueError("AUTO_LISTING_AI_PUBLISHER_FAILED", true);
+            }
+            try {
+              await withTimeout(outboxRepository.releaseUnpublishedAutoListingAiWork({
+                accountId: row.accountId,
+                itemId: row.itemId,
+                id: row.id,
+                workerId: row.leaseOwner,
+                leaseToken: row.leaseToken,
+                publicationId: row.publicationId,
+              }), publishTimeoutMs, timers);
+            } catch {
+              throw queueError("AUTO_LISTING_AI_PUBLISHER_FAILED", true);
+            }
+            failed += 1;
+            continue;
+          }
+          if (!validWorkPublicationEvidence(publication, singletonKey, queueName)) {
+            throw queueError("AUTO_LISTING_AI_PUBLISHER_FAILED", true);
+          }
+          try {
+            await withTimeout(outboxRepository.markAutoListingAiWorkPublished({
+              accountId: row.accountId,
+              itemId: row.itemId,
+              id: row.id,
+              workerId: row.leaseOwner,
+              leaseToken: row.leaseToken,
+              publicationId: row.publicationId,
+            }), publishTimeoutMs, timers);
+          } catch {
+            throw queueError("AUTO_LISTING_AI_PUBLISHER_FAILED", true);
+          }
+          published += 1;
+          if (publication.duplicate === true) duplicates += 1;
+          continue;
+        }
         let message;
         try {
           message = normalizeAutoListingAiMessage(row?.message);
@@ -372,7 +521,7 @@ export function createAutoListingAiOutboxPublisher(rawOptions = {}) {
           failed += 1;
           continue;
         }
-        if (!validPublicationEvidence(publication, row.dedupeKey)) {
+        if (!validPublicationEvidence(publication, row.dedupeKey, queueName)) {
           throw queueError("AUTO_LISTING_AI_PUBLISHER_FAILED", true);
         }
         try {
@@ -389,9 +538,9 @@ export function createAutoListingAiOutboxPublisher(rawOptions = {}) {
         published += 1;
         if (publication.duplicate === true) duplicates += 1;
       }
-      if (typeof outboxRepository.reconcileDeadAutoListingAiMessages === "function") {
+      if (!work && typeof outboxRepository.reconcileDeadLegacyAutoListingAiMessages === "function") {
         try {
-          await withTimeout(outboxRepository.reconcileDeadAutoListingAiMessages({
+          await withTimeout(outboxRepository.reconcileDeadLegacyAutoListingAiMessages({
             accountId: input.accountId,
             limit: batchSize,
           }), publishTimeoutMs, timers);
@@ -454,4 +603,30 @@ export function createAutoListingAiOutboxPublisher(rawOptions = {}) {
     },
   };
   return Object.freeze(api);
+}
+
+export function createLegacyAutoListingAiOutboxPublisher(rawOptions = {}) {
+  return createOutboxPublisher(rawOptions, { work: false, queueName: AUTO_LISTING_AI_QUEUE });
+}
+
+export function createAutoListingAiWorkPublisher(rawOptions = {}) {
+  return createOutboxPublisher(rawOptions, { work: true, queueName: AUTO_LISTING_AI_WORK_QUEUE });
+}
+
+export function createCurrentLegacyAutoListingAiOutboxPublisher(rawOptions = {}) {
+  return createOutboxPublisher(rawOptions, {
+    work: false,
+    queueName: AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+  });
+}
+
+export function createCurrentAutoListingAiWorkPublisher(rawOptions = {}) {
+  return createOutboxPublisher(rawOptions, {
+    work: true,
+    queueName: AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+  });
+}
+
+export function createAutoListingAiOutboxPublisher(rawOptions = {}) {
+  return createAutoListingAiWorkPublisher(rawOptions);
 }

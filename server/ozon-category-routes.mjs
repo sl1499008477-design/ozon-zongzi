@@ -1,4 +1,5 @@
 function requestContext(dependencies, req, state, url) {
+  if (typeof dependencies.resolveContext === "function") return dependencies.resolveContext(req, state, url);
   const account = dependencies.requireAuth(req, state);
   const storeId = dependencies.storeIdForAccountRequest(
     state,
@@ -20,7 +21,7 @@ function requiredPositiveIdOf(value) {
   if (!Number.isInteger(id) || id <= 0) {
     const error = new Error(CATEGORY_ERROR_MESSAGE);
     error.status = 400;
-    error.code = "OZON_CATEGORY_DATA_INVALID";
+    error.code = "ZONGZI_CATEGORY_DATA_INVALID";
     error.body = { operation: "INPUT" };
     error.cause = null;
     throw error;
@@ -53,7 +54,7 @@ export function createOzonCategoryRouteHandler(dependencies) {
   return async function handleOzonCategoryRoute({ req, res, url, state }) {
     if (req.method === "GET" && url.pathname === "/ozon/categories/tree") {
       await respondCategory(dependencies, res, async () => {
-        const { account, store } = requestContext(dependencies, req, state, url);
+        const { account, store } = await requestContext(dependencies, req, state, url);
         const language = url.searchParams.get("language") || "DEFAULT";
         const result = await dependencies.categoryService.getCategoryTree({
           accountId: account.id,
@@ -76,7 +77,7 @@ export function createOzonCategoryRouteHandler(dependencies) {
     );
     if (req.method === "GET" && attributesMatch) {
       await respondCategory(dependencies, res, async () => {
-        const { account, store } = requestContext(dependencies, req, state, url);
+        const { account, store } = await requestContext(dependencies, req, state, url);
         const typeId = requiredPositiveIdOf(decodeURIComponent(attributesMatch[1]));
         const requestedCategoryId =
           url.searchParams.get("descriptionCategoryId")
@@ -91,7 +92,7 @@ export function createOzonCategoryRouteHandler(dependencies) {
             language: "DEFAULT",
           }),
         );
-        const verifiedContext = requestContext(dependencies, req, state, url);
+        const verifiedContext = await requestContext(dependencies, req, state, url);
         const result = await dependencies.categoryService.getCategoryAttributes({
           accountId: verifiedContext.account.id,
           store: verifiedContext.store,
@@ -116,7 +117,7 @@ export function createOzonCategoryRouteHandler(dependencies) {
     );
     if (req.method === "GET" && valuesMatch) {
       await respondCategory(dependencies, res, async () => {
-        const { account, store } = requestContext(dependencies, req, state, url);
+        const { account, store } = await requestContext(dependencies, req, state, url);
         const typeId = requiredPositiveIdOf(decodeURIComponent(valuesMatch[1]));
         const attributeId = requiredPositiveIdOf(decodeURIComponent(valuesMatch[2]));
         const requestedCategoryId =
@@ -132,7 +133,7 @@ export function createOzonCategoryRouteHandler(dependencies) {
             language: "DEFAULT",
           }),
         );
-        const verifiedContext = requestContext(dependencies, req, state, url);
+        const verifiedContext = await requestContext(dependencies, req, state, url);
         const result = await dependencies.categoryService.getCategoryAttributeValues({
           accountId: verifiedContext.account.id,
           store: verifiedContext.store,
@@ -159,11 +160,11 @@ export function createOzonCategoryRouteHandler(dependencies) {
   };
 }
 const STABLE_CATEGORY_ERROR_CODES = new Set([
-  "OZON_CATEGORY_TREE_UNAVAILABLE",
-  "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
-  "OZON_CATEGORY_VALUES_UNAVAILABLE",
-  "OZON_CATEGORY_DATA_INVALID",
-  "OZON_CATEGORY_TYPE_NOT_FOUND",
+  "ZONGZI_CATEGORY_TREE_UNAVAILABLE",
+  "ZONGZI_CATEGORY_ATTRIBUTES_UNAVAILABLE",
+  "ZONGZI_CATEGORY_VALUES_UNAVAILABLE",
+  "ZONGZI_CATEGORY_DATA_INVALID",
+  "ZONGZI_CATEGORY_TYPE_NOT_FOUND",
 ]);
 const CATEGORY_ERROR_MESSAGE = "未能从 Ozon 获取真实类目数据，请重试";
 const CATEGORY_ERROR_STATUSES = new Set([400, 422, 502, 503, 504]);

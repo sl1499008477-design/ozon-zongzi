@@ -54,8 +54,8 @@ test("Task 11 delivery pins the executable composition suite and rollout invaria
   ]) assert.match(runbook, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   const migrations = (await readdir(migrationsDir)).filter((name) => /^\d{3}_.+\.sql$/u.test(name)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
-  assert.equal(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version, "0.13.46.27-local");
+  assert.equal(migrations.at(-1), "105_auto_listing_source_image_derivatives.sql");
+  assert.equal(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version, "0.13.46.28-local");
 });
 
 function memoryObjectStorage() {
@@ -299,7 +299,7 @@ if (!enabled) {
       await admin.query(`SET search_path TO ${quote(schema)}, public`);
       const migrations = (await readdir(migrationsDir)).filter((name) => /^\d{3}_.+\.sql$/u.test(name)).sort();
       assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-      assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
+      assert.equal(migrations.at(-1), "105_auto_listing_source_image_derivatives.sql");
       for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       const accountId = `account-a-${suffix}`;
       const foreignAccountId = `account-b-${suffix}`;
@@ -431,22 +431,32 @@ if (!enabled) {
       const settings = await callAdmin(runtime, actor, "PATCH", "/admin/auto-listing/category-strategies/settings",
         { expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY", idempotencyKey: `strict-${suffix}`, correlationId: `strict-corr-${suffix}` });
       assert.equal(settings.status, 200);
-      const blocked = await callAutoListing(autoRuntime, actor, {
-        collectItemIds: [source.collectItemId], idempotencyKey: `blocked-create-${suffix}`,
-        correlationId: `blocked-create-corr-${suffix}`, config: autoConfig,
+      const fallback = await callAutoListing(autoRuntime, actor, {
+        collectItemIds: [source.collectItemId], idempotencyKey: `fallback-create-${suffix}`,
+        correlationId: `fallback-create-corr-${suffix}`, config: autoConfig,
       });
-      assert.equal(blocked.status, 409);
-      assert.equal(blocked.payload.code, "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED");
-      assert.deepEqual(autoPorts, { prepare: 0, freshness: 0, ozon: 0 });
+      assert.equal(fallback.status, 201);
+      assert.equal(fallback.payload.data.status, "CREATED");
+      assert.deepEqual(autoPorts, { prepare: 1, freshness: 1, ozon: 0 });
       assert.equal(aiRequests.length, 0);
       assert.equal(objectStorage.objects.size, 0);
+      const fallbackGraph = await pool.query(`SELECT job.strategy_version_id,job.config_snapshot,event.details
+        FROM auto_listing_jobs job
+        JOIN auto_listing_job_items item ON item.account_id=job.account_id AND item.job_id=job.id
+        JOIN auto_listing_events event ON event.account_id=item.account_id AND event.item_id=item.id
+          AND event.event_type='SOURCE_CAPTURED'
+        WHERE job.account_id=$1 AND job.idempotency_key=$2`, [accountId, `fallback-create-${suffix}`]);
+      assert.equal(fallbackGraph.rows.length, 1);
+      assert.equal(fallbackGraph.rows[0].strategy_version_id, publishedV1);
+      assert.equal(fallbackGraph.rows[0].config_snapshot.useCategoryStrategy, false);
+      assert.equal(fallbackGraph.rows[0].details.matchedBy, "DEFAULT");
       assert.deepEqual((await pool.query(`SELECT
         (SELECT COUNT(*)::INTEGER FROM auto_listing_jobs WHERE account_id=$1) jobs,
         (SELECT COUNT(*)::INTEGER FROM auto_listing_job_items WHERE account_id=$1) items,
         (SELECT COUNT(*)::INTEGER FROM auto_listing_ai_outbox WHERE account_id=$1) outbox,
         (SELECT COUNT(*)::INTEGER FROM auto_listing_source_snapshots WHERE account_id=$1) snapshots,
         (SELECT COUNT(*)::INTEGER FROM auto_listing_listing_bases WHERE account_id=$1) bases`, [accountId])).rows[0],
-      { jobs: 0, items: 0, outbox: 0, snapshots: 0, bases: 0 });
+      { jobs: 1, items: 1, outbox: 0, snapshots: 1, bases: 1 });
       const draftResponse = await callAdmin(runtime, actor, "POST", "/admin/auto-listing/category-strategies/drafts",
         { scope, sourceCollectItemId: source.collectItemId, expectedSourceVersion: source.expectedSourceVersion,
           idempotencyKey: `draft-${suffix}`, correlationId: `draft-corr-${suffix}` });
@@ -558,8 +568,8 @@ if (!enabled) {
       });
       assert.equal(continuedResponse.status, 201);
       assert.equal(continuedResponse.payload.data.status, "CREATED");
-      assert.equal(autoPorts.prepare, 1);
-      assert.equal(autoPorts.freshness, 1);
+      assert.equal(autoPorts.prepare, 2);
+      assert.equal(autoPorts.freshness, 2);
       assert.equal(autoPorts.ozon, 0);
       const persisted = await pool.query(`SELECT job.id AS job_id,job.strategy_version_id,job.config_snapshot,job.config_hash,
           item.id AS item_id,item.planning_contract,item.snapshot_id,
@@ -627,7 +637,7 @@ if (!enabled) {
       assert.equal(continuedReplay.status, 201);
       assert.equal(continuedReplay.payload.data.jobId, continuedResponse.payload.data.jobId);
       assert.equal((await pool.query("SELECT COUNT(*)::INTEGER count FROM auto_listing_jobs WHERE account_id=$1",
-        [accountId])).rows[0].count, 1);
+        [accountId])).rows[0].count, 2);
 
       const secondStoreConfig = { ...autoConfig, targetStoreId: secondTarget.storeId,
         targetWarehouseId: secondTarget.warehouseId };
@@ -658,12 +668,21 @@ if (!enabled) {
       assert.equal((await callAdmin(runtime, foreignActor, "PATCH", "/admin/auto-listing/category-strategies/settings",
         { expectedVersion: 1, mode: "REQUIRE_EXACT_STRATEGY", idempotencyKey: `foreign-strict-${suffix}`,
           correlationId: `foreign-strict-corr-${suffix}` })).status, 200);
-      const foreignBlocked = await callAutoListing(autoRuntime, foreignActor, {
-        collectItemIds: [foreignSource.collectItemId], idempotencyKey: `foreign-blocked-${suffix}`,
-        correlationId: `foreign-blocked-corr-${suffix}`, config: foreignConfig,
+      const foreignFallback = await callAutoListing(autoRuntime, foreignActor, {
+        collectItemIds: [foreignSource.collectItemId], idempotencyKey: `foreign-fallback-${suffix}`,
+        correlationId: `foreign-fallback-corr-${suffix}`, config: foreignConfig,
       });
-      assert.equal(foreignBlocked.status, 409);
-      assert.equal(foreignBlocked.payload.code, "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED");
+      assert.equal(foreignFallback.status, 201);
+      assert.equal(foreignFallback.payload.data.status, "CREATED");
+      const foreignFallbackGraph = await pool.query(`SELECT job.config_snapshot,event.details
+        FROM auto_listing_jobs job
+        JOIN auto_listing_job_items item ON item.account_id=job.account_id AND item.job_id=job.id
+        JOIN auto_listing_events event ON event.account_id=item.account_id AND event.item_id=item.id
+          AND event.event_type='SOURCE_CAPTURED'
+        WHERE job.account_id=$1 AND job.idempotency_key=$2`,
+      [foreignAccountId, `foreign-fallback-${suffix}`]);
+      assert.equal(foreignFallbackGraph.rows[0].config_snapshot.useCategoryStrategy, false);
+      assert.equal(foreignFallbackGraph.rows[0].details.matchedBy, "DEFAULT");
       const foreignReplay = await callAutoListing(autoRuntime, foreignActor, {
         collectItemIds: [foreignSource.collectItemId], idempotencyKey: `foreign-v1-${suffix}`,
         correlationId: `foreign-v1-corr-${suffix}`, config: foreignConfig,
@@ -671,7 +690,7 @@ if (!enabled) {
       assert.equal(foreignReplay.status, 201);
       assert.equal(foreignReplay.payload.data.jobId, legacyV1.payload.data.jobId);
       assert.equal((await pool.query("SELECT COUNT(*)::INTEGER count FROM auto_listing_jobs WHERE account_id=$1",
-        [foreignAccountId])).rows[0].count, 1);
+        [foreignAccountId])).rows[0].count, 2);
 
       const jobsBeforeDisabled = (await pool.query("SELECT COUNT(*)::INTEGER count FROM auto_listing_jobs",
         [])).rows[0].count;
@@ -700,7 +719,7 @@ if (!enabled) {
       ]);
       assert.equal(logs.length, 9);
       assert.deepEqual(logs.map(({ metric, outcome }) => ({ metric, outcome })), [
-        { metric: "category_strategy_required_total", outcome: "blocked" },
+        { metric: "category_strategy_required_total", outcome: "fallback" },
         { metric: "category_strategy_sampling_started_total", outcome: "success" },
         { metric: "category_strategy_sample_set_committed_total", outcome: "success" },
         { metric: "category_strategy_analysis_attempt_total", outcome: "success" },
@@ -708,7 +727,7 @@ if (!enabled) {
         { metric: "category_strategy_continue_create_total", outcome: "success" },
         { metric: "category_strategy_continue_create_total", outcome: "replay" },
         { metric: "category_strategy_continue_create_total", outcome: "success" },
-        { metric: "category_strategy_required_total", outcome: "blocked" },
+        { metric: "category_strategy_required_total", outcome: "fallback" },
       ]);
       const serializedLogs = JSON.stringify(logs);
       assert.equal(serializedLogs.includes(accountId), false);
@@ -887,8 +906,20 @@ if (!enabled) {
         getPostgresPool: async () => pool,
         env: { AUTO_LISTING_ENABLED: "true", AUTO_LISTING_AI_ENABLED: "false",
           AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET: "e2e-observer-key-that-is-at-least-thirty-two-characters" },
-        createListingBasePreparer: async () => async () => {
-          driftPrepareCalls += 1; throw new Error("source drift must stop before listing-base preparation");
+        createListingBasePreparer: async () => async ({ source: entry, pricingEvidence }) => {
+          driftPrepareCalls += 1;
+          return { productDraft: { id: entry.productDraft.id, version: entry.productDraft.version,
+            dataHash: entry.productDraft.dataHash },
+          pricingEvidence: { ...pricingEvidence,
+            evidenceHash: "4c6f549e1668186515248caffeb08fe2f9ba91ca1dab9edbdd8d159aa2b11bf8" },
+          richContentAttributeSupported: true,
+          variants: [{ sourceVariantId: `variant-${suffix}`, sourceSku: "4862904234", item: {
+            offer_id: `offer-drift-${suffix}`, name: "Test product", price: "100.00", currency_code: "RUB",
+            description_category_id: 171, type_id: 99,
+            primary_image: "https://source.example.test/product.jpg",
+            images: ["https://source.example.test/product.jpg"], weight: 100, weight_unit: "g",
+            depth: 100, width: 100, height: 100, dimension_unit: "mm", attributes: [],
+          } }], versions: { normalizerVersion: "e2e", categoryRuleVersion: "e2e", dictionaryVersion: "e2e" } };
         },
         createCategoryFreshness: async () => {
           const driftRepository = createPostgresAccountSharedOzonCategoryRepository({ pool });
@@ -921,18 +952,24 @@ if (!enabled) {
         collectItemIds: [source.collectItemId], idempotencyKey: `source-drift-${suffix}`,
         correlationId: `source-drift-corr-${suffix}`, config: autoConfig,
       });
-      assert.equal(drifted.status, 409, JSON.stringify(drifted.payload));
-      assert.equal(drifted.payload.code, "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED");
-      assert.equal(driftPrepareCalls, 0);
-      assert.equal((await pool.query("SELECT COUNT(*)::INTEGER count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2",
-        [accountId, `source-drift-${suffix}`])).rows[0].count, 0);
+      assert.equal(drifted.status, 201, JSON.stringify(drifted.payload));
+      assert.equal(drifted.payload.data.status, "CREATED");
+      assert.equal(driftPrepareCalls, 1);
+      const driftGraph = await pool.query(`SELECT job.config_snapshot,event.details
+        FROM auto_listing_jobs job
+        JOIN auto_listing_job_items item ON item.account_id=job.account_id AND item.job_id=job.id
+        JOIN auto_listing_events event ON event.account_id=item.account_id AND event.item_id=item.id
+          AND event.event_type='SOURCE_CAPTURED'
+        WHERE job.account_id=$1 AND job.idempotency_key=$2`, [accountId, `source-drift-${suffix}`]);
+      assert.equal(driftGraph.rows.length, 1);
+      assert.equal(driftGraph.rows[0].config_snapshot.useCategoryStrategy, false);
+      assert.equal(driftGraph.rows[0].details.matchedBy, "DEFAULT");
       assert.deepEqual((await pool.query(`SELECT status,source,version,current_description_category_id,current_type_id
         FROM account_ozon_shared_categories WHERE account_id=$1 AND source_description_category_id=170 AND source_type_id=99`,
       [accountId])).rows[0], { status: "ACTIVE", source: "OZON_REFRESH", version: 3,
         current_description_category_id: "171", current_type_id: "99" });
       assert.deepEqual(metrics.slice(metricsBeforeDrift), [
         { name: "category_strategy_required_total", labels: {} },
-        { name: "category_strategy_continue_create_total", labels: { outcome: "strategy_changed" } },
       ]);
 
       const metricsBeforeRace = metrics.length;

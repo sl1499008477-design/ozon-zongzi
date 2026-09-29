@@ -30,7 +30,7 @@ const SAFE_CAPABILITY_RESULT_ERROR_CODES = new Set([
   "AI_GATEWAY_REQUEST_INVALID", "AI_GATEWAY_SECRET_MISSING", "AI_GATEWAY_PROTOCOL_UNSUPPORTED",
   "AI_GATEWAY_MODEL_MISMATCH", "AI_GATEWAY_INPUT_UNSUPPORTED", "GATEWAY_REDIRECT_BLOCKED",
   "GATEWAY_TIMEOUT", "GATEWAY_CANCELLED", "RETRYABLE_GATEWAY", "NON_RETRYABLE_AUTH",
-  "NON_RETRYABLE_GATEWAY", "INVALID_GATEWAY_RESPONSE",
+  "NON_RETRYABLE_GATEWAY", "AI_GATEWAY_MODEL_UNAVAILABLE", "INVALID_GATEWAY_RESPONSE",
 ]);
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 
@@ -299,11 +299,35 @@ function strategyDto(row, accountId) {
   return dto;
 }
 
+function categoryArchiveDto(row, accountId) {
+  const value = closedObject(row, new Set([
+    "draftId", "accountId", "removed", "draftVersion", "activeStrategyChanged",
+    "strategyVersionId", "strategyVersion", "duplicate",
+  ]), "AUTO_LISTING_AI_ADMIN_STRATEGY_INVALID");
+  if (text(value.accountId) !== accountId || value.removed !== true
+    || typeof value.activeStrategyChanged !== "boolean" || typeof value.duplicate !== "boolean") {
+    throw adminError("AUTO_LISTING_AI_ADMIN_STRATEGY_INVALID");
+  }
+  const strategyVersionId = value.strategyVersionId === null ? null : text(value.strategyVersionId);
+  const strategyVersion = value.strategyVersion === null ? null
+    : positiveVersion(value.strategyVersion, "AUTO_LISTING_AI_ADMIN_STRATEGY_INVALID");
+  if ((strategyVersionId === null) !== (strategyVersion === null)
+    || value.activeStrategyChanged !== (strategyVersionId !== null)) {
+    throw adminError("AUTO_LISTING_AI_ADMIN_STRATEGY_INVALID");
+  }
+  return Object.freeze({
+    draftId: text(value.draftId), removed: true,
+    draftVersion: positiveVersion(value.draftVersion, "AUTO_LISTING_AI_ADMIN_STRATEGY_INVALID"),
+    activeStrategyChanged: value.activeStrategyChanged,
+    strategyVersionId, strategyVersion, duplicate: value.duplicate,
+  });
+}
+
 function requireDependencies(repository, capabilityService) {
   const methods = [
     "createProfile", "listProfiles", "publishProfile",
     "createStrategyVersion", "listStrategyVersions", "publishStrategyVersion", "publishCategoryStrategyDraft",
-    "rollbackCategoryStrategyVersion",
+    "archiveCategoryStrategyDraft", "rollbackCategoryStrategyVersion",
   ];
   if (!repository || methods.some((method) => typeof repository[method] !== "function")) {
     throw new TypeError("Auto listing AI admin repository is required");
@@ -466,6 +490,22 @@ export function createAutoListingAiAdminService({
         correlationId: text(input.correlationId),
       });
       return strategyDto(row, accountId);
+    },
+
+    async archiveCategoryStrategyDraft(raw = {}) {
+      const input = closedObject(raw,
+        new Set(["actor", "draftId", "expectedDraftVersion", "idempotencyKey", "correlationId"]),
+        "AUTO_LISTING_AI_ADMIN_REQUEST_INVALID");
+      const accountId = actorScope(input.actor);
+      const row = await repository.archiveCategoryStrategyDraft({
+        accountId,
+        actorId: accountId,
+        draftId: text(input.draftId),
+        expectedDraftVersion: positiveVersion(input.expectedDraftVersion),
+        idempotencyKey: text(input.idempotencyKey),
+        correlationId: text(input.correlationId),
+      });
+      return categoryArchiveDto(row, accountId);
     },
 
     async rollbackCategoryStrategyVersion(raw = {}) {

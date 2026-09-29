@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "ffmpegVersion": "9.0.1",
+  "x264Commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+  "archives": [
+    {
+      "file": "ffmpeg-9.0.1.tar.xz",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz",
+      "bytes": 12036420,
+      "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
+    },
+    {
+      "file": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+      "url": "https://code.videolan.org/api/v4/projects/videolan%2Fx264/repository/archive.tar.gz?sha=b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+      "bytes": 1040000,
+      "sha256": "c07b1c6a8faf8b7078fc44b1ae563f1673900b604744133cc728606d8c7794ec"
+    },
+    {
+      "file": "pkgconf-2.5.1.tar.xz",
+      "url": "https://distfiles.ariadne.space/pkgconf/pkgconf-2.5.1.tar.xz",
+      "bytes": 328064,
+      "sha256": "cd05c9589b9f86ecf044c10a2269822bc9eb001eced2582cfffd658b0a50c243"
+    },
+    {
+      "file": "nasm-2.16.03.tar.xz",
+      "url": "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.xz",
+      "bytes": 1032388,
+      "sha256": "1412a1c760bbd05db026b6c0d1657affd6631cd0a63cddb6f73cc6d4aa616148"
+    }
+  ]
+}

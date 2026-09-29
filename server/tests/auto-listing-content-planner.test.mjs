@@ -11,6 +11,11 @@ import { createContentPlanDiagnoser } from "../auto-listing-content-plan-validat
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+const deferred = () => {
+  let resolve; let reject;
+  const promise = new Promise((accept, decline) => { resolve = accept; reject = decline; });
+  return { promise, resolve, reject };
+};
 const image = (assetId, digit = "a") => ({ assetId, contentHash: digit.repeat(64) });
 const visualEvidence = (variantId) => ({
   contractVersion: 1,
@@ -36,9 +41,7 @@ function fixedFillFor(skeleton) {
           - Number(!/DIMENSION_|размер/iu.test(`${right.kind} ${right.value}`)))
         : allowed;
       return [slot.slotKey, { claims: ordered.slice(0, minimum).map((fact) => ({
-        text: fact.value,
-        claimType: fact.kind,
-        sourceFactIds: [fact.factId],
+        factId: fact.factId,
       })) }];
     })),
   };
@@ -50,6 +53,7 @@ function sourceCapture({
   accountId = "account-a",
   title = "Термокружка",
   attributes = [{ attributeId: "material", dictionaryValueId: "steel", values: ["сталь"], multiple: false }],
+  images = [image("source-image-1")],
 } = {}) {
   return buildAutoListingSourceSnapshot({
     accountId,
@@ -66,8 +70,8 @@ function sourceCapture({
       productMeasurements: productMeasurements ?? (reliableDimensions
         ? { reliable: true, heightCm: 22, unit: "cm", source: "manufacturer" }
         : {}),
-      images: [image("source-image-1")],
-      variants: [{ sku: "sku-1", offerId: "offer-1", name: title, images: [image("source-image-1")], evidence: visualEvidence("variant-1") }],
+      images,
+      variants: [{ sku: "sku-1", offerId: "offer-1", name: title, images, evidence: visualEvidence("variant-1") }],
     } },
     categoryEvidence: {
       id: "category-evidence-1", accountId, sourceDescriptionCategoryId: 170,
@@ -85,7 +89,7 @@ function sourceCapture({
 }
 
 const roleSets = {
-  six: { main: 1, sellingPoint: 2, detail: 1, scene: 1, specification: 0, infographic: 1 },
+  six: { main: 1, sellingPoint: 1, infographic: 1, scene: 1, detail: 1, specification: 1 },
   eight: { main: 1, sellingPoint: 3, detail: 1, scene: 1, specification: 1, infographic: 1 },
   thirteen: { main: 1, sellingPoint: 5, detail: 2, scene: 2, specification: 1, infographic: 2 },
 };
@@ -189,6 +193,322 @@ function plannerArgs(overrides = {}) {
 }
 const planner = (overrides = {}) => buildPlannerInput(plannerArgs(overrides));
 
+function intelligenceSummary(overrides = {}) {
+  const value = {
+    contractVersion: "AUTO_LISTING_SOURCE_IMAGE_INTELLIGENCE_V1",
+    coverageMap: {
+      FRONT: { assetIds: ["front-asset"], preciseViewpoints: ["FRONT"], tentativeAssetIds: [] },
+      BACK: { assetIds: ["back-asset"], preciseViewpoints: ["BACK"], tentativeAssetIds: [] },
+      DETAIL: { assetIds: ["detail-asset"], preciseViewpoints: ["DETAIL"], tentativeAssetIds: [] },
+      COMPLETE_PRODUCT: {
+        confirmedFamilyCount: 2, confirmedFamilies: ["FRONT", "BACK"], requiredFamilyCount: 2,
+        prohibitedViews: ["LEFT", "RIGHT", "TOP", "BOTTOM", "INTERIOR"],
+      },
+    },
+    factCandidates: [
+      {
+        sourceFactId: `source-fact-${"1".repeat(24)}`, kind: "PACKAGE_QUANTITY", value: "В комплекте: 3 шт.",
+        status: "CONFIRMED", sources: [{ sourceAssetId: "front-asset", region: null }],
+        confirmationMethod: "STRUCTURED_FACT_MATCH", reasonCodes: ["SOURCE_FACT_STRUCTURED_MATCH"],
+      },
+      {
+        sourceFactId: `source-fact-${"2".repeat(24)}`, kind: "PROMOTION", value: "Скидка 50%",
+        status: "REJECTED", sources: [{ sourceAssetId: "text-asset", region: null }],
+        confirmationMethod: "REJECTED_FORBIDDEN_TEXT", reasonCodes: ["SOURCE_FACT_FORBIDDEN_TEXT"],
+      },
+    ],
+    markingDecisions: [{
+      sourceAssetId: "front-asset", kind: "PRODUCT_MARKING", regions: [],
+      decisionMethod: "OBSERVED_PRODUCT_MARKING", reasonCodes: ["PRODUCT_MARKING_PROTECTED"],
+    }],
+    eligibleAssetIds: ["front-asset", "back-asset", "detail-asset"],
+    excludedAssetIds: ["text-asset"], requiredConfirmations: [], symmetryClass: "ASYMMETRIC", reasonCodes: [],
+    ...overrides,
+  };
+  return { ...value, summaryHash: hash(value) };
+}
+
+function intelligentPlannerArgs(overrides = {}) {
+  const source = overrides.sourceCapture || sourceCapture({ images: [
+    image("front-asset", "1"), image("text-asset", "2"), image("back-asset", "3"), image("detail-asset", "4"),
+  ] });
+  const summary = overrides.sourceImageIntelligenceSummary || intelligenceSummary();
+  return {
+    sourceCapture: source,
+    strategyCapture: overrides.strategyCapture || strategyCapture(),
+    configCapture: overrides.configCapture || configCapture(roleSets.six),
+    sourceImageAnalysisRun: overrides.sourceImageAnalysisRun || {
+      id: "analysis-run-a", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+      sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+      sourceSnapshotHash: source.snapshotHash, status: "ACCEPTED", summaryHash: summary.summaryHash, summary,
+    },
+    sourceImageIntelligenceSummary: summary,
+    profileRef,
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    prohibitedClaims,
+    regeneration: null,
+  };
+}
+
+test("intelligent planning binds V3 system-owned slot evidence and rejects every frozen-evidence mutation", () => {
+  const args = intelligentPlannerArgs();
+  const built = buildPlannerInput(args);
+  const skeleton = buildFixedSkeleton({ plannerContext: built });
+  assert.equal(skeleton.plan.version, 3);
+  assert.equal(built.sourceImageAnalysisRunId, "analysis-run-a");
+  assert.equal(built.sourceImageIntelligenceHash, args.sourceImageIntelligenceSummary.summaryHash);
+  assert.ok(built.plannerInput.factRegistry.some(({ factId }) => factId === `source-fact-${"1".repeat(24)}`));
+  assert.ok(!built.plannerInput.factRegistry.some(({ factId }) => factId === `source-fact-${"2".repeat(24)}`));
+  assert.doesNotMatch(JSON.stringify(buildContentPlanFillSchema(skeleton)), /targetView|identityAssetId|referenceAssetIds/u);
+  const acceptedPlan = mergeContentPlanFill({ skeleton, fill: fixedFillFor(skeleton), plannerContext: built });
+  assert.doesNotThrow(() => validateContentPlan({ plan: acceptedPlan, plannerContext: built }));
+
+  for (const mutate of [
+    (slot) => { slot.targetView = "INTERIOR"; },
+    (slot) => { slot.sourceFactIds.push(`source-fact-${"2".repeat(24)}`); },
+    (slot) => { slot.referenceAssetIds = ["text-asset"]; },
+    (slot) => { slot.identityAssetId = null; },
+  ]) {
+    const plan = structuredClone(acceptedPlan);
+    mutate(plan.slots[0]);
+    assert.throws(() => validateContentPlan({ plan, plannerContext: built }), {
+      code: "AUTO_LISTING_CONTENT_PLAN_INVALID",
+    });
+  }
+  assert.throws(() => buildPlannerInput(intelligentPlannerArgs({
+    sourceImageAnalysisRun: { ...args.sourceImageAnalysisRun, summaryHash: "0".repeat(64) },
+  })), { code: "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID" });
+  const replay = buildPlannerInput(intelligentPlannerArgs({
+    sourceImageAnalysisRun: { ...args.sourceImageAnalysisRun, id: "analysis-run-b" },
+  }));
+  assert.notEqual(replay.inputHash, built.inputHash);
+});
+
+test("intelligent planning ignores a sibling variant group after its media is excluded from the current primary SKU", () => {
+  const source = sourceCapture({ images: [image("front-asset", "1")] });
+  const sibling = structuredClone(source.snapshot.variants[0]);
+  sibling.sku = "sku-sibling";
+  sibling.offerId = "offer-sibling";
+  sibling.name = "Соседний вариант";
+  sibling.media = [image("sibling-asset", "2")];
+  sibling.evidence = null;
+  source.snapshot.variants.push(sibling);
+  source.snapshotHash = hash(source.snapshot);
+  const excludedFactId = `source-fact-${"9".repeat(24)}`;
+  const summary = intelligenceSummary({
+    coverageMap: {
+      FRONT: { assetIds: ["front-asset"], preciseViewpoints: ["FRONT"], tentativeAssetIds: [] },
+      COMPLETE_PRODUCT: {
+        confirmedFamilyCount: 1, confirmedFamilies: ["FRONT"], requiredFamilyCount: 1,
+        prohibitedViews: ["BACK", "LEFT", "RIGHT", "TOP", "BOTTOM", "INTERIOR"],
+      },
+    },
+    factCandidates: [{
+      sourceFactId: excludedFactId,
+      kind: "IMAGE_SELLING_POINT",
+      value: "仅属于已排除变体的卖点",
+      status: "CONFIRMED",
+      sources: [{ sourceAssetId: "sibling-asset", region: null }],
+      confirmationMethod: "SOURCE_TEXT_EXPLICIT_LOW_RISK",
+      reasonCodes: ["SOURCE_FACT_EXPLICIT_LOW_RISK_TEXT"],
+    }],
+    markingDecisions: [],
+    eligibleAssetIds: ["front-asset"],
+    excludedAssetIds: ["sibling-asset"],
+  });
+
+  const built = buildPlannerInput(intelligentPlannerArgs({
+    sourceCapture: source,
+    sourceImageIntelligenceSummary: summary,
+  }));
+  const skeleton = buildFixedSkeleton({ plannerContext: built });
+
+  assert.equal(built.plannerInput.visualGroups.length, 1);
+  assert.deepEqual(built.plannerInput.visualGroups[0].referenceImages.map(({ assetId }) => assetId), ["front-asset"]);
+  assert.equal(built.plannerInput.factRegistry.some(({ factId }) => factId === excludedFactId), false);
+  assert.equal(built.reasonCodes.includes("SOURCE_IMAGE_FACT_WITHOUT_VISUAL_GROUP_IGNORED"), true);
+  assert.equal(skeleton.plan.slots.length, 6);
+});
+
+test("intelligent planning keeps an eligible sibling when every primary SKU image is excluded", () => {
+  const source = sourceCapture({ images: [image("front-asset", "1")] });
+  const sibling = structuredClone(source.snapshot.variants[0]);
+  sibling.sku = "sku-sibling";
+  sibling.offerId = "offer-sibling";
+  sibling.name = "Соседний вариант 12 шт";
+  sibling.media = [image("sibling-asset", "2")];
+  sibling.evidence = null;
+  source.snapshot.variants.push(sibling);
+  source.snapshotHash = hash(source.snapshot);
+  const siblingFactId = `source-fact-${"8".repeat(24)}`;
+  const summary = intelligenceSummary({
+    coverageMap: {
+      FRONT: { assetIds: ["sibling-asset"], preciseViewpoints: ["FRONT"], tentativeAssetIds: [] },
+      COMPLETE_PRODUCT: {
+        confirmedFamilyCount: 1, confirmedFamilies: ["FRONT"], requiredFamilyCount: 1,
+        prohibitedViews: ["BACK", "LEFT", "RIGHT", "TOP", "BOTTOM", "INTERIOR"],
+      },
+    },
+    factCandidates: [{
+      sourceFactId: siblingFactId,
+      kind: "PACKAGE_QUANTITY",
+      value: "В комплекте: 12 шт.",
+      status: "CONFIRMED",
+      sources: [{ sourceAssetId: "sibling-asset", region: null }],
+      confirmationMethod: "STRUCTURED_FACT_MATCH",
+      reasonCodes: ["SOURCE_FACT_STRUCTURED_MATCH"],
+    }],
+    markingDecisions: [],
+    eligibleAssetIds: ["sibling-asset"],
+    excludedAssetIds: ["front-asset"],
+  });
+
+  const built = buildPlannerInput(intelligentPlannerArgs({
+    sourceCapture: source,
+    sourceImageIntelligenceSummary: summary,
+  }));
+  const siblingGroup = built.plannerInput.visualGroups[0];
+
+  assert.equal(built.plannerInput.visualGroups.length, 1);
+  assert.deepEqual(siblingGroup.referenceImages.map(({ assetId }) => assetId), ["sibling-asset"]);
+  assert.equal(built.plannerInput.factRegistry.some(({ factId }) => factId === siblingFactId), true);
+  assert.equal(built.plannerInput.factRegistry.some(({ factId }) =>
+    factId.startsWith("fact.product.") || factId.startsWith("fact.attribute.")), false);
+  assert.equal(built.reasonCodes.includes("PRIMARY_STRUCTURED_FACTS_OMITTED_NO_ELIGIBLE_PRIMARY_GROUP"), true);
+  assert.equal(buildFixedSkeleton({ plannerContext: built }).plan.slots.length, 6);
+});
+
+test("V3 validation binds every identity-protected slot to its confirmed product-marking asset", () => {
+  const built = buildPlannerInput(intelligentPlannerArgs());
+  const skeleton = buildFixedSkeleton({ plannerContext: built });
+  assert.ok(skeleton.plan.slots.every(({ identityAssetId, referenceAssetIds }) => identityAssetId === "front-asset"
+    && referenceAssetIds.includes("front-asset")));
+
+  const accepted = mergeContentPlanFill({ skeleton, fill: fixedFillFor(skeleton), plannerContext: built });
+  const tampered = structuredClone(accepted);
+  const fallback = tampered.slots.find(({ referenceAssetIds }) => referenceAssetIds.includes("back-asset"));
+  assert.ok(fallback);
+  fallback.identityAssetId = "back-asset";
+  assert.throws(() => validateContentPlan({ plan: tampered, plannerContext: built }), {
+    code: "AUTO_LISTING_CONTENT_PLAN_INVALID",
+  });
+});
+
+test("image-derived facts stay within their source visual group even when confirmed by structured evidence", () => {
+  const source = sourceCapture({ images: [image("red-front", "a")] });
+  const blue = structuredClone(source.snapshot.variants[0]);
+  blue.sku = "sku-blue";
+  blue.offerId = "offer-blue";
+  blue.name = "Термокружка синяя";
+  blue.media = [image("blue-front", "b")];
+  blue.evidence.variantId = "variant-blue";
+  blue.evidence.appearanceFacts = [
+    { factId: "fact.color.blue", kind: "COLOR", value: "синий" },
+    { factId: "fact.material.steel", kind: "MATERIAL", value: "сталь" },
+  ];
+  blue.evidence.sizeFacts = [{ factId: "fact.size.variant-blue", kind: "SIZE", value: "M" }];
+  source.snapshot.variants.push(blue);
+  source.snapshotHash = hash(source.snapshot);
+
+  const imageFactId = `source-fact-${"3".repeat(24)}`;
+  const structuredFactId = `source-fact-${"4".repeat(24)}`;
+  const summary = intelligenceSummary({
+    coverageMap: {
+      FRONT: { assetIds: ["red-front", "blue-front"], preciseViewpoints: ["FRONT"], tentativeAssetIds: [] },
+      COMPLETE_PRODUCT: {
+        confirmedFamilyCount: 1, confirmedFamilies: ["FRONT"], requiredFamilyCount: 1,
+        prohibitedViews: ["BACK", "LEFT", "RIGHT", "TOP", "BOTTOM", "INTERIOR"],
+      },
+    },
+    factCandidates: [{
+      sourceFactId: imageFactId, kind: "MODEL", value: "Синяя серия", status: "CONFIRMED",
+      sources: [{ sourceAssetId: "blue-front", region: null }],
+      confirmationMethod: "PRODUCT_OR_PACKAGE_MARKING", reasonCodes: ["PRODUCT_MARKING_PROTECTED"],
+    }, {
+      sourceFactId: structuredFactId, kind: "PACKAGE_QUANTITY", value: "В комплекте: 3 шт.", status: "CONFIRMED",
+      sources: [{ sourceAssetId: "red-front", region: null }],
+      confirmationMethod: "STRUCTURED_FACT_MATCH", reasonCodes: ["SOURCE_FACT_STRUCTURED_MATCH"],
+    }],
+    markingDecisions: [],
+    eligibleAssetIds: ["red-front", "blue-front"], excludedAssetIds: [],
+  });
+  const built = buildPlannerInput(intelligentPlannerArgs({
+    sourceCapture: source,
+    sourceImageIntelligenceSummary: summary,
+  }));
+  const redGroup = built.plannerInput.visualGroups.find((group) => group.referenceImages
+    .some(({ assetId }) => assetId === "red-front"));
+  const blueGroup = built.plannerInput.visualGroups.find((group) => group.referenceImages
+    .some(({ assetId }) => assetId === "blue-front"));
+  const imageFact = built.plannerInput.factRegistry.find(({ factId }) => factId === imageFactId);
+  const structuredFact = built.plannerInput.factRegistry.find(({ factId }) => factId === structuredFactId);
+
+  assert.deepEqual(imageFact.visualGroupKeys, [blueGroup.visualGroupKey]);
+  assert.deepEqual(structuredFact.visualGroupKeys, [redGroup.visualGroupKey]);
+  const skeleton = buildFixedSkeleton({ plannerContext: built });
+  assert.ok(skeleton.plan.slots.filter(({ visualGroupKey }) => visualGroupKey === redGroup.visualGroupKey)
+    .every(({ sourceFactIds }) => !sourceFactIds.includes(imageFactId)));
+});
+
+test("primary SKU dimensions and attributes cannot leak into sibling visual groups", () => {
+  const source = sourceCapture({
+    productMeasurements: {
+      reliable: true,
+      lengthCm: 23,
+      widthCm: 21,
+      heightCm: 13,
+      unit: "cm",
+      source: "manufacturer",
+    },
+  });
+  const sibling = structuredClone(source.snapshot.variants[0]);
+  sibling.sku = "sku-large";
+  sibling.offerId = "offer-large";
+  sibling.name = "Термосумка 77 л";
+  sibling.media = [image("large-front", "b")];
+  sibling.evidence.variantId = "variant-large";
+  sibling.evidence.appearanceFacts = [
+    { factId: "fact.color.gray", kind: "COLOR", value: "серый" },
+    { factId: "fact.material.steel", kind: "MATERIAL", value: "сталь" },
+  ];
+  sibling.evidence.sizeFacts = [{ factId: "fact.size.variant-large", kind: "SIZE", value: "77 л" }];
+  source.snapshot.variants.push(sibling);
+  source.snapshotHash = hash(source.snapshot);
+
+  const built = buildPlannerInput(plannerArgs({ sourceCapture: source }));
+  const groups = buildVisualGroups({ sourceCapture: source }).groups;
+  const primaryGroup = groups.find(({ sourceSkus }) => sourceSkus.includes("sku-1"));
+  const siblingGroup = groups.find(({ sourceSkus }) => sourceSkus.includes("sku-large"));
+  const primaryFacts = built.plannerInput.factRegistry.filter(({ factId }) =>
+    factId.startsWith("fact.product.") || factId.startsWith("fact.attribute."));
+
+  assert.ok(primaryGroup);
+  assert.ok(siblingGroup);
+  assert.ok(primaryFacts.length >= 5);
+  assert.ok(primaryFacts.every(({ visualGroupKeys }) =>
+    JSON.stringify(visualGroupKeys) === JSON.stringify([primaryGroup.visualGroupKey])));
+  assert.ok(primaryFacts.every(({ visualGroupKeys }) => !visualGroupKeys.includes(siblingGroup.visualGroupKey)));
+});
+
+test("primary SKU dimensions and attributes are omitted when its visual group is shared by sibling SKUs", () => {
+  const source = sourceCapture();
+  const sibling = structuredClone(source.snapshot.variants[0]);
+  sibling.sku = "sku-same-appearance";
+  sibling.offerId = "offer-same-appearance";
+  sibling.name = "Термокружка другого размера";
+  sibling.media = [image("same-appearance", "b")];
+  sibling.evidence.variantId = "variant-same-appearance";
+  sibling.evidence.sizeFacts = [{ factId: "fact.size.variant-same-appearance", kind: "SIZE", value: "L" }];
+  source.snapshot.variants.push(sibling);
+  source.snapshotHash = hash(source.snapshot);
+
+  const built = buildPlannerInput(plannerArgs({ sourceCapture: source }));
+
+  assert.equal(built.plannerInput.visualGroups.length, 1);
+  assert.equal(built.plannerInput.factRegistry.some(({ factId }) =>
+    factId.startsWith("fact.product.") || factId.startsWith("fact.attribute.")), false);
+});
+
 function reserved(input, overrides = {}) {
   return {
     status: "RESERVED",
@@ -199,6 +519,8 @@ function reserved(input, overrides = {}) {
     planningContract: input.planningContract,
     skeletonHash: null,
     plannerStage: "FILLING_COPY",
+    gatewayConnectionId: input.gatewayConnectionId,
+    gatewayConnectionVersion: input.gatewayConnectionVersion,
     ...overrides,
   };
 }
@@ -216,14 +538,19 @@ function validPlan(built) {
   const slots = [];
   for (const group of built.plannerInput.visualGroups) {
     const groupFact = (kind) => group.factEvidence.find((fact) => fact.kind === kind);
+    const applicableFact = (factId) => built.plannerInput.factRegistry.find((fact) => fact.factId === factId
+      && (!fact.visualGroupKeys.length || fact.visualGroupKeys.includes(group.visualGroupKey)));
     const color = groupFact("COLOR");
     const material = groupFact("MATERIAL");
+    const height = applicableFact("fact.product.heightCm");
     const roleToClaim = {
       MAIN: null,
       SELLING_POINT: { text: `Цвет: ${color.value}`, claimType: "COLOR", sourceFactIds: [color.factId] },
       DETAIL: { text: `Материал: ${material.value}`, claimType: "MATERIAL", sourceFactIds: [material.factId] },
       SCENE: { text: "Термокружка", claimType: "IDENTITY_NAME", sourceFactIds: ["fact.identity.name"] },
-      SPECIFICATION: { text: "Высота 22 см", claimType: "DIMENSION_HEIGHT", sourceFactIds: ["fact.product.heightCm"] },
+      SPECIFICATION: height
+        ? { text: "Высота 22 см", claimType: "DIMENSION_HEIGHT", sourceFactIds: [height.factId] }
+        : { text: `Материал: ${material.value}`, claimType: "MATERIAL", sourceFactIds: [material.factId] },
       INFOGRAPHIC: { text: "Бренд Brand 500", claimType: "IDENTITY_BRAND", sourceFactIds: ["fact.identity.brand"] },
     };
     let order = 1;
@@ -248,11 +575,13 @@ function validPlan(built) {
   return { version: 1, language: "ru", slots };
 }
 
-test("buildPlannerInput supports all five styles, every role, stable order, and 6/8/13 role totals", () => {
+test("buildPlannerInput preserves legacy role order and supports all five styles plus 6/8/13 totals", () => {
   for (const style of ["VISUAL_FIRST", "PARAMETER_FIRST", "DEMONSTRATION_FIRST", "SPECIFICATION_FIRST", "BALANCED_DEFAULT"]) {
     const built = planner({ style });
     assert.equal(built.plannerInput.strategy.style, style);
-    assert.deepEqual(Object.keys(built.plannerInput.requestedRoleCounts), ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
+    assert.deepEqual(Object.keys(built.plannerInput.requestedRoleCounts), [
+      "MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC",
+    ]);
   }
   for (const roles of Object.values(roleSets)) {
     const built = planner({ configCapture: configCapture(roles) });
@@ -260,6 +589,68 @@ test("buildPlannerInput supports all five styles, every role, stable order, and 
     assert.equal(built.plannerInput.imagesPerVisualGroup, expected);
     assert.doesNotThrow(() => validateContentPlan({ plan: validPlan(built), plannerContext: built }));
   }
+});
+
+test("source overlay exclusions stay frozen in the plan but are omitted from the paid fill prompt", async () => {
+  const forbiddenOverlay = `COMPETITOR-WATERMARK-${"x".repeat(1_800)}`;
+  const baselineSummary = intelligenceSummary();
+  const summary = intelligenceSummary({
+    factCandidates: [
+      ...baselineSummary.factCandidates,
+      {
+        sourceFactId: `source-fact-${"3".repeat(24)}`,
+        kind: "PROMOTION",
+        value: forbiddenOverlay,
+        status: "REJECTED",
+        sources: [{ sourceAssetId: "text-asset", region: null }],
+        confirmationMethod: "REJECTED_FORBIDDEN_TEXT",
+        reasonCodes: ["SOURCE_FACT_FORBIDDEN_TEXT"],
+      },
+    ],
+  });
+  const planningArgs = intelligentPlannerArgs({ sourceImageIntelligenceSummary: summary });
+  const context = buildPlannerInput(planningArgs);
+  const skeleton = buildFixedSkeleton({ plannerContext: context });
+  const fill = fixedFillFor(skeleton);
+  let paidPrompt = "";
+  let storedInput = null;
+
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    planningContract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    evidenceRepository: passthroughEvidenceRepository,
+    ...planningArgs,
+    gatewayProfile: {
+      id: "profile-1", accountId: "account-a", configVersion: 7,
+      textModel: "planner-model", enabled: true,
+    },
+    gateway: { async createTextResponse(input) {
+      paidPrompt = input.prompt;
+      return { value: fill, requestId: "gateway-compact-fill" };
+    } },
+    repository: {
+      async reserveContentPlan(input) {
+        return reserved(input, {
+          planningContract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+          skeletonHash: skeleton.skeletonHash,
+          plannerStage: "BUILDING_SKELETON",
+          sourceImageAnalysisRunId: input.sourceImageAnalysisRunId,
+          sourceImageIntelligenceHash: input.sourceImageIntelligenceHash,
+        });
+      },
+      advanceContentPlanStage: advanceStage,
+      async saveContentPlan(input) { storedInput = input; return { id: "plan-compact-fill", ...input }; },
+      async releaseContentPlanReservation() { throw new Error("must not release accepted plan"); },
+      async releaseContentPlanChannelReservation() { throw new Error("must not release accepted channel"); },
+    },
+  });
+
+  assert.doesNotMatch(paidPrompt, /COMPETITOR-WATERMARK|prohibitedOverlayTexts/u);
+  assert.equal(storedInput.plan.slots.some((slot) =>
+    slot.prohibitedOverlayTexts.includes(forbiddenOverlay)), true);
+  assert.equal(result.plan.slots.some((slot) =>
+    slot.prohibitedOverlayTexts.includes(forbiddenOverlay)), true);
 });
 
 test("published V2 role guidance enters planning while current task counts remain authoritative for 6, 8 and 13 images", () => {
@@ -300,7 +691,11 @@ test("published category guidance controls main-image text density", () => {
 
   const fill = fixedFillFor(skeleton);
   const merged = mergeContentPlanFill({ skeleton, fill, plannerContext: built });
-  assert.deepEqual(merged.slots.find(({ slotKey }) => slotKey === main.slotKey).claims, fill.fills[main.slotKey].claims);
+  assert.deepEqual(merged.slots.find(({ slotKey }) => slotKey === main.slotKey).claims,
+    fill.fills[main.slotKey].claims.map(({ factId }) => {
+      const candidate = skeleton.allowedClaimsBySlot[main.slotKey].find((entry) => entry.factId === factId);
+      return { text: candidate.value, claimType: candidate.kind, sourceFactIds: [candidate.factId] };
+    }));
 });
 
 test("V6 keeps category styling but raises the main image to a dense verified-fact layout", () => {
@@ -315,6 +710,9 @@ test("V6 keeps category styling but raises the main image to a dense verified-fa
   assert.equal(built.plannerInput.strategy.roleGuidance.MAIN.textDensity, "HEAVY");
   assert.equal(built.plannerInput.strategy.roleGuidance.MAIN.composition, "MAIN composition");
   assert.equal(built.plannerInput.strategy.roleGuidance.MAIN.background, "MAIN background");
+  assert.deepEqual(Object.keys(built.plannerInput.requestedRoleCounts), [
+    "MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION",
+  ]);
 });
 
 test("separate trusted length width and height attributes become one concise dimension fact", () => {
@@ -387,6 +785,7 @@ test("fixed skeleton prompt receives only closed V2 role guidance and keeps all 
       },
       advanceContentPlanStage: advanceStage,
       async releaseContentPlanReservation() {},
+      async releaseContentPlanChannelReservation() { return { released: true }; },
     },
   }), { code: "RETRYABLE_GATEWAY" });
   assert.equal(gatewayCalls, 1);
@@ -416,7 +815,10 @@ test("planner structured-output schema only uses array keywords accepted by the 
 });
 
 test("missing documentary facts keeps a copy-free product documentary slot", () => {
-  const built = planner({ sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }) });
+  const built = buildPlannerInput({
+    ...plannerArgs({ sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }) }),
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+  });
   assert.deepEqual(built.plannerInput.requestedRoleCounts, {
     MAIN: 1,
     SELLING_POINT: 3,
@@ -437,9 +839,12 @@ test("missing documentary facts keeps a copy-free product documentary slot", () 
     plan: skeleton.plan,
     plannerContext: built,
   }));
-  assert.doesNotThrow(() => planner({
-    sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }),
-    configCapture: configCapture(roleSets.thirteen),
+  assert.doesNotThrow(() => buildPlannerInput({
+    ...plannerArgs({
+      sourceCapture: sourceCapture({ reliableDimensions: false, attributes: [] }),
+      configCapture: configCapture(roleSets.thirteen),
+    }),
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
   }));
 });
 
@@ -541,12 +946,14 @@ test("createContentPlan reserves before one gateway call, persists canonical evi
     advanceContentPlanStage: advanceStage,
     async saveContentPlan(input) { record = { id: "plan-1", ...input }; return record; },
     async releaseContentPlanReservation() { throw new Error("not expected"); },
+    async releaseContentPlanChannelReservation() { throw new Error("not expected"); },
   };
   const gateway = { async createTextResponse(input) {
     gatewayCalls += 1;
     assert.match(input.requestKey, /^auto-listing-plan-[a-f0-9]{64}$/);
     assert.equal(input.model, "planner-model");
     assert.equal(Object.hasOwn(input, "timeoutMs"), false);
+    assert.equal(input.idleTimeoutMs, 300_000);
     assert.doesNotMatch(input.prompt, /store-a|warehouse-a|blackKopecks|apiKey/i);
     return { value: output, requestId: "gateway-request-1", usage: { totalTokens: 100 } };
   } };
@@ -588,6 +995,7 @@ test("planner records the raw response before detailed validation and saves only
       return { id: "plan-a", ...input };
     },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -635,6 +1043,7 @@ test("invalid business output keeps rejected evidence and never saves a content 
     async advanceContentPlanStage() { events.push("stage"); },
     async saveContentPlan() { saves += 1; },
     async releaseContentPlanReservation() { events.push("release"); },
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -654,7 +1063,7 @@ test("invalid business output keeps rejected evidence and never saves a content 
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse() { events.push("gateway"); return { value: invalidOutput, requestId: "gateway-a" }; } },
     repository,
-  }), { code: "AUTO_LISTING_CONTENT_PLAN_INVALID" });
+  }), (error) => error?.code === "AUTO_LISTING_CONTENT_PLAN_INVALID" && error?.retryable === true);
   assert.deepEqual(events, ["gateway", "response", "stage", "validation:REJECTED", "release"]);
   assert.equal(saves, 0);
 });
@@ -670,6 +1079,7 @@ test("response-loss replay resumes exact recorded evidence without a second gate
     async advanceContentPlanStage() { stageCalls += 1; throw new Error("already validating"); },
     async saveContentPlan(input) { saved += 1; return { id: "plan-replayed", ...input }; },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() {
@@ -693,6 +1103,226 @@ test("response-loss replay resumes exact recorded evidence without a second gate
   assert.equal(gatewayCalls, 0);
   assert.equal(stageCalls, 0);
   assert.equal(saved, 1);
+});
+
+test("connection B reuses planner response produced by A without rewriting producer provenance", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  let saved;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { plannerStage: "VALIDATING_COPY",
+        gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async advanceContentPlanStage() { throw new Error("must not advance"); },
+    async saveContentPlan(input) { saved = input; return { id: "plan-reused-a", ...input }; },
+    async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome(input) {
+      assert.equal(input.gatewayConnectionId, "connection-a");
+      assert.equal(input.gatewayConnectionVersion, 3);
+      return { response: { id: "response-a", response: structuredClone(output), gatewayRequestId: "gateway-a" }, validation: null };
+    },
+    async recordResponse() { throw new Error("paid planner must not run"); },
+    async recordValidation(input) { return { id: "validation-a", ...input }; },
+  };
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { throw new Error("paid planner must not run"); } },
+    repository,
+  });
+  assert.equal(result.id, "plan-reused-a");
+  assert.equal(saved.gatewayConnectionId, "connection-a");
+  assert.equal(saved.gatewayConnectionVersion, 3);
+});
+
+test("connection B replaces semantically invalid planner evidence from A before one new paid call", async () => {
+  const built = planner();
+  const valid = validPlan(built);
+  const events = [];
+  let saved;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { attemptId: "attempt-a", reservationToken: "lease-a",
+        plannerStage: "VALIDATING_COPY", gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async replaceContentPlanReservation(input) {
+      events.push(["replace", input]);
+      return reserved(input, { attemptId: "attempt-b", attemptNo: 2, reservationToken: "lease-b",
+        plannerStage: "FILLING_COPY", gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9 });
+    },
+    async advanceContentPlanStage(input) { events.push(["stage", input]); return input; },
+    async saveContentPlan(input) { saved = input; return { id: "plan-b", ...input }; },
+    async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome(input) {
+      events.push(["load", input]);
+      return input.owner.id === "attempt-a"
+        ? { response: { id: "response-a", response: { version: 1, language: "ru", slots: [] }, gatewayRequestId: "gateway-a" },
+          validation: { id: "validation-a", status: "REJECTED", validatorVersion: "content-plan-validator-v1", issues: [{ path: "$.slots", code: "INVALID" }] } }
+        : null;
+    },
+    async recordResponse(input) {
+      events.push(["response", input]);
+      return { id: "response-b", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId };
+    },
+    async recordValidation(input) { events.push(["validation", input]); return { id: `validation-${input.responseId}`, ...input }; },
+  };
+  let paidCalls = 0;
+
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { paidCalls += 1; return { requestId: "gateway-b", value: structuredClone(valid) }; } },
+    repository,
+  });
+
+  assert.equal(result.id, "plan-b");
+  assert.equal(paidCalls, 1);
+  assert.equal(events.filter(([name]) => name === "replace").length, 1);
+  assert.equal(events.find(([name]) => name === "replace")[1].gatewayConnectionId, "connection-a");
+  assert.equal(events.find(([name]) => name === "replace")[1].replacementGatewayConnectionId, "connection-b");
+  assert.equal(events.filter(([name, input]) => name === "validation" && input.responseId === "response-a").length, 0);
+  assert.equal(events.find(([name]) => name === "response")[1].gatewayConnectionId, "connection-b");
+  assert.equal(saved.gatewayConnectionId, "connection-b");
+  assert.equal(saved.gatewayConnectionVersion, 9);
+});
+
+test("connection B replaces hash-conflicting planner evidence from A without a duplicate paid call", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  let replacements = 0;
+  let paidCalls = 0;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { attemptId: "attempt-a", reservationToken: "lease-a",
+        plannerStage: "VALIDATING_COPY", gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async replaceContentPlanReservation(input) {
+      replacements += 1;
+      return reserved(input, { attemptId: "attempt-b", attemptNo: 2, reservationToken: "lease-b",
+        plannerStage: "FILLING_COPY", gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9 });
+    },
+    async advanceContentPlanStage(input) { return input; },
+    async saveContentPlan(input) { return { id: "plan-b", ...input }; },
+    async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome(input) {
+      if (input.owner.id === "attempt-a") {
+        const error = new Error("stored response hash mismatch");
+        error.code = "AUTO_LISTING_CONTENT_PLAN_EVIDENCE_CONFLICT";
+        throw error;
+      }
+      return null;
+    },
+    async recordResponse(input) { return { id: "response-b", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId }; },
+    async recordValidation(input) { return { id: "validation-b", ...input }; },
+  };
+
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { paidCalls += 1; return { requestId: "gateway-b", value: structuredClone(output) }; } },
+    repository,
+  });
+
+  assert.equal(result.gatewayConnectionId, "connection-b");
+  assert.equal(replacements, 1);
+  assert.equal(paidCalls, 1);
+});
+
+test("connection B replaces malformed planner evidence from A before one paid call", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  let replacements = 0;
+  let paidCalls = 0;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { attemptId: "attempt-a", reservationToken: "lease-a",
+        plannerStage: "VALIDATING_COPY", gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async replaceContentPlanReservation(input) {
+      replacements += 1;
+      return reserved(input, { attemptId: "attempt-b", attemptNo: 2, reservationToken: "lease-b",
+        plannerStage: "FILLING_COPY", gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9 });
+    },
+    async advanceContentPlanStage(input) { return input; },
+    async saveContentPlan(input) { return { id: "plan-b", ...input }; },
+    async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome(input) {
+      if (input.owner.id === "attempt-a") {
+        const error = new Error("malformed stored validation");
+        error.code = "AUTO_LISTING_CONTENT_PLAN_EVIDENCE_INVALID";
+        throw error;
+      }
+      return null;
+    },
+    async recordResponse(input) { return { id: "response-b", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId }; },
+    async recordValidation(input) { return { id: "validation-b", ...input }; },
+  };
+
+  const result = await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { paidCalls += 1; return { requestId: "gateway-b", value: structuredClone(output) }; } },
+    repository,
+  });
+
+  assert.equal(result.gatewayConnectionId, "connection-b");
+  assert.equal(replacements, 1);
+  assert.equal(paidCalls, 1);
+});
+
+test("stale planner producer handoff makes no paid B call and writes no B evidence", async () => {
+  let paidCalls = 0;
+  let responseWrites = 0;
+  const repository = {
+    async reserveContentPlan(input) {
+      return reserved(input, { attemptId: "attempt-a", reservationToken: "lease-a",
+        plannerStage: "VALIDATING_COPY", gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3 });
+    },
+    async replaceContentPlanReservation() {
+      const error = new Error("stale lease"); error.code = "AUTO_LISTING_CONTENT_PLAN_LEASE_CONFLICT"; throw error;
+    },
+    async advanceContentPlanStage() {}, async saveContentPlan() { throw new Error("must not save"); },
+    async releaseContentPlanReservation() {}, async releaseContentPlanChannelReservation() {},
+  };
+  const conflict = new Error("hash mismatch");
+  conflict.code = "AUTO_LISTING_CONTENT_PLAN_EVIDENCE_CONFLICT";
+  const evidenceRepository = {
+    async loadOutcome() { throw conflict; },
+    async recordResponse() { responseWrites += 1; },
+    async recordValidation() { throw new Error("must not validate"); },
+  };
+
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    gatewayExecution: { channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000 },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { paidCalls += 1; } }, repository,
+  }), { code: "AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED" });
+
+  assert.equal(paidCalls, 0);
+  assert.equal(responseWrites, 0);
 });
 
 test("fixed contract builds the configured skeleton, lets AI fill only claims, and persists exact identity", async () => {
@@ -722,6 +1352,7 @@ test("fixed contract builds the configured skeleton, lets AI fill only claims, a
     },
     async saveContentPlan(input) { events.push("save"); storedInput = input; return { id: "plan-fixed", ...input }; },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -742,8 +1373,8 @@ test("fixed contract builds the configured skeleton, lets AI fill only claims, a
     gateway: { async createTextResponse(input) {
       events.push("gateway");
       assert.equal(input.jsonSchema.properties.fills.required.length, 8);
-      assert.equal(input.prompt.includes("只填写俄语文案"), true);
-      assert.match(input.prompt, /规格槽存在尺寸候选时必须至少选择一条尺寸文案/u);
+      assert.equal(input.prompt.includes("只负责为每个位置选择候选事实"), true);
+      assert.match(input.prompt, /规格槽存在尺寸候选时必须至少选择对应的尺寸 factId/u);
       return { value: { version: 1, language: "ru", fills }, requestId: "gateway-fixed" };
     } },
     repository,
@@ -758,7 +1389,7 @@ test("fixed contract builds the configured skeleton, lets AI fill only claims, a
   ]);
 });
 
-test("fixed contract rejects copy that is not one exact fact-backed candidate", async () => {
+test("fixed contract rejects a fact identity outside the frozen slot candidates", async () => {
   const planningArgs = plannerArgs();
   const fixedContext = buildPlannerInput({
     ...planningArgs,
@@ -768,16 +1399,12 @@ test("fixed contract rejects copy that is not one exact fact-backed candidate", 
   const fills = Object.fromEntries(skeleton.plan.slots.map((slot) => {
     const fact = skeleton.allowedClaimsBySlot[slot.slotKey][0];
     return [slot.slotKey, { claims: slot.textDensity === "NONE" ? [] : [{
-      text: fact.value,
-      claimType: fact.kind,
-      sourceFactIds: [fact.factId],
+      factId: fact.factId,
     }] }];
   }));
   const sellingPoint = skeleton.plan.slots.find((slot) => slot.role === "SELLING_POINT");
   fills[sellingPoint.slotKey].claims = [{
-    text: "Белый матовый корпус",
-    claimType: "IDENTITY_NAME",
-    sourceFactIds: ["fact.identity.name"],
+    factId: "fact.foreign",
   }];
   let saves = 0;
   const repository = {
@@ -791,6 +1418,7 @@ test("fixed contract rejects copy that is not one exact fact-backed candidate", 
     advanceContentPlanStage: advanceStage,
     async saveContentPlan() { saves += 1; },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -825,6 +1453,7 @@ test("fixed contract records rejected fill tampering and never saves a plan", as
     async advanceContentPlanStage(input) { events.push(`stage:${input.toStage}`); return advanceStage(input); },
     async saveContentPlan() { saves += 1; },
     async releaseContentPlanReservation() { events.push("release"); },
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const evidenceRepository = {
     async loadOutcome() { return null; },
@@ -882,7 +1511,8 @@ test("fixed contract plans a copy-free product documentary image when dimensions
         skeletonHash: skeleton.skeletonHash,
         plannerStage: "BUILDING_SKELETON",
       });
-    }, advanceContentPlanStage: advanceStage, async releaseContentPlanReservation() {} },
+    }, advanceContentPlanStage: advanceStage, async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; } },
   }), { code: "RETRYABLE_GATEWAY" });
   assert.equal(context.plannerInput.requestedRoleCounts.SPECIFICATION, 1);
   assert.equal(context.plannerInput.requestedRoleCounts.DETAIL, 1);
@@ -914,6 +1544,7 @@ test("reused corrupted or cross-scope rows fail closed, and gateway failures per
 
   let saves = 0;
   let releases = 0;
+  let channelReleases = 0;
   await assert.rejects(createContentPlan({
     accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
     ...planningArgs,
@@ -924,10 +1555,299 @@ test("reused corrupted or cross-scope rows fail closed, and gateway failures per
       advanceContentPlanStage: advanceStage,
       async saveContentPlan() { saves += 1; },
       async releaseContentPlanReservation() { releases += 1; },
+      async releaseContentPlanChannelReservation() { return { released: true }; },
+      async releaseContentPlanChannelReservation() { channelReleases += 1; return { released: true }; },
     },
   }), (error) => error?.code === "RETRYABLE_GATEWAY");
   assert.equal(saves, 0);
-  assert.equal(releases, 1);
+  assert.equal(releases, 0);
+  assert.equal(channelReleases, 1);
+});
+
+test("an unclassified planner gateway failure stays recoverable inside the planning stage", async () => {
+  const built = planner();
+  let businessReleases = 0;
+  let gatewayReleases = 0;
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(),
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { throw new TypeError("unexpected adapter response"); } },
+    repository: {
+      async reserveContentPlan(input) { return reserved(input); },
+      advanceContentPlanStage: advanceStage,
+      async saveContentPlan() { throw new Error("must not save"); },
+      async releaseContentPlanReservation() { businessReleases += 1; return { released: true }; },
+      async releaseContentPlanChannelReservation() { gatewayReleases += 1; return { released: true }; },
+    },
+  }), (error) => error?.code === "AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED"
+    && error?.retryable === true);
+  assert.equal(businessReleases, 0);
+  assert.equal(gatewayReleases, 1);
+});
+
+test("planner preserves quota and empty-pool signals for channel-level recovery", async () => {
+  for (const code of ["AI_GATEWAY_QUOTA_EXHAUSTED", "AI_GATEWAY_NO_CAPACITY"]) {
+    let businessReleases = 0;
+    let channelReleases = 0;
+    const gatewayError = Object.assign(new Error("gateway capacity unavailable"), {
+      code,
+      status: 503,
+      retryable: true,
+      deliveryState: "NOT_SENT",
+      retryAfterMs: 300_000,
+    });
+    await assert.rejects(createContentPlan({
+      accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+      ...plannerArgs(),
+      gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+      gateway: { async createTextResponse() { throw gatewayError; } },
+      repository: {
+        async reserveContentPlan(input) { return reserved(input); },
+        advanceContentPlanStage: advanceStage,
+        async saveContentPlan() { throw new Error("must not save"); },
+        async releaseContentPlanReservation() { businessReleases += 1; return { released: true }; },
+        async releaseContentPlanChannelReservation() { channelReleases += 1; return { released: true }; },
+      },
+    }), (error) => error === gatewayError);
+    assert.equal(businessReleases, 0, code);
+    assert.equal(channelReleases, 1, code);
+  }
+});
+
+test("a request rejected before gateway delivery is a non-retryable planner input failure", async () => {
+  let businessReleases = 0;
+  let gatewayReleases = 0;
+  const requestInvalid = Object.assign(new Error("request too large"), {
+    code: "AI_GATEWAY_REQUEST_INVALID",
+    retryable: false,
+    deliveryState: "NOT_SENT",
+  });
+
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(),
+    gatewayProfile: {
+      id: "profile-1", accountId: "account-a", configVersion: 7,
+      textModel: "planner-model", enabled: true,
+    },
+    gateway: { async createTextResponse() { throw requestInvalid; } },
+    repository: {
+      async reserveContentPlan(input) { return reserved(input); },
+      advanceContentPlanStage: advanceStage,
+      async saveContentPlan() { throw new Error("must not save"); },
+      async releaseContentPlanReservation() { businessReleases += 1; return { released: true }; },
+      async releaseContentPlanChannelReservation() { gatewayReleases += 1; return { released: true }; },
+    },
+  }), (error) => error?.code === "AUTO_LISTING_CONTENT_PLANNER_INPUT_INVALID"
+    && error?.retryable !== true);
+
+  assert.equal(businessReleases, 1);
+  assert.equal(gatewayReleases, 0);
+});
+
+test("planner preserves an adapter 404 for channel revalidation instead of rewriting it", async () => {
+  const built = planner();
+  let channelReleases = 0;
+  const gatewayError = Object.assign(new Error("model missing"), {
+    code: "NON_RETRYABLE_GATEWAY", status: 404, retryable: false,
+  });
+  const repository = {
+    async reserveContentPlan(input) { return reserved(input); },
+    advanceContentPlanStage: advanceStage,
+    async saveContentPlan() { throw new Error("must not save"); },
+    async releaseContentPlanReservation() { throw new Error("channel failure must not consume business attempts"); },
+    async releaseContentPlanChannelReservation(input) {
+      channelReleases += 1;
+      assert.deepEqual(Object.keys(input).sort(), [
+        "accountId", "attemptId", "errorCode", "expectedStatusVersion", "gatewayConnectionId", "gatewayConnectionVersion",
+        "inputHash", "itemId", "jobId",
+        "planningContract", "profileId", "profileVersion", "requestKey", "reservationToken", "skeletonHash",
+        "sourceSnapshotId",
+      ]);
+      assert.equal(input.attemptId, "attempt-test");
+      assert.equal(input.errorCode, "AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED");
+      return { released: true };
+    },
+  };
+
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(),
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { throw gatewayError; } },
+    repository,
+  }), (error) => error === gatewayError);
+  assert.equal(built.inputHash.length, 64);
+  assert.equal(channelReleases, 1);
+});
+
+test("planner lease loss after provider return writes no response, validation, or plan result", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  const writes = [];
+  let releases = 0;
+  const repository = {
+    async reserveContentPlan(input) { return reserved(input); },
+    advanceContentPlanStage: advanceStage,
+    async saveContentPlan() { writes.push("plan"); },
+    async releaseContentPlanReservation() { releases += 1; },
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+    async releaseContentPlanChannelReservation() { releases += 1; return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse() { writes.push("response"); },
+    async recordValidation() { writes.push("validation"); },
+  };
+
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    assertLeaseActive() { if (!active) throw stale; },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() {
+      active = false;
+      return { value: output, requestId: "gateway-stale" };
+    } },
+    repository,
+  }), (error) => error === stale);
+  assert.deepEqual(writes, []);
+  assert.equal(releases, 0);
+});
+
+test("planner provider rejection rechecks the lease before preserving a channel error", async () => {
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  const providerFailure = Object.assign(new Error("provider rejected"), {
+    code: "NON_RETRYABLE_GATEWAY", status: 404, retryable: false,
+  });
+  let active = true;
+  const writes = [];
+  let releases = 0;
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(),
+    assertLeaseActive() { if (!active) throw stale; },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { active = false; throw providerFailure; } },
+    repository: {
+      async reserveContentPlan(input) { return reserved(input); },
+      async advanceContentPlanStage() { writes.push("stage"); },
+      async saveContentPlan() { writes.push("plan"); },
+      async releaseContentPlanReservation() { releases += 1; },
+      async releaseContentPlanChannelReservation() { return { released: true }; },
+      async releaseContentPlanChannelReservation() { releases += 1; return { released: true }; },
+    },
+    evidenceRepository: {
+      async loadOutcome() { return null; },
+      async recordResponse() { writes.push("response"); },
+      async recordValidation() { writes.push("validation"); },
+    },
+  }), (error) => error === stale);
+  assert.deepEqual(writes, []);
+  assert.equal(releases, 0);
+});
+
+test("planner repository boundaries prefer lease loss on deferred resolve or reject and never terminalize", async (t) => {
+  const built = planner();
+  const output = validPlan(built);
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  for (const boundary of ["recordResponse", "advance", "recordValidation", "save"]) {
+    for (const settlement of ["resolve", "reject"]) {
+      await t.test(`${boundary}:${settlement}`, async () => {
+        let active = true;
+        let entered;
+        const enteredPromise = new Promise((resolve) => { entered = resolve; });
+        const pending = deferred();
+        let terminalWrites = 0;
+        const pause = async (value, result) => {
+          entered();
+          await pending.promise;
+          return typeof result === "function" ? result(value) : result;
+        };
+        const repository = {
+          async reserveContentPlan(input) { return reserved(input); },
+          async advanceContentPlanStage(value) {
+            return boundary === "advance" ? pause(value, advanceStage) : advanceStage(value);
+          },
+          async saveContentPlan(value) {
+            return boundary === "save" ? pause(value, (input) => ({ id: "plan-race", ...input })) : { id: "plan-race", ...value };
+          },
+          async releaseContentPlanReservation() { terminalWrites += 1; },
+          async releaseContentPlanChannelReservation() { terminalWrites += 1; return { released: true }; },
+        };
+        const evidenceRepository = {
+          async loadOutcome() { return null; },
+          async recordResponse(value) {
+            const result = (input) => ({ id: "response-race", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId });
+            return boundary === "recordResponse" ? pause(value, result) : result(value);
+          },
+          async recordValidation(value) {
+            return boundary === "recordValidation" ? pause(value, (input) => ({ id: "validation-race", ...input })) : { id: "validation-race", ...value };
+          },
+        };
+        const work = createContentPlan({
+          accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+          ...plannerArgs(), evidenceRepository,
+          assertLeaseActive() { if (!active) throw stale; },
+          gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+          gateway: { async createTextResponse() { return { value: output, requestId: "gateway-race" }; } },
+          repository,
+        });
+        await enteredPromise;
+        active = false;
+        if (settlement === "resolve") pending.resolve();
+        else pending.reject(new Error(`deferred ${boundary} rejection`));
+
+        await assert.rejects(work, (error) => error === stale);
+        assert.equal(terminalWrites, 0);
+      });
+    }
+  }
+});
+
+test("planner lease loss between response evidence and later persistence stops every later result write", async () => {
+  const built = planner();
+  const output = validPlan(built);
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  const writes = [];
+  const repository = {
+    async reserveContentPlan(input) { return reserved(input); },
+    async advanceContentPlanStage() { writes.push("stage"); },
+    async saveContentPlan() { writes.push("plan"); },
+    async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
+  };
+  const evidenceRepository = {
+    async loadOutcome() { return null; },
+    async recordResponse(input) {
+      writes.push("response");
+      active = false;
+      return Object.freeze({ id: "response-stale", response: structuredClone(input.response), gatewayRequestId: input.gatewayRequestId });
+    },
+    async recordValidation() { writes.push("validation"); },
+  };
+
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    ...plannerArgs(), evidenceRepository,
+    assertLeaseActive() { if (!active) throw stale; },
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { return { value: output, requestId: "gateway-stale-stage" }; } },
+    repository,
+  }), (error) => error === stale);
+  assert.deepEqual(writes, ["response"]);
 });
 
 test("regeneration requires a stable reason plus request ID and changes the input hash without mutating old plans", () => {
@@ -998,6 +1918,8 @@ test("canonical URL media remains plannable and persistable only as hash evidenc
       async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease-url-evidence" }); },
       advanceContentPlanStage: advanceStage,
       async saveContentPlan(input) { savedInput = structuredClone(input); return { id: "plan-url-evidence", ...input }; },
+      async releaseContentPlanReservation() {},
+      async releaseContentPlanChannelReservation() { return { released: true }; },
     },
   });
   assert.equal(savedInput.visualGroups.groups[0].referenceImages[0].evidenceKind, "SOURCE_REF_HASH");
@@ -1034,6 +1956,7 @@ test("repository reservation serializes concurrent same-input planning so the ga
       return record;
     },
     async releaseContentPlanReservation() {},
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   const gateway = { async createTextResponse() {
     gatewayCalls += 1;
@@ -1048,6 +1971,27 @@ test("repository reservation serializes concurrent same-input planning so the ga
   const [first, second] = await Promise.all([createContentPlan(args), createContentPlan(args)]);
   assert.equal(gatewayCalls, 1);
   assert.deepEqual(first, second);
+});
+
+test("a live planner reservation reports exact busy state without gateway or business-attempt writes", async () => {
+  const planningArgs = plannerArgs();
+  let gatewayCalls = 0;
+  let terminalWrites = 0;
+  await assert.rejects(createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope, ...planningArgs,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7,
+      textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { gatewayCalls += 1; } },
+    repository: {
+      async reserveContentPlan() { return { status: "IN_PROGRESS" }; },
+      async advanceContentPlanStage() { terminalWrites += 1; },
+      async releaseContentPlanChannelReservation() { terminalWrites += 1; },
+      async releaseContentPlanReservation() { terminalWrites += 1; },
+    },
+    evidenceRepository: passthroughEvidenceRepository,
+  }), (error) => error?.code === "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS" && error?.retryable === true);
+  assert.equal(gatewayCalls, 0);
+  assert.equal(terminalWrites, 0);
 });
 
 test("production repository port receives frozen snapshot, profile, request, and status-version fences on every transition", async () => {
@@ -1070,33 +2014,43 @@ test("production repository port receives frozen snapshot, profile, request, and
     async releaseContentPlanReservation(input) {
       calls.push(["release", input]);
     },
+    async releaseContentPlanChannelReservation() { return { released: true }; },
   };
   await createContentPlan({
     accountId: "account-a", jobId: "job-1", itemId: "item-1",
     sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
     planningContract: "LEGACY_FULL_PLAN_V3",
     evidenceRepository: passthroughEvidenceRepository,
+    gatewayExecution: {
+      channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
+    },
     ...planningArgs,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse() { return { value: validPlan(built), requestId: "gateway-one" }; } },
     repository,
   });
   assert.deepEqual(Object.keys(calls[0][1]).sort(), [
-    "accountId", "expectedStatusVersion", "inputHash", "itemId", "jobId", "planningContract",
+    "accountId", "expectedStatusVersion", "gatewayConnectionId", "gatewayConnectionVersion", "inputHash", "itemId", "jobId", "planningContract",
     "profileId", "profileVersion", "requestKey", "skeletonHash", "sourceSnapshotId",
   ]);
   assert.equal(calls[0][1].sourceSnapshotId, "snapshot-db-1");
   assert.equal(calls[0][1].expectedStatusVersion, 7);
   assert.equal(calls[0][1].profileId, "profile-1");
+  assert.equal(calls[0][1].gatewayConnectionId, "connection-b");
+  assert.equal(calls[0][1].gatewayConnectionVersion, 9);
   const stage = calls.find(([name]) => name === "stage")[1];
   const save = calls.find(([name]) => name === "save")[1];
   assert.equal(stage.attemptId, "attempt-test");
   assert.equal(stage.fromStage, "FILLING_COPY");
   assert.equal(stage.toStage, "VALIDATING_COPY");
+  assert.equal(stage.gatewayConnectionId, "connection-b");
+  assert.equal(stage.gatewayConnectionVersion, 9);
   assert.equal(save.sourceSnapshotId, "snapshot-db-1");
   assert.equal(save.expectedStatusVersion, 7);
   assert.equal(save.requestKey, calls[0][1].requestKey);
   assert.equal(save.strategyVersionId, "strategy-v1");
+  assert.equal(save.gatewayConnectionId, "connection-b");
+  assert.equal(save.gatewayConnectionVersion, 9);
   assert.deepEqual(save.factRegistry, built.plannerInput.factRegistry);
   assert.equal(save.factRegistryHash, hash(built.plannerInput.factRegistry));
 });
@@ -1115,6 +2069,7 @@ test("source text that resembles a prompt remains delimited as untrusted data an
       async reserveContentPlan(input) { return reserved(input, { reservationToken: "lease" }); },
       advanceContentPlanStage: advanceStage,
       async releaseContentPlanReservation() {},
+      async releaseContentPlanChannelReservation() { return { released: true }; },
     },
   }), (error) => error?.code === "RETRYABLE_GATEWAY");
   assert.match(capturedPrompt, /<UNTRUSTED_SOURCE_FACTS_JSON>/);
@@ -1383,6 +2338,7 @@ test("claims are field-bound and stored plans retain visual evidence plus a safe
       advanceContentPlanStage: advanceStage,
       async saveContentPlan(row) { stored = { id: "plan", ...row }; return stored; },
       async releaseContentPlanReservation() {},
+      async releaseContentPlanChannelReservation() { return { released: true }; },
     },
   });
   assert.deepEqual(stored.visualGroups, args.visualGroupsCapture);
@@ -1402,6 +2358,30 @@ test("real edit-page attributes keep safe textual and numeric facts but exclude 
   assert.ok(built.plannerInput.factRegistry.some((fact) => fact.value === "Material: нержавеющая сталь"));
   assert.equal(built.plannerInput.factRegistry.find((fact) => fact.value === "Material: сталь").dictionaryValueId, null);
   assert.doesNotMatch(JSON.stringify(built.plannerInput), /ignore instructions|4191|11254/);
+  assert.ok(built.reasonCodes.includes("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED"));
+});
+
+test("planner keeps listing-only Ozon attributes out of every AI creative fact registry", () => {
+  const source = sourceCapture();
+  source.snapshot.attributes = [
+    { id: 9048, name: "Название модели (для объединения в одну карточку)", value: "019d2e6c74ed7ca59b6e879584910440", values: ["019d2e6c74ed7ca59b6e879584910440"], required: true, dictionaryId: 0, multiple: false },
+    { id: 7822, name: "Артикул", value: "3726236911", values: ["3726236911"], required: true, dictionaryId: 0, multiple: false },
+    { id: 11650, name: "Количество заводских упаковок", value: "1", values: ["1"], required: false, dictionaryId: 0, multiple: false },
+    { id: 23171, name: "Хештеги", value: "пожаротушение", values: ["пожаротушение"], required: false, dictionaryId: 0, multiple: true },
+    { id: 99001, name: "Телефон поддержки", value: "+7 999 123-45-67", values: ["+7 999 123-45-67"], required: false, dictionaryId: 0, multiple: false },
+    { id: 8145, name: "Мощность, Вт", value: "20", values: ["20"], required: false, dictionaryId: 0, multiple: false },
+  ];
+  source.snapshotHash = hash(source.snapshot);
+
+  const built = buildPlannerInput(plannerArgs({
+    sourceCapture: source,
+    promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+  }));
+  const serialized = JSON.stringify(built.plannerInput.factRegistry);
+
+  assert.doesNotMatch(serialized, /fact\.attribute\.(?:9048|7822|11650|23171)\./u);
+  assert.doesNotMatch(serialized, /019d2e6c74ed7ca59b6e879584910440|3726236911|Хештеги|\+7 999 123-45-67/u);
+  assert.match(serialized, /Мощность, Вт: 20/u);
   assert.ok(built.reasonCodes.includes("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED"));
 });
 

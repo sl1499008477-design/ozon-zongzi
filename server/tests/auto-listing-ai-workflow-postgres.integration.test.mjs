@@ -9,6 +9,8 @@ import {
   createPostgresAutoListingAiWorkflow,
   stageInitialPlanWork,
 } from "../auto-listing-ai-workflow-postgres.mjs";
+import { createPostgresAiOutboxRepository } from "../auto-listing-ai-outbox-postgres.mjs";
+import { autoListingAiMessageDedupeKey } from "../auto-listing-ai-message.mjs";
 import { buildGeneratedAssetObjectKey } from "../auto-listing-asset-store.mjs";
 import { createPostgresGenerationAttemptRepository } from "../auto-listing-generation-attempt-postgres.mjs";
 import {
@@ -17,6 +19,7 @@ import {
 } from "../auto-listing-image-generator.mjs";
 import { createPostgresRichContentRepository } from "../auto-listing-rich-content-repository.mjs";
 import {
+  buildRichContentAttemptInputHash,
   buildRichContentEvidenceIdentity,
 } from "../auto-listing-rich-content.mjs";
 import { evaluateGeneratedCheckerEvidence } from "../auto-listing-result-checker.mjs";
@@ -38,6 +41,7 @@ function acceptedOutcome(phase, outcome, correlationId, failureCode = null) {
   return Object.freeze({
     contractVersion: "V1", disposition: "ACK", phase, outcome,
     retryable: false, failureCode, correlationId,
+    failureScope: null, deliveryState: null, retryAfterMs: null,
   });
 }
 
@@ -111,8 +115,8 @@ if (!enabled) {
       );
       await admin.query(
         `INSERT INTO auto_listing_job_items (
-           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version
-         ) VALUES ($1,$2,$3,$4,$5,$6,'SOURCE_READY',1)`,
+           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order
+         ) VALUES ($1,$2,$3,$4,$5,$6,'SOURCE_READY',1,1)`,
         [ids.item, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouse],
       );
 
@@ -174,6 +178,7 @@ if (!enabled) {
         outcome: {
           contractVersion: "V1", disposition: "FAIL", phase: "PLAN_CONTENT", outcome: "FAILED",
           retryable: false, failureCode: "AUTO_LISTING_CONTENT_PLAN_FAILED", correlationId: ids.correlation,
+          failureScope: "BUSINESS", deliveryState: null, retryAfterMs: null,
         },
       }), { code: "AUTO_LISTING_AI_WORKFLOW_DATABASE_FAILED", retryable: true });
       assert.deepEqual((await admin.query(
@@ -191,8 +196,8 @@ if (!enabled) {
       ];
       await admin.query(
         `INSERT INTO auto_listing_job_items (
-           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version
-         ) VALUES ($1,$2,$3,$4,$5,$6,'GENERATING',3)`,
+           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order
+         ) VALUES ($1,$2,$3,$4,$5,$6,'GENERATING',3,2)`,
         [imageItem, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouse],
       );
       const insertPlan = (planId, inputHash, parentId = null) => admin.query(
@@ -221,6 +226,7 @@ if (!enabled) {
         contractVersion: "V1", disposition: "ACK", phase: "GENERATE_IMAGE_SLOT",
         outcome: "IMAGE_SLOT_SKIPPED", retryable: false,
         failureCode: "AUTO_LISTING_IMAGE_POLICY_REJECTED", correlationId: ids.correlation,
+        failureScope: null, deliveryState: null, retryAfterMs: null,
       };
       const concurrent = await Promise.all([
         workflow.applyPhaseOutcome({ message: imageMessage("slot-2"), outcome: skippedOutcome }),
@@ -275,8 +281,8 @@ if (!enabled) {
       };
       await admin.query(
         `INSERT INTO auto_listing_job_items (
-           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version
-         ) VALUES ($1,$2,$3,$4,$5,$6,'SOURCE_READY',1)`,
+           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order
+         ) VALUES ($1,$2,$3,$4,$5,$6,'SOURCE_READY',1,3)`,
         [journeyItem, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouse],
       );
       const stagedClient = await pool.connect();
@@ -502,22 +508,50 @@ if (!enabled) {
         scope: richScope, planHash, sourceHash, sourceFactEvidence: [fact], assetEvidence: acceptedAssets,
         profileId: ids.profile, profileVersion: 1, modelName: "text-model", promptTemplateVersion: "rich-v1",
       });
+      const richInputHash = buildRichContentAttemptInputHash(richIdentity.inputHash, 3);
       const richReservation = {
-        ...richScope, planHash, sourceHash, profileId: ids.profile, profileVersion: 1,
+        ...richScope, expectedStatusVersion: 3,
+        planHash, sourceHash, profileId: ids.profile, profileVersion: 1,
         modelName: "text-model", promptTemplateVersion: "rich-v1", sourceFactEvidence: [fact],
         assetEvidence: acceptedAssets, factRegistryHash: richIdentity.factRegistryHash,
-        assetHash: richIdentity.assetHash, promptHash: richIdentity.promptHash, inputHash: richIdentity.inputHash,
+        assetHash: richIdentity.assetHash, promptHash: richIdentity.promptHash, inputHash: richInputHash,
         requestEvidence: {
-          requestKey: `auto-listing-rich-${richIdentity.inputHash}`,
+          requestKey: `auto-listing-rich-${richInputHash}`,
           schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1",
         },
         maxAttempts: 3,
       };
+      let richLeaseSequence = 0;
       const richRepository = createPostgresRichContentRepository({
-        pool, token: () => `rich-lease-${suffix}`, id: () => `rich-result-${suffix}`,
+        pool, token: () => `rich-lease-${++richLeaseSequence}-${suffix}`,
+        id: () => `rich-result-${suffix}`,
       });
-      const richLease = await richRepository.reserveRichContentAttempt(richReservation);
-      assert.equal(richLease.status, "RESERVED");
+      const originalRichLease = await richRepository.reserveRichContentAttempt(richReservation);
+      assert.equal(originalRichLease.status, "RESERVED");
+      assert.equal((await richRepository.releaseRichContentAttempt({
+        ...richReservation, ...originalRichLease,
+        errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+      })).status, "GENERATING");
+      await assert.rejects(richRepository.releaseRichContentAttempt({
+        ...richReservation, ...originalRichLease,
+        errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+      }), (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID");
+      const concurrentRich = await Promise.all([
+        richRepository.reserveRichContentAttempt(richReservation),
+        richRepository.reserveRichContentAttempt(richReservation),
+      ]);
+      const richLease = concurrentRich.find(({ status }) => status === "RESERVED");
+      assert.ok(richLease);
+      assert.equal(richLease.attemptNo, 1);
+      assert.notEqual(richLease.leaseToken, originalRichLease.leaseToken);
+      assert.equal(concurrentRich.filter(({ status }) => status === "IN_PROGRESS").length, 1);
+      assert.deepEqual((await admin.query(
+        `SELECT attempt_no,status,lease_token,error_code FROM ai_rich_content_results
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND input_hash=$4`,
+        [ids.account, ids.job, journeyItem, richInputHash],
+      )).rows, [{
+        attempt_no: 1, status: "GENERATING", lease_token: richLease.leaseToken, error_code: null,
+      }]);
       const richContent = {
         version: "AUTO_LISTING_RICH_CONTENT_V1", language: "ru",
         blocks: [
@@ -569,6 +603,148 @@ if (!enabled) {
         "SELECT COUNT(*)::INTEGER AS count FROM auto_listing_ai_outbox WHERE account_id=$1 AND item_id=$2 AND phase LIKE '%UPLOAD%'",
         [ids.account, journeyItem],
       )).rows[0].count, 0);
+
+      const connected = {
+        connection: `connection-${suffix}`, profile: `connected-profile-${suffix}`,
+        job: `connected-job-${suffix}`, item: `connected-item-${suffix}`,
+        outbox: `connected-outbox-${suffix}`, correlation: `connected-correlation-${suffix}`,
+        channel: `connected-channel-${suffix}`,
+      };
+      await admin.query(
+        `INSERT INTO ai_gateway_connection_versions (
+           account_id,id,version,display_name,base_url,ciphertext,iv,auth_tag,algorithm,key_version,
+           fingerprint,status,idempotency_key,request_hash,correlation_id,created_by
+         ) VALUES ($1,$2,1,'Connected','https://gateway.invalid','ciphertext','iv','tag','aes-256-gcm','local-v1',
+           $3,'PENDING',$4,$5,$6,$1)`,
+        [ids.account, connected.connection, `fingerprint-${suffix}`, `connection-key-${suffix}`,
+          "d".repeat(64), connected.correlation],
+      );
+      await admin.query(
+        `UPDATE ai_gateway_connection_versions
+            SET status='VALIDATED',status_version=2,validation_result='{"outcome":"PASSED"}'::JSONB,
+                validation_hash=$3,validated_at=NOW(),validated_by=$1
+          WHERE account_id=$1 AND id=$2 AND version=1`,
+        [ids.account, connected.connection, "e".repeat(64)],
+      );
+      await admin.query(
+        `UPDATE ai_gateway_connection_versions
+            SET status='ACTIVE',status_version=3,activated_at=NOW(),activated_by=$1
+          WHERE account_id=$1 AND id=$2 AND version=1`,
+        [ids.account, connected.connection],
+      );
+      await admin.query(
+        `INSERT INTO ai_gateway_profiles (
+           id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+           text_model,image_model,config_version,enabled,connection_id,connection_version
+         ) VALUES ($1,$2,'Connected','https://gateway.invalid','SUB2API_ENCRYPTED_KEY','SUB2API_RESPONSES',
+           'SUB2API_OPENAI_IMAGES','text-model','image-model',1,FALSE,$3,1)`,
+        [connected.profile, ids.account, connected.connection],
+      );
+      await admin.query(
+        `INSERT INTO auto_listing_ai_profile_channels (
+           account_id,profile_id,profile_version,channel_id,display_name,connection_id,connection_version,channel_order
+         ) VALUES ($1,$2,1,$3,'Connected',$4,1,1)`,
+        [ids.account, connected.profile, connected.channel, connected.connection],
+      );
+      await admin.query(
+        `INSERT INTO auto_listing_jobs (
+           id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,
+           strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,correlation_id
+         ) VALUES ($1,$2,'COLLECT_BOX','CREATED',$3,'{}'::JSONB,$4,$5,$6,$7,1,$2,$8)`,
+        [connected.job, ids.account, `connected-${suffix}`, "f".repeat(64), ids.strategy,
+          ids.policy, connected.profile, connected.correlation],
+      );
+      await admin.query(
+        `INSERT INTO auto_listing_job_items (
+           id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order
+         ) VALUES ($1,$2,$3,$4,$5,$6,'PLANNING',2,1)`,
+        [connected.item, connected.job, ids.account, ids.snapshot, ids.store, ids.warehouse],
+      );
+      const connectedMessage = {
+        contractVersion: "V1", accountId: ids.account, itemId: connected.item, phase: "PLAN_CONTENT",
+        expectedStatusVersion: 2, correlationId: connected.correlation,
+      };
+      await admin.query(
+        `INSERT INTO auto_listing_ai_outbox (
+           id,account_id,job_id,item_id,event_type,dedupe_key,state,contract_version,phase,
+           expected_status_version,correlation_id,payload,next_retry_at
+         ) VALUES ($1,$2,$3,$4,'PLAN_CONTENT',$5,'PENDING','V1','PLAN_CONTENT',2,$6,$7::JSONB,NOW())`,
+        [connected.outbox, ids.account, connected.job, connected.item,
+          autoListingAiMessageDedupeKey(connectedMessage), connected.correlation, JSON.stringify(connectedMessage)],
+      );
+      const outboxRepository = createPostgresAiOutboxRepository({ pool });
+      const adopt = async (relayOwner, workerOwner, workerToken) => {
+        const [claim] = await outboxRepository.claimAutoListingAiWork({
+          accountId: ids.account, workerId: relayOwner, limit: 1, leaseMs: 60_000,
+        });
+        assert.ok(claim);
+        await outboxRepository.markAutoListingAiWorkPublished({
+          accountId: claim.accountId, itemId: claim.itemId, id: claim.id,
+          workerId: claim.leaseOwner, leaseToken: claim.leaseToken, publicationId: claim.publicationId,
+        });
+        return outboxRepository.adoptAutoListingAiWork({
+          accountId: claim.accountId, itemId: claim.itemId, id: claim.id,
+          publicationId: claim.publicationId,
+          dispatchGeneration: claim.workMessage.execution.dispatchGeneration,
+          relayOwner: claim.leaseOwner, relayToken: claim.leaseToken,
+          workerId: workerOwner, workerLeaseToken: workerToken, leaseMs: 60_000,
+        });
+      };
+      const firstAdopted = await adopt("relay-one", "worker-one", "worker-token-one");
+      assert.deepEqual(await workflow.requeueChannelFailure({
+        message: connectedMessage,
+        outcome: {
+          contractVersion: "V1", disposition: "RETRY", phase: "PLAN_CONTENT", outcome: "FAILED",
+          retryable: true, failureCode: "AI_GATEWAY_UNAUTHORIZED", correlationId: connected.correlation,
+          failureScope: "CHANNEL_REVALIDATION", deliveryState: "NOT_SENT", retryAfterMs: null,
+        },
+        execution: firstAdopted.workMessage.execution,
+      }), { disposition: "REQUEUED", status: "PLANNING", statusVersion: 2,
+        enqueued: 0, uncertainResultCount: 0 });
+      assert.deepEqual((await admin.query(
+        `SELECT o.state,o.uncertain_result_count,o.publication_id,c.requires_revalidation,
+                c.assigned_item_id,c.execution_lease_owner
+           FROM auto_listing_ai_outbox o
+           JOIN auto_listing_ai_profile_channels c ON c.account_id=o.account_id AND c.channel_id=$3
+          WHERE o.account_id=$1 AND o.id=$2`,
+        [ids.account, connected.outbox, connected.channel],
+      )).rows[0], {
+        state: "PENDING", uncertain_result_count: 0, publication_id: null,
+        requires_revalidation: true, assigned_item_id: null, execution_lease_owner: null,
+      });
+
+      await admin.query(
+        `UPDATE auto_listing_ai_profile_channels
+            SET requires_revalidation=FALSE,cooldown_until=NULL
+          WHERE account_id=$1 AND channel_id=$2`,
+        [ids.account, connected.channel],
+      );
+      await admin.query(
+        "UPDATE auto_listing_ai_outbox SET uncertain_result_count=1 WHERE account_id=$1 AND id=$2",
+        [ids.account, connected.outbox],
+      );
+      const secondAdopted = await adopt("relay-two", "worker-two", "worker-token-two");
+      assert.deepEqual(await workflow.requeueChannelFailure({
+        message: connectedMessage,
+        outcome: {
+          contractVersion: "V1", disposition: "RETRY", phase: "PLAN_CONTENT", outcome: "FAILED",
+          retryable: true, failureCode: "INVALID_GATEWAY_RESPONSE", correlationId: connected.correlation,
+          failureScope: "CHANNEL_TRANSIENT", deliveryState: "POSSIBLY_SENT", retryAfterMs: null,
+        },
+        execution: secondAdopted.workMessage.execution,
+      }), { disposition: "APPLIED", status: "RETRYABLE_ERROR", statusVersion: 3, enqueued: 0 });
+      assert.deepEqual((await admin.query(
+        `SELECT i.status,i.failure_code,o.state,o.uncertain_result_count,c.assigned_item_id,c.execution_lease_owner
+           FROM auto_listing_job_items i
+           JOIN auto_listing_ai_outbox o ON o.account_id=i.account_id AND o.item_id=i.id
+           JOIN auto_listing_ai_profile_channels c ON c.account_id=i.account_id AND c.channel_id=$3
+          WHERE i.account_id=$1 AND i.id=$2`,
+        [ids.account, connected.item, connected.channel],
+      )).rows[0], {
+        status: "RETRYABLE_ERROR", failure_code: "AUTO_LISTING_AI_RESULT_UNCERTAIN",
+        state: "COMPLETED", uncertain_result_count: 2,
+        assigned_item_id: null, execution_lease_owner: null,
+      });
     } finally {
       await pool?.end();
       try { await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`); } catch {}

@@ -18,6 +18,7 @@ const BODY_KEYS = Object.freeze({
   session: new Set(["expectedDraftVersion", "idempotencyKey", "correlationId"]),
   samples: new Set(["expectedDraftVersion", "sessionId", "sessionSecret", "samples", "idempotencyKey", "correlationId"]),
   remove: new Set(["expectedDraftVersion", "idempotencyKey", "correlationId"]),
+  archive: new Set(["expectedDraftVersion", "idempotencyKey", "correlationId"]),
   analysis: new Set(["costConfirmed", "idempotencyKey", "correlationId"]),
   detail: new Set(["expectedDraftVersion", "patch", "idempotencyKey", "correlationId"]),
   publish: new Set(["expectedDraftVersion", "expectedPublishedStrategyVersionId", "idempotencyKey", "correlationId"]),
@@ -59,7 +60,7 @@ function classify(pathname) {
 
 function methodAllowed(route, method) {
   const methods = {
-    list: ["GET"], settings: ["GET", "PATCH"], drafts: ["POST"], detail: ["GET", "PATCH"],
+    list: ["GET"], settings: ["GET", "PATCH"], drafts: ["POST"], detail: ["GET", "PATCH", "DELETE"],
     session: ["POST"], samples: ["POST"], remove: ["DELETE"], analysis: ["POST"],
     publish: ["POST"], rollback: ["POST"], thumbnail: ["GET"],
   };
@@ -151,7 +152,9 @@ export function createAutoListingCategoryStrategyHttpHandler({
         return true;
       } else {
         let body;
-        try { body = closedBody(await readJson(req), BODY_KEYS[route.kind]); } catch (error) {
+        const bodyKeys = route.kind === "detail" && req.method === "DELETE"
+          ? BODY_KEYS.archive : BODY_KEYS[route.kind];
+        try { body = closedBody(await readJson(req), bodyKeys); } catch (error) {
           if (error?.code) throw error;
           throw routeError();
         }
@@ -161,7 +164,9 @@ export function createAutoListingCategoryStrategyHttpHandler({
         else if (route.kind === "samples") data = await service.confirmSampleSet({ actor, draftId: route.draftId, ...body });
         else if (route.kind === "remove") data = await service.removeSample({ actor, draftId: route.draftId, sampleId: route.sampleId, ...body });
         else if (route.kind === "analysis") data = await service.createAnalysisAttempt({ actor, draftId: route.draftId, ...body });
-        else if (route.kind === "detail") data = await service.updateDraft({ actor, draftId: route.draftId, ...body });
+        else if (route.kind === "detail" && req.method === "DELETE") {
+          data = await service.archiveDraft({ actor, draftId: route.draftId, ...body });
+        } else if (route.kind === "detail") data = await service.updateDraft({ actor, draftId: route.draftId, ...body });
         else if (route.kind === "publish") data = await service.publishDraft({ actor, draftId: route.draftId, ...body });
         else data = await service.rollbackDraft({ actor, draftId: route.draftId, ...body });
       }

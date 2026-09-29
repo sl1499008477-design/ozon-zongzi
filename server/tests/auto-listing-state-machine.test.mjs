@@ -4,6 +4,7 @@ import {
   assertAutoListingTransition,
   assertAutoListingRetryEvent,
   isSafeAutoListingBlockedCancellationFailure,
+  isSafeAutoListingPlanningRetryFailure,
   isSafeAutoListingPreOzonRetryFailure,
   recoveryPointForRetryableFailure,
   nextAutoListingStatus,
@@ -27,10 +28,26 @@ test("only content-planning blocks may be cancelled after reaching BLOCKED", () 
     "AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED",
     "AUTO_LISTING_CONTENT_PLAN_RESERVATION_FAILED",
     "AUTO_LISTING_CONTENT_PLAN_VERSION_CONFLICT",
+    "AUTO_LISTING_REFERENCE_IMAGE_REQUIRED",
   ]) assert.equal(isSafeAutoListingBlockedCancellationFailure(code), true);
   for (const code of ["AUTO_LISTING_UPLOAD_RESULT_UNCERTAIN", "AUTO_LISTING_IMAGE_FAILED", null]) {
     assert.equal(isSafeAutoListingBlockedCancellationFailure(code), false);
   }
+});
+
+test("source cleanup transport and persistence failures remain recoverable in planning", () => {
+  for (const code of [
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_FAILED",
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_CHECK_FAILED",
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_GATEWAY_INVALID",
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_CHECK_GATEWAY_INVALID",
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_REPOSITORY_FAILED",
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_CHECK_REPOSITORY_FAILED",
+    "AUTO_LISTING_SOURCE_IMAGE_DERIVATIVE_REPOSITORY_FAILED",
+    "AUTO_LISTING_SOURCE_IMAGE_DERIVATIVE_STORAGE_UNAVAILABLE",
+    "AUTO_LISTING_SOURCE_IMAGE_DERIVATIVE_STORAGE_UNVERIFIED",
+  ]) assert.equal(isSafeAutoListingPlanningRetryFailure(code), true, code);
+  assert.equal(isSafeAutoListingPlanningRetryFailure("AUTO_LISTING_SOURCE_IMAGE_CLEANUP_INPUT_INVALID"), false);
 });
 
 const permittedTransitions = [
@@ -41,6 +58,7 @@ const permittedTransitions = [
   ["GENERATING", "CONTENT_READY_FOR_DIRECT_UPLOAD", "UPLOAD_QUEUED"],
   ["READY_FOR_REVIEW", "APPROVE_UPLOAD", "UPLOAD_QUEUED"],
   ["BLOCKED", "APPROVE_UPLOAD", "UPLOAD_QUEUED"],
+  ["BLOCKED", "SOURCE_IMAGE_DECISION_ACCEPTED", "PLANNING"],
   ["UPLOAD_QUEUED", "START_UPLOAD", "UPLOADING"],
   ["UPLOADING", "UPLOAD_SUCCEEDED", "SUCCEEDED"],
   ["PLANNING", "RETRYABLE_FAILURE", "RETRYABLE_ERROR"],
@@ -50,6 +68,7 @@ const permittedTransitions = [
   ["RETRYABLE_ERROR", "RETRY_PLANNING", "PLANNING", "PLANNING"],
   ["RETRYABLE_ERROR", "RETRY_GENERATION", "GENERATING", "GENERATION"],
   ["RETRYABLE_ERROR", "RETRY_UPLOAD", "UPLOAD_QUEUED", "UPLOAD"],
+  ["RETRYABLE_ERROR", "REGENERATE", "PLANNING"],
   ["READY_FOR_REVIEW", "REGENERATE", "PLANNING"],
   ["CREATED", "BLOCK", "BLOCKED"],
   ["SOURCE_READY", "BLOCK", "BLOCKED"],
@@ -191,7 +210,7 @@ test("rejects every unapproved event from closed states", () => {
   ];
   for (const status of ["SUCCEEDED", "BLOCKED", "CANCELLED"]) {
     for (const eventType of events) {
-      if (status !== "BLOCKED" || !["APPROVE_UPLOAD", "CANCEL"].includes(eventType)) expectForbidden(status, eventType);
+      if (status !== "BLOCKED" || !["APPROVE_UPLOAD", "SOURCE_IMAGE_DECISION_ACCEPTED", "CANCEL"].includes(eventType)) expectForbidden(status, eventType);
     }
   }
 });

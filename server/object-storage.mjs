@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
+import {createReadStream} from 'node:fs';
+import {stat as statFile} from 'node:fs/promises';
 import { types as utilTypes } from "node:util";
 
 let clientPromise = null;
@@ -723,6 +725,16 @@ export async function putObjectFromBuffer({ key, name, contentType, buffer, maxB
   };
 }
 
+export async function putObjectFromFile({key,path,contentType,metadata={},maxBytes=2*1024**3}) {
+  const info=await statFile(path);
+  if(!info.isFile()||info.size<=0||info.size>maxBytes)throw new Error('待保存文件为空或超出大小限制');
+  await ensureBucket();
+  const client=await getClient(),stream=createReadStream(path);
+  try{await client.putObject(bucketName(),key,stream,info.size,{'Content-Type':contentType,...metadata});}
+  finally{stream.destroy();}
+  return {key,bucket:bucketName(),contentType,size:info.size};
+}
+
 export async function getObjectStream(key) {
   const client = await getClient();
   return client.getObject(bucketName(), String(key || ""));
@@ -769,9 +781,11 @@ export async function removeObject(key, options = {}) {
 }
 
 export async function objectStorageHealth() {
-  await ensureBucket();
+  const client = await getClient();
+  const exists = await client.bucketExists(bucketName());
   return {
-    ok: true,
+    ok: exists,
     ...objectStorageInfo(),
+    ...(exists ? {} : { message: "文件存储桶尚未创建，请先完成存储初始化" }),
   };
 }

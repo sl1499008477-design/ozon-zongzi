@@ -1,14 +1,24 @@
 import crypto from "node:crypto";
 import { isIP } from "node:net";
 
-export const AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION = "V1";
+export const AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION = "V3";
+const SUPPORTED_CONTRACT_VERSIONS = new Set(["V1", "V2", AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION]);
 export const AUTO_LISTING_AI_MESSAGE_MAX_UTF8_BYTES = 2_048;
 export const AUTO_LISTING_AI_PHASES = Object.freeze([
-  "PLAN_CONTENT",
   "MATERIALIZE_SOURCE_ASSET",
+  "ANALYZE_SOURCE_IMAGE_BATCH",
+  "CLEAN_SOURCE_IMAGE_OVERLAY",
+  "CHECK_SOURCE_IMAGE_CLEANUP",
+  "RECONCILE_SOURCE_IMAGE_ANALYSIS",
+  "PLAN_CONTENT",
   "FINALIZE_MATERIALIZED_PLAN",
   "GENERATE_IMAGE_SLOT",
+  "CHECK_IMAGE_GROUP",
   "GENERATE_RICH_CONTENT",
+]);
+const LEGACY_PHASES = new Set([
+  "PLAN_CONTENT", "MATERIALIZE_SOURCE_ASSET", "FINALIZE_MATERIALIZED_PLAN",
+  "GENERATE_IMAGE_SLOT", "GENERATE_RICH_CONTENT",
 ]);
 
 const COMMON_KEYS = Object.freeze([
@@ -19,12 +29,26 @@ const COMMON_KEYS = Object.freeze([
   "expectedStatusVersion",
   "correlationId",
 ]);
-const PHASE_KEY = Object.freeze({
-  PLAN_CONTENT: null,
+const PHASE_KEYS = Object.freeze({
+  PLAN_CONTENT: Object.freeze([]),
+  MATERIALIZE_SOURCE_ASSET: Object.freeze(["sourceAssetId"]),
+  ANALYZE_SOURCE_IMAGE_BATCH: Object.freeze(["analysisBatchId"]),
+  CLEAN_SOURCE_IMAGE_OVERLAY: Object.freeze(["analysisRunId", "derivativeAttemptId"]),
+  CHECK_SOURCE_IMAGE_CLEANUP: Object.freeze(["analysisRunId", "derivativeAttemptId"]),
+  RECONCILE_SOURCE_IMAGE_ANALYSIS: Object.freeze(["analysisRunId"]),
+  FINALIZE_MATERIALIZED_PLAN: Object.freeze([]),
+  GENERATE_IMAGE_SLOT: Object.freeze(["slotKey"]),
+  CHECK_IMAGE_GROUP: Object.freeze(["visualGroupKey"]),
+  GENERATE_RICH_CONTENT: Object.freeze([]),
+});
+const PHASE_TARGET_KEY = Object.freeze({
   MATERIALIZE_SOURCE_ASSET: "sourceAssetId",
-  FINALIZE_MATERIALIZED_PLAN: null,
+  ANALYZE_SOURCE_IMAGE_BATCH: "analysisBatchId",
+  CLEAN_SOURCE_IMAGE_OVERLAY: "derivativeAttemptId",
+  CHECK_SOURCE_IMAGE_CLEANUP: "derivativeAttemptId",
+  RECONCILE_SOURCE_IMAGE_ANALYSIS: "analysisRunId",
   GENERATE_IMAGE_SLOT: "slotKey",
-  GENERATE_RICH_CONTENT: null,
+  CHECK_IMAGE_GROUP: "visualGroupKey",
 });
 const SAFE_IDENTIFIER = /^[\p{L}\p{N}][\p{L}\p{N}._:-]*$/u;
 const FORBIDDEN_VALUE = /(?:https?:|ftp:|file:|data:|www\.|@|(?:^|[._:-])(?:api[-_]?key|secret|password|passwd|bearer|authorization|cookie|credential|private[-_]?key|access[-_]?token|refresh[-_]?token)(?:$|[._:-]))/iu;
@@ -81,9 +105,10 @@ export function normalizeAutoListingAiMessage(input) {
     const value = snapshotOwnData(input);
     const contractVersion = value.contractVersion;
     const phase = value.phase;
-    if (contractVersion !== AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION || !Object.hasOwn(PHASE_KEY, phase)) throw invalid();
-    const phaseKey = PHASE_KEY[phase];
-    const keys = phaseKey ? [...COMMON_KEYS, phaseKey] : COMMON_KEYS;
+    if (!SUPPORTED_CONTRACT_VERSIONS.has(contractVersion) || !Object.hasOwn(PHASE_KEYS, phase)
+      || (contractVersion !== "V3" && !LEGACY_PHASES.has(phase))) throw invalid();
+    const phaseKeys = PHASE_KEYS[phase];
+    const keys = [...COMMON_KEYS, ...phaseKeys];
     if (!exactKeys(value, keys)
       || !Number.isInteger(value.expectedStatusVersion)
       || value.expectedStatusVersion < 1
@@ -98,7 +123,7 @@ export function normalizeAutoListingAiMessage(input) {
       phase: value.phase,
       expectedStatusVersion: value.expectedStatusVersion,
       correlationId: identifier(value.correlationId),
-      ...(phaseKey ? { [phaseKey]: identifier(value[phaseKey]) } : {}),
+      ...Object.fromEntries(phaseKeys.map((key) => [key, identifier(value[key])])),
     };
     if (Buffer.byteLength(JSON.stringify(message), "utf8") > AUTO_LISTING_AI_MESSAGE_MAX_UTF8_BYTES) {
       throw invalid();
@@ -107,6 +132,12 @@ export function normalizeAutoListingAiMessage(input) {
   } catch {
     throw invalid();
   }
+}
+
+export function autoListingAiMessagePhaseTarget(input) {
+  const message = normalizeAutoListingAiMessage(input);
+  const targetKey = PHASE_TARGET_KEY[message.phase];
+  return targetKey === undefined ? null : message[targetKey];
 }
 
 export function canonicalizeAutoListingAiMessage(input) {

@@ -62,7 +62,7 @@ function selection(overrides = {}) {
 
 function assertContractRejected(operation) {
   assert.throws(operation, (error) => (
-    error?.code === "ACCOUNT_SHARED_OZON_CATEGORY_CONTRACT_INVALID"
+    error?.code === "ACCOUNT_SHARED_ZONGZI_CATEGORY_CONTRACT_INVALID"
       && !String(error?.message).includes("raw-a")
       && !Object.hasOwn(error, "details")
   ));

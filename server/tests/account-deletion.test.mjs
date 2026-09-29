@@ -60,6 +60,10 @@ function scopedFixture() {
       requestId: "request-other",
       sku: "4862904234",
     }],
+    collectorOzonEnrichmentTaskControls: [
+      { accountId: 'account-target', taskGroupKey: 'run:target', controlState: 'PAUSED' },
+      { accountId: 'account-other', taskGroupKey: 'run:other', controlState: 'CANCELLED' },
+    ],
     collectOzonCategorySourceEvidence: [{
       id: "resolution-target",
       accountId: "account-target",
@@ -159,6 +163,9 @@ test("removeAccountScope removes only the deleted account business scope and kee
     state.collectorOzonEnrichmentJobs.map((item) => item.id),
     ["enrichment-job-other"],
   );
+  assert.deepEqual(state.collectorOzonEnrichmentTaskControls, [
+    { accountId: 'account-other', taskGroupKey: 'run:other', controlState: 'CANCELLED' },
+  ]);
   assert.deepEqual(
     state.collectOzonCategorySourceEvidence.map((item) => item.id),
     ["resolution-other"],

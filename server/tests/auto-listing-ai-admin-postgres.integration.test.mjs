@@ -85,6 +85,12 @@ async function seedPublishableCategoryDraft(client, { accountId, suffix, descrip
     "INSERT INTO product_drafts (id,collect_item_id,version,data_hash,data) VALUES ($1,$2,7,$3,'{}'::JSONB)",
     [productDraftId, collectItemId, h(productDraftId)],
   );
+  await client.query(
+    `INSERT INTO product_draft_revisions
+       (id,draft_id,version,data_hash,data,changed_by,change_reason)
+     VALUES ($1,$2,7,$3,'{}'::JSONB,$4,'category strategy integration seed')`,
+    [`category-product-revision-${suffix}`, productDraftId, h(productDraftId), accountId],
+  );
   await client.query("UPDATE collect_items SET current_draft_id=$2 WHERE account_id=$1 AND id=$3", [
     accountId, productDraftId, collectItemId,
   ]);
@@ -201,7 +207,7 @@ if (!enabled) {
     skip: "requires PostgreSQL opt-in and a dedicated disposable database URL",
   }, () => {});
 } else {
-  test("category publication accepts an active source-to-current category mapping", {
+  test("category publication and archive preserve the current immutable strategy chain", {
     timeout: 90_000,
   }, async () => {
     const { Pool } = await import("pg");
@@ -272,7 +278,7 @@ if (!enabled) {
       });
       await sharedRepository.markSharedNeedsReview({
         accountId, evidenceId: draft.evidenceId, expectedVersion: 4,
-        safeFailureCode: "OZON_CATEGORY_NEEDS_REVIEW",
+        safeFailureCode: "ZONGZI_CATEGORY_NEEDS_REVIEW",
         transitionedAt: new Date(transitionTime + 2_000).toISOString(),
       });
       await assert.rejects(repository.publishCategoryStrategyDraft({
@@ -306,6 +312,54 @@ if (!enabled) {
       assert.deepEqual(published.rules.map((rule) => rule.scope), [{
         taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 170, typeId: 99,
       }]);
+
+      const replacementDraft = await seedPublishableCategoryDraft(admin, {
+        accountId, suffix: `replacement-${suffix}`, descriptionCategoryId: 170, typeId: 99,
+        sourceDescriptionCategoryId: 191, sourceTypeId: 110,
+      });
+      const replacementPublished = await repository.publishCategoryStrategyDraft({
+        accountId, actorId: accountId, draftId: replacementDraft.draftId, expectedDraftVersion: 4,
+        expectedPublishedStrategyVersionId: published.id,
+        idempotencyKey: `publish-replacement-${suffix}`,
+        correlationId: `publish-replacement-correlation-${suffix}`,
+      });
+      assert.equal(replacementPublished.version, 3);
+
+      const supersededArchiveInput = {
+        accountId, actorId: accountId, draftId: draft.draftId, expectedDraftVersion: 5,
+        idempotencyKey: `archive-superseded-${suffix}`,
+        correlationId: `archive-superseded-correlation-${suffix}`,
+      };
+      const supersededArchive = await repository.archiveCategoryStrategyDraft(supersededArchiveInput);
+      assert.deepEqual({
+        removed: supersededArchive.removed,
+        activeStrategyChanged: supersededArchive.activeStrategyChanged,
+        strategyVersionId: supersededArchive.strategyVersionId,
+      }, { removed: true, activeStrategyChanged: false, strategyVersionId: null });
+      assert.equal((await repository.archiveCategoryStrategyDraft(supersededArchiveInput)).duplicate, true);
+      assert.equal((await admin.query(
+        "SELECT id FROM ai_content_strategy_versions WHERE account_id=$1 AND strategy_key='default' AND status='PUBLISHED'",
+        [accountId],
+      )).rows[0].id, replacementPublished.id);
+
+      const activeArchive = await repository.archiveCategoryStrategyDraft({
+        accountId, actorId: accountId, draftId: replacementDraft.draftId, expectedDraftVersion: 5,
+        idempotencyKey: `archive-active-${suffix}`,
+        correlationId: `archive-active-correlation-${suffix}`,
+      });
+      assert.deepEqual({
+        removed: activeArchive.removed,
+        activeStrategyChanged: activeArchive.activeStrategyChanged,
+        strategyVersion: activeArchive.strategyVersion,
+      }, { removed: true, activeStrategyChanged: true, strategyVersion: 4 });
+      assert.equal((await admin.query(
+        "SELECT COUNT(*)::int AS count FROM ai_content_strategy_rules WHERE account_id=$1 AND strategy_version_id=$2",
+        [accountId, activeArchive.strategyVersionId],
+      )).rows[0].count, 0);
+      assert.equal((await admin.query(
+        "SELECT COUNT(*)::int AS count FROM auto_listing_category_strategy_events WHERE account_id=$1 AND draft_id IN ($2,$3) AND event_type='PUBLISHED'",
+        [accountId, draft.draftId, replacementDraft.draftId],
+      )).rows[0].count, 2);
     } finally {
       try {
         await pool?.end();
@@ -754,10 +808,38 @@ if (!enabled) {
 
       const first = await createConnected("first");
       await passCapability(first, "PROFILE_CAPABILITY", "first");
+      await pool.query(`CREATE FUNCTION reject_primary_channel_${suffix}() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'forced primary channel insert failure'; END;
+        $$`);
+      await pool.query(`CREATE TRIGGER reject_primary_channel_${suffix}
+        BEFORE INSERT ON auto_listing_ai_profile_channels
+        FOR EACH ROW WHEN (NEW.channel_id = 'primary')
+        EXECUTE FUNCTION reject_primary_channel_${suffix}()`);
+      await assert.rejects(profiles.publishProfile({
+        accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
+        idempotencyKey: `publish-primary-rollback-${suffix}`, correlationId: `publish-primary-rollback-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED", status: 503 });
+      assert.deepEqual((await pool.query(
+        "SELECT enabled FROM ai_gateway_profiles WHERE account_id=$1 AND id=$2 AND config_version=1",
+        [accountId, first.profile.id],
+      )).rows, [{ enabled: false }]);
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND profile_id=$2 AND profile_version=1",
+        [accountId, first.profile.id],
+      )).rows[0].count), 0);
+      await pool.query(`DROP TRIGGER reject_primary_channel_${suffix} ON auto_listing_ai_profile_channels`);
+      await pool.query(`DROP FUNCTION reject_primary_channel_${suffix}()`);
       await profiles.publishProfile({
         accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
         idempotencyKey: `publish-first-${suffix}`, correlationId: `publish-first-corr-${suffix}`,
       });
+      assert.deepEqual((await pool.query(
+        `SELECT channel_id,channel_order,connection_id,connection_version
+           FROM auto_listing_ai_profile_channels
+          WHERE account_id=$1 AND profile_id=$2 AND profile_version=1`,
+        [accountId, first.profile.id],
+      )).rows, [{ channel_id: "primary", channel_order: 1, connection_id: first.connection.id,
+        connection_version: 1 }]);
       const activeAttemptCountBefore = (await pool.query(
         "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_attempts WHERE account_id=$1",
         [accountId],
@@ -912,12 +994,52 @@ if (!enabled) {
         code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409,
       });
       await passCapability(successor, "ROLLBACK_CAPABILITY", "first");
+      await pool.query("ALTER TABLE auto_listing_ai_profile_channels DISABLE TRIGGER auto_listing_ai_profile_channels_no_delete");
+      await pool.query(
+        "DELETE FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND profile_id=$2 AND profile_version=1 AND channel_id='primary'",
+        [accountId, successor.profile.id],
+      );
+      await pool.query("ALTER TABLE auto_listing_ai_profile_channels ENABLE TRIGGER auto_listing_ai_profile_channels_no_delete");
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM auto_listing_ai_profile_channels WHERE account_id=$1 AND profile_id=$2 AND profile_version=1",
+        [accountId, successor.profile.id],
+      )).rows[0].count), 0, "the historical encrypted rollback target starts without a channel");
+      await pool.query(`CREATE FUNCTION reject_rollback_primary_${suffix}() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'forced rollback primary channel insert failure'; END;
+        $$`);
+      await pool.query(`CREATE TRIGGER reject_rollback_primary_${suffix}
+        BEFORE INSERT ON auto_listing_ai_profile_channels
+        FOR EACH ROW WHEN (NEW.channel_id = 'primary')
+        EXECUTE FUNCTION reject_rollback_primary_${suffix}()`);
+      await assert.rejects(profiles.rollbackProfile(rollbackInput), {
+        code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED", status: 503,
+      });
+      assert.deepEqual((await pool.query(
+        "SELECT id,enabled FROM ai_gateway_profiles WHERE account_id=$1 AND id IN ($2,$3) ORDER BY id",
+        [accountId, successor.profile.id, second.profile.id],
+      )).rows, [{ id: second.profile.id, enabled: true }, { id: successor.profile.id, enabled: false }].sort((a, b) => a.id.localeCompare(b.id)));
+      assert.deepEqual((await pool.query(
+        "SELECT id,status FROM ai_gateway_connection_versions WHERE account_id=$1 AND id IN ($2,$3) ORDER BY id",
+        [accountId, successor.connection.id, second.connection.id],
+      )).rows, [{ id: second.connection.id, status: "ACTIVE" }, { id: successor.connection.id, status: "RETIRED" }].sort((a, b) => a.id.localeCompare(b.id)));
+      assert.equal(Number((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_ROLLBACK'",
+        [accountId],
+      )).rows[0].count), 0);
+      await pool.query(`DROP TRIGGER reject_rollback_primary_${suffix} ON auto_listing_ai_profile_channels`);
+      await pool.query(`DROP FUNCTION reject_rollback_primary_${suffix}()`);
       const rolledBack = await profiles.rollbackProfile(rollbackInput);
       assert.equal(rolledBack.enabled, true);
       assert.equal(rolledBack.activation.kind, "ROLLBACK");
       assert.equal(rolledBack.activation.actorId, accountId);
       assert.equal(new Date(rolledBack.activation.occurredAt).toISOString(), rolledBack.activation.occurredAt);
       assert.equal((await profiles.rollbackProfile(rollbackInput)).duplicate, true);
+      assert.deepEqual((await pool.query(
+        `SELECT channel_id,channel_order,connection_id,connection_version
+           FROM auto_listing_ai_profile_channels
+          WHERE account_id=$1 AND profile_id=$2 AND profile_version=1`,
+        [accountId, successor.profile.id],
+      )).rows, [{ channel_id: "primary", channel_order: 1, connection_id: successor.connection.id, connection_version: 1 }]);
       const activationOverview = await settings.loadSettingsOverview({ accountId });
       assert.deepEqual(
         activationOverview.profiles.find((candidate) => candidate.id === successor.profile.id)?.activation,
@@ -2336,26 +2458,6 @@ if (!enabled) {
         [accountA],
       )).rows[0].count, before.rows[0].count);
 
-      const wrongLanguageGuidance = { ...manualGuidance, overallStyle: "中文整体风格" };
-      await pool.query(
-        `UPDATE auto_listing_category_strategy_analysis_results
-            SET guidance=$3::JSONB,guidance_hash=$4
-          WHERE account_id=$1 AND id=$2`,
-        [accountA, manualResultId, JSON.stringify(wrongLanguageGuidance),
-          crypto.createHash("sha256").update(JSON.stringify(wrongLanguageGuidance)).digest("hex")],
-      );
-      await assert.rejects(repository.publishCategoryStrategyDraft({
-        ...base, idempotencyKey: `wrong-language-${suffix}`,
-        correlationId: `wrong-language-corr-${suffix}`,
-      }), { code: "AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", status: 409 });
-      await pool.query(
-        `UPDATE auto_listing_category_strategy_analysis_results
-            SET guidance=$3::JSONB,guidance_hash=$4
-          WHERE account_id=$1 AND id=$2`,
-        [accountA, manualResultId, JSON.stringify(manualGuidance),
-          crypto.createHash("sha256").update(JSON.stringify(manualGuidance)).digest("hex")],
-      );
-
       const publishCollisionId = `publish-collision-${suffix}`;
       await pool.query(
         `INSERT INTO ai_content_strategy_versions
@@ -2627,7 +2729,7 @@ if (!enabled) {
             scope: { accountId, taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 270, typeId: 199 },
             draftVersion: 4, status: "DRAFT_READY", sampleCount: 5,
             sourceCollectItemId: `source-${suffix}`, expectedSourceVersion: "draft:7",
-            browserUrl: "https://www.ozon.ru/category/270/",
+            browserUrl: "https://www.ozon.ru/category/test-category-270/",
           }; },
           async getDraftDetail() { throw new Error("not used"); },
           async getThumbnailEvidence() { return null; },

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import {
+  AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION,
   autoListingAiMessageDedupeKey,
   canonicalizeAutoListingAiMessage,
   isSafeAutoListingAiIdentifier,
@@ -113,7 +114,8 @@ function replay(row, value, action, requestHash) {
 
 function planMessage(value, expectedStatusVersion) {
   return normalizeAutoListingAiMessage({
-    contractVersion: "V1", accountId: value.accountId, itemId: value.itemId,
+    contractVersion: AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION,
+    accountId: value.accountId, itemId: value.itemId,
     phase: "PLAN_CONTENT", expectedStatusVersion, correlationId: value.correlationId,
   });
 }
@@ -141,7 +143,7 @@ async function execute(pool, raw, action) {
       return duplicate;
     }
     const boundary = await query(client,
-      `SELECT i.status,i.status_version,i.failure_code
+      `SELECT i.status,i.status_version,i.recovery_point,i.failure_code
          FROM auto_listing_job_items AS i
          JOIN auto_listing_jobs AS j ON j.account_id=i.account_id AND j.id=i.job_id
         WHERE i.account_id=$1 AND i.job_id=$2 AND i.id=$3
@@ -153,6 +155,8 @@ async function execute(pool, raw, action) {
     if (row.status === "BLOCKED"
       && !((action === "APPROVE_UPLOAD" && isSafeAutoListingPreOzonRetryFailure(row.failure_code))
         || (action === "CANCEL" && isSafeAutoListingBlockedCancellationFailure(row.failure_code)))) throw notAllowed();
+    if (row.status === "RETRYABLE_ERROR" && action === "REGENERATE"
+      && !["PLANNING", "GENERATION"].includes(row.recovery_point)) throw notAllowed();
     let nextStatus;
     try { nextStatus = nextAutoListingStatus(row.status, action); } catch { throw notAllowed(); }
     if ((action === "REGENERATE" && nextStatus !== "PLANNING")
@@ -198,10 +202,11 @@ async function execute(pool, raw, action) {
            available_at,contract_version,phase,phase_target_id,expected_status_version,
            correlation_id,next_retry_at
          ) VALUES ($1,$2,$3,$4,NULL,'PLAN_CONTENT',$5,$6::JSONB,'PENDING',0,NOW(),
-           'V1','PLAN_CONTENT',NULL,$7,$8,NOW())
+           $9,'PLAN_CONTENT',NULL,$7,$8,NOW())
          RETURNING id`,
         [`auto-listing-outbox-${dedupeKey}`, value.accountId, value.jobId, value.itemId,
-          dedupeKey, canonicalizeAutoListingAiMessage(message), nextVersion, value.correlationId]);
+          dedupeKey, canonicalizeAutoListingAiMessage(message), nextVersion, value.correlationId,
+          message.contractVersion]);
       if (outbox?.rowCount !== 1) throw conflict();
     }
     if (action === "APPROVE_UPLOAD") {

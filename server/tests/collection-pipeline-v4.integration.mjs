@@ -1,4 +1,4 @@
-import "../env.mjs";
+import "./support/dedicated-postgres-test-environment.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";

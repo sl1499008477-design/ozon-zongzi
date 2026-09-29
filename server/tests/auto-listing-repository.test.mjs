@@ -344,13 +344,225 @@ test("ordinary list ranks item rows before limit and filters unselected siblings
   assert.deepEqual(full.events.map((event) => event.id), ["event-job", "event-a", "event-sibling"]);
 });
 
-function warehouseGraph({ itemCount = 1, priceMultiplierMicros } = {}) {
+test("job reads project durable AI queue state in the existing item query", async () => {
+  const calls = [];
+  const createdAt = new Date("2026-08-28T01:00:00.000Z");
+  const queueRows = [
+    {
+      id: "item-calling", status: "GENERATING", status_version: 4,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-calling", source_version: "1", snapshot_hash: "hash-calling",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "CALLING_AI", ai_channel_display_name: "主通道",
+      ai_channel_switching: false, ai_channel_wait_started_at: null,
+    },
+    {
+      id: "item-takeover", status: "PLANNING", status_version: 2,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-takeover", source_version: "1", snapshot_hash: "hash-takeover",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "WAITING_FOR_AI_CHANNEL", ai_channel_display_name: "备用通道",
+      ai_channel_switching: false, ai_channel_wait_started_at: new Date("2026-08-28T01:01:00.000Z"),
+    },
+    {
+      id: "item-switching", status: "GENERATING", status_version: 5,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-switching", source_version: "1", snapshot_hash: "hash-switching",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "SWITCHING_AI_CHANNEL", ai_channel_display_name: "故障通道",
+      ai_channel_switching: true, ai_channel_wait_started_at: new Date("2026-08-28T01:02:00.000Z"),
+    },
+    {
+      id: "item-waiting", status: "PLANNING", status_version: 3,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-waiting", source_version: "1", snapshot_hash: "hash-waiting",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "WAITING_FOR_AI_CHANNEL", ai_channel_display_name: null,
+      ai_channel_switching: false, ai_channel_wait_started_at: new Date("2026-08-28T01:03:00.000Z"),
+    },
+    {
+      id: "item-complete", status: "READY_FOR_REVIEW", status_version: 6,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-complete", source_version: "1", snapshot_hash: "hash-complete",
+      created_at: createdAt, updated_at: createdAt,
+      ai_queue_state: "CALLING_AI", ai_channel_display_name: "不得泄漏",
+      ai_channel_switching: true, ai_channel_wait_started_at: createdAt,
+    },
+    {
+      id: "item-uploading", status: "UPLOADING", status_version: 7,
+      target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+      source_record_id: "collect-uploading", source_version: "1", snapshot_hash: "hash-uploading",
+      created_at: createdAt, updated_at: createdAt,
+      upload_asset_total: 12, upload_asset_published: 3,
+    },
+  ];
+  const pool = {
+    async connect() { return pool; },
+    release() {},
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/SELECT id,account_id,source_type,status,strategy_version_id/.test(sql)) return { rows: [{
+        id: "job-queue", account_id: "account-a", source_type: "COLLECT_BOX", status: "CREATED",
+        strategy_version_id: "strategy-a", correlation_id: "corr-queue",
+        created_at: createdAt, updated_at: createdAt,
+      }] };
+      if (/FROM auto_listing_job_items i/.test(sql)) return { rows: queueRows };
+      if (/FROM auto_listing_events/.test(sql)) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  };
+
+  const job = await createAutoListingRepository({ pool }).getJob({ accountId: "account-a", jobId: "job-queue" });
+
+  assert.deepEqual(job.items.map((item) => ({
+    id: item.id,
+    aiQueueState: item.aiQueueState,
+    aiChannelDisplayName: item.aiChannelDisplayName,
+    aiChannelSwitching: item.aiChannelSwitching,
+    aiChannelWaitStartedAt: item.aiChannelWaitStartedAt,
+  })), [
+    { id: "item-calling", aiQueueState: "CALLING_AI", aiChannelDisplayName: "主通道", aiChannelSwitching: false, aiChannelWaitStartedAt: null },
+    { id: "item-takeover", aiQueueState: "WAITING_FOR_AI_CHANNEL", aiChannelDisplayName: "备用通道", aiChannelSwitching: false, aiChannelWaitStartedAt: new Date("2026-08-28T01:01:00.000Z") },
+    { id: "item-switching", aiQueueState: "SWITCHING_AI_CHANNEL", aiChannelDisplayName: "故障通道", aiChannelSwitching: true, aiChannelWaitStartedAt: new Date("2026-08-28T01:02:00.000Z") },
+    { id: "item-waiting", aiQueueState: "WAITING_FOR_AI_CHANNEL", aiChannelDisplayName: null, aiChannelSwitching: false, aiChannelWaitStartedAt: new Date("2026-08-28T01:03:00.000Z") },
+    { id: "item-complete", aiQueueState: null, aiChannelDisplayName: null, aiChannelSwitching: false, aiChannelWaitStartedAt: null },
+    { id: "item-uploading", aiQueueState: null, aiChannelDisplayName: null, aiChannelSwitching: false, aiChannelWaitStartedAt: null },
+  ]);
+  assert.deepEqual(job.items.find(({ id }) => id === "item-uploading").uploadPreparation,
+    { published: 3, total: 12 });
+  const itemReads = calls.filter(({ sql }) => /FROM auto_listing_job_items i/.test(sql));
+  assert.equal(itemReads.length, 1);
+  assert.match(itemReads[0].sql, /LEFT JOIN LATERAL[\s\S]*auto_listing_ai_outbox AS ai_queue/u);
+  assert.match(itemReads[0].sql, /auto_listing_ai_profile_channels AS assigned_channel/u);
+  assert.match(itemReads[0].sql, /auto_listing_ai_profile_channels AS available_channel/u);
+  assert.match(itemReads[0].sql, /ai_queue\.expected_status_version=i\.status_version/u);
+  assert.match(itemReads[0].sql, /WHEN live_execution\.outbox_id IS NOT NULL THEN 'CALLING_AI'[\s\S]*WHEN latest_failure\.outbox_id IS NOT NULL THEN 'SWITCHING_AI_CHANNEL'[\s\S]*runnable_queue\.assignment_exact IS TRUE THEN 'WAITING_FOR_AI_CHANNEL'/u);
+  assert.match(itemReads[0].sql, /auto_listing_ai_outbox AS live_queue[\s\S]*live_queue\.state='PROCESSING'[\s\S]*\) live_execution ON TRUE/u);
+  assert.match(itemReads[0].sql, /live_channel\.execution_lease_owner=live_queue\.lease_owner[\s\S]*live_channel\.execution_lease_token=live_queue\.lease_token[\s\S]*live_channel\.execution_lease_expires_at=live_queue\.lease_expires_at[\s\S]*live_channel\.execution_lease_expires_at>NOW\(\)/u);
+  assert.match(itemReads[0].sql, /auto_listing_ai_outbox AS failed_queue[\s\S]*failed_queue\.state='PENDING'[\s\S]*failed_queue\.last_error_code IN \([\s\S]*ORDER BY failed_queue\.updated_at DESC,failed_queue\.created_at DESC,failed_queue\.id DESC[\s\S]*\) latest_failure ON TRUE/u);
+  assert.match(itemReads[0].sql, /ORDER BY CASE WHEN available_channel\.fixed THEN 0 ELSE 1 END,[\s\S]*COALESCE\(ai_queue\.next_retry_at,ai_queue\.available_at\)[\s\S]*ai_queue\.created_at,ai_queue\.id[\s\S]*\) runnable_queue ON TRUE/u);
+  for (const alias of ["progress", "live_queue", "failed_queue", "failed_live", "ai_queue", "live"]) {
+    assert.match(itemReads[0].sql,
+      new RegExp(`${alias}\\.contract_version IN \\('V1','V2','V3'\\)`, "u"));
+  }
+  assert.equal([...itemReads[0].sql.matchAll(/recoverable\.contract_version IN \('V1','V2','V3'\)/gu)].length, 2);
+  assert.match(itemReads[0].sql,
+    /live_queue\.phase IN \('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','ANALYZE_SOURCE_IMAGE_BATCH','RECONCILE_SOURCE_IMAGE_ANALYSIS','FINALIZE_MATERIALIZED_PLAN'\)[\s\S]*live_queue\.phase IN \('GENERATE_IMAGE_SLOT','CHECK_IMAGE_GROUP','GENERATE_RICH_CONTENT'\)/u);
+  assert.match(itemReads[0].sql,
+    /failed_queue\.phase IN \('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','ANALYZE_SOURCE_IMAGE_BATCH','RECONCILE_SOURCE_IMAGE_ANALYSIS','FINALIZE_MATERIALIZED_PLAN'\)[\s\S]*failed_queue\.phase IN \('GENERATE_IMAGE_SLOT','CHECK_IMAGE_GROUP','GENERATE_RICH_CONTENT'\)/u);
+  assert.match(itemReads[0].sql,
+    /ai_queue\.phase IN \('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','ANALYZE_SOURCE_IMAGE_BATCH','RECONCILE_SOURCE_IMAGE_ANALYSIS','FINALIZE_MATERIALIZED_PLAN'\)[\s\S]*ai_queue\.phase IN \('GENERATE_IMAGE_SLOT','CHECK_IMAGE_GROUP','GENERATE_RICH_CONTENT'\)/u);
+  assert.match(itemReads[0].sql,
+    /upload_preparation\.total_assets AS upload_asset_total[\s\S]*upload_preparation\.published_assets AS upload_asset_published/u);
+  assert.match(itemReads[0].sql,
+    /auto_listing_asset_publications AS publication[\s\S]*publication\.asset_id=selected_asset\.id/u);
+  assert.equal([...itemReads[0].sql.matchAll(
+    /prompt_template_version='AUTO_LISTING_CONTENT_PLAN_FILL_V6'[\s\S]{0,180}?planned_slot->>'role'='MAIN'/gu,
+  )].length, 2,
+  "progress and upload preparation must both retain an accepted claimless V6 MAIN");
+});
+
+test("job reads project current-run and active-plan durable V3 progress counts", async () => {
+  const calls = [];
+  const pool = {
+    async connect() { return pool; },
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/SELECT id,account_id,source_type,status,strategy_version_id/.test(sql)) return { rows: [{
+        id: "job-counted", account_id: "account-a", source_type: "COLLECT_BOX", status: "RUNNING",
+        config_snapshot: {}, correlation_id: "corr-a", created_at: new Date(), updated_at: new Date(),
+      }] };
+      if (/FROM auto_listing_job_items i/.test(sql)) return { rows: [{
+        id: "item-counted", status: "PLANNING", status_version: 7,
+        planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+        target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+        source_record_id: "collect-a", source_version: "1", snapshot_hash: "hash-a",
+        created_at: new Date(), updated_at: new Date(),
+        progress_phase: "ANALYZE_SOURCE_IMAGE_BATCH", progress_state: "PROCESSING",
+        progress_attempts: 1, progress_completed_units: 6, progress_total_units: 13,
+        progress_updated_at: new Date("2026-08-30T08:00:00.000Z"), progress_next_retry_at: null,
+      }] };
+      if (/FROM auto_listing_events/.test(sql)) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  };
+  const job = await createAutoListingRepository({ pool })
+    .getJob({ accountId: "account-a", jobId: "job-counted" });
+  assert.deepEqual(job.items[0].workflowProgress, {
+    phase: "ANALYZE_SOURCE_IMAGE_BATCH", state: "RUNNING", attemptCount: 1,
+    completedUnits: 6, totalUnits: 13,
+    updatedAt: new Date("2026-08-30T08:00:00.000Z"), nextRetryAt: null,
+  });
+
+  const read = calls.find(({ sql }) => /FROM auto_listing_job_items i/.test(sql)).sql;
+  assert.match(read, /analysis_run\.id=i\.current_source_image_analysis_run_id/u);
+  assert.match(read, /progress\.expected_status_version=i\.status_version/u);
+  assert.match(read, /assessment\.analysis_run_id=analysis_run\.id/u);
+  assert.match(read, /assessment\.record_status='MATERIALIZED'/u);
+  assert.match(read, /assessment\.record_status='ACCEPTED'/u);
+  assert.match(read, /content_plan\.id=i\.active_content_plan_id/u);
+  assert.match(read, /jsonb_array_elements\(content_plan\.plan->'slots'\)/u);
+  assert.match(read, /generation_asset\.plan_id=content_plan\.id/u);
+  assert.match(read, /details->>'planId'=content_plan\.id/u);
+  assert.match(read, /progress_completed_units/u);
+  assert.match(read, /progress_total_units/u);
+});
+
+test("job reads a concrete current-run source-image failure without raw analyzer evidence", async () => {
+  const calls = [];
+  const createdAt = new Date("2026-08-30T01:00:00.000Z");
+  const pool = {
+    async connect() { return pool; },
+    release() {},
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/SELECT id,account_id,source_type,status,strategy_version_id/.test(sql)) return { rows: [{
+        id: "job-source-failure", account_id: "account-a", source_type: "COLLECT_BOX", status: "BLOCKED",
+        strategy_version_id: "strategy-a", correlation_id: "corr-source-failure",
+        created_at: createdAt, updated_at: createdAt,
+      }] };
+      if (/FROM auto_listing_job_items i/.test(sql)) return { rows: [{
+        id: "item-source-failure", status: "BLOCKED", status_version: 8,
+        failure_code: "AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED",
+        target_store_id: "store-a", target_warehouse_id: "warehouse-a",
+        source_record_id: "collect-a", source_version: "1", snapshot_hash: "hash-a",
+        source_image_failure_reason_code: "UNIQUE_VIEW_MARKING_UNCERTAIN",
+        source_image_failure_source_ordinal: 0,
+        source_image_failure_viewpoint: "FRONT",
+        created_at: createdAt, updated_at: createdAt,
+      }] };
+      if (/FROM auto_listing_events/.test(sql)) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  };
+
+  const job = await createAutoListingRepository({ pool }).getJob({
+    accountId: "account-a", jobId: "job-source-failure",
+  });
+
+  assert.deepEqual(job.items[0].sourceImageFailure, {
+    reasonCode: "UNIQUE_VIEW_MARKING_UNCERTAIN", sourceOrdinal: 0, viewpoint: "FRONT",
+  });
+  const itemRead = calls.find(({ sql }) => /FROM auto_listing_job_items i/.test(sql));
+  assert.match(itemRead.sql, /source_failure\.reason_code AS source_image_failure_reason_code/u);
+  assert.match(itemRead.sql, /run\.id=i\.current_source_image_analysis_run_id/u);
+  assert.match(itemRead.sql, /run\.account_id=i\.account_id[\s\S]*run\.job_id=i\.job_id[\s\S]*run\.item_id=i\.id/u);
+  assert.match(itemRead.sql, /run\.summary->'requiredConfirmations'/u);
+  assert.match(itemRead.sql, /AUTO_LISTING_SOURCE_IMAGE_UNIQUE_VIEW_MARKING_UNCERTAIN/u);
+  assert.match(itemRead.sql, /source_assessment\.terminal_status IN \('DOWNLOAD_FAILED','UNSUPPORTED_MEDIA'\)/u);
+  assert.doesNotMatch(itemRead.sql,
+    /WHEN i\.failure_code='AUTO_LISTING_SOURCE_IMAGE_(?:EVIDENCE_INSUFFICIENT|INPUT_TOO_LARGE|ANALYSIS_RESULT_INVALID)'/u);
+  assert.doesNotMatch(itemRead.sql, /raw_response|provider_response|object_key/u);
+});
+
+function warehouseGraph({ itemCount = 1, priceMultiplierMicros, useCategoryStrategy } = {}) {
   const { config, configHash } = normalizeAndHashAutoListingConfig({
     targetStoreId: "store-a",
     targetWarehouseId: "warehouse-a",
     stock: 1,
     priceAdjustmentKopecks: "0",
     ...(priceMultiplierMicros ? { priceMultiplierMicros } : {}),
+    ...(useCategoryStrategy === undefined ? {} : { useCategoryStrategy }),
   });
   const items = Array.from({ length: itemCount }, (_, sourceIndex) => {
     const sourceOrder = sourceIndex + 1;
@@ -512,7 +724,7 @@ function warehouseEvidenceFixture({
       if (/FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
       if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
-      if (/FROM ai_gateway_profiles/.test(sql)) return { rows: profiles };
+      if (/FROM ai_user_channels/.test(sql)) return { rows: profiles };
       if (/FROM ai_gateway_model_catalogs/.test(sql)) return { rows: catalog === null ? [] : [{ catalog }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
       if (/FROM collect_ozon_category_current_sources current_category/.test(sql)) {
@@ -564,11 +776,18 @@ test("repository accepts only a function or null for the optional initial AI wor
   );
 });
 
+test("repository accepts the frozen source-image planning contract", async () => {
+  const graph = warehouseGraph();
+  graph.items[0].planningContract = "FIXED_SKELETON_SOURCE_IMAGE_V1";
+  const { repository, stop } = warehouseEvidenceFixture();
+  await assert.rejects(repository.createJobGraph(graph), (error) => error === stop);
+});
+
 test("job creation without an AI workflow keeps the legacy profile-free path", async () => {
   const { repository, calls, stop } = warehouseEvidenceFixture();
   await assert.rejects(repository.createJobGraph(warehouseGraph()), (error) => error === stop);
 
-  assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /FROM ai_user_channels/.test(sql)), false);
   const insertCall = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
   assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,\s*correlation_id,warehouse_validation_evidence_id/iu);
   assert.deepEqual(insertCall.params.slice(6), [
@@ -683,7 +902,7 @@ test("loads finalizable Excel source rows with account and ready-state boundarie
   assert.equal(result.sources[0].collectItemId, "collect-1");
   assert.equal(
     result.sources[0].sourceVersion,
-    "raw:hash-1:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
+    "raw:hash-1:category:shared-a:1:AUTO_LISTING_SOURCE_SNAPSHOT_V3",
   );
   assert.match(calls[1].sql, /r\.status='READY'/u);
   assert.match(calls[1].sql, /r\.account_id=\$1/u);
@@ -810,6 +1029,7 @@ test("category lease release is persistently idempotent only for the exact repla
 });
 
 test("loads Collect Box source rows with versioned draft and raw identities", async () => {
+  let sharedCategoryVersion = 2;
   const repository = createAutoListingRepository({
     pool: {
       connect: async () => assert.fail("read path must not open a transaction"),
@@ -821,7 +1041,8 @@ test("loads Collect Box source rows with versioned draft and raw identities", as
             raw_payload: { normalized: {} }, payload_hash: "payload-draft", collected_at: "2026-08-07T00:00:00.000Z",
             evidence_id: "evidence-draft", evidence_account_id: "account-a", source_description_category_id: 123,
             source_type_id: 456, taxonomy_scope: "OZON:DEFAULT", shared_category_id: "shared-a",
-            shared_category_account_id: "account-a", shared_category_version: 2, shared_category_evidence_id: "evidence-draft",
+            shared_category_account_id: "account-a", shared_category_version: sharedCategoryVersion,
+            shared_category_evidence_id: "evidence-draft",
             shared_category_status: "ACTIVE", shared_category_source: "SOURCE_DIRECT",
             current_description_category_id: 123, current_type_id: 456, taxonomy_fingerprint: null,
           },
@@ -831,7 +1052,8 @@ test("loads Collect Box source rows with versioned draft and raw identities", as
             raw_payload: { normalized: {} }, payload_hash: "payload-raw", collected_at: "2026-08-07T00:00:00.000Z",
             evidence_id: "evidence-raw", evidence_account_id: "account-a", source_description_category_id: 123,
             source_type_id: 456, taxonomy_scope: "OZON:DEFAULT", shared_category_id: "shared-a",
-            shared_category_account_id: "account-a", shared_category_version: 2, shared_category_evidence_id: "evidence-raw",
+            shared_category_account_id: "account-a", shared_category_version: sharedCategoryVersion,
+            shared_category_evidence_id: "evidence-raw",
             shared_category_status: "ACTIVE", shared_category_source: "SOURCE_DIRECT",
             current_description_category_id: 123, current_type_id: 456, taxonomy_fingerprint: null,
           },
@@ -845,10 +1067,17 @@ test("loads Collect Box source rows with versioned draft and raw identities", as
   });
 
   assert.deepEqual(result.map(({ sourceVersion }) => sourceVersion), [
-    "draft:7:payload-draft:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
-    "raw:payload-raw:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
+    "draft:7:payload-draft:category:shared-a:2:AUTO_LISTING_SOURCE_SNAPSHOT_V3",
+    "raw:payload-raw:category:shared-a:2:AUTO_LISTING_SOURCE_SNAPSHOT_V3",
   ]);
   assert.deepEqual(result.map((entry) => entry.sharedCategory.version), [2, 2]);
+
+  sharedCategoryVersion = 3;
+  const refreshed = await repository.loadCollectSources({
+    accountId: "account-a", collectItemIds: ["collect-draft", "collect-raw"],
+  });
+  assert.notEqual(refreshed[0].sourceVersion, result[0].sourceVersion);
+  assert.match(refreshed[0].sourceVersion, /:category:shared-a:3:AUTO_LISTING_SOURCE_SNAPSHOT_V3$/u);
 });
 
 test("Collect Box category source query is account scoped, store independent, and fail closed", async () => {
@@ -903,21 +1132,21 @@ test("Collect Box source mapping rejects foreign, incomplete, and non-active cat
   }
 });
 
-test("job creation locks and freezes the one enabled account AI profile without latest-profile inference", async () => {
+test("job creation locks an enabled user channel and freezes its model snapshot", async () => {
   const { repository, calls, stop } = warehouseEvidenceFixture({
     stageInitialPlanWork: async () => ({ status: "PLANNING", statusVersion: 2 }),
   });
   await assert.rejects(repository.createJobGraph(warehouseGraph()), (error) => error === stop);
 
   const strategyIndex = calls.findIndex(({ sql }) => /FROM ai_content_strategy_versions/.test(sql));
-  const profileIndex = calls.findIndex(({ sql }) => /FROM ai_gateway_profiles/.test(sql));
+  const profileIndex = calls.findIndex(({ sql }) => /FROM ai_user_channels/.test(sql));
   const profileCall = calls[profileIndex];
   const insertCall = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
   assert.ok(profileIndex > strategyIndex);
-  assert.match(profileCall.sql, /SELECT\s+id,config_version,connection_id,connection_version,text_model,image_model\s+FROM ai_gateway_profiles/iu);
-  assert.match(profileCall.sql, /WHERE account_id=\$1 AND enabled IS TRUE/iu);
+  assert.match(profileCall.sql, /JOIN ai_gateway_profiles p/iu);
+  assert.match(profileCall.sql, /WHERE channel.account_id=\$1 AND channel.enabled IS TRUE/iu);
   assert.match(profileCall.sql, /FOR SHARE/iu);
-  assert.doesNotMatch(profileCall.sql, /ORDER\s+BY|LIMIT|latest|api_key/iu);
+  assert.match(profileCall.sql, /LIMIT 1 FOR SHARE OF channel,p/iu);
   assert.deepEqual(profileCall.params, ["account-a"]);
   assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,\s*correlation_id,warehouse_validation_evidence_id/iu);
   assert.deepEqual(insertCall.params.slice(6), [
@@ -971,7 +1200,7 @@ test("new jobs accept a connection-backed profile only when its latest successfu
   });
   await assert.rejects(repository.createJobGraph(warehouseGraph()), (error) => error === stop);
   const accountFenceIndex = calls.findIndex(({ sql }) => /FROM accounts WHERE id=\$1 FOR UPDATE/iu.test(sql));
-  const profileIndex = calls.findIndex(({ sql }) => /FROM ai_gateway_profiles/iu.test(sql));
+  const profileIndex = calls.findIndex(({ sql }) => /FROM ai_user_channels/iu.test(sql));
   const catalogCall = calls.find(({ sql }) => /FROM ai_gateway_model_catalogs/iu.test(sql));
   assert.ok(accountFenceIndex >= 0 && profileIndex > accountFenceIndex,
     "new-job catalog eligibility must share the account fence used by catalog completion and publication");
@@ -1058,7 +1287,7 @@ test("idempotent job replay recalculates exact multiplier evidence before profil
   const result = await repository.createJobGraph(warehouseGraph({ priceMultiplierMicros: "1250000" }));
   assert.equal(result.id, "job-existing");
   assert.equal(result.duplicate, true);
-  assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /FROM ai_user_channels/.test(sql)), false);
   assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql)), false);
   assert.equal(stageCount, 0);
 });
@@ -1131,7 +1360,11 @@ function mixedCreationGraph() {
   return graph;
 }
 
-function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "profile-a", config_version: 3 }] } = {}) {
+function successfulCreationFixture({
+  stageBehavior = null,
+  profiles = [{ id: "profile-a", config_version: 3 }],
+  rules = [],
+} = {}) {
   const calls = [];
   const stageCalls = [];
   const snapshots = new Map();
@@ -1164,8 +1397,8 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
       }] };
       if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
-      if (/FROM ai_gateway_profiles/.test(sql)) return { rows: profiles };
-      if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
+      if (/FROM ai_user_channels/.test(sql)) return { rows: profiles };
+      if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: rules };
       if (/FROM collect_ozon_category_current_sources current_category/.test(sql)) return { rows: [{ id: "shared-123-456" }] };
       if (/FROM collect_items c/.test(sql)) return { rows: [{
         draft_id: `draft-${params[0]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
@@ -1173,6 +1406,7 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
       if (/INSERT INTO auto_listing_jobs/.test(sql)) {
         job = {
           id: params[0], account_id: params[1], source_type: params[2], status: "CREATED",
+          config_snapshot: JSON.parse(params[4]),
           strategy_version_id: params[6], warehouse_validation_evidence_id: params[12], correlation_id: params[11],
           created_at: new Date(0), updated_at: new Date(0),
         };
@@ -1255,12 +1489,29 @@ test("successful creation without the AI workflow keeps ready statuses and stage
   const created = await repository.createJobGraph(mixedCreationGraph());
 
   assert.deepEqual(created.items.map(({ status }) => status), ["SOURCE_READY", "SOURCE_READY", "BLOCKED"]);
-  assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /FROM ai_user_channels/.test(sql)), false);
   assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/i.test(sql)), false);
   assert.equal(calls.filter(({ sql }) => /INSERT INTO auto_listing_listing_bases/.test(sql)).length, 2);
   assert.equal(stageCalls.length, 0);
   const jobInsert = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
   assert.deepEqual(jobInsert.params.slice(7, 10), ["upload-policy-review-a", null, null]);
+});
+
+test("category strategy OFF persists the frozen generic selection even when a published rule matches", async () => {
+  const { repository, calls } = successfulCreationFixture({
+    rules: [{
+      id: "matching-rule", rule_order: 1, rule_kind: "EXACT_CATEGORY",
+      category_id: "123", ancestor_category_id: null, product_style: null,
+      rule: { style: "VISUAL_FIRST", textDensityByRole: {} },
+    }],
+  });
+
+  const created = await repository.createJobGraph(warehouseGraph({ useCategoryStrategy: false }));
+
+  assert.equal(created.useCategoryStrategy, false);
+  assert.equal(created.items[0].style, "BALANCED_DEFAULT");
+  assert.equal(created.items[0].matchedBy, "DEFAULT");
+  assert.equal(calls.some(({ sql }) => /FROM ai_content_strategy_rules/.test(sql)), false);
 });
 
 test("job graph persists and returns each server-selected planning contract", async () => {
@@ -1518,7 +1769,7 @@ function reusedEvidenceFixture({ graph, persistedSnapshot }) {
       }] };
       if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
-      if (/FROM ai_gateway_profiles/.test(sql)) return { rows: [{ id: "profile-a", config_version: 3 }] };
+      if (/FROM ai_user_channels/.test(sql)) return { rows: [{ id: "profile-a", config_version: 3 }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
       if (/FROM collect_ozon_category_current_sources current_category/.test(sql)) return { rows: [{ id: "shared-123-456" }] };
       if (/FROM collect_items c/.test(sql)) return { rows: [{

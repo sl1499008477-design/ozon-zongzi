@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import {
+  SOURCE_ANALYSIS_ASSET_OBJECT_KEY_VERSION,
   SOURCE_ASSET_OBJECT_KEY_VERSION,
   buildSourceAssetObjectKey,
   verifySourceAssetObjectKey,
@@ -10,25 +11,44 @@ const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
 const CONTENT_TYPES = Object.freeze({ "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" });
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
 const MAX_SOURCE_PIXELS = 40_000_000;
+const SAFE_ANALYSIS_FAILURE_CODES = new Set([
+  "AUTO_LISTING_SOURCE_DOWNLOAD_BLOCKED",
+  "AUTO_LISTING_SOURCE_DOWNLOAD_FAILED",
+  "AUTO_LISTING_SOURCE_DOWNLOAD_INPUT_INVALID",
+  "AUTO_LISTING_SOURCE_IMAGE_INVALID",
+  "AUTO_LISTING_SOURCE_IMAGE_TOO_LARGE",
+  "AUTO_LISTING_SOURCE_MEDIA_UNSUPPORTED",
+]);
 export const SOURCE_MATERIALIZATION_OBJECT_KEY_VERSION = SOURCE_ASSET_OBJECT_KEY_VERSION;
 
-const BASE_KEYS = Object.freeze([
+const PLAN_BASE_KEYS = Object.freeze([
   "accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId",
   "sourceRefHash", "inputHash", "expectedStatusVersion",
 ]);
-const RESERVE_KEYS = new Set([...BASE_KEYS, "maxAttempts"]);
-const OWNER_KEYS = Object.freeze([...BASE_KEYS, "attemptId", "attemptNo", "leaseToken"]);
+const ANALYSIS_BASE_KEYS = Object.freeze([
+  "accountId", "jobId", "itemId", "owner", "sourceAssetId",
+  "sourceRefHash", "inputHash", "expectedStatusVersion",
+]);
+const INTERNAL_BASE_KEYS = Object.freeze([
+  "accountId", "jobId", "itemId", "owner", "sourceAssetId",
+  "sourceRefHash", "inputHash", "expectedStatusVersion",
+]);
+const OWNER_TAIL_KEYS = Object.freeze(["attemptId", "attemptNo", "leaseToken"]);
 const EVIDENCE_KEYS = Object.freeze([
   "objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height", "sizeBytes",
 ]);
-const STORE_KEYS = new Set([...OWNER_KEYS, ...EVIDENCE_KEYS]);
-const FAIL_KEYS = new Set([...OWNER_KEYS, "errorCode", "errorRetryable"]);
 const LIST_KEYS = new Set(["accountId", "jobId", "itemId", "parentPlanId", "expectedStatusVersion"]);
 const IMMUTABLE_LIST_KEYS = new Set(["accountId", "jobId", "itemId", "parentPlanId"]);
+const IMMUTABLE_ANALYSIS_LIST_KEYS = new Set([
+  "accountId", "jobId", "itemId", "parentPlanId", "sourceImageAnalysisRunId",
+]);
+const IMMUTABLE_REUSED_ANALYSIS_LIST_KEYS = new Set([
+  ...IMMUTABLE_ANALYSIS_LIST_KEYS, "sourceMaterializationAnalysisRunId",
+]);
 const FACTORY_KEYS = new Set(["now", "leaseMs", "token", "id", "readItemState", "maxRows", "leaseOwner"]);
 const POSTGRES_FACTORY_KEYS = new Set(["pool", "leaseMs", "token", "id", "maxRows", "leaseOwner"]);
-const CLEANUP_KEYS = new Set([
-  "accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId", "materializationAttemptId",
+const CLEANUP_TAIL_KEYS = Object.freeze([
+  "materializationAttemptId",
   "sourceRefHash", "inputHash", "expectedStatusVersion", "attemptNo", "leaseToken",
   "objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height", "sizeBytes",
   "reasonCode", "originalErrorCode",
@@ -71,12 +91,18 @@ function milliseconds(value) {
   return timestamp;
 }
 const same = (left, right, keys) => keys.every((key) => left?.[key] === right?.[key]);
-const scopeKey = (value) => BASE_KEYS.map((key) => value[key]).join("\u0001");
+const sameOwned = (left, right, keys) => left?.owner?.kind === right?.owner?.kind
+  && left?.owner?.id === right?.owner?.id && same(left, right, keys.filter((key) => key !== "owner"));
+const scopeKey = (value) => [value.accountId, value.jobId, value.itemId, value.owner.kind, value.owner.id,
+  value.sourceAssetId, value.sourceRefHash, value.inputHash, value.expectedStatusVersion].join("\u0001");
 export const buildSourceMaterializationObjectKey = buildSourceAssetObjectKey;
 
 export function verifySourceMaterializationObjectKey(input = {}) {
   try {
-    return input.objectKeyVersion === SOURCE_MATERIALIZATION_OBJECT_KEY_VERSION
+    const version = input.owner?.kind === "SOURCE_IMAGE_ANALYSIS"
+      ? SOURCE_ANALYSIS_ASSET_OBJECT_KEY_VERSION
+      : SOURCE_MATERIALIZATION_OBJECT_KEY_VERSION;
+    return input.objectKeyVersion === version
       && verifySourceAssetObjectKey(input)
       && Buffer.byteLength(input.objectKey, "utf8") <= 2048 && !/(?:https?|ftp|file|data):|\?|#/iu.test(input.objectKey);
   } catch {
@@ -84,27 +110,44 @@ export function verifySourceMaterializationObjectKey(input = {}) {
   }
 }
 
-function validateBase(input, keys) {
-  if (!exactObject(input, keys) || !BASE_KEYS.slice(0, 5).every((key) => safeIdentifier(input[key]))
+function exactOwner(owner) {
+  return plainObject(owner) && Reflect.ownKeys(owner).length === 2
+    && owner.kind === "SOURCE_IMAGE_ANALYSIS" && safeIdentifier(owner.id);
+}
+function normalizeOwnedInput(rawInput, tailKeys) {
+  const planKeys = new Set([...PLAN_BASE_KEYS, ...tailKeys]);
+  const analysisKeys = new Set([...ANALYSIS_BASE_KEYS, ...tailKeys]);
+  let input;
+  if (exactObject(rawInput, planKeys)) {
+    input = { ...rawInput, owner: { kind: "CONTENT_PLAN", id: rawInput.parentPlanId } };
+    delete input.parentPlanId;
+  } else if (exactObject(rawInput, analysisKeys) && exactOwner(rawInput.owner)) {
+    input = { ...rawInput, owner: { ...rawInput.owner } };
+  } else {
+    throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID");
+  }
+  if (!["accountId", "jobId", "itemId", "sourceAssetId"].every((key) => safeIdentifier(input[key]))
+    || !safeIdentifier(input.owner.id)
     || !HASH.test(input.sourceRefHash || "") || !HASH.test(input.inputHash || "")
     || !Number.isInteger(input.expectedStatusVersion) || input.expectedStatusVersion < 1
     || input.expectedStatusVersion > 2_147_483_647) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID");
+  return input;
 }
-function validateReserve(input) {
-  validateBase(input, RESERVE_KEYS);
+function validateReserve(rawInput) {
+  const input = normalizeOwnedInput(rawInput, ["maxAttempts"]);
   if (input.maxAttempts !== 3) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID");
   return input;
 }
-function validateOwner(input, keys) {
-  validateBase(input, keys);
+function validateOwner(rawInput, tailKeys) {
+  const input = normalizeOwnedInput(rawInput, [...OWNER_TAIL_KEYS, ...tailKeys]);
   if (!safeIdentifier(input.attemptId) || !safeIdentifier(input.leaseToken)
     || !Number.isInteger(input.attemptNo) || input.attemptNo < 1 || input.attemptNo > 3) {
     throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID");
   }
   return input;
 }
-function validateEvidence(input) {
-  validateOwner(input, STORE_KEYS);
+function validateEvidence(rawInput) {
+  const input = validateOwner(rawInput, EVIDENCE_KEYS);
   if (!verifySourceMaterializationObjectKey(input) || !HASH.test(input.contentHash || "")
     || !Object.hasOwn(CONTENT_TYPES, input.contentType)
     || !Number.isInteger(input.width) || input.width < 1 || input.width > 100_000
@@ -115,8 +158,8 @@ function validateEvidence(input) {
   }
   return input;
 }
-function validateFailure(input) {
-  validateOwner(input, FAIL_KEYS);
+function validateFailure(rawInput) {
+  const input = validateOwner(rawInput, ["errorCode", "errorRetryable"]);
   if (!ERROR_CODE.test(input.errorCode || "") || typeof input.errorRetryable !== "boolean") {
     throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID");
   }
@@ -131,20 +174,26 @@ function validateList(input) {
   return input;
 }
 function validateImmutableList(input) {
-  if (!exactObject(input, IMMUTABLE_LIST_KEYS)
-    || !["accountId", "jobId", "itemId", "parentPlanId"].every((key) => safeIdentifier(input[key]))) {
+  const planOwned = exactObject(input, IMMUTABLE_LIST_KEYS);
+  const analysisOwned = exactObject(input, IMMUTABLE_ANALYSIS_LIST_KEYS);
+  const reusedAnalysisOwned = exactObject(input, IMMUTABLE_REUSED_ANALYSIS_LIST_KEYS);
+  if ((!planOwned && !analysisOwned && !reusedAnalysisOwned)
+    || !["accountId", "jobId", "itemId", "parentPlanId"].every((key) => safeIdentifier(input[key]))
+    || ((analysisOwned || reusedAnalysisOwned) && !safeIdentifier(input.sourceImageAnalysisRunId))
+    || (reusedAnalysisOwned && !safeIdentifier(input.sourceMaterializationAnalysisRunId))) {
     throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID");
   }
-  return input;
+  return {
+    ...input,
+    ownerKind: analysisOwned || reusedAnalysisOwned ? "SOURCE_IMAGE_ANALYSIS" : "CONTENT_PLAN",
+    materializationAnalysisRunId: reusedAnalysisOwned
+      ? input.sourceMaterializationAnalysisRunId : input.sourceImageAnalysisRunId,
+  };
 }
-function validateCleanup(input) {
-  if (!exactObject(input, CLEANUP_KEYS)
-    || !["accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId", "materializationAttemptId", "leaseToken"].every((key) => safeIdentifier(input[key]))
-    || !HASH.test(input.sourceRefHash || "") || !HASH.test(input.inputHash || "")
-    || !Number.isInteger(input.expectedStatusVersion) || input.expectedStatusVersion < 1
-    || input.expectedStatusVersion > 2_147_483_647
+function validateCleanup(rawInput) {
+  const input = normalizeOwnedInput(rawInput, CLEANUP_TAIL_KEYS);
+  if (!["materializationAttemptId", "leaseToken"].every((key) => safeIdentifier(input[key]))
     || !Number.isInteger(input.attemptNo) || input.attemptNo < 1 || input.attemptNo > 3
-    || input.objectKeyVersion !== SOURCE_MATERIALIZATION_OBJECT_KEY_VERSION
     || typeof input.objectKey !== "string" || Buffer.byteLength(input.objectKey, "utf8") > 2048
     || !HASH.test(input.contentHash || "") || !Object.hasOwn(CONTENT_TYPES, input.contentType)
     || !Number.isInteger(input.width) || input.width < 1 || input.width > 100_000
@@ -169,12 +218,49 @@ function acceptedRecord(row) {
     && row.leaseToken === null && row.leaseExpiresAt === null && row.errorCode === null
     && row.errorRetryable === null && row.acceptedAt !== null;
 }
+function exhaustedSafeFailureRecord(row, input) {
+  return input.owner.kind === "SOURCE_IMAGE_ANALYSIS"
+    && row?.status === "FAILED"
+    && sameOwned(row, input, INTERNAL_BASE_KEYS)
+    && row.attemptNo === input.maxAttempts
+    && row.leaseOwner === null && row.leaseToken === null && row.leaseExpiresAt === null
+    && row.objectKeyVersion === null && row.objectKey === null
+    && row.contentHash === null && row.contentType === null
+    && row.width === null && row.height === null && row.sizeBytes === null
+    && row.acceptedAt === null
+    && SAFE_ANALYSIS_FAILURE_CODES.has(row.errorCode)
+    && typeof row.errorRetryable === "boolean";
+}
 function publicRecord(row) {
   const value = clone(row);
   value.attemptId = value.id ?? value.attemptId;
   delete value.id;
+  if (value.owner?.kind === "CONTENT_PLAN") {
+    value.parentPlanId = value.owner.id;
+    delete value.owner;
+  } else if (value.owner?.kind === "SOURCE_IMAGE_ANALYSIS") {
+    value.owner = Object.freeze({ ...value.owner });
+  }
   for (const key of ["leaseExpiresAt", "acceptedAt", "createdAt", "updatedAt"]) {
     if (value[key] != null) value[key] = new Date(milliseconds(value[key])).toISOString();
+  }
+  return value;
+}
+function publicCleanupRecord(row) {
+  const value = clone(row);
+  if (value.owner?.kind === "CONTENT_PLAN") {
+    value.parentPlanId = value.owner.id;
+    delete value.owner;
+  } else if (value.owner?.kind === "SOURCE_IMAGE_ANALYSIS") {
+    value.owner = Object.freeze({ ...value.owner });
+  }
+  return value;
+}
+function snapshotRecord(row) {
+  const value = clone(row);
+  if (value.owner?.kind === "CONTENT_PLAN") {
+    value.parentPlanId = value.owner.id;
+    delete value.owner;
   }
   return value;
 }
@@ -186,7 +272,8 @@ function reservedResponse(row, status = "RESERVED") {
     attemptNo: row.attemptNo,
     leaseToken: row.leaseToken,
     leaseExpiresAt: new Date(milliseconds(row.leaseExpiresAt)).toISOString(),
-    ...Object.fromEntries(BASE_KEYS.map((key) => [key, row[key]])),
+    ...Object.fromEntries(INTERNAL_BASE_KEYS.filter((key) => key !== "owner").map((key) => [key, row[key]])),
+    ...(row.owner.kind === "CONTENT_PLAN" ? { parentPlanId: row.owner.id } : { owner: Object.freeze({ ...row.owner }) }),
   };
   return response;
 }
@@ -216,7 +303,8 @@ export function createMemorySourceMaterializationRepository(options = {}) {
     try {
       state = await readItemState(Object.freeze({
         accountId: input.accountId, jobId: input.jobId, itemId: input.itemId,
-        parentPlanId: input.parentPlanId, expectedStatusVersion: input.expectedStatusVersion,
+        ...(input.owner.kind === "CONTENT_PLAN" ? { parentPlanId: input.owner.id } : { owner: Object.freeze({ ...input.owner }) }),
+        expectedStatusVersion: input.expectedStatusVersion,
       }));
     }
     catch { throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED"); }
@@ -267,12 +355,17 @@ export function createMemorySourceMaterializationRepository(options = {}) {
         }
       }
       const attemptNo = matching.reduce((maximum, row) => Math.max(maximum, row.attemptNo), 0) + 1;
-      if (attemptNo > input.maxAttempts) return { status: "ATTEMPTS_EXHAUSTED" };
+      if (attemptNo > input.maxAttempts) {
+        const last = matching.find((row) => row.attemptNo === input.maxAttempts);
+        return exhaustedSafeFailureRecord(last, input)
+          ? { status: "EXHAUSTED_SAFE_FAILURE", record: publicRecord(last) }
+          : { status: "ATTEMPTS_EXHAUSTED" };
+      }
       let nonce; let attemptId;
       try { nonce = token(); attemptId = id(); } catch { throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED"); }
       if (!safeIdentifier(nonce) || !safeIdentifier(attemptId)) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED");
       const row = {
-        id: attemptId, ...Object.fromEntries(BASE_KEYS.map((key) => [key, input[key]])), attemptNo,
+        id: attemptId, ...Object.fromEntries(INTERNAL_BASE_KEYS.map((key) => [key, input[key]])), attemptNo,
         status: "MATERIALIZING", leaseOwner, leaseToken: `${nonce}:${attemptNo}`, leaseExpiresAt: timestamp + leaseMs,
         objectKeyVersion: null, objectKey: null, contentHash: null, contentType: null,
         width: null, height: null, sizeBytes: null, acceptedAt: null, errorCode: null, errorRetryable: null,
@@ -309,7 +402,7 @@ export function createMemorySourceMaterializationRepository(options = {}) {
     async listAcceptedSourceMaterializations(rawInput) {
       const input = validateList(rawInput);
       const found = rows.filter((row) => row.accountId === input.accountId && row.jobId === input.jobId
-        && row.itemId === input.itemId && row.parentPlanId === input.parentPlanId
+        && row.itemId === input.itemId && row.owner.kind === "CONTENT_PLAN" && row.owner.id === input.parentPlanId
         && row.expectedStatusVersion === input.expectedStatusVersion && row.status === "ACCEPTED")
         .sort((left, right) => left.sourceAssetId.localeCompare(right.sourceAssetId) || left.attemptNo - right.attemptNo);
       if (found.length > maxRows || found.some((row) => !acceptedRecord(row))) {
@@ -320,7 +413,10 @@ export function createMemorySourceMaterializationRepository(options = {}) {
     async listAcceptedSourceMaterializationsForPlan(rawInput) {
       const input = validateImmutableList(rawInput);
       const found = rows.filter((row) => row.accountId === input.accountId && row.jobId === input.jobId
-        && row.itemId === input.itemId && row.parentPlanId === input.parentPlanId && row.status === "ACCEPTED")
+        && row.itemId === input.itemId && row.owner.kind === input.ownerKind
+        && row.owner.id === (input.ownerKind === "SOURCE_IMAGE_ANALYSIS"
+          ? input.materializationAnalysisRunId : input.parentPlanId)
+        && row.status === "ACCEPTED")
         .sort((left, right) => left.sourceAssetId.localeCompare(right.sourceAssetId) || left.attemptNo - right.attemptNo);
       if (found.length > maxRows || found.some((row) => !acceptedRecord(row))) {
         throw failure(found.length > maxRows ? "AUTO_LISTING_SOURCE_MATERIALIZATION_BATCH_EXCEEDED" : "AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
@@ -331,12 +427,12 @@ export function createMemorySourceMaterializationRepository(options = {}) {
       const input = validateCleanup(rawInput);
       const existing = cleanupRows.find((row) => row.accountId === input.accountId && row.objectKey === input.objectKey);
       if (existing) {
-        if (!same(existing, input, [...CLEANUP_KEYS])) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
-        return clone(existing);
+        if (!sameOwned(existing, input, [...INTERNAL_BASE_KEYS, ...CLEANUP_TAIL_KEYS])) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
+        return publicCleanupRecord(existing);
       }
       const materialization = rows.find((row) => row.id === input.materializationAttemptId
         && row.accountId === input.accountId && row.jobId === input.jobId && row.itemId === input.itemId
-        && row.parentPlanId === input.parentPlanId && row.sourceAssetId === input.sourceAssetId
+        && row.owner.kind === input.owner.kind && row.owner.id === input.owner.id && row.sourceAssetId === input.sourceAssetId
         && row.sourceRefHash === input.sourceRefHash && row.inputHash === input.inputHash
         && row.expectedStatusVersion === input.expectedStatusVersion && row.attemptNo === input.attemptNo
         && row.leaseToken === input.leaseToken && row.leaseExpiresAt > milliseconds(now())
@@ -352,9 +448,9 @@ export function createMemorySourceMaterializationRepository(options = {}) {
         claimOwner: null, claimToken: null, claimExpiresAt: null, nextRetryAt: timestamp,
         lastErrorCode: null, createdAt: timestamp, updatedAt: timestamp };
       cleanupRows.push(record);
-      return clone(record);
+      return publicCleanupRecord(record);
     },
-    snapshot() { return rows.map(clone); },
+    snapshot() { return rows.map(snapshotRecord); },
   });
 }
 
@@ -362,7 +458,10 @@ function fromRow(row) {
   if (!row) return null;
   return {
     attemptId: row.id, accountId: row.account_id, jobId: row.job_id, itemId: row.item_id,
-    parentPlanId: row.parent_plan_id, sourceAssetId: row.source_asset_id,
+    owner: row.parent_plan_id !== null && row.parent_plan_id !== undefined
+      ? { kind: "CONTENT_PLAN", id: row.parent_plan_id }
+      : { kind: "SOURCE_IMAGE_ANALYSIS", id: row.source_analysis_run_id },
+    sourceAssetId: row.source_asset_id,
     sourceRefHash: row.source_ref_hash, inputHash: row.input_hash,
     expectedStatusVersion: row.expected_status_version, attemptNo: row.attempt_no, status: row.status,
     leaseOwner: row.lease_owner, leaseToken: row.lease_token, leaseExpiresAt: row.lease_expires_at,
@@ -377,7 +476,10 @@ function fromCleanupRow(row) {
   if (!row) return null;
   return {
     id: row.id, accountId: row.account_id, jobId: row.job_id, itemId: row.item_id,
-    parentPlanId: row.parent_plan_id, sourceAssetId: row.source_asset_id,
+    owner: row.parent_plan_id !== null && row.parent_plan_id !== undefined
+      ? { kind: "CONTENT_PLAN", id: row.parent_plan_id }
+      : { kind: "SOURCE_IMAGE_ANALYSIS", id: row.source_analysis_run_id },
+    sourceAssetId: row.source_asset_id,
     materializationAttemptId: row.materialization_attempt_id,
     sourceRefHash: row.source_ref_hash, inputHash: row.input_hash,
     expectedStatusVersion: row.expected_status_version, attemptNo: row.attempt_no,
@@ -423,30 +525,40 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
       if (client && client !== pool) { try { await client.release(); } catch { throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED"); } }
     }
   }
-  const baseValues = (input) => BASE_KEYS.map((key) => input[key]);
+  const baseValues = (input) => [input.accountId, input.jobId, input.itemId, input.owner.id,
+    input.sourceAssetId, input.sourceRefHash, input.inputHash, input.expectedStatusVersion];
+  const ownerColumn = (input) => input.owner.kind === "CONTENT_PLAN" ? "parent_plan_id" : "source_analysis_run_id";
   async function reserveSourceMaterialization(rawInput) {
     const input = validateReserve(rawInput);
     let nonce; let attemptId;
     try { nonce = token(); attemptId = id(); } catch { throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED"); }
     if (!safeIdentifier(nonce) || !safeIdentifier(attemptId)) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED");
     return transaction(async (client) => {
-      const item = await client.query(
-        `SELECT item.status,item.status_version
-         FROM auto_listing_job_items AS item
-         JOIN ai_content_plans AS plan
-           ON plan.account_id=item.account_id AND plan.job_id=item.job_id
-          AND plan.item_id=item.id AND plan.id=$4
-         WHERE item.account_id=$1 AND item.job_id=$2 AND item.id=$3
-         FOR UPDATE OF item`,
-        [input.accountId, input.jobId, input.itemId, input.parentPlanId],
-      );
+      const item = await client.query(input.owner.kind === "CONTENT_PLAN"
+        ? `SELECT item.status,item.status_version
+           FROM auto_listing_job_items AS item
+           JOIN ai_content_plans AS plan
+             ON plan.account_id=item.account_id AND plan.job_id=item.job_id
+            AND plan.item_id=item.id AND plan.id=$4
+           WHERE item.account_id=$1 AND item.job_id=$2 AND item.id=$3
+           FOR UPDATE OF item`
+        : `SELECT item.status,item.status_version
+           FROM auto_listing_job_items AS item
+           JOIN auto_listing_source_image_analysis_runs AS analysis
+             ON analysis.account_id=item.account_id AND analysis.job_id=item.job_id
+            AND analysis.item_id=item.id AND analysis.id=$4
+            AND analysis.expected_status_version=item.status_version
+           WHERE item.account_id=$1 AND item.job_id=$2 AND item.id=$3
+             AND item.current_source_image_analysis_run_id=analysis.id
+           FOR UPDATE OF item`,
+        [input.accountId, input.jobId, input.itemId, input.owner.id]);
       if (item.rowCount !== 1) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID");
       if (item.rows[0].status === "CANCELLED") return { status: "CANCELLED" };
       if (item.rows[0].status_version !== input.expectedStatusVersion) return { status: "STALE" };
       const parameters = baseValues(input);
       const acceptedResult = await client.query(
         `SELECT * FROM auto_listing_source_materialization_attempts
-         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND parent_plan_id=$4 AND source_asset_id=$5
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND ${ownerColumn(input)}=$4 AND source_asset_id=$5
            AND source_ref_hash=$6 AND input_hash=$7 AND expected_status_version=$8 AND status='ACCEPTED'
          FOR UPDATE`, parameters,
       );
@@ -457,7 +569,7 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
       }
       const active = await client.query(
         `SELECT * FROM auto_listing_source_materialization_attempts
-         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND parent_plan_id=$4 AND source_asset_id=$5
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND ${ownerColumn(input)}=$4 AND source_asset_id=$5
            AND source_ref_hash=$6 AND input_hash=$7 AND expected_status_version=$8
            AND status IN ('MATERIALIZING','STORED') AND lease_expires_at > NOW()
          FOR UPDATE`, parameters,
@@ -467,7 +579,7 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
         `UPDATE auto_listing_source_materialization_attempts
          SET lease_owner=$9,lease_token=$10::TEXT || ':' || attempt_no::text,
              lease_expires_at=NOW()+($11::INTEGER * INTERVAL '1 millisecond'),updated_at=NOW()
-         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND parent_plan_id=$4 AND source_asset_id=$5
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND ${ownerColumn(input)}=$4 AND source_asset_id=$5
            AND source_ref_hash=$6 AND input_hash=$7 AND expected_status_version=$8
            AND status='STORED' AND lease_expires_at <= NOW()
          RETURNING *`, [...parameters, leaseOwner, nonce, leaseMs],
@@ -481,21 +593,36 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
         `UPDATE auto_listing_source_materialization_attempts
          SET status='FAILED',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
              error_code='AUTO_LISTING_SOURCE_LEASE_EXPIRED',error_retryable=TRUE,updated_at=NOW()
-         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND parent_plan_id=$4 AND source_asset_id=$5
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND ${ownerColumn(input)}=$4 AND source_asset_id=$5
            AND source_ref_hash=$6 AND input_hash=$7 AND expected_status_version=$8
            AND status='MATERIALIZING' AND lease_expires_at <= NOW()`, parameters,
       );
       const attempts = await client.query(
         `SELECT COALESCE(MAX(attempt_no),0)::INTEGER AS attempt_no
          FROM auto_listing_source_materialization_attempts
-         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND parent_plan_id=$4 AND source_asset_id=$5
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND ${ownerColumn(input)}=$4 AND source_asset_id=$5
            AND source_ref_hash=$6 AND input_hash=$7 AND expected_status_version=$8`, parameters,
       );
       const attemptNo = Number(attempts.rows?.[0]?.attempt_no || 0) + 1;
-      if (attemptNo > input.maxAttempts) return { status: "ATTEMPTS_EXHAUSTED" };
+      if (attemptNo > input.maxAttempts) {
+        if (input.owner.kind === "SOURCE_IMAGE_ANALYSIS") {
+          const lastFailure = await client.query(
+            `SELECT * FROM auto_listing_source_materialization_attempts
+             WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_analysis_run_id=$4 AND source_asset_id=$5
+               AND source_ref_hash=$6 AND input_hash=$7 AND expected_status_version=$8
+               AND attempt_no=$9 AND status='FAILED'
+             FOR UPDATE`, [...parameters, input.maxAttempts],
+          );
+          const record = fromRow(lastFailure.rows?.[0]);
+          if (lastFailure.rowCount === 1 && exhaustedSafeFailureRecord(record, input)) {
+            return { status: "EXHAUSTED_SAFE_FAILURE", record: publicRecord(record) };
+          }
+        }
+        return { status: "ATTEMPTS_EXHAUSTED" };
+      }
       const inserted = await client.query(
         `INSERT INTO auto_listing_source_materialization_attempts (
-           id,account_id,job_id,item_id,parent_plan_id,source_asset_id,source_ref_hash,input_hash,
+           id,account_id,job_id,item_id,${ownerColumn(input)},source_asset_id,source_ref_hash,input_hash,
            expected_status_version,attempt_no,status,lease_owner,lease_token,lease_expires_at
          ) VALUES ($9,$1,$2,$3,$4,$5,$6,$7,$8,$10::INTEGER,'MATERIALIZING',$11,$12::TEXT || ':' || $10::INTEGER::TEXT,
            NOW()+($13::INTEGER * INTERVAL '1 millisecond'))
@@ -518,7 +645,7 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
         SET status='STORED',object_key_version=$12,object_key=$13,content_hash=$14,content_type=$15,
             width=$16,height=$17,size_bytes=$18,updated_at=NOW()
         FROM auto_listing_job_items AS item
-        WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.parent_plan_id=$4
+        WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.${ownerColumn(input)}=$4
           AND attempt.source_asset_id=$5 AND attempt.source_ref_hash=$6 AND attempt.input_hash=$7
           AND attempt.expected_status_version=$8 AND attempt.id=$9 AND attempt.attempt_no=$10 AND attempt.lease_token=$11
           AND attempt.status IN ('MATERIALIZING','STORED') AND attempt.lease_expires_at > NOW()
@@ -533,7 +660,7 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
       statement = `UPDATE auto_listing_source_materialization_attempts AS attempt
         SET status='ACCEPTED',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,accepted_at=NOW(),updated_at=NOW()
         FROM auto_listing_job_items AS item
-        WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.parent_plan_id=$4
+        WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.${ownerColumn(input)}=$4
           AND attempt.source_asset_id=$5 AND attempt.source_ref_hash=$6 AND attempt.input_hash=$7
           AND attempt.expected_status_version=$8 AND attempt.id=$9 AND attempt.attempt_no=$10 AND attempt.lease_token=$11
           AND attempt.status='STORED' AND attempt.lease_expires_at > NOW()
@@ -548,7 +675,7 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
         SET status='FAILED',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
             error_code=$12,error_retryable=$13,updated_at=NOW()
         FROM auto_listing_job_items AS item
-        WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.parent_plan_id=$4
+        WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3 AND attempt.${ownerColumn(input)}=$4
           AND attempt.source_asset_id=$5 AND attempt.source_ref_hash=$6 AND attempt.input_hash=$7
           AND attempt.expected_status_version=$8 AND attempt.id=$9 AND attempt.attempt_no=$10 AND attempt.lease_token=$11
           AND attempt.status IN ('MATERIALIZING','STORED') AND attempt.lease_expires_at > NOW()
@@ -561,8 +688,8 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
     try { result = await query(statement, parameters); } catch (cause) { throw cause; }
     const record = fromRow(result.rows?.[0]);
     if (result.rowCount !== 1 || !record) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_CLAIM_REJECTED");
-    if (kind === "STORE" && (!validStoredRecord(record) || !same(record, input, EVIDENCE_KEYS))) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
-    if (kind === "COMPLETE" && (!acceptedRecord(record) || !same(record, input, EVIDENCE_KEYS))) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
+    if (kind === "STORE" && (!validStoredRecord(record) || !sameOwned(record, input, [...INTERNAL_BASE_KEYS, ...EVIDENCE_KEYS]))) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
+    if (kind === "COMPLETE" && (!acceptedRecord(record) || !sameOwned(record, input, [...INTERNAL_BASE_KEYS, ...EVIDENCE_KEYS]))) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
     if (kind === "FAIL" && (record.status !== "FAILED" || record.errorCode !== input.errorCode || record.errorRetryable !== input.errorRetryable)) {
       throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
     }
@@ -590,13 +717,40 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
     },
     async listAcceptedSourceMaterializationsForPlan(rawInput) {
       const input = validateImmutableList(rawInput);
-      const result = await query(
-        `SELECT * FROM auto_listing_source_materialization_attempts
-         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND parent_plan_id=$4
-           AND status='ACCEPTED'
-         ORDER BY source_asset_id,attempt_no LIMIT $5`,
-        [input.accountId, input.jobId, input.itemId, input.parentPlanId, maxRows + 1],
-      );
+      const result = input.ownerKind === "SOURCE_IMAGE_ANALYSIS"
+        && input.materializationAnalysisRunId !== input.sourceImageAnalysisRunId
+        ? await query(
+          `SELECT attempt.* FROM auto_listing_source_materialization_attempts AS attempt
+           JOIN ai_content_plans AS parent
+             ON parent.account_id=attempt.account_id AND parent.job_id=attempt.job_id
+            AND parent.item_id=attempt.item_id AND parent.id=$4
+            AND parent.source_image_analysis_run_id=$5
+           WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+             AND attempt.source_analysis_run_id=$6 AND attempt.status='ACCEPTED'
+           ORDER BY attempt.source_asset_id,attempt.attempt_no LIMIT $7`,
+          [input.accountId, input.jobId, input.itemId, input.parentPlanId,
+            input.sourceImageAnalysisRunId, input.materializationAnalysisRunId, maxRows + 1],
+        )
+        : input.ownerKind === "SOURCE_IMAGE_ANALYSIS"
+        ? await query(
+          `SELECT attempt.* FROM auto_listing_source_materialization_attempts AS attempt
+           JOIN ai_content_plans AS parent
+             ON parent.account_id=attempt.account_id AND parent.job_id=attempt.job_id
+            AND parent.item_id=attempt.item_id AND parent.id=$4
+            AND parent.source_image_analysis_run_id=$5
+           WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+             AND attempt.source_analysis_run_id=$5 AND attempt.status='ACCEPTED'
+           ORDER BY attempt.source_asset_id,attempt.attempt_no LIMIT $6`,
+          [input.accountId, input.jobId, input.itemId, input.parentPlanId,
+            input.sourceImageAnalysisRunId, maxRows + 1],
+        )
+        : await query(
+          `SELECT * FROM auto_listing_source_materialization_attempts
+           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND parent_plan_id=$4
+             AND status='ACCEPTED'
+           ORDER BY source_asset_id,attempt_no LIMIT $5`,
+          [input.accountId, input.jobId, input.itemId, input.parentPlanId, maxRows + 1],
+        );
       const rows = (result.rows || []).map(fromRow);
       if (rows.length > maxRows || rows.some((row) => !acceptedRecord(row))) {
         throw failure(rows.length > maxRows ? "AUTO_LISTING_SOURCE_MATERIALIZATION_BATCH_EXCEEDED" : "AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
@@ -611,15 +765,14 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
       let cleanupId;
       try { cleanupId = id(); } catch { throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED"); }
       if (!safeIdentifier(cleanupId)) throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED");
-      const values = [cleanupId, ...[
-        "accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId", "materializationAttemptId",
-        "sourceRefHash", "inputHash", "expectedStatusVersion", "attemptNo", "leaseToken",
-        "objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height", "sizeBytes",
-        "reasonCode", "originalErrorCode",
-      ].map((key) => input[key])];
+      const values = [cleanupId, input.accountId, input.jobId, input.itemId, input.owner.id,
+        input.sourceAssetId, input.materializationAttemptId, input.sourceRefHash, input.inputHash,
+        input.expectedStatusVersion, input.attemptNo, input.leaseToken, input.objectKeyVersion,
+        input.objectKey, input.contentHash, input.contentType, input.width, input.height, input.sizeBytes,
+        input.reasonCode, input.originalErrorCode];
       const inserted = await query(
         `INSERT INTO auto_listing_source_object_cleanup_obligations (
-           id,account_id,job_id,item_id,parent_plan_id,source_asset_id,materialization_attempt_id,
+           id,account_id,job_id,item_id,${ownerColumn(input)},source_asset_id,materialization_attempt_id,
            source_ref_hash,input_hash,expected_status_version,attempt_no,lease_token,
            object_key_version,object_key,content_hash,content_type,width,height,size_bytes,
            reason_code,original_error_code
@@ -627,7 +780,7 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
          FROM auto_listing_source_materialization_attempts AS attempt
          WHERE attempt.account_id=$2 AND attempt.job_id=$3 AND attempt.item_id=$4
-           AND attempt.parent_plan_id=$5 AND attempt.source_asset_id=$6 AND attempt.id=$7
+           AND attempt.${ownerColumn(input)}=$5 AND attempt.source_asset_id=$6 AND attempt.id=$7
            AND attempt.source_ref_hash=$8 AND attempt.input_hash=$9
            AND attempt.expected_status_version=$10 AND attempt.attempt_no=$11 AND attempt.lease_token=$12
            AND attempt.status IN ('MATERIALIZING','STORED') AND attempt.lease_expires_at > NOW()
@@ -642,10 +795,10 @@ export function createPostgresSourceMaterializationRepository(options = {}) {
         );
         record = fromCleanupRow(found.rows?.[0]);
       }
-      if (!record || record.status !== "PENDING" || !same(record, input, [...CLEANUP_KEYS])) {
+      if (!record || record.status !== "PENDING" || !sameOwned(record, input, [...INTERNAL_BASE_KEYS, ...CLEANUP_TAIL_KEYS])) {
         throw failure("AUTO_LISTING_SOURCE_MATERIALIZATION_CONFLICT");
       }
-      return record;
+      return publicCleanupRecord(record);
     },
   });
 }

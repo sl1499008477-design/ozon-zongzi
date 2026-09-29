@@ -129,6 +129,53 @@ test("builds an isolated snapshot preserving listing facts and multi-variant evi
   assert.deepEqual(input, before);
 });
 
+test("the primary variant inherits the complete PDP gallery and normalized visual aspects", () => {
+  const listingDraft = structuredClone(collectItem().listingDraft);
+  listingDraft.images = [
+    "https://ir.ozone.ru/s3/multimedia-1-v/7223222443.jpg",
+    "https://media.example/primary-back.jpg",
+    "https://media.example/primary-detail.jpg",
+  ];
+  listingDraft.variants = [
+    {
+      ...listingDraft.variants[0],
+      images: ["https://ir.ozone.ru/s3/multimedia-1-v/wc1000/7223222443.jpg"],
+      aspectValues: { "Цвет": "темно-синий" },
+    },
+    {
+      sku: "sku-gray",
+      offerId: "offer-gray",
+      name: "Gray product",
+      images: ["https://media.example/gray-cover.jpg"],
+      aspectValues: { "Цвет": "серый" },
+      blackKopecks: "10000",
+      greenKopecks: "8000",
+      currency: "RUB",
+    },
+  ];
+
+  const result = buildAutoListingSourceSnapshot(source({
+    collectItem: collectItem({ listingDraft }),
+  }));
+  const primary = result.snapshot.variants.find(({ sku }) => sku === "sku-primary");
+  const gray = result.snapshot.variants.find(({ sku }) => sku === "sku-gray");
+
+  assert.deepEqual(primary.media, listingDraft.images);
+  assert.deepEqual(gray.media, ["https://media.example/gray-cover.jpg"]);
+  assert.deepEqual(primary.evidence, {
+    contractVersion: 1,
+    variantId: "source-sku:sku-primary",
+    appearanceStatus: "COMPLETE",
+    appearanceFacts: [{
+      factId: `fact.variant.${crypto.createHash("sha256").update("COLOR\u0000темно-синий").digest("hex").slice(0, 24)}`,
+      kind: "COLOR",
+      value: "темно-синий",
+    }],
+    sizeFacts: [],
+  });
+  assert.equal(gray.evidence.appearanceFacts[0].value, "серый");
+});
+
 test("uses persisted Ozon source attributes when the editable draft has no attribute facts", () => {
   const sourceAttributes = [
     { key: "8145", value: "80", dictionary_value_id: "0" },
@@ -201,7 +248,7 @@ test("preserves variant price, media and grouping facts and hashes every frozen 
     blackKopecks: "10000", greenKopecks: "8000", currency: "RUB", currencySource: "SOURCE",
   });
   assert.equal(first.snapshot.variants[0].groupId, "group-a");
-  assert.deepEqual(first.snapshot.variants[0].media, ["one"]);
+  assert.deepEqual(first.snapshot.variants[0].media, ["https://media.example/primary.jpg", "one"]);
   for (const mutate of [
     (draft) => ({ ...draft, brand: "Brand two" }),
     (draft) => ({ ...draft, variants: [{ ...draft.variants[0], blackKopecks: "10001" }] }),
@@ -238,6 +285,39 @@ test("does not borrow the primary variant discount price for sibling variants", 
     currency: "RUB",
     currencySource: "SOURCE",
   });
+});
+
+test("recovers exact per-variant prices from historical marketplace display text", () => {
+  const draft = structuredClone(collectItem().listingDraft);
+  delete draft.blackKopecks;
+  delete draft.greenKopecks;
+  draft.price = "118.21";
+  draft.currency = "";
+  draft.variants = [
+    {
+      sku: "sku-primary",
+      offerId: "offer-primary",
+      name: "Primary product",
+      price: "106,39 ¥",
+      images: ["https://media.example/primary.jpg"],
+    },
+    {
+      sku: "sku-sibling",
+      offerId: "offer-sibling",
+      name: "Sibling product",
+      price: "218,77 ¥",
+      images: ["https://media.example/sibling.jpg"],
+    },
+  ];
+
+  const captured = buildAutoListingSourceSnapshot(source({
+    targetStoreCurrency: "CNY",
+    collectItem: collectItem({ listingDraft: draft }),
+  }));
+
+  assert.equal(captured.snapshot.priceEvidence.blackKopecks, "11821");
+  assert.equal(captured.snapshot.variants[0].priceEvidence.blackKopecks, "10639");
+  assert.equal(captured.snapshot.variants[1].priceEvidence.blackKopecks, "21877");
 });
 
 test("requires complete trusted scope and makes raw evidence and arrays JSON-exact", () => {

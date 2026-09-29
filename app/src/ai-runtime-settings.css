@@ -1,0 +1,234 @@
+.runtime-settings-page {
+  color: #071737;
+}
+
+.runtime-settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.85fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.runtime-settings-card {
+  border-color: #dce8f7;
+  border-radius: 26px;
+  box-shadow: 0 12px 38px rgba(24, 79, 151, 0.06);
+}
+
+.runtime-editor-card {
+  grid-row: span 2;
+}
+
+.runtime-settings-card .ant-card-head {
+  min-height: 64px;
+  padding-inline: 24px;
+  border-bottom-color: #dce8f7;
+}
+
+.runtime-settings-card .ant-card-body {
+  padding: 24px;
+}
+
+.runtime-setting-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.runtime-setting-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 7px 16px;
+  padding: 18px;
+  border: 1px solid #dce8f7;
+  border-radius: 18px;
+  background: #f8fbff;
+}
+
+.runtime-setting-label {
+  align-self: center;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.runtime-setting-field .ant-input-number {
+  width: 100%;
+}
+
+.runtime-setting-field small,
+.runtime-setting-field em {
+  grid-column: 1 / -1;
+  color: #65718a;
+  font-size: 13px;
+  font-style: normal;
+  line-height: 1.55;
+}
+
+.runtime-setting-field em {
+  color: #8994a8;
+  font-size: 12px;
+}
+
+.runtime-adaptive-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 16px;
+  padding: 20px;
+  border: 1px solid #dce8f7;
+  border-radius: 18px;
+}
+
+.runtime-adaptive-row strong {
+  font-size: 15px;
+}
+
+.runtime-adaptive-row p {
+  margin: 6px 0;
+  color: #65718a;
+  line-height: 1.6;
+}
+
+.runtime-adaptive-row small {
+  color: #8994a8;
+  line-height: 1.55;
+}
+
+.runtime-adaptive-row .ant-switch {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.runtime-save-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.runtime-save-row > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: #65718a;
+}
+
+.runtime-status-line,
+.runtime-revision-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runtime-status-line > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.runtime-status-label {
+  color: #65718a;
+  font-size: 12px;
+}
+
+.runtime-revision-row {
+  flex-wrap: wrap;
+  margin: 18px 0;
+  color: #65718a;
+  font-size: 13px;
+}
+
+.runtime-metric-grid,
+.runtime-resource-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.runtime-metric-grid > div,
+.runtime-resource-grid > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  padding: 13px;
+  border-radius: 14px;
+  background: #f3f8ff;
+}
+
+.runtime-metric-grid span,
+.runtime-resource-grid span {
+  color: #65718a;
+  font-size: 12px;
+}
+
+.runtime-metric-grid strong,
+.runtime-resource-grid strong {
+  overflow-wrap: anywhere;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.runtime-worker-note {
+  margin: 16px 0 0;
+  color: #65718a;
+  line-height: 1.6;
+}
+
+.runtime-capacity-note {
+  margin-top: 16px;
+}
+
+.runtime-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 180px;
+  justify-content: center;
+  border: 1px solid #dce8f7;
+  border-radius: 26px;
+  background: white;
+  color: #65718a;
+}
+
+@media (max-width: 1120px) {
+  .runtime-settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-editor-card {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .runtime-setting-fields,
+  .runtime-metric-grid,
+  .runtime-resource-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-setting-field {
+    grid-template-columns: minmax(0, 1fr) 92px;
+    padding: 15px;
+  }
+
+  .runtime-settings-card .ant-card-head,
+  .runtime-settings-card .ant-card-body {
+    padding-inline: 18px;
+  }
+
+  .runtime-save-row,
+  .runtime-save-row .ant-space {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .runtime-save-row .ant-btn {
+    width: 100%;
+  }
+}

@@ -9,7 +9,7 @@ const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 function invalidTaxonomy() {
   return Object.assign(new TypeError("Ozon taxonomy input is invalid"), {
-    code: "OZON_TAXONOMY_CONTRACT_INVALID",
+    code: "ZONGZI_TAXONOMY_CONTRACT_INVALID",
   });
 }
 
@@ -133,7 +133,7 @@ export function taxonomyFingerprint(tree) {
   try {
     return createHash("sha256").update(JSON.stringify(normalizeTaxonomy(tree))).digest("hex");
   } catch (error) {
-    if (error?.code === "OZON_TAXONOMY_CONTRACT_INVALID") throw error;
+    if (error?.code === "ZONGZI_TAXONOMY_CONTRACT_INVALID") throw error;
     throw invalidTaxonomy();
   }
 }
@@ -153,7 +153,7 @@ export function enabledLeafCandidates(tree, sourceTypeId = null) {
     );
     return Object.freeze(candidates);
   } catch (error) {
-    if (error?.code === "OZON_TAXONOMY_CONTRACT_INVALID") throw error;
+    if (error?.code === "ZONGZI_TAXONOMY_CONTRACT_INVALID") throw error;
     throw invalidTaxonomy();
   }
 }

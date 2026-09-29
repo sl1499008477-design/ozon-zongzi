@@ -196,7 +196,8 @@ function validateCredential(value, input) {
   if (!clientId.valid || !clientId.value || !apiKey.valid || !apiKey.value) {
     throwVerifierError("RFBS_VALIDATION_REQUIRED", true);
   }
-  return Object.freeze({ id: storeId.value, clientId: clientId.value, apiKey: apiKey.value });
+  return Object.freeze({ id: storeId.value, clientId: clientId.value, apiKey: apiKey.value,
+    ...(['CN','RU','LEGACY'].includes(credential.ozonRoute)?{ozonRoute:credential.ozonRoute}:{}) });
 }
 
 function safeJsonSnapshot(value) {
@@ -307,11 +308,11 @@ function mapOzonFailure(error) {
     }
     const status = Number(statusDescriptor?.value);
     const code = typeof codeDescriptor?.value === "string" ? codeDescriptor.value.toUpperCase() : "";
-    if ([401, 403].includes(status) || ["OZON_HTTP_401", "OZON_HTTP_403"].includes(code)) {
+    if ([401, 403].includes(status) || ["ZONGZI_HTTP_401", "ZONGZI_HTTP_403"].includes(code)) {
       return verifierError("RFBS_WAREHOUSE_SCOPE_MISMATCH");
     }
     if (status >= 500 || status === 408 || status === 429
-      || code === "OZON_TIMEOUT" || /^OZON_HTTP_5\d\d$/u.test(code)) {
+      || code === "ZONGZI_TIMEOUT" || /^ZONGZI_HTTP_5\d\d$/u.test(code)) {
       return verifierError("RFBS_VALIDATION_REQUIRED", true);
     }
   } catch {
@@ -364,9 +365,7 @@ export function createAutoListingRfbsWarehouseVerifier({
       }
       const credential = validateCredential(credentialValue, input);
 
-      let response;
-      try {
-        response = await callOzonSellerApi(
+      const readWarehouse = credential => callOzonSellerApi(
           credential,
           "/v2/warehouse/list",
           {},
@@ -376,8 +375,16 @@ export function createAutoListingRfbsWarehouseVerifier({
             ...(input.signal ? { signal: input.signal } : {}),
           },
         );
+      let response;
+      try {
+        response = await readWarehouse(credential);
       } catch (error) {
-        throw mapOzonFailure(error);
+        const fields=error && typeof error==='object'?Object.getOwnPropertyDescriptors(error):{};
+        // Only this read-only lookup may use the alternate host. A transport
+        // failure merely wrapped as status 502 is not a remote HTTP 502.
+        if(credential.ozonRoute!=='CN' || fields.status?.value!==502 || fields.code?.value!=='ZONGZI_HTTP_502')throw mapOzonFailure(error);
+        try { response=await readWarehouse(Object.freeze({...credential,ozonRoute:'RU'})); }
+        catch (backupError) { throw mapOzonFailure(backupError); }
       }
 
       let rows;

@@ -1,4 +1,7 @@
+import { assertOzonRussianProductText, hasChineseProductText, preferOzonRussianText } from "./ozon-product-language.mjs";
+import { collectedAttributeValues } from "./collector-attribute-values.mjs";
 import { types } from "node:util";
+import { EntityDecoder, ALL_ENTITIES } from "@nodable/entities";
 
 const TYPE_MATCH_SCORE = {
   EXACT: 3,
@@ -7,15 +10,25 @@ const TYPE_MATCH_SCORE = {
   PARTIAL: 1,
 };
 const OZON_NO_BRAND_VALUE = "Нет бренда";
+const MANUFACTURING_COUNTRY_ATTRIBUTE_ID = 4389;
 const RICH_CONTENT_ATTRIBUTE_ID = 11254;
 const HASHTAGS_ATTRIBUTE_ID = 23171;
 const LEGACY_HASHTAGS_ATTRIBUTE_ID = 22508;
 const HASHTAGS_ATTRIBUTE_IDS = new Set([HASHTAGS_ATTRIBUTE_ID, LEGACY_HASHTAGS_ATTRIBUTE_ID]);
 const MAX_HASHTAGS = 30;
 const MAX_HASHTAG_LENGTH = 30;
+const descriptionEntities = new EntityDecoder({ namedEntities: ALL_ENTITIES });
 const STRICT_METADATA_KEYS = new Set(["descriptionCategoryId", "typeId", "attributes"]);
 const STRICT_ATTRIBUTE_KEYS = new Set(["id", "complexId", "required", "dictionaryId", "dictionaryValues"]);
 const STRICT_DICTIONARY_VALUE_KEYS = new Set(["id", "value"]);
+
+export function defaultOzonManufacturingCountryAttribute() {
+  return {
+    id: MANUFACTURING_COUNTRY_ATTRIBUTE_ID,
+    complex_id: 0,
+    values: [{ dictionary_value_id: 90296, value: "Китай" }],
+  };
+}
 
 function autoListingCategoryFailure(code, status) {
   const error = new Error(code);
@@ -36,6 +49,10 @@ function incompleteCategoryAttributesError() {
 
 function unresolvedCategoryDictionaryError() {
   return autoListingCategoryFailure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED", 422);
+}
+
+function videoCountLimitError() {
+  return autoListingCategoryFailure("ZONGZI_VIDEO_COUNT_LIMIT", 422);
 }
 
 function strictPositiveId(value) {
@@ -231,25 +248,15 @@ function findSourceAttribute(item, id) {
 }
 
 function sourceAttributeText(item, id) {
-  const attr = findSourceAttribute(item, id);
-  if (!attr) return "";
-  if (attr.value != null && String(attr.value).trim()) return cleanText(attr.value);
-  const first = asArray(attr.collection).find((value) => value != null && String(value).trim());
-  return first == null ? "" : cleanText(typeof first === "object" ? first.value : first);
+  return sourceAttributeValues(item, id).find(value => value.value)?.value || "";
 }
 
 function sourceAttributeValues(item, id) {
-  const attr = findSourceAttribute(item, id);
-  if (!attr) return [];
-  const raw = attr.value != null ? [attr] : asArray(attr.collection);
-  return raw.length ? normalizeAttributeValues(raw) : [];
+  return normalizeAttributeValues(collectedAttributeValues(findSourceAttribute(item, id)));
 }
 
 function rawAttributeValues(raw) {
-  if (!raw || typeof raw !== "object") return [];
-  if (asArray(raw.values).length) return raw.values;
-  if (raw.value != null) return [raw];
-  return asArray(raw.collection);
+  return collectedAttributeValues(raw);
 }
 
 function sourceAttributeDictionaryValueIds(item, id) {
@@ -296,17 +303,22 @@ function categoryIdsOf(value) {
     .filter(Boolean);
 }
 
-function normalizeAttributeValues(rawValues) {
+function normalizeBarcode(value) {
+  const barcode = cleanText(value);
+  return barcode && !/^OZN/iu.test(barcode) ? barcode : undefined;
+}
+
+export function normalizeAttributeValues(rawValues, { preserveText = false } = {}) {
   const out = [];
   for (const raw of asArray(rawValues)) {
     if (raw == null) continue;
     const value = typeof raw === "object" ? firstFilled(raw.value, raw.name, raw.title) : raw;
-    const text = cleanText(value);
-    if (!text) continue;
-    const item = { value: text };
+    const text = preserveText && typeof value === "string" ? value : cleanText(value);
     const dictId = typeof raw === "object"
       ? toPositiveNumber(firstFilled(raw.dictionary_value_id, raw.dictionaryValueId))
       : 0;
+    if (!text && !dictId) continue;
+    const item = { value: text };
     if (dictId) item.dictionary_value_id = dictId;
     out.push(item);
   }
@@ -318,13 +330,7 @@ function normalizeAttribute(raw, fallbackComplexId = 0) {
   const id = toPositiveNumber(firstFilled(raw.id, raw.attribute_id, raw.attributeId, raw.key));
   if (!id) return null;
   const complexId = toPositiveNumber(firstFilled(raw.complex_id, raw.attribute_complex_id, raw.complexId, fallbackComplexId));
-  const values = normalizeAttributeValues(
-    asArray(raw.values).length
-      ? raw.values
-      : raw.value != null
-        ? [raw]
-        : asArray(raw.collection),
-  );
+  const values = normalizeAttributeValues(collectedAttributeValues(raw), { preserveText: [9024, 10289].includes(id) });
   if (!values.length) return null;
   return {
     complex_id: complexId,
@@ -428,12 +434,17 @@ function normalizeRichContentValue(value) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
   const v03 = normalizeRichContentV03(parsed);
   if (v03) return JSON.stringify(v03);
-  const widget = normalizeRichContentWidget(parsed) ||
-    asArray(parsed.content).map(normalizeRichContentWidget).find(Boolean);
-  return widget ? JSON.stringify(widget) : "";
+  // Collected Ozon content already carries its version and all widgets. Keep
+  // that envelope intact; extracting the first widget produces invalid JSON.
+  if (parsed.version === 0.3 && Array.isArray(parsed.content) && parsed.content.length
+    && parsed.content.every(widget => widget && typeof widget.widgetName === "string")) {
+    return JSON.stringify(parsed);
+  }
+  const widget = normalizeRichContentWidget(parsed);
+  return widget ? JSON.stringify({ content: [widget], version: 0.3 }) : "";
 }
 
-function flattenHashtagInput(value) {
+export function flattenHashtagInput(value) {
   if (Array.isArray(value)) return value.flatMap(flattenHashtagInput);
   const text = cleanText(value);
   if (!text) return [];
@@ -470,6 +481,10 @@ function normalizeHashtags(value) {
 function normalizeUploadAttribute(raw, fallbackComplexId = 0) {
   const attr = normalizeAttribute(raw, fallbackComplexId);
   if (!attr) return null;
+  if (attr.id === 7822) {
+    const values = attr.values.filter(value => normalizeBarcode(value.value));
+    return values.length ? { ...attr, values } : null;
+  }
   if (attr.id === RICH_CONTENT_ATTRIBUTE_ID) {
     const richContent = normalizeRichContentValue(attr.values.map((value) => value?.value).find(Boolean));
     return richContent
@@ -479,7 +494,7 @@ function normalizeUploadAttribute(raw, fallbackComplexId = 0) {
   if (isHashtagAttributeId(attr.id)) {
     const hashtags = normalizeHashtags(attr.values.map((value) => value?.value));
     return hashtags.length
-      ? { complex_id: 0, id: attr.id, values: hashtags.map((value) => ({ value })) }
+      ? { complex_id: 0, id: attr.id, values: [{ value: hashtags.join(" ") }] }
       : null;
   }
   return attr;
@@ -946,11 +961,11 @@ function compactErrorMessage(error) {
 }
 
 const SAFE_CATEGORY_ERROR_CODES = new Set([
-  "OZON_CATEGORY_TREE_UNAVAILABLE",
-  "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
-  "OZON_CATEGORY_VALUES_UNAVAILABLE",
-  "OZON_CATEGORY_DATA_INVALID",
-  "OZON_CATEGORY_TYPE_NOT_FOUND",
+  "ZONGZI_CATEGORY_TREE_UNAVAILABLE",
+  "ZONGZI_CATEGORY_ATTRIBUTES_UNAVAILABLE",
+  "ZONGZI_CATEGORY_VALUES_UNAVAILABLE",
+  "ZONGZI_CATEGORY_DATA_INVALID",
+  "ZONGZI_CATEGORY_TYPE_NOT_FOUND",
   "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
   "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE",
   "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED",
@@ -963,7 +978,7 @@ function isSafeCategoryError(error) {
 function unresolvedRequiredDictionaryError() {
   const error = new Error("必填字典属性未匹配到 Ozon 字典值，请检查后重试");
   error.status = 422;
-  error.code = "OZON_CATEGORY_DATA_INVALID";
+  error.code = "ZONGZI_CATEGORY_DATA_INVALID";
   error.body = { operation: "REQUIRED_DICTIONARY_VALUE" };
   error.cause = null;
   return error;
@@ -973,6 +988,17 @@ function appendNormalizationWarning(ctx, warning) {
   const text = cleanText(warning, 500);
   if (!text || !Array.isArray(ctx?.warnings) || ctx.warnings.includes(text)) return;
   ctx.warnings.push(text);
+}
+
+function dictionaryAccessError(error) {
+  return [error?.status, error?.statusCode, error?.diagnostic?.sourceStatus].some(status => [401, 403].includes(Number(status)))
+    || error?.code === "ZONGZI_CATEGORY_STORE_FORBIDDEN";
+}
+
+function warnOptionalDictionaryValues(ctx, attr, meta, values, reason) {
+  const label = cleanText(attributeDisplayName(meta, attr.id), 80);
+  const text = values.map(value => cleanText(value?.value, 100)).filter(Boolean).join("、");
+  appendNormalizationWarning(ctx, "SKU " + ctx.warningSku + "：可选属性「" + label + "」(" + attr.id + ") 的值「" + text + "」" + reason + "，未上传");
 }
 
 function matchDictionaryValue(options, value) {
@@ -1004,43 +1030,110 @@ async function resolveDictionaryAttributeValues(attributes, {
   ctx,
 } = {}) {
   if (typeof ctx?.getCategoryAttributeValues !== "function") return attributes;
-  const cache = new Map();
+  const cache = ctx.dictionaryValueCache || new Map();
+  const readCached = (key, read) => {
+    if (!cache.has(key)) cache.set(key, Promise.resolve().then(read));
+    return cache.get(key);
+  };
+  const optionId = option => toPositiveNumber(firstFilled(option?.id, option?.dictionary_value_id, option?.dictionaryValueId));
+  const findOption = (options, id) => asArray(options).find(option => optionId(option) === id);
   const out = [];
   for (const attr of asArray(attributes)) {
     const meta = metaById?.get?.(Number(attr?.id)) || {};
     const dictionaryId = attributeDictionaryId(meta);
-    if (!dictionaryId || !asArray(attr?.values).some((value) => !toPositiveNumber(value?.dictionary_value_id))) {
+    const categoryDependent = boolish(meta.category_dependent ?? meta.categoryDependent);
+    const trustSuppliedIds = ctx.trustSuppliedDictionaryIds === true;
+    if (!dictionaryId || ((!categoryDependent || trustSuppliedIds) && !asArray(attr?.values).some((value) => !toPositiveNumber(value?.dictionary_value_id)))) {
       out.push(attr);
       continue;
     }
     const cacheKey = `${descriptionCategoryId}:${typeId}:${attr.id}`;
-    if (!cache.has(cacheKey)) {
+    const warnUnverifiedId = () => appendNormalizationWarning(ctx,
+      `SKU ${ctx.warningSku}：属性「${attributeDisplayName(meta, attr.id)}」(${attr.id}) 的字典暂不可用，已保留原字典ID，未能核对目标类目，请在 Ozon 核对`);
+    let options;
+    try {
+      options = await readCached(cacheKey, () => ctx.getCategoryAttributeValues(descriptionCategoryId, typeId, attr.id));
+    } catch (error) {
+      const required = isRequiredAttribute(meta);
+      if (dictionaryAccessError(error) || (isSafeCategoryError(error)
+        && (required || error.code !== "ZONGZI_CATEGORY_VALUES_UNAVAILABLE"))) throw error;
+      const label = attributeDisplayName(meta, attr.id);
+      if (required) {
+        const warning = `获取必填字典属性「${label}」可选值失败：${compactErrorMessage(error)}`;
+        if (!ctx.allowUnresolvedRequiredDictionaryValues) throw new Error(warning);
+        appendNormalizationWarning(ctx, warning);
+      } else {
+        const known = attr.values.filter(value => toPositiveNumber(value.dictionary_value_id));
+        if (known.length) out.push({ ...attr, values: known });
+        if (categoryDependent && known.length && !trustSuppliedIds) warnUnverifiedId();
+        const missing = attr.values.filter(value => !toPositiveNumber(value.dictionary_value_id));
+        if (missing.length) warnOptionalDictionaryValues(ctx, attr, meta, missing, "因字典暂不可用未能匹配");
+      }
+      continue;
+    }
+    const targetOption = async id => {
+      const firstPageMatch = findOption(options, id);
+      if (firstPageMatch) return firstPageMatch;
       try {
-        cache.set(cacheKey, await ctx.getCategoryAttributeValues(descriptionCategoryId, typeId, attr.id));
+        // A missing first-page entry is not proof of an invalid ID. The existing
+        // category service follows the target dictionary cursor for this exact ID.
+        const later = await readCached(cacheKey + ":id:" + id, () => ctx.getCategoryAttributeValues(descriptionCategoryId, typeId, attr.id, {
+          matchCandidates: [{ id }],
+        }));
+        return findOption(later, id);
       } catch (error) {
-        if (isSafeCategoryError(error)) throw error;
-        const required = isRequiredAttribute(meta);
-        const label = attributeDisplayName(meta, attr.id);
-        if (required) {
-          const warning = `获取必填字典属性「${label}」可选值失败：${compactErrorMessage(error)}`;
-          if (!ctx.allowUnresolvedRequiredDictionaryValues) throw new Error(warning);
-          appendNormalizationWarning(ctx, warning);
-        }
+        if (dictionaryAccessError(error)) throw error;
+        // null means the lookup failed; undefined means it succeeded with no ID.
+        return null;
+      }
+    };
+    const required = isRequiredAttribute(meta);
+    const nextValues = [];
+    for (const value of attr.values) {
+      const suppliedId = toPositiveNumber(value?.dictionary_value_id);
+      if (suppliedId && trustSuppliedIds) { nextValues.push(value); continue; }
+      const suppliedTarget = suppliedId && categoryDependent ? await targetOption(suppliedId) : undefined;
+      if (suppliedId && (!categoryDependent || suppliedTarget || (!required && suppliedTarget === null))) {
+        if (categoryDependent && suppliedTarget === null) warnUnverifiedId();
+        nextValues.push(value);
         continue;
       }
-    }
-    const options = cache.get(cacheKey);
-    const required = isRequiredAttribute(meta);
-    const nextValues = attr.values.map((value) => {
-      if (toPositiveNumber(value?.dictionary_value_id)) return value;
-      const matched = matchDictionaryValue(options, value?.value);
-      const matchedId = toPositiveNumber(firstFilled(matched?.id, matched?.dictionary_value_id, matched?.dictionaryValueId));
-      if (!matchedId) return value;
-      return {
-        value: cleanText(firstFilled(matched?.value, matched?.name, matched?.title, matched?.label, value?.value)),
+      const unresolvedValue = { ...value };
+      delete unresolvedValue.dictionary_value_id;
+      let matched = matchDictionaryValue(options, value?.value);
+      if (!matched) {
+        const matchCandidates = attr.values
+          .filter(candidate => candidate.value && (categoryDependent && !trustSuppliedIds || !toPositiveNumber(candidate.dictionary_value_id)) && !matchDictionaryValue(options, candidate.value))
+          .map(candidate => ({ value: candidate.value }));
+        const localizedKey = cacheKey + ":ZH_HANS:" + JSON.stringify(matchCandidates);
+        try {
+          const localized = await readCached(localizedKey, () => ctx.getCategoryAttributeValues(descriptionCategoryId, typeId, attr.id, {
+            language: "ZH_HANS", matchCandidates,
+          }));
+          matched = matchDictionaryValue(localized, value.value);
+        } catch (error) {
+          if (dictionaryAccessError(error)) throw error;
+          // Failed fallbacks use the existing unresolved-value rules below.
+        }
+      }
+      if (!matched && String(value.value || '').length >= 2 && typeof ctx.searchCategoryAttributeValuesExact === "function") {
+        const searchKey = cacheKey + ":search:" + value.value;
+        try {
+          const searched = await readCached(searchKey, () => ctx.searchCategoryAttributeValuesExact(descriptionCategoryId, typeId, attr.id, value.value));
+          matched = matchDictionaryValue(searched, value.value);
+        } catch (error) {
+          if (dictionaryAccessError(error)) throw error;
+        }
+      }
+      let matchedId = optionId(matched);
+      const targetMatch = categoryDependent && matchedId ? await targetOption(matchedId) : null;
+      if (categoryDependent && !targetMatch) matchedId = 0;
+      const canonical = targetMatch || findOption(options, matchedId) || matched;
+      nextValues.push(matchedId ? {
+        value: cleanText(firstFilled(canonical?.value, canonical?.name, canonical?.title, canonical?.label, value?.value)),
         dictionary_value_id: matchedId,
-      };
-    });
+      } : unresolvedValue);
+    }
     const unresolvedValues = nextValues.filter((value) => !toPositiveNumber(value?.dictionary_value_id));
     if (unresolvedValues.length) {
       if (required) {
@@ -1052,6 +1145,8 @@ async function resolveDictionaryAttributeValues(attributes, {
         if (resolvedValues.length) out.push({ ...attr, values: resolvedValues });
         continue;
       }
+      warnOptionalDictionaryValues(ctx, attr, meta, unresolvedValues,
+        categoryDependent ? "未匹配到当前目标类目的有效字典值" : "未匹配到 Ozon 字典ID");
       const resolvedValues = nextValues.filter((value) => toPositiveNumber(value?.dictionary_value_id));
       if (!resolvedValues.length) continue;
       out.push({
@@ -1100,12 +1195,60 @@ function assertStrictDictionaryValues(attributes, { metaByKey } = {}) {
   }
 }
 
+function sourceContentValue(item, ...keys) {
+  for (const carrier of [item, sourceVariantOf(item), bundleItemOf(item)]) {
+    for (const key of keys) {
+      if (Object.hasOwn(carrier, key) && carrier[key] !== undefined) return carrier[key];
+    }
+  }
+}
+
+function sourceMediaValue(item, field, ...aliases) {
+  const keys = [field, ...aliases];
+  if (sourceContentValue(item, "contentDiagnostics")?.[field]?.source === "manual") {
+    return sourceContentValue(item, ...keys);
+  }
+  // Historical drafts generated empty defaults before Seller enrichment arrived.
+  // Only an explicit manual edit may use an empty value to erase saved media.
+  return firstFilled(...[item, sourceVariantOf(item), bundleItemOf(item)]
+    .flatMap(carrier => keys.map(key => carrier[key])));
+}
+
+function normalizeColorImageUrl(value) {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  if (!/^https?:[/][/]/iu.test(text) || /\s/u.test(text)) return undefined;
+  try {
+    const url = new URL(text);
+    return ["http:", "https:"].includes(url.protocol) && url.hostname ? text : undefined;
+  } catch { return undefined; }
+}
+
+function isVideoCoverUrl(value) {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && /\.(?:mp4|mov)$/iu.test(url.pathname);
+  } catch { return false; }
+}
+
 function sourceComplexAttributes(item, allowedIds) {
+  const source = sourceVariantOf(item);
+  const bundle = bundleItemOf(item);
+  const provided = [item.complex_attributes, source.complex_attributes, bundle.complex_attributes]
+    .find(value => Array.isArray(value) && value.length) || [];
+  const canonical = provided.map(group => ({
+    attributes: asArray(group?.attributes)
+      .map(raw => normalizeUploadAttribute(raw, group.complex_id))
+      .filter(attr => attr && hasAllowedAttribute(allowedIds, attr.id)),
+  })).filter(group => group.attributes.length);
   const groups = new Map();
   const all = [
     ...asArray(item.bundleComplexAttrs),
-    ...asArray(sourceVariantOf(item)._bundleComplexAttrs),
-    ...asArray(bundleItemOf(item).attributes).filter((attr) => toPositiveNumber(attr?.complex_id)),
+    ...asArray(source._bundleComplexAttrs),
+    ...asArray(item.attributes),
+    ...asArray(source.attributes),
+    ...asArray(bundle.attributes),
   ];
   for (const raw of all) {
     const attr = normalizeUploadAttribute(raw);
@@ -1115,36 +1258,154 @@ function sourceComplexAttributes(item, allowedIds) {
     if (!groups.has(complexId)) groups.set(complexId, []);
     groups.get(complexId).push(attr);
   }
-  return [...groups.values()].map((attributes) => ({ attributes }));
+  const seen = new Set();
+  const complexGroups = [...canonical, ...[...groups.values()].map(attributes => ({ attributes }))]
+    .filter(group => {
+      const key = JSON.stringify(group);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  const explicitVideos = sourceMediaValue(item, "videos", "videoUrl", "video_url");
+  if (explicitVideos !== undefined && (!explicitVideos || (Array.isArray(explicitVideos) && !explicitVideos.length))) {
+    for (const group of complexGroups) {
+      group.attributes = group.attributes.filter(attr => ![21841, 21837].includes(attr.id));
+    }
+  }
+  // Ozon /v3/product/import: ordered URL/name values in video group 100001.
+  // A collected JPG coverUrl is a poster, not the MP4 video-cover attribute 21845.
+  if (hasAllowedAttribute(allowedIds, 21841) && hasAllowedAttribute(allowedIds, 21837)) {
+    const rawVideos = Array.isArray(explicitVideos) ? explicitVideos : [{ url: explicitVideos }];
+    const videoGroup = complexGroups.find(group => group.attributes.some(attr => attr.id === 21841 && attr.complex_id === 100001));
+    const videoUrls = [...(videoGroup?.attributes.find(attr => attr.id === 21841)?.values || [])];
+    const existingUrls = new Set(complexGroups.flatMap(group => group.attributes)
+      .filter(attr => attr.id === 21841).flatMap(attr => attr.values.map(value => value.value)));
+    const added = [];
+    for (const raw of rawVideos) {
+      const url = cleanText(typeof raw === "string" ? raw : raw?.url, 2000);
+      if (!/^https?:[/][/]/iu.test(url) || existingUrls.has(url)) continue;
+      if (existingUrls.size >= 5) throw videoCountLimitError();
+      existingUrls.add(url);
+      added.push({ url, name: cleanText(raw?.name || raw?.title, 200) || "Видео " + existingUrls.size });
+    }
+    if (added.length) {
+      const group = videoGroup || { attributes: [] };
+      for (const [id, values] of [
+        [21841, added.map(video => ({ value: video.url }))],
+        [21837, added.map(video => ({ value: video.name }))],
+      ]) {
+        const attribute = group.attributes.find(attr => attr.id === id);
+        if (attribute) attribute.values.push(...values);
+        else group.attributes.push({ complex_id: 100001, id, values: id === 21837
+          ? [...videoUrls.map((_, index) => ({ value: "Видео " + (index + 1) })), ...values] : values });
+      }
+      if (!videoGroup) complexGroups.push(group);
+    }
+  }
+  const explicitCover = sourceMediaValue(item, "videoCoverUrl");
+  // Existing structured Seller fields retain their meaning; an explicit edit overrides them.
+  for (const group of complexGroups) {
+    group.attributes = group.attributes.filter(attr => attr.id !== 21845 || explicitCover === undefined);
+    for (const attr of group.attributes) {
+      if (attr.id === 21845) attr.values = attr.values.filter(value => isVideoCoverUrl(value.value));
+    }
+    group.attributes = group.attributes.filter(attr => attr.values.length);
+  }
+  if (isVideoCoverUrl(explicitCover) && hasAllowedAttribute(allowedIds, 21845)) {
+    complexGroups.push({ attributes: [{ complex_id: 100002, id: 21845, values: [{ value: explicitCover.trim() }] }] });
+  }
+  return complexGroups.filter(group => group.attributes.length);
+}
+
+function normalizeDescriptionHtml(value) {
+  const source = String(value ?? "");
+  // Plain-text line breaks and HTML block boundaries carry meaning. Removing
+  // tags before adding separators used to join headings, table cells and lists.
+  const html = /<[a-z][^>]*>/iu.test(source) ? source : source.replace(/\r\n|[\r\n]/gu, "<br/>");
+  return cleanText(html
+    .replace(/<!--[\s\S]*?-->/gu, "")
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, "")
+    .replace(/<[^>]*>/gu, tag => {
+      const match = /^<\s*(\/?)\s*([a-z][a-z0-9]*)(?:\s|\/?>)/iu.exec(tag);
+      if (!match) return "";
+      const [, closing, name] = match, lower = name.toLowerCase();
+      if (lower === "br") return closing ? "" : "<br/>";
+      if (lower === "ol") return `<${closing}ul>`;
+      if (["p", "ul", "li"].includes(lower)) return `<${closing}${lower}>`;
+      if (["td", "th"].includes(lower)) return " ";
+      if (/^(?:h[1-6]|div|section|article|header|footer|table|thead|tbody|tfoot|tr|dl|dt|dd|blockquote|pre|hr)$/u.test(lower)) return "<br/>";
+      return "";
+    }), 4096)
+    .replace(/(?:<br\/>\s*){3,}/gu, "<br/><br/>")
+    .replace(/^(?:<br\/>\s*)+|(?:\s*<br\/>)+$/gu, "").trim();
 }
 
 function buildAttributes(item, allowedIds, metaById = new Map(), { sourceEvidenceAuthoritative = false } = {}) {
   const attrs = new Map();
+  // Remember structured evidence before normalization removes empty attributes.
+  // Current values (including []) must not be revived from a historical bundle.
+  const structuredIds = rows => new Set(asArray(rows)
+    .filter(raw => Array.isArray(raw?.values) && !toPositiveNumber(firstFilled(raw.complex_id, raw.attribute_complex_id, raw.complexId)))
+    .map(raw => toPositiveNumber(firstFilled(raw.id, raw.attribute_id, raw.attributeId, raw.key))));
+  const itemStructuredIds = structuredIds(item.attributes);
+  const sourceStructuredIds = structuredIds(sourceAttributesOf(item));
 
   for (const raw of asArray(item.attributes)) {
     const attr = normalizeUploadAttribute(raw);
-    if (attr && hasAllowedAttribute(allowedIds, attr.id)) upsertAttribute(attrs, attr, { overwrite: true });
+    if (attr && !attr.complex_id && hasAllowedAttribute(allowedIds, attr.id)
+      && !(sourceEvidenceAuthoritative && sourceStructuredIds.has(attr.id))) upsertAttribute(attrs, attr, { overwrite: true });
   }
 
   for (const raw of asArray(bundleItemOf(item).attributes)) {
     if (toPositiveNumber(raw?.complex_id)) continue;
     const attr = normalizeUploadAttribute(raw);
-    if (attr && hasAllowedAttribute(allowedIds, attr.id)) upsertAttribute(attrs, attr);
+    if (attr && !attr.complex_id && hasAllowedAttribute(allowedIds, attr.id)
+      && !itemStructuredIds.has(attr.id) && !sourceStructuredIds.has(attr.id)) upsertAttribute(attrs, attr);
   }
 
   for (const raw of sourceAttributesOf(item)) {
     const attr = normalizeUploadAttribute(raw);
-    if (attr && hasAllowedAttribute(allowedIds, attr.id)) {
+    if (attr && !attr.complex_id && hasAllowedAttribute(allowedIds, attr.id)
+      && (!itemStructuredIds.has(attr.id) || sourceEvidenceAuthoritative)) {
       upsertAttribute(attrs, attr, { overwrite: sourceEvidenceAuthoritative });
     }
   }
 
-  const description = cleanText(firstFilled(item.scraped_description, item.description), 4096);
+  const source = sourceVariantOf(item);
+  const bundle = bundleItemOf(item);
+  const descriptionSource = sourceContentValue(item, "contentDiagnostics")?.description?.source;
+  const manualDescription = descriptionSource === "manual"
+    ? item.scraped_description ?? sourceContentValue(item, "description") : undefined;
+  const savedDescriptions = asArray(attrs.get("0:4191")?.values).map(value => value.value);
+  if (manualDescription !== undefined) attrs.delete("0:4191");
+  const descriptionCandidates = [
+    item.descriptionHTML, source.descriptionHTML, bundle.descriptionHTML,
+    ...(descriptionSource === "json_ld" ? savedDescriptions : []),
+    item.scraped_description, item.description, source.description, bundle.description,
+    ...asArray(attrs.get("0:4191")?.values).map(value => value.value),
+  ].map(normalizeDescriptionHtml);
+  // JSON-LD may flatten an image-based product page into joined machine text.
+  // Prefer intact same-SKU prose; retain unusable source text for editing, but
+  // do not publish it as annotation or reject the rest of the collected product.
+  // Ozon documents words over 27 characters as a description moderation error:
+  // https://global-help.ozon.com/products/upload/moderation/errors-with-pdps
+  const description = manualDescription !== undefined ? normalizeDescriptionHtml(manualDescription)
+    : preferOzonRussianText(...descriptionCandidates.filter(value => descriptionSource !== "json_ld"
+      || hasChineseProductText(descriptionEntities.decode(value))
+      || !/[\p{L}\p{M}]{28,}/u.test(descriptionEntities.decode(value.replace(/<[^>]*>/gu, " ")))));
+  if (descriptionSource === "json_ld" && !description) attrs.delete("0:4191");
   if (description && hasAllowedAttribute(allowedIds, 4191)) {
     upsertAttribute(attrs, { complex_id: 0, id: 4191, values: [{ value: description }] }, { overwrite: true });
   }
 
-  const richContent = normalizeRichContentValue(firstFilled(item.richContent, item.rich_content, sourceAttributeText(item, RICH_CONTENT_ATTRIBUTE_ID)));
+  const explicitRichContent = sourceMediaValue(item, "richContent", "rich_content");
+  const richContentCleared = explicitRichContent !== undefined && !cleanText(explicitRichContent);
+  if (richContentCleared) attrs.delete(`0:${RICH_CONTENT_ATTRIBUTE_ID}`);
+  const richContent = richContentCleared ? "" : preferOzonRussianText(...[
+    item.richContent, item.rich_content, source.richContent, source.rich_content,
+    bundle.richContent, bundle.rich_content,
+    ...asArray(attrs.get(`0:${RICH_CONTENT_ATTRIBUTE_ID}`)?.values).map(value => value.value),
+  ].map(normalizeRichContentValue));
   if (richContent && hasAllowedAttribute(allowedIds, RICH_CONTENT_ATTRIBUTE_ID)) {
     upsertAttribute(attrs, { complex_id: 0, id: RICH_CONTENT_ATTRIBUTE_ID, values: [{ value: richContent }] }, { overwrite: true });
   }
@@ -1159,14 +1420,18 @@ function buildAttributes(item, allowedIds, metaById = new Map(), { sourceEvidenc
   if (hashtags.length && hashtagAttributeId) {
     upsertAttribute(
       attrs,
-      { complex_id: 0, id: hashtagAttributeId, values: hashtags.map((value) => ({ value })) },
+      { complex_id: 0, id: hashtagAttributeId, values: [{ value: hashtags.join(" ") }] },
       { overwrite: true },
     );
   }
 
-  const barcodeValues = sourceAttributeValues(item, 7822);
+  const barcodeValues = sourceAttributeValues(item, 7822).filter(value => normalizeBarcode(value.value));
   if (barcodeValues.length && hasAllowedAttribute(allowedIds, 7822)) {
     upsertAttribute(attrs, { complex_id: 0, id: 7822, values: barcodeValues }, { overwrite: true });
+  }
+
+  if (hasAllowedAttribute(allowedIds, MANUFACTURING_COUNTRY_ATTRIBUTE_ID)) {
+    upsertAttribute(attrs, defaultOzonManufacturingCountryAttribute(), { overwrite: true });
   }
 
   return [...attrs.values()];
@@ -1185,7 +1450,7 @@ function stripUndefined(value) {
   return out;
 }
 
-async function normalizeOneImportItem(item, ctx) {
+export async function normalizeOzonImportCategory(item, ctx = {}) {
   const descriptionCategoryCandidates = descriptionCategoryIdCandidatesOf(item);
   let descriptionCategoryId = descriptionCategoryIdOf(item);
   const explicitDescriptionCategoryId = toPositiveNumber(firstFilled(
@@ -1244,16 +1509,101 @@ async function normalizeOneImportItem(item, ctx) {
     throw new Error(`${sku ? `SKU ${sku} ` : ""}${detail}`);
   }
 
+  return { descriptionCategoryId, typeId, categoryResolution };
+}
+
+// A content check describes availability separately from the existing listing gates.
+// Historical rows without capture diagnostics remain readable; no re-cleaning at read time.
+function warnContentAvailability(item, normalized, { allowedIds }, ctx) {
+  const diagnostics = sourceContentValue(item, "contentDiagnostics");
+  const savedAttributes = flattenedCategoryAttributes(normalized.attributes, normalized.complex_attributes);
+  const uploadedKeys = new Set(savedAttributes.filter(attr => attr.values?.length).map(strictAttributeKey));
+  const sourceAttributes = [item, sourceVariantOf(item), bundleItemOf(item)].flatMap(carrier => [
+    ...asArray(carrier.attributes), ...asArray(carrier.complex_attributes).flatMap(group => asArray(group.attributes)),
+    ...asArray(carrier.bundleComplexAttrs), ...asArray(carrier._bundleComplexAttrs),
+  ]);
+  const suppliedAttribute = id => sourceAttributes.some(raw => {
+    const attr = normalizeAttribute(raw);
+    return attr?.id === id && attr.values.length;
+  });
+  const suppliedContent = (id, ...fields) => {
+    const value = sourceMediaValue(item, ...fields);
+    return value !== undefined ? (Array.isArray(value) ? value.length > 0 : !!cleanText(value)) : suppliedAttribute(id);
+  };
+  const manualDescription = diagnostics?.description?.source === "manual"
+    ? item.scraped_description ?? sourceContentValue(item, "description") : undefined;
+  const explicitVideos = sourceMediaValue(item, "videos", "videoUrl", "video_url");
+  const sourceVideoUrls = new Set((explicitVideos !== undefined
+    ? (Array.isArray(explicitVideos) ? explicitVideos : [explicitVideos])
+      .map(video => cleanText(typeof video === "string" ? video : video?.url))
+    : sourceAttributes.map(raw => normalizeAttribute(raw)).filter(attr => attr?.id === 21841)
+      .flatMap(attr => attr.values.map(value => value.value))).filter(Boolean));
+  const uploadedVideoUrls = new Set(savedAttributes.filter(attr => attr.id === 21841 && attr.complex_id === 100001)
+    .flatMap(attr => attr.values.map(value => value.value)));
+  const warn = message => ctx.warnings.push(`SKU ${ctx.warningSku || normalized.offer_id} ${message}`);
+  for (const [field, label, id, complexId, supplied] of [
+    ["description", "简介", 4191, 0, manualDescription !== undefined ? !!cleanText(manualDescription)
+      : item.scraped_description || item.descriptionHTML || sourceContentValue(item, "description") || suppliedAttribute(4191)],
+    ["richContent", "富内容", 11254, 0, suppliedContent(11254, "richContent", "rich_content")],
+    ["videos", "普通视频", 21841, 100001, suppliedContent(21841, "videos", "videoUrl", "video_url")],
+    ["color_image", "颜色样本", 0, 0, sourceMediaValue(item, "color_image")],
+    ["videoCoverUrl", "封面视频", 21845, 100002, suppliedContent(21845, "videoCoverUrl")],
+  ]) {
+    const uploaded = id ? uploadedKeys.has(`${complexId}:${id}`) : !!normalized.color_image;
+    const evidence = diagnostics?.[field];
+    if (uploaded) {
+      const original = sourceContentValue(item, field, ...(
+        field === "richContent" ? ["rich_content"] : field === "videos" ? ["videoUrl", "video_url"] : []));
+      if (field !== "description" && original !== undefined && !firstFilled(original) && evidence?.source !== "manual") {
+        warn(`${label}历史空值用途待核实，本次保留同 SKU 已保存内容`);
+      }
+      if (field === "videos") {
+        const omitted = [...sourceVideoUrls].filter(url => !uploadedVideoUrls.has(url));
+        if (omitted.length) warn(`普通视频有 ${omitted.length} 条已保存链接未进入本次请求，请核对字段格式或类目限制`);
+      }
+      continue;
+    }
+    if (supplied) {
+      if (id && allowedIds && !allowedIds.has(id)) warn(`${label}已保存，当前类目不支持，未提交`);
+      else if (field === "description" && evidence?.source === "json_ld") warn('简介机器摘要中含超过 27 个字母的连续词，原文已保留，未作为简介提交；可修订补充');
+      else if (field === "videoCoverUrl") warn('封面视频需有效 MP4 / MOV 视频链接，当前值未提交');
+      else if (field === "color_image") warn('颜色样本需有效 HTTP(S) 图片链接，当前值未提交');
+      else warn(`${label}已保存，但未进入本次请求，请核对字段格式`);
+      continue;
+    }
+    if (!diagnostics || (id && allowedIds && !allowedIds.has(id))) continue;
+    const status = evidence?.status;
+    if (evidence?.source === 'manual') warn(`${label}已手动清空，未提交`);
+    else if (status === 'read_failed') warn(`${label}读取失败：${cleanText(evidence.message, 300) || '来源读取未完成，请重试或编辑'}`);
+    else if (status === 'not_provided') warn(`${label}源未提供（可编辑补充）`);
+    else if (status === 'unverified') warn(`${label}待核实，当前来源未能确认用途或 SKU`);
+    else if (status === 'provided') warn(`${label}采集时已提供，当前草稿未填写，未提交`);
+    else warn(`${label}未记录来源状态，待核实`);
+  }
+  for (const issue of asArray(diagnostics?.issues)) {
+    if (issue?.message) warn(`资料读取记录：${cleanText(issue.message, 300)}`);
+  }
+  const explicitCover = sourceMediaValue(item, "videoCoverUrl");
+  const rawCoverAttrs = sourceAttributes.filter(attr => Number(attr.id || attr.key || attr.attribute_id) === 21845);
+  if (explicitCover === undefined && rawCoverAttrs.some(attr => asArray(attr.values).some(value => !isVideoCoverUrl(value.value)))) {
+    warn('封面视频需有效 MP4 / MOV 视频链接，静态预览图未提交');
+  }
+  if (uploadedKeys.has('100002:21845')) warn('封面视频已写入请求；时长尚未核实，请确认符合 8–30 秒要求');
+  // Category metadata describes allowed fields, not captured source values.
+  // Ordinary dictionary losses already have value-specific warnings above;
+  // logistics, gallery and type also have dedicated import destinations.
+}
+
+async function normalizeOneImportItem(item, ctx) {
+  const { descriptionCategoryId, typeId, categoryResolution } = await normalizeOzonImportCategory(item, ctx);
   const { allowedIds, metaById, metaByKey } = await categoryAttributeContext(descriptionCategoryId, typeId, ctx);
   const images = normalizeImages(item.images);
   const source = sourceVariantOf(item);
   const bundle = bundleItemOf(item);
-  const barcode = cleanText(firstFilled(item.barcode, bundle.barcode, sourceAttributeText(item, 7822)));
+  const barcode = [item.barcode, bundle.barcode, sourceAttributeText(item, 7822)]
+    .map(normalizeBarcode).find(Boolean);
 
-  const weight = positiveInt(item.weight, sourceWeightGrams(item), item.scraped_weight, bundle.weight, 100);
-  const depth = positiveInt(item.depth, sourceAttributeText(item, 9454), item.scraped_depth, bundle.depth, 100);
-  const width = positiveInt(item.width, sourceAttributeText(item, 9455), item.scraped_width, bundle.width, 100);
-  const height = positiveInt(item.height, sourceAttributeText(item, 9456), item.scraped_height, bundle.height, 100);
+  const { weight, depth, width, height } = normalizeOzonImportLogistics(item);
 
   const builtAttributes = buildAttributes(item, allowedIds, metaById, {
     sourceEvidenceAuthoritative: ctx.categoryMatchPolicy === "SOURCE_CATEGORY_STRICT",
@@ -1274,9 +1624,20 @@ async function normalizeOneImportItem(item, ctx) {
     assertStrictDictionaryValues(allAttributes, { metaByKey });
   }
 
+  // IDs are language-independent. Do not forward legacy Chinese dictionary labels.
+  // Free text has no equivalent ID and must be corrected instead of being dropped.
+  for (const attribute of flattenedCategoryAttributes(attributes, complexAttributes)) {
+    if ([9024, 10289].includes(attribute.id)) continue;
+    for (const value of asArray(attribute.values)) {
+      if (toPositiveNumber(value.dictionary_value_id) && hasChineseProductText(value.value)) delete value.value;
+    }
+  }
+  const name = preferOzonRussianText(item.name, item.title,
+    ...asArray(attributes.find(attribute => attribute.id === 4180)?.values).map(value => value.value));
   const normalized = {
-    offer_id: cleanText(item.offer_id || item.offerId || `jz-${item.scraped_sku || Date.now()}`),
-    name: cleanText(firstFilled(item.name, item.title, sourceAttributeText(item, 4180), item.scraped_sku), 200),
+    offer_id: [item.offer_id, item.offerId].find(value => typeof value === "string" && value.trim())
+      ?? cleanText(`jz-${item.scraped_sku || Date.now()}`),
+    name: cleanText(name || item.scraped_sku, 200),
     price: cleanText(item.price),
     old_price: cleanText(item.old_price || item.oldPrice),
     min_price: parseSourceNumber(item.min_price || item.minPrice) > 0 ? cleanText(item.min_price || item.minPrice) : undefined,
@@ -1286,6 +1647,7 @@ async function normalizeOneImportItem(item, ctx) {
     type_id: typeId,
     barcode,
     primary_image: images[0],
+    color_image: normalizeColorImageUrl(sourceMediaValue(item, "color_image")),
     images,
     weight,
     weight_unit: "g",
@@ -1297,6 +1659,8 @@ async function normalizeOneImportItem(item, ctx) {
     complex_attributes: complexAttributes,
   };
 
+  assertOzonRussianProductText(normalized, { sku: item.scraped_sku || normalized.offer_id });
+  warnContentAvailability(item, normalized, { allowedIds, metaByKey }, ctx);
   return { item: stripUndefined(normalized), categoryResolution };
 }
 
@@ -1304,19 +1668,42 @@ export async function normalizeOzonImportItems(items, ctx = {}) {
   const normalizedItems = [];
   const warnings = [];
   const categoryResolutions = [];
-  const normalizationContext = { ...ctx, warnings };
+  const itemWarnings = [];
+  // One submission can contain many SKUs in the same category. Share successful
+  // and failed reads only within this call, never across account/store requests.
+  const normalizationContext = { ...ctx, warnings, dictionaryValueCache: new Map() };
   for (const item of asArray(items)) {
     try {
-      const normalized = await normalizeOneImportItem(item, normalizationContext);
+      const warningStart = warnings.length;
+      const normalized = await normalizeOneImportItem(item, { ...normalizationContext,
+        warningSku: cleanText(firstFilled(item.scraped_sku, item.sku, item.offer_id), 100) });
       normalizedItems.push(normalized.item);
+      if (warnings.length > warningStart) itemWarnings.push({ offerId: normalized.item.offer_id, warnings: warnings.slice(warningStart) });
       if (normalized.categoryResolution) categoryResolutions.push(normalized.categoryResolution);
     } catch (error) {
       if (error?.categoryResolution) categoryResolutions.push(error.categoryResolution);
-      if (ctx.strictTypeMatch || isSafeCategoryError(error)) throw error;
+      if (ctx.strictTypeMatch || isSafeCategoryError(error)
+        || ["ZONGZI_IMPORT_LOGISTICS_REQUIRED", "ZONGZI_VIDEO_COUNT_LIMIT"].includes(error.code)) throw error;
       warnings.push(error?.message || String(error));
     }
   }
-  return { items: normalizedItems, warnings, categoryResolutions };
+  return { items: normalizedItems, warnings, categoryResolutions, ...(itemWarnings.length ? { itemWarnings } : {}) };
+}
+
+// One rule for both incoming AI sources and direct imports. Missing physical
+// facts are never replaced with invented shipping dimensions.
+export function normalizeOzonImportLogistics(item = {}) {
+  const bundle = bundleItemOf(item);
+  const values = {
+    weight: positiveInt(item.weight, sourceWeightGrams(item), item.scraped_weight, bundle.weight),
+    depth: positiveInt(item.depth, sourceAttributeText(item, 9454), item.scraped_depth, bundle.depth),
+    width: positiveInt(item.width, sourceAttributeText(item, 9455), item.scraped_width, bundle.width),
+    height: positiveInt(item.height, sourceAttributeText(item, 9456), item.scraped_height, bundle.height),
+  };
+  const missing = Object.keys(values).filter(key => !Number.isSafeInteger(values[key]) || values[key] <= 0);
+  if (missing.length) throw Object.assign(new Error(`SKU ${item.scraped_sku || item.offer_id || ""} 缺少真实包装参数：${missing.join("、")}`),
+    { code: "ZONGZI_IMPORT_LOGISTICS_REQUIRED", statusCode: 422, status: 422, missing });
+  return values;
 }
 
 export const testExports = {

@@ -10,9 +10,14 @@
   const DRAIN_CANCELLED = Symbol('collectorOzonDrainCancelled');
   const DRAIN_FAILED = Symbol('collectorOzonDrainFailed');
   const JOB_KEYS = Object.freeze(['id', 'requestId', 'sku', 'refreshBundle', 'claimFence']);
+  const JOB_KEYS_WITH_TASK_KEY = Object.freeze([...JOB_KEYS, 'taskKey']);
   const FAILURE_MESSAGES = Object.freeze({
-    OZON_ENRICH_NOT_FOUND: '未找到 Ozon 商品资料',
-    OZON_ENRICH_UPSTREAM_FAILED: 'Ozon 商品资料暂时无法读取',
+    ZONGZI_ENRICH_DATA_CONFLICT: '来源包装参数冲突，请核实',
+    ZONGZI_ENRICH_BUNDLE_UNCERTAIN: '上次商品包创建结果未确认，停止重复创建',
+    ZONGZI_ENRICH_NOT_FOUND: '未找到 Ozon 商品资料',
+    ZONGZI_ENRICH_INCOMPLETE: '来源未提供完整包装资料，请核实补填',
+    ZONGZI_ENRICH_BUSY: 'Ozon 请求受限，稍后重试',
+    ZONGZI_ENRICH_UPSTREAM_FAILED: 'Ozon 商品资料暂时无法读取',
     SELLER_CONTEXT_CHANGED: 'Seller 店铺上下文已变化',
     SELLER_CONTEXT_REQUIRED: '需要登录 Seller',
   });
@@ -71,12 +76,28 @@
     }
   };
 
-  const fixedFailure = (code) => {
-    const stableCode = Object.hasOwn(FAILURE_MESSAGES, code)
-      ? code
-      : 'OZON_ENRICH_UPSTREAM_FAILED';
-    return Object.assign(new Error(FAILURE_MESSAGES[stableCode]), {
+  const safeErrorText = (value) => {
+    const redact = root.JzCollectorSession?.redactCollectorSecrets;
+    const text = typeof redact === 'function' ? redact(value) : String(value || '')
+      .replace(/(?:Collector|Bearer)\s+[^\s,;]+/gi, '[REDACTED]')
+      .replace(/(?:ctt|cst|csess)_[A-Za-z0-9_-]+/gi, '[REDACTED]')
+      .replace(/([?&](?:token|key|secret|signature|password|credential)[^=\s]*=)[^&\s]+/gi, '$1[REDACTED]');
+    return text.slice(0, 1000);
+  };
+
+  const fixedFailure = (code, detail = {}) => {
+    const stableCode = Object.hasOwn(FAILURE_MESSAGES, code) ? code : 'ZONGZI_ENRICH_UPSTREAM_FAILED';
+    const diagnostic = detail.diagnostic || {};
+    const explanation = safeErrorText(detail.message || '');
+    return Object.assign(new Error(explanation && explanation !== '[REDACTED]' ? explanation : FAILURE_MESSAGES[stableCode]), {
       code: stableCode,
+      diagnostic: {
+        ...(diagnostic.stage ? { stage: safeErrorText(diagnostic.stage).slice(0, 80) } : {}),
+        ...(diagnostic.upstreamCode ? { upstreamCode: safeErrorText(diagnostic.upstreamCode).slice(0, 80) } : {}),
+        ...(Number.isInteger(diagnostic.upstreamStatus) ? { upstreamStatus: diagnostic.upstreamStatus } : {}),
+        ...(typeof diagnostic.requestSent === 'boolean' ? { requestSent: diagnostic.requestSent } : {}),
+        ...(root.chrome?.runtime?.getManifest ? { extensionVersion: root.chrome.runtime.getManifest().version } : {}),
+      },
     });
   };
 
@@ -106,7 +127,7 @@
     const seen = new WeakSet();
     const visit = (nested) => {
       if (typeof nested === 'string' && SECRET_VALUE.test(nested)) {
-        throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
       }
       if (!nested || typeof nested !== 'object') return;
       if (seen.has(nested)) return;
@@ -115,9 +136,9 @@
         nested.forEach(visit);
         return;
       }
-      if (!isPlainObject(nested)) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      if (!isPlainObject(nested)) throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
       for (const [key, child] of Object.entries(nested)) {
-        if (sensitiveNestedKey(key)) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        if (sensitiveNestedKey(key)) throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
         visit(child);
       }
     };
@@ -129,7 +150,7 @@
     const seen = new WeakSet();
     const visit = (nested) => {
       if (typeof nested === 'string' && SECRET_VALUE.test(nested)) {
-        throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
       }
       if (!nested || typeof nested !== 'object') return;
       if (seen.has(nested)) return;
@@ -138,9 +159,9 @@
         nested.forEach(visit);
         return;
       }
-      if (!isPlainObject(nested)) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      if (!isPlainObject(nested)) throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
       for (const [key, child] of Object.entries(nested)) {
-        if (forbiddenNestedKey(key)) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        if (forbiddenNestedKey(key)) throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
         visit(child);
       }
     };
@@ -148,38 +169,12 @@
     return value;
   };
 
-  const productScalar = (value) => (
-    typeof value === 'string'
-    || (typeof value === 'number' && Number.isFinite(value))
-    || typeof value === 'boolean'
-  );
-
-  const projectAttribute = (attribute) => {
-    if (!isPlainObject(attribute)) return null;
-    const key = cleanText(attribute.key);
-    if (!key) return null;
-    const projected = { key };
-    if (productScalar(attribute.value)) projected.value = attribute.value;
-    else if (Array.isArray(attribute.collection)) {
-      const collection = attribute.collection.filter(productScalar);
-      if (collection.length) projected.collection = collection;
-    }
-    if (!Object.hasOwn(projected, 'value') && !Object.hasOwn(projected, 'collection')) return null;
-    const dictionaryValueId = Number(attribute.dictionary_value_id ?? attribute.dictionaryValueId);
-    if (Number.isFinite(dictionaryValueId) && dictionaryValueId > 0) {
-      projected.dictionary_value_id = dictionaryValueId;
-    }
-    return projected;
-  };
-
   // The Seller portal response also contains draft actions, account context and URL
   // metadata. None of those fields belong to the enrichment contract. Keep only the
   // stable product fields consumed by the server so portal-only data cannot cross
   // the Collector boundary or make an otherwise valid capture fail validation.
   const projectVariantData = (variantData) => {
-    const attributes = Array.isArray(variantData?.attributes)
-      ? variantData.attributes.map(projectAttribute).filter(Boolean)
-      : [];
+    const attributes = root.JzOzonEnrichmentContract.projectCollectedVariant(variantData).attributes || [];
     const attributeNumber = (key) => {
       const attribute = attributes.find((entry) => cleanText(entry?.key) === key);
       const number = Number(attribute?.value);
@@ -190,18 +185,22 @@
         const number = Number(value);
         if (Number.isFinite(number) && number > 0) return number;
       }
-      throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      return null; // Missing source logistics are evidence gaps, not capture failures.
     };
     const positiveInteger = (value) => {
       const number = Number(value);
       if (Number.isSafeInteger(number) && number > 0) return number;
-      throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
     };
     const typeId = Object.hasOwn(variantData || {}, 'type_id')
       ? positiveInteger(variantData.type_id)
       : null;
     return {
       description_category_id: positiveInteger(variantData?.description_category_id),
+      ...(Array.isArray(variantData?.packagingCandidates) ? {packagingCandidates: variantData.packagingCandidates.map(value => ({
+        weightG: positiveNumber(value.weightG), lengthMm: positiveNumber(value.lengthMm),
+        widthMm: positiveNumber(value.widthMm), heightMm: positiveNumber(value.heightMm),
+      }))} : {}),
       ...(typeId ? { type_id: typeId } : {}),
       weight: positiveNumber(variantData?.weight, attributeNumber('4497')),
       depth: positiveNumber(variantData?.depth, attributeNumber('9454')),
@@ -213,7 +212,7 @@
 
   const normalizeJob = (value) => {
     if (
-      !exactKeys(value, JOB_KEYS)
+      (!exactKeys(value, JOB_KEYS) && !exactKeys(value, JOB_KEYS_WITH_TASK_KEY))
       || !safeJobId(value.id)
       || typeof value.requestId !== 'string'
       || !cleanText(value.requestId)
@@ -222,7 +221,7 @@
       || typeof value.refreshBundle !== 'boolean'
       || !safeJobId(value.claimFence)
     ) {
-      throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
     }
     return {
       id: safeJobId(value.id),
@@ -279,12 +278,12 @@
 
   const matchedVariantData = (capture, sku) => {
     if (capture?.ok !== true || !isPlainObject(capture.data) || !Array.isArray(capture.data.items)) {
-      throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
     }
     const expectedSku = cleanText(sku);
     const matched = capture.data.items.find((item) =>
       isPlainObject(item) && candidateSkuValues(item).includes(expectedSku));
-    if (!matched) throw fixedFailure('OZON_ENRICH_NOT_FOUND');
+    if (!matched) throw fixedFailure('ZONGZI_ENRICH_NOT_FOUND');
     return matched;
   };
 
@@ -293,6 +292,8 @@
     captureVariant,
     canCapture,
     sellerContextRuntime,
+    onResult,
+    beforeClaim = async () => {},
     sleep,
     now = () => Date.now(),
     setTimer = (...args) => root.setTimeout(...args),
@@ -305,6 +306,7 @@
       || typeof canCapture !== 'function'
       || typeof sellerContextRuntime?.resolveCurrentWithRecovery !== 'function'
       || typeof sellerContextRuntime?.submitIfCurrent !== 'function'
+      || (onResult != null && typeof onResult !== 'function')
       || typeof sleep !== 'function'
       || typeof now !== 'function'
       || typeof setTimer !== 'function'
@@ -320,7 +322,7 @@
     let availableRequestedGeneration = 0;
     let pendingAvailableKicks = [];
 
-    const deadlineFailure = () => fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+    const deadlineFailure = () => fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
     const deactivate = (entry) => {
       if (!entry?.active) return;
       entry.active = false;
@@ -350,10 +352,9 @@
       return handle;
     };
     const isCurrent = (entry, generation) => {
-      if (entry?.active && now() >= entry.deadlineAt) deactivate(entry);
       return Boolean(
         entry?.active
-        && entry.refs > 0
+        && (entry.refs > 0 || entry.executing === true)
         && entry.generation === generation
         && drains.get(entry.requestId) === entry,
       );
@@ -362,38 +363,20 @@
       if (!isCurrent(entry, generation)) throw deadlineFailure();
     };
     const withLifecycle = async (promise, entry, generation) => {
-      ensureCurrent(entry, generation);
-      let timer;
-      const deadlineSignal = new Promise((resolve) => {
-        const schedule = () => {
-          const remaining = entry.deadlineAt - now();
-          if (remaining <= 0) {
-            deactivate(entry);
-            resolve();
-            return;
-          }
-          timer = setTimer(() => {
-            if (now() >= entry.deadlineAt) {
-              deactivate(entry);
-              resolve();
-            } else {
-              schedule();
-            }
-          }, remaining);
-        };
-        schedule();
-      });
       try {
-        const value = await Promise.race([
-          Promise.resolve(promise),
-          entry.cancelled.then(() => { throw deadlineFailure(); }),
-          deadlineSignal.then(() => { throw deadlineFailure(); }),
-        ]);
         ensureCurrent(entry, generation);
-        return value;
-      } finally {
-        clearTimer(timer);
+      } catch (error) {
+        // The caller has already started this operation. Expiry must consume
+        // its eventual rejection even though it may no longer publish a result.
+        Promise.resolve(promise).catch(() => {});
+        throw error;
       }
+      const value = await Promise.race([
+        Promise.resolve(promise),
+        entry.cancelled.then(() => { throw deadlineFailure(); }),
+      ]);
+      ensureCurrent(entry, generation);
+      return value;
     };
 
     const withCollectorStage = async (entry, generation, request) => {
@@ -437,34 +420,47 @@
       const id = safeJobId(rawJob?.id);
       const claimFence = safeJobId(rawJob?.claimFence);
       if (!id || !claimFence || !isCurrent(entry, generation)) return false;
-      const failure = fixedFailure(error?.code);
-      try {
-        ensureCurrent(entry, generation);
-        const response = await withLifecycle(
-          sellerContextRuntime.submitIfCurrent(sellerContext, () => collectorRequest(
+      const failure = fixedFailure(error?.code, error);
+      while (isCurrent(entry, generation)) {
+        try {
+          ensureCurrent(entry, generation);
+          const response = await withLifecycle(
+            sellerContextRuntime.submitIfCurrent(sellerContext, () => collectorRequest(
+              entry,
+              generation,
+              collectorOperation,
+              `/collector/ozon/enrichment-jobs/${encodeURIComponent(id)}/fail`,
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  code: failure.code,
+                  message: failure.message,
+                  ...(Object.keys(failure.diagnostic || {}).length ? { diagnostic: failure.diagnostic } : {}),
+                  captureContext: captureContextFor(sellerContext),
+                  claimFence,
+                }),
+              },
+            )),
             entry,
             generation,
-            collectorOperation,
-            `/collector/ozon/enrichment-jobs/${encodeURIComponent(id)}/fail`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                code: failure.code,
-                message: failure.message,
-                captureContext: captureContextFor(sellerContext),
-                claimFence,
-              }),
-            },
-          )),
-          entry,
-          generation,
-        );
-        ensureCurrent(entry, generation);
-        return response !== false && Boolean(response?.ok);
-      } catch {
-        return false;
+          );
+          ensureCurrent(entry, generation);
+          if (response === false) return false;
+          if (response?.ok) return true;
+          if (!(response?.status >= 500 || [408, 429].includes(response?.status))) return false;
+          root.console?.warn('[collector-ozon-enrichment] failure_upload', id, `HTTP ${response.status}`);
+        } catch (error) {
+          if (!isCurrent(entry, generation)
+            || (/^(COLLECTOR_|SELLER_CONTEXT)/.test(error?.code || '') && !/^SELLER_CONTEXT_SYNC_/.test(error?.code || ''))
+            || error?.name === 'AbortError') return false;
+          root.console?.warn('[collector-ozon-enrichment] failure_upload', id, safeErrorText(error?.message || error));
+        }
+        try {
+          await withLifecycle(sleep(1000), entry, generation);
+        } catch { return false; }
       }
+      return false;
     };
 
     const captureContextFor = (sellerContext) => ({
@@ -481,57 +477,97 @@
       sellerContext,
     ) => {
       let job;
+      let progressTimer;
+      let keepProgress = false;
+      let capturedResult = false;
       try {
         job = normalizeJob(rawJob);
         ensureCurrent(entry, generation);
+        entry.executing = true;
+        keepProgress = true;
+        const renew = async () => {
+          if (!keepProgress || !isCurrent(entry, generation)) return;
+          try {
+            await sessionManager.collectorFetch(
+              `/collector/ozon/enrichment-jobs/${encodeURIComponent(job.id)}/progress`,
+              {
+                collectorOperation, permission: READ_PERMISSION, method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ captureContext: captureContextFor(sellerContext), claimFence: job.claimFence }),
+              },
+            );
+          } catch { /* A connection failure does not determine the capture outcome. */ }
+          if (keepProgress) progressTimer = setTimer(renew, 10_000);
+        };
+        progressTimer = setTimer(renew, 10_000);
         const capture = await withLifecycle(captureVariant({
-          sku: job.sku,
-          noProxy: true,
-          readOnly: true,
-          forceRefresh: job.refreshBundle === true,
-          deadlineAt: entry.deadlineAt,
-          sellerContext,
+          sku: job.sku, noProxy: true, readOnly: false, automaticCapture: true,
+          forceRefresh: job.refreshBundle === true, sellerContext,
         }), entry, generation);
         ensureCurrent(entry, generation);
         const captureCode = cleanText(capture?.error || capture?.code);
         if (capture?.ok !== true && SELLER_AUTH_CAPTURE_CODES.has(captureCode)) {
-          throw fixedFailure('SELLER_CONTEXT_REQUIRED');
+          throw fixedFailure('SELLER_CONTEXT_REQUIRED', capture);
         }
+        if (capture?.ok !== true && ['HTTP_429', 'ANTIBOT_BLOCKED'].includes(captureCode)) throw fixedFailure('ZONGZI_ENRICH_BUSY', capture);
+        if (capture?.ok !== true && Object.hasOwn(FAILURE_MESSAGES, captureCode)) throw fixedFailure(captureCode, capture);
+        if (capture?.ok !== true) throw fixedFailure(captureCode, capture);
         const rawVariantData = matchedVariantData(capture, job.sku);
         assertRawVariantCredentialsSafe(rawVariantData);
         const variantData = projectVariantData(rawVariantData);
         assertSafeVariantData(variantData);
         ensureCurrent(entry, generation);
-        const response = await withLifecycle(
-          sellerContextRuntime.submitIfCurrent(sellerContext, () => collectorRequest(
-            entry,
-            generation,
-            collectorOperation,
-            `/collector/ozon/enrichment-jobs/${encodeURIComponent(job.id)}/result`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                variantData,
-                captureContext: captureContextFor(sellerContext),
-                claimFence: job.claimFence,
-              }),
-            },
-          )),
-          entry,
-          generation,
-        );
-        ensureCurrent(entry, generation);
-        if (response === false) throw fixedFailure('SELLER_CONTEXT_CHANGED');
-        if (!response?.ok) {
-          const failure = await jsonBody(response);
-          throw fixedFailure(failure?.code === 'SELLER_CONTEXT_CHANGED'
-            ? 'SELLER_CONTEXT_CHANGED'
-            : 'OZON_ENRICH_UPSTREAM_FAILED');
+        capturedResult = true;
+        // Result delivery is independent of source capture. A lost receipt or a
+        // transient server failure retries the SAME result/fence; never /fail.
+        while (isCurrent(entry, generation)) {
+          let response;
+          try {
+            response = await withLifecycle(
+              sellerContextRuntime.submitIfCurrent(sellerContext, () => collectorRequest(
+                entry, generation, collectorOperation,
+                `/collector/ozon/enrichment-jobs/${encodeURIComponent(job.id)}/result`,
+                { method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ variantData, captureContext: captureContextFor(sellerContext), claimFence: job.claimFence }) },
+              )), entry, generation,
+            );
+            ensureCurrent(entry, generation);
+            if (response === false) return false;
+            if (response?.ok) {
+              try {
+                await onResult?.({ sku: job.sku, variantData, collectorOperation, sellerContext });
+              } catch (error) {
+                root.console?.warn('[collector-ozon-enrichment] result_notification', job.sku, safeErrorText(error?.message || error));
+              }
+              return true;
+            }
+            if (!(response?.status >= 500 || [408, 429].includes(response?.status))) {
+              const rejected = await jsonBody(response);
+              const code = cleanText(rejected?.code);
+              root.console?.warn('[collector-ozon-enrichment] result_rejected', job.sku, `HTTP ${response?.status}`, safeErrorText(code));
+              // Service-level failures already persist their disposition. An
+              // invalid envelope is rejected earlier, so record it explicitly.
+              // Ownership, authorization and Seller rejections never post /fail.
+              if (['ZONGZI_ENRICH_REQUEST_INVALID', 'OZON_ENRICH_REQUEST_INVALID'].includes(code) || ([413, 415].includes(response?.status) && !code)) {
+                await reportFailure(entry, generation, collectorOperation, job, fixedFailure('ZONGZI_ENRICH_INCOMPLETE', {
+                  message: '商品资料回传被服务端拒绝，请更新扩展后重试',
+                  diagnostic: { stage: 'result_upload', upstreamCode: code || `HTTP_${response.status}`, upstreamStatus: response.status, requestSent: true },
+                }), sellerContext);
+              }
+              return false;
+            }
+            root.console?.warn('[collector-ozon-enrichment] result_upload', job.sku, `HTTP ${response.status}`);
+          } catch (error) {
+            if (!isCurrent(entry, generation)
+              || (/^(COLLECTOR_|SELLER_CONTEXT)/.test(error?.code || '') && !/^SELLER_CONTEXT_SYNC_/.test(error?.code || ''))
+              || error?.name === 'AbortError') throw error;
+            root.console?.warn('[collector-ozon-enrichment] result_upload', job.sku, safeErrorText(error?.message || error));
+          }
+          await withLifecycle(sleep(1000), entry, generation);
         }
-        return true;
+        return false;
       } catch (error) {
-        if (isCurrent(entry, generation)) {
+        if (!capturedResult && isCurrent(entry, generation)) {
           await reportFailure(
             entry,
             generation,
@@ -542,11 +578,18 @@
           );
         }
         return false;
+      } finally {
+        keepProgress = false;
+        clearTimer(progressTimer);
+        entry.executing = false;
+        if (entry.refs <= 0) deactivate(entry);
       }
     };
 
     const claimNext = (entry, generation, collectorOperation, sellerContext) =>
       withCollectorStage(entry, generation, async (signal) => {
+        await beforeClaim();
+        ensureCurrent(entry, generation);
         const response = await sessionManager.collectorFetch(NEXT_PATH, {
           collectorOperation,
           permission: READ_PERMISSION,
@@ -556,11 +599,11 @@
           signal,
         });
         ensureCurrent(entry, generation);
-        if (!response?.ok) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        if (!response?.ok) throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
         const body = await jsonBody(response);
         ensureCurrent(entry, generation);
         if (!exactKeys(body, ['ok', 'job']) || body.ok !== true) {
-          throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+          throw fixedFailure('ZONGZI_ENRICH_UPSTREAM_FAILED');
         }
         return body.job;
       });
@@ -574,7 +617,7 @@
         return isCurrent(entry, generation) ? DRAIN_FAILED : DRAIN_CANCELLED;
       }
       if (!collectorOperation) return DRAIN_FAILED;
-      while (isCurrent(entry, generation)) {
+      while (isCurrent(entry, generation) && now() < entry.deadlineAt) {
         let canCaptureNow;
         try {
           ensureCurrent(entry, generation);
@@ -587,7 +630,7 @@
         } catch {
           return isCurrent(entry, generation) ? DRAIN_FAILED : DRAIN_CANCELLED;
         }
-        if (!isCurrent(entry, generation)) break;
+        if (!isCurrent(entry, generation) || now() >= entry.deadlineAt) break;
         if (!canCaptureNow) {
           if (stopWhenEmpty) return DRAIN_COMPLETED;
           try {
@@ -643,7 +686,8 @@
             continue;
           }
           if (stopWhenEmpty) return DRAIN_COMPLETED;
-        } catch {
+        } catch (error) {
+          if (String(error?.message || '').startsWith('SELLER_ROUTE_BUSY')) return DRAIN_FAILED;
           // The held public request owns the user-facing error. Polling stays fail-closed.
         } finally {
           await releaseSellerContext(leasedSellerContext || sellerContext);
@@ -661,15 +705,15 @@
     };
 
     const drainUntil = (input = {}) => {
-      if (!exactKeys(input, ['requestId', 'deadlineAt'])) {
+      if (!exactKeys(input, ['requestId', 'deadlineAt']) && !exactKeys(input, ['requestId'])) {
         return Promise.reject(new TypeError('collector Ozon drain input is invalid'));
       }
       const requestId = typeof input.requestId === 'string' ? cleanText(input.requestId) : '';
-      const requestedDeadline = Number(input.deadlineAt);
-      if (!requestId || !Number.isFinite(requestedDeadline)) {
+      const requestedDeadline = input.deadlineAt === undefined ? Infinity : Number(input.deadlineAt);
+      if (!requestId || (input.deadlineAt !== undefined && !Number.isFinite(requestedDeadline))) {
         return Promise.reject(new TypeError('collector Ozon drain input is invalid'));
       }
-      const deadlineAt = Math.min(requestedDeadline, now() + MAX_DRAIN_MS);
+      const deadlineAt = requestedDeadline;
       const existing = drains.get(requestId);
       if (existing?.active) {
         existing.deadlineAt = Math.max(existing.deadlineAt, deadlineAt);
@@ -807,7 +851,7 @@
         leaseRecords.delete(releaseToken);
         entry.refs -= 1;
         if (leaseRecord.claimed) entry.tokenRefs -= 1;
-        if (entry.refs === 0 && entry.active) deactivate(entry);
+        if (entry.refs === 0 && entry.active && !entry.executing) deactivate(entry);
         return true;
       }
 
@@ -818,7 +862,7 @@
       return true;
     };
 
-    return Object.freeze({ drainAvailable, drainUntil, stop });
+    return Object.freeze({ drainAvailable, drainUntil, stop, isBusy: () => Boolean(availablePromise) || [...drains.values()].some(entry => entry.active || entry.executing) });
   }
 
   const api = Object.freeze({ create });

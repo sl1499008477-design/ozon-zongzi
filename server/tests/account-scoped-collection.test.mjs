@@ -1,4 +1,4 @@
-import "../env.mjs";
+import "./support/dedicated-postgres-test-environment.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
@@ -22,7 +22,7 @@ process.env.QH_LOCAL_NO_LISTEN = "1";
 process.env.SONLI_ADMIN_PASSWORD = "task4-test-admin-password";
 
 if (!postgresEnabled()) {
-  test("account-scoped collection PostgreSQL behavior", { skip: "PostgreSQL is not configured" }, () => {});
+  test("account-scoped collection PostgreSQL behavior", { skip: "requires SONLI_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL (dedicated test database)" }, () => {});
 } else {
   const suffix = crypto.randomUUID();
   const accountA = `task4_account_a_${suffix}`;
@@ -470,6 +470,10 @@ if (!postgresEnabled()) {
     const accountAItems = await listCollectItemsV3({ accountId: accountA });
     assert.equal(accountAItems.some((item) => item.id === accountBResult.collectItemId), false);
     const accountAItem = accountAItems.find((item) => item.id === first.collectItemId);
+    const statusBeforePublicDraftUpdate = (await pool.query(
+      'SELECT status FROM collect_items WHERE id=$1 AND account_id=$2',
+      [first.collectItemId, accountA],
+    )).rows[0].status;
     assert.equal(Object.hasOwn(accountAItem, "legacyScope"), false, "forged raw JSON legacyScope is never trusted");
     assert.equal(accountAItem.listingDraft.targetStore, undefined);
     assert.deepEqual(accountAItem.collectorMetadata, { keep: "collector-source" });
@@ -492,6 +496,7 @@ if (!postgresEnabled()) {
       collectItemId: first.collectItemId,
       accountId: accountA,
       patch: {
+        status: "COMPLETED",
         listingDraft: {
           ...accountAItem.listingDraft,
           targetStore: {
@@ -519,6 +524,11 @@ if (!postgresEnabled()) {
       },
     });
     assert.equal(updatedListing.listingDraft.targetStore.clientId, updatedTargetClientId);
+    assert.equal((await pool.query(
+      'SELECT status FROM collect_items WHERE id=$1 AND account_id=$2',
+      [first.collectItemId, accountA],
+    )).rows[0].status, statusBeforePublicDraftUpdate,
+    'public draft updates cannot modify the collect workflow status');
     assert.deepEqual(
       updatedListing.listingDraft.sourceMetadata,
       { keep: "updated-draft-source" },

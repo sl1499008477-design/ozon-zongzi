@@ -40,6 +40,26 @@ export function normalizeCollectorTask(raw = {}) {
     };
     const publicConfiguration = objectValue(withoutCollectorScope(configuration));
     const publicSource = objectValue(withoutCollectorScope(source));
+    const run = objectValue(source.currentRun);
+    const runProgress = objectValue(run.progress);
+    const progress = run.id ? {
+        current: 0, // In-flight concurrency is known only by the local active task.
+        total: runProgress.totalCount ?? run.totalCount ?? 0,
+        totalCount: run.resultSummary?.collectedCount ?? runProgress.qualifiedCount ?? run.qualifiedCount ?? 0,
+        ...((runProgress.qualifiedSkuCount ?? run.qualifiedSkuCount) != null
+            ? { skuCount: runProgress.qualifiedSkuCount ?? run.qualifiedSkuCount } : {}),
+    } : { ...objectValue(source.progress) };
+    const dedup = objectValue(run.id ? run.resultSummary?.dedup : progress.dedup);
+    progress.dedup = {
+        collected: dedup.collected ?? 0,
+        listed: dedup.listed ?? 0,
+        collecting: dedup.collecting ?? 0,
+    };
+    if (run.id) {
+        const skipped = run.progress?.filteredCount ?? run.filteredCount ?? 0;
+        const failed = run.progress?.failedCount ?? run.failedCount ?? 0;
+        if (skipped || failed) progress.outcomes = { skipped, failed };
+    }
     const normalized = {
         ...publicConfiguration,
         ...publicSource,
@@ -47,6 +67,11 @@ export function normalizeCollectorTask(raw = {}) {
         taskId: id,
         taskName: source.name || source.taskName || configuration.taskName || '未命名任务',
         taskStatus: FRONTEND_STATUS[rawStatus.toUpperCase()] || rawStatus,
+        createTime: source.createdAt ?? source.createTime ?? null,
+        lastRunningTime: Object.hasOwn(source, 'lastStartedAt')
+            ? source.lastStartedAt : run.startedAt ?? source.lastRunningTime ?? null,
+        progress,
+        tableFilePath: run.resultSummary?.exportedFilePath || source.tableFilePath || '',
         operatingStoreId: null,
         configuration: publicConfiguration,
         ...(Object.keys(legacyScope).length ? { legacyScope } : {}),
@@ -60,6 +85,8 @@ export function toCollectorTaskPayload(input = {}) {
     const source = objectValue(input);
     const configuration = {
         ...source,
+        captureScope: source.captureScope === 'ALL' ? 'ALL'
+            : source.captureScope === 'CURRENT' || source._id || source.id || source.taskId ? 'CURRENT' : 'ALL',
         _id: undefined,
         id: undefined,
         taskId: undefined,
@@ -72,8 +99,18 @@ export function toCollectorTaskPayload(input = {}) {
         config: undefined,
         taskConfig: undefined,
         currentRunId: undefined,
+        currentRun: undefined,
+        lastStartedAt: undefined,
+        createTime: undefined,
+        lastRunningTime: undefined,
+        createdAt: undefined,
+        updatedAt: undefined,
+        deletedAt: undefined,
         statusVersion: undefined,
         lastErrorCode: undefined,
+        lastErrorMessage: undefined,
+        lastLog: undefined,
+        startError: undefined,
     };
     for (const key of Object.keys(configuration)) {
         if (configuration[key] === undefined

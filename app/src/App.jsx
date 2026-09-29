@@ -1,3 +1,22 @@
+import { stockEntries, productStatus, PRODUCT_STATUS_BUCKETS, productStatusMeta, productStatusFilterOptions, productSearchText, productMatchesQuery, stockNumber, productKnownStockValue, productMatchesStockFilter } from "../../shared/product-catalog.mjs";
+import DashboardPage from "./DashboardPage.jsx";
+import OrderManagementPage from "./OrderManagementPage.jsx";
+import QualityInspectionPage, { QualityInspectionBell } from "./QualityInspectionPage.jsx";
+import { useQualityInspection } from "./use-quality-inspection.js";
+import StockEditor from "./StockEditor.jsx";
+import BatchStockEditor from "./BatchStockEditor.jsx";
+import {useProductCosts,ProductCostField,ProductCostSwitch} from "./ProductCostControls.jsx";
+import "./catalog-management.css";
+import ProductRestrictionsPage from "./ProductRestrictionsPage.jsx";
+import AiRechargePage from "./AiRechargePage.jsx";
+import AiBillingPage from "./AiBillingPage.jsx";
+import AiUserChannelsPage from "./AiUserChannelsPage.jsx";
+import AiRuntimeSettingsPage from "./AiRuntimeSettingsPage.jsx";
+import SoftwareDownloadsPage from "./SoftwareDownloadsPage.jsx";
+import OzonRouteSwitch from "./OzonRouteSwitch.jsx";
+import WebCollectionCard from "./WebCollectionCard.jsx";
+import { webCollectionJobView } from "./web-collection-jobs.js";
+import "./web-collection.css";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   App as AntApp,
@@ -13,6 +32,7 @@ import {
   Dropdown,
   Empty,
   Form,
+  Image,
   Input,
   InputNumber,
   Layout,
@@ -22,49 +42,13 @@ import {
   Segmented,
   Select,
   Space,
-  Steps,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Upload,
 } from "antd";
-import {
-  ApartmentOutlined,
-  ApiOutlined,
-  AppstoreOutlined,
-  AreaChartOutlined,
-  BellOutlined,
-  CheckOutlined,
-  ChromeOutlined,
-  CloudUploadOutlined,
-  CopyOutlined,
-  DashboardOutlined,
-  DatabaseOutlined,
-  DeleteOutlined,
-  DeploymentUnitOutlined,
-  DollarOutlined,
-  DownloadOutlined,
-  EditOutlined,
-  EyeOutlined,
-  GiftOutlined,
-  HomeOutlined,
-  InboxOutlined,
-  LinkOutlined,
-  LoginOutlined,
-  MenuOutlined,
-  MessageOutlined,
-  PictureOutlined,
-  PlusOutlined,
-  PrinterOutlined,
-  SettingOutlined,
-  ShoppingCartOutlined,
-  ShoppingOutlined,
-  SyncOutlined,
-  ThunderboltOutlined,
-  ToolOutlined,
-  UserOutlined,
-} from "@ant-design/icons";
+import Table from "./PagedTable.jsx";
+import { ApartmentOutlined, ApiOutlined, AppstoreOutlined, BellOutlined, CheckOutlined, DownloadOutlined, CloudUploadOutlined, CopyOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, EyeOutlined, FileSearchOutlined, HomeOutlined, InboxOutlined, LinkOutlined, LoginOutlined, MenuOutlined, PictureOutlined, PlusOutlined, SettingOutlined, ShoppingCartOutlined, SyncOutlined, ThunderboltOutlined, UserOutlined } from "@ant-design/icons";
 import zhCN from "antd/locale/zh_CN";
 import "antd/dist/reset.css";
 import {
@@ -83,25 +67,21 @@ import {
   dictionaryRowsOfResponse,
   useCategoryDictionaryReadiness,
 } from "./use-category-dictionary-readiness.js";
-import { postingMoneyGroups, summarizePostingMoney } from "./order-money.js";
-import { scopedPostingsForCurrentStore } from "./posting-store-scope.js";
-import { localDayKey } from "./order-analytics.js";
-import DataScreenPage from "./DataScreenPage.jsx";
 import PricingSettingsPage from "./PricingSettingsPage.jsx";
 import AccountSettingsPage from "./AccountSettingsPage.jsx";
 import StoresSettingsPage from "./StoresSettingsPage.jsx";
-import AutoListingPage from "./AutoListingPage.jsx";
-import AiModelSettingsPage from "./AiModelSettingsPage.jsx";
-import CategoryStrategyPage from "./CategoryStrategyPage.jsx";
+import AiListingPage, { AiListingCompletedRecords } from "./AiListingPage.jsx";
+import PromptManagementPage from "./PromptManagementPage.jsx";
+import SalePricingPage,{CompetitorPricingPage} from "./SalePricingPage.jsx";
+import MessageManagementPage from "./MessageManagementPage.jsx";
+import PromotionManagementPage from "./PromotionManagementPage.jsx";
+import { ozonPromotionTitle } from "./ozon-promotion-labels.mjs";
 import { buildAutoListingCollectPush } from "./auto-listing-collect-push.js";
 import { createStoreSwitchGate } from "./store-switch-gate.js";
-import ProfitTrendPage from "./ProfitTrendPage.jsx";
-import SourceTable, {
-  SourceMetricStrip,
-  SourceSectionTitle,
-} from "./SourceTable.jsx";
+import SourceTable, { SourceSectionTitle } from "./SourceTable.jsx";
 import {
   dateInputValue,
+  localDayKey,
   todayDateOnly,
 } from "./store-date.js";
 import {
@@ -111,25 +91,24 @@ import {
   sourceCellText,
 } from "./table-text.jsx";
 import { apiRequest } from "./client-transport.js";
+import { createAppAccountLoginHandler } from "./account-login-bootstrap.js";
 import { PRODUCT_BRAND } from "./brand.js";
-import {
-  dashboardMoneyGroups,
-  dashboardSummaryMoney,
-} from "./dashboard-money.js";
-import { buildPrepareListingBody, collectAddReadiness, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
+import { buildPrepareListingBody, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
 import {
   collectEditDictionaryIdsOf,
   resolveCollectEditDictionaryValue,
   shouldApplyCollectEditDictionaryDefault,
 } from "./collect-edit-dictionary-match.js";
-import { normalizeCollectEditVariantRow } from "./collect-edit-variant-row.js";
+import { collectPriceCurrencyCode, formatCollectSourcePrice, normalizeCollectEditVariantRow } from "./collect-edit-variant-row.js";
 import {
   collectEditEnrichmentBackfill,
   collectEditSourceCategorySnapshot,
   collectEditSourceCategoryVariant,
   collectEnrichmentEffectiveSummary,
   collectEnrichmentErrorSummary,
-  collectEnrichmentListNeedsPolling,
+  collectEnrichmentPollingIds,
+  refreshCollectEnrichmentProgress,
+  mergeCollectEnrichmentProgress,
   collectEnrichmentNeedsPolling,
   collectEnrichmentSuccessMessage,
   collectEnrichmentView,
@@ -139,7 +118,6 @@ import {
 } from "./collect-enrichment-view.js";
 import { categoryResolutionView } from "./collect-category-resolution-view.js";
 import { STORE_SYNC_TYPES, runBackendStoreSync } from "./store-sync-coordinator.js";
-import { storeSyncDetailText } from "./store-sync-presentation.js";
 import {
   createCollectorAuthGenerationController,
   installCollectorAuthBridge,
@@ -149,14 +127,10 @@ import {
 import {
   emptyLocalRuntimeData,
   localRuntimeStateFromApi,
+  localStatePathForPage,
+  pageStateNeedsLoading,
 } from "./local-runtime-state.js";
 import { createLatestLocalStateRefresh } from "./latest-request-gate.js";
-import {
-  EXTENSION_CAPABILITIES,
-  EXTENSION_DOWNLOAD_PATH,
-  EXTENSION_POPUP_PREVIEW_PATH,
-  EXTENSION_VERSION,
-} from "./extension-page-contract.mjs";
 
 const { Header, Sider, Content } = Layout;
 
@@ -250,50 +224,38 @@ function SkuCopyButton({ message, sku }) {
 const emptyLocalData = emptyLocalRuntimeData();
 
 const pageTitles = {
-  "/ozon/dashboard": "仪表盘",
-  "/ozon/products/list": "商品列表",
+  "/ozon/dashboard": "首页",
+  "/ozon/downloads": "软件下载",
+  "/ozon/products/list": "商品管理",
+  "/ozon/orders": "订单列表",
+  "/ozon/orders/quality": "质检单",
   "/ozon/products/collect": "采集箱",
   "/ozon/products/collect/edit": "商品编辑",
   "/ozon/products/import-history": "上架记录",
-  "/ozon/products/stocks": "库存管理",
-  "/ozon/products/reshelf": "下架重上",
-  "/ozon/tools/ai-poster-records": "AI 改图神器",
-  "/ozon/tools/auto-listing": "自动上架",
+  "/ozon/tools/ai-listing": "AI 上架",
+  "/ozon/tools/prompts": "提示词管理",
+  "/ozon/tools/sale-pricing": "售价配置",
+  "/ozon/messages": "消息管理",
+  "/ozon/promotions": "活动管理",
   "/ozon/tools/auto-listing/ai-settings": "AI 模型配置",
-  "/ozon/tools/category-strategies": "类目图片策略",
-  "/ozon/ai-image": "AI 商品套图",
-  "/ozon/promotions/prices": "价格与折扣",
-  "/ozon/promotions/campaigns": "促销活动",
-  "/ozon/promotions/auto-delete": "自动删促销",
-  "/ozon/postings/list": "订单",
-  "/ozon/postings/returns": "退货申请",
-  "/ozon/postings/profit-trend": "利润趋势",
-  "/datascreen": "数据大屏",
-  "/ozon/postings/review-request": "索要好评",
-  "/ozon/postings/pickup-reminder": "提醒取货",
-  "/extension": "浏览器插件",
-  "/ozon/messaging/templates": "消息模板",
-  "/ozon/messaging/history": "发送记录",
   "/ozon/templates": "商品模板",
   "/ozon/settings/stores": "经营店铺",
   "/ozon/settings/accounts": "账号管理",
   "/ozon/settings/pricing": "算价配置",
+  "/ozon/settings/competitor-pricing": "竞品真实售价计算",
+  "/ozon/settings/ai-user-channels": "AI 通道配置",
+  "/ozon/settings/ai-runtime-settings": "AI 并发设置",
+  "/ozon/settings/product-restrictions": "禁售类目配置",
+  "/ozon/settings/recharge": "充值管理",
+  "/ozon/settings/ai-billing": "费用账单",
   "/404": "404",
 };
 
 const routeAliases = {
   "/ozon/products": "/ozon/products/list",
   "/ozon/products/batch-upload": "/ozon/products/import-history",
-  "/ozon/ai/image": "/ozon/tools/ai-poster-records",
-  "/ozon/ai-image/editor": "/ozon/tools/ai-poster-records",
-  "/ozon/ai/title": "/ozon/tools/ai-poster-records",
-  "/ozon/promotions": "/ozon/promotions/campaigns",
-  "/ozon/orders": "/ozon/postings/list",
-  "/ozon/orders/shipments": "/ozon/postings/list",
-  "/ozon/orders/returns": "/ozon/postings/returns",
-  "/ozon/tools/pricing": "/ozon/promotions/prices",
-  "/ozon/tools/stores": "/ozon/products/stocks",
-  "/ozon/messages": "/ozon/messaging/templates",
+  "/ozon/tools/stores": "/ozon/products/list",
+  "/ozon/products/stocks": "/ozon/products/list",
   "/ozon/settings": "/ozon/settings/stores",
   "/login": "/ozon/dashboard",
 };
@@ -301,7 +263,7 @@ const routeAliases = {
 const normalizePath = (value) => {
   const path = String(value || "/ozon/dashboard").split("?")[0].replace(/\/+$/, "");
   if (path === "" || path === "/") return "/ozon/dashboard";
-  const aliased = routeAliases[path] || path;
+  const aliased = path === "/ozon/tools/auto-listing/ai-settings" ? "/ozon/settings/ai-user-channels" : routeAliases[path] || path;
   return pageTitles[aliased] ? aliased : "/404";
 };
 
@@ -353,44 +315,8 @@ const clearStoreStorage = () => {
   return true;
 };
 
-const requestExtensionPing = async (timeoutMs = 1200) => {
-  const reqId = `ping-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const response = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      window.removeEventListener("message", onMessage);
-      reject(new Error("本地浏览器插件未响应，请在 Chrome 重新加载本项目 extension 目录"));
-    }, timeoutMs);
-    const onMessage = (event) => {
-      if (event.source !== window || event.origin !== window.location.origin) return;
-      const data = event.data;
-      if (!data || data.__jz !== "v1" || data.kind !== "ping.response" || data.reqId !== reqId) return;
-      clearTimeout(timer);
-      window.removeEventListener("message", onMessage);
-      if (!data.ok) reject(new Error(data.error || "插件桥返回失败"));
-      else resolve(data);
-    };
-    window.addEventListener("message", onMessage);
-    window.postMessage({ __jz: "v1", kind: "ping.request", reqId }, window.location.origin);
-  });
-  return response;
-};
 
-const extensionSupportsLocalListing = (response = {}) =>
-  response?.capabilities?.followSell === true &&
-  response?.capabilities?.dryRunPreview === true &&
-  response?.capabilities?.localListingBridge === true;
 
-const listingBridgeStatusFromPing = (response = {}) => {
-  const version = response.version || "未知版本";
-  if (extensionSupportsLocalListing(response)) {
-    return { status: "ok", version, error: "" };
-  }
-  return {
-    status: "partial",
-    version,
-    error: `插件已响应${version ? ` · ${version}` : ""}，但缺少本地 follow-sell 上架桥能力`,
-  };
-};
 
 const requestExtensionFollowSell = async ({
   storeId,
@@ -464,158 +390,82 @@ const requestExtensionPrefetch = async ({ skus, timeoutMs = 120000 }) => {
   return response;
 };
 
-const formatDate = () => {
-  const now = new Date();
-  const week = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][
-    now.getDay()
-  ];
-  const date = now.toISOString().slice(0, 10);
-  return `${date} · ${week}`;
-};
 
-const menuItems = [
-  {
-    key: "/ozon/dashboard",
-    icon: <DashboardOutlined />,
-    label: "仪表盘",
-  },
-  {
-    key: "products",
-    icon: <ShoppingCartOutlined />,
-    label: "商品",
-    children: [
-      { key: "/ozon/products/list", label: "商品列表" },
-      { key: "/ozon/products/collect", label: "采集箱" },
-      { key: "/ozon/products/import-history", label: "上架记录" },
-      { key: "/ozon/products/stocks", label: "库存管理" },
-      { key: "/ozon/products/reshelf", label: "下架重上" },
-    ],
-  },
+const regularMenuItems = [
+  { key: "/ozon/products/list", icon: <ShoppingCartOutlined />, label: "商品管理" },
+  { key: "orders", icon: <InboxOutlined />, label: "订单管理", children: [
+    { key: "/ozon/orders", label: "订单列表" },
+  ] },
   {
     key: "ai",
-    icon: <ThunderboltOutlined />,
-    label: "AI 工具",
+    icon: <CloudUploadOutlined />,
+    label: "产品上架",
     children: [
-      { key: "/ozon/tools/auto-listing", label: "自动上架" },
-      { key: "/ozon/tools/category-strategies", label: "类目图片策略" },
-      { key: "/ozon/tools/ai-poster-records", label: "AI 改图神器" },
-      { key: "/ozon/ai-image", label: "AI 商品套图" },
+      { key: "/ozon/products/collect", label: "采集箱" },
+      { key: "/ozon/tools/ai-listing", label: "AI 上架" },
+      { key: "/ozon/tools/prompts", label: "提示词管理" },
+      { key: "/ozon/tools/sale-pricing", label: "售价配置" },
+      { key: "/ozon/products/import-history", label: "上架记录" },
     ],
   },
-  {
-    icon: <GiftOutlined />,
-    label: "促销",
-    key: "promotions",
-    children: [
-      { key: "/ozon/promotions/prices", label: "价格与折扣" },
-      { key: "/ozon/promotions/campaigns", label: "营销活动" },
-      { key: "/ozon/promotions/auto-delete", label: "自动删促销" },
-    ],
-  },
-  {
-    key: "orders",
-    icon: <DeploymentUnitOutlined />,
-    label: "订单",
-    children: [
-      { key: "/ozon/postings/list", label: "订单" },
-      { key: "/ozon/postings/returns", label: "退货申请" },
-      { key: "/ozon/postings/profit-trend", label: "利润趋势" },
-      { key: "/datascreen", label: "数据大屏" },
-    ],
-  },
-  {
-    key: "tools",
-    icon: <ToolOutlined />,
-    label: "工具",
-    children: [
-      { key: "/extension", label: "浏览器插件" },
-    ],
-  },
-  {
-    key: "messages",
-    icon: <MessageOutlined />,
-    label: "消息",
-    children: [
-      { key: "/ozon/messaging/templates", label: "消息模板" },
-      { key: "/ozon/messaging/history", label: "发送记录" },
-      { key: "/ozon/postings/review-request", label: "索要好评" },
-      { key: "/ozon/postings/pickup-reminder", label: "提醒取货" },
-    ],
-  },
+  { key: "/ozon/messages", icon: <BellOutlined />, label: "消息管理" },
+  { key: "/ozon/promotions", icon: <ThunderboltOutlined />, label: "活动管理" },
 ];
+
+const adminMenuItem = {
+  key: "admin",
+  icon: <SettingOutlined />,
+  label: "管理员配置",
+  className: "qh-admin-menu",
+  children: [
+    { key: "/ozon/settings/pricing", label: "算价配置" },
+    { key: "/ozon/settings/competitor-pricing", label: "竞品真实售价计算" },
+    { key: "/ozon/settings/ai-user-channels", label: "AI 通道配置" },
+    { key: "/ozon/settings/ai-runtime-settings", label: "AI 并发设置" },
+    { key: "/ozon/settings/product-restrictions", label: "禁售类目配置" },
+    { key: "/ozon/settings/recharge", label: "充值管理" },
+    { key: "/ozon/settings/ai-billing", label: "费用账单" },
+  ],
+};
 
 const routeParent = {
-  "/ozon/products/list": "products",
-  "/ozon/products/collect": "products",
-  "/ozon/products/collect/edit": "products",
-  "/ozon/products/import-history": "products",
-  "/ozon/products/stocks": "products",
-  "/ozon/products/reshelf": "products",
-  "/ozon/tools/ai-poster-records": "ai",
-  "/ozon/tools/auto-listing": "ai",
-  "/ozon/tools/auto-listing/ai-settings": "ai",
-  "/ozon/tools/category-strategies": "ai",
-  "/ozon/promotions/prices": "promotions",
-  "/ozon/promotions/campaigns": "promotions",
-  "/ozon/ai-image": "ai",
-  "/ozon/promotions/auto-delete": "promotions",
-  "/ozon/postings/list": "orders",
-  "/ozon/postings/returns": "orders",
-  "/ozon/postings/profit-trend": "orders",
-  "/datascreen": "orders",
-  "/ozon/postings/review-request": "messages",
-  "/ozon/postings/pickup-reminder": "messages",
-  "/extension": "tools",
-  "/ozon/messaging/templates": "messages",
-  "/ozon/messaging/history": "messages",
+  "/ozon/orders": "orders",
+  "/ozon/products/collect": "ai",
+  "/ozon/products/collect/edit": "ai",
+  "/ozon/products/import-history": "ai",
+  "/ozon/tools/ai-listing": "ai",
+  "/ozon/tools/prompts": "ai",
+  "/ozon/tools/sale-pricing": "ai",
+  "/ozon/tools/auto-listing/ai-settings": "admin",
+  "/ozon/settings/pricing": "admin",
+  "/ozon/settings/competitor-pricing": "admin",
+  "/ozon/settings/ai-user-channels": "admin",
+  "/ozon/settings/ai-runtime-settings": "admin",
+  "/ozon/settings/product-restrictions": "admin",
+  "/ozon/settings/recharge": "admin",
+  "/ozon/settings/ai-billing": "admin",
 };
 
-const dashboardMetricList = (summary = emptyLocalData.summary) => [
-  { label: "今日订单", value: String(summary.todayPostings || 0), note: "— 持平", sub: "vs 昨日" },
-  { label: "今日 GMV", value: dashboardSummaryMoney(summary, "today"), note: "— 持平", sub: "vs 昨日" },
-  { label: "等待备货", value: String(summary.awaitingPackaging || 0), note: (summary.awaitingPackaging || 0) ? "需及时处理" : "暂无积压" },
-  { label: "等待发运", value: String(summary.awaitingDeliver || 0), note: `合计待处理 ${summary.pendingPostings || 0}` },
-  { label: "在售商品", value: `${summary.products || 0}个`, note: "多店聚合" },
-  { label: "库存预警", value: "0SKU", note: "库存充足" },
-  { label: "今日退货", value: "0", note: "退货率 0.0%" },
-  { label: "7 日利润", value: "¥—", note: "需成本数据" },
-];
 
-const quickActions = [
-  { icon: <SyncOutlined />, label: "一键同步全部", path: "sync" },
-  { icon: <DollarOutlined />, label: "批量改价", path: "/ozon/promotions/prices" },
-  { icon: <ThunderboltOutlined />, label: "AI 大模型改图", path: "/ozon/tools/ai-poster-records" },
-  { icon: <ShoppingOutlined />, label: "1688 采集", path: "/ozon/products/collect" },
-  { icon: <MessageOutlined />, label: "群发消息", path: "/ozon/messaging/templates" },
-  {
-    icon: <CloudUploadOutlined />,
-    label: "批量上架",
-    path: "/ozon/products/import-history",
-  },
-  { icon: <PrinterOutlined />, label: "打印发货单", path: "/ozon/postings/list" },
-];
-
-const featureLinks = [
-  { icon: <InboxOutlined />, label: "采集箱", path: "/ozon/products/collect" },
-  { icon: <AreaChartOutlined />, label: "利润趋势", path: "/ozon/postings/profit-trend" },
-  { icon: <PictureOutlined />, label: "AI 大模型改图", path: "/ozon/tools/ai-poster-records", tag: "NEW" },
-  { icon: <DeploymentUnitOutlined />, label: "17track", path: "/ozon/postings/list" },
-  { icon: <GiftOutlined />, label: "营销活动", path: "/ozon/promotions/campaigns" },
-];
-
-const requiredSteps = [
-  "绑定店铺",
-  "安装浏览器插件",
-  "同步商品数据",
-  "处理首个订单",
-];
-
-const pluginWordmarkStyle = {
-  width: "auto",
-  maxWidth: 156,
-  height: 36,
-  objectFit: "contain",
-};
+function AdminNavigation({ route, onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const selected = adminMenuItem.children.some(item => item.key === route);
+  return <Dropdown
+    trigger={["click"]}
+    placement="topLeft"
+    open={open}
+    onOpenChange={setOpen}
+    overlayClassName="prototype-overlay qh-admin-popup"
+    menu={{ items: adminMenuItem.children, selectedKeys: [route], onClick: ({ key }) => {
+      setOpen(false); onNavigate(key);
+    } }}
+  >
+    <button type="button" className={`qh-admin-trigger${open || selected ? " is-active" : ""}`}
+      aria-label="管理员配置" aria-haspopup="menu" aria-expanded={open}>
+      <SettingOutlined /><span>管理员配置</span><span className={`qh-admin-chevron${open ? " is-open" : ""}`} aria-hidden="true" />
+    </button>
+  </Dropdown>;
+}
 
 export function AppShell({ initialState = null }) {
   const { message, modal } = AntApp.useApp();
@@ -625,6 +475,23 @@ export function AppShell({ initialState = null }) {
   const [accounts, setAccounts] = useState([]);
   const [authChecked, setAuthChecked] = useState(() => initialState?.authChecked === true);
   const [loggingIn, setLoggingIn] = useState(false);
+  const inspection = useQualityInspection({ accountId: authChecked ? account?.id : "" });
+  const menuItems = [
+    { key: "/ozon/dashboard", icon: <HomeOutlined />, label: "首页" },
+    {
+      key: "/ozon/orders/quality",
+      icon: <FileSearchOutlined />,
+      className: "quality-menu-entry",
+      label: <><span>质检单</span><Badge
+        className="quality-menu-badge"
+        count={inspection.summary?.unreadCount || 0}
+        overflowCount={99}
+        title={`全店未读质检单：${inspection.summary?.unreadCount || 0} 条`}
+      /></>,
+    },
+    { type: "divider", key: "quality-divider", className: "quality-menu-divider" },
+    ...regularMenuItems,
+  ];
   const [binding, setBinding] = useState(() => {
     const stored = readJson(STORAGE_KEY, null);
     return stored ? { ...stored, storeName: visibleStoreName(stored.storeName, stored.clientId) } : null;
@@ -632,21 +499,36 @@ export function AppShell({ initialState = null }) {
   const [settings, setSettings] = useState(() =>
     readJson(SETTINGS_KEY, { pluginInstalled: true, lastSync: null }),
   );
-  const [localData, setLocalData] = useState(emptyLocalData);
+  const [localData, setLocalData] = useState(() => initialState?.localData || emptyLocalData);
+  const [loadedStateView,setLoadedStateView]=useState(initialState?.localData?"/local/state":"");
+  const [stateReadError,setStateReadError]=useState("");
+  const lastPageRequestRef=useRef("");
   const [syncing, setSyncing] = useState(false);
   const [switchingStoreId, setSwitchingStoreId] = useState("");
-  const [storeSyncStates, setStoreSyncStates] = useState([]);
   const [bindOpen, setBindOpen] = useState(false);
+  const [savingBinding, setSavingBinding] = useState(false);
+  const [syncingNewStore, setSyncingNewStore] = useState(false);
+  const savingBindingRef = useRef(false);
+  const [bindingSaveError, setBindingSaveError] = useState("");
   const [editingBindingStore, setEditingBindingStore] = useState(null);
-  const [pluginOpen, setPluginOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [openKeys, setOpenKeys] = useState(() => {
     const parent = routeParent[normalizePath(window.location.pathname)];
     return parent ? [parent] : [];
   });
+  const handleMenuOpenChange = (keys) => {
+    const opened = keys.find((key) => !openKeys.includes(key));
+    setOpenKeys(opened ? [opened] : keys.slice(-1));
+  };
   const [form] = Form.useForm();
   const applyLocalStateRef = useRef(null);
   const localStateRefreshRef = useRef(null);
+  const localStateReadRef = useRef({generation:0, pending:0});
+  const collectProgressScopeRef = useRef(null);
+  collectProgressScopeRef.current = {
+    accountId:account?.id || "", page:`${route}${locationSearch}`,
+    items:localData?.caches?.collectBox,
+  };
   const collectorAuthGenerationRef = useRef(null);
   const storeSwitchGateRef = useRef(null);
   const messageRef = useRef(message);
@@ -658,10 +540,11 @@ export function AppShell({ initialState = null }) {
 
   const hasStore = Boolean(binding?.storeName);
   const isEditingBindingStore = Boolean(editingBindingStore?.id || editingBindingStore?.storeId);
-  const pageTitle = pageTitles[route] || "仪表盘";
-  const currentDate = useMemo(() => formatDate(), []);
 
   const applyLocalState = async (state) => {
+    localStateReadRef.current.generation += 1;
+    if(state?.__webStatePath)setLoadedStateView(state.__webStatePath);
+    setStateReadError("");
     const nextAccount = state?.account || null;
     setAccount(nextAccount);
     setAccounts(state?.accounts || []);
@@ -708,21 +591,55 @@ export function AppShell({ initialState = null }) {
   applyLocalStateRef.current = applyLocalState;
   if (!localStateRefreshRef.current) {
     localStateRefreshRef.current = createLatestLocalStateRefresh({
-      readState: () => apiRequest("/local/state"),
+      readState: async () => {
+        const pagePath=normalizePath(window.location.pathname);
+        const readPath=localStatePathForPage(pagePath,window.location.search);
+        lastPageRequestRef.current=`${pagePath}${window.location.search}`;
+        const state=await apiRequest(readPath);
+        return {...state,__webStatePath:readPath};
+      },
       applyState: (state) => applyLocalStateRef.current(state),
     });
   }
 
   const refreshLocalState = React.useCallback(async ({ silent = true, source = "manual-refresh" } = {}) => {
+    localStateReadRef.current.generation += 1;
+    localStateReadRef.current.pending += 1;
     try {
       const result = await localStateRefreshRef.current({ source });
       return result.status === "applied" ? result.state : null;
     } catch (error) {
+      setStateReadError(error.message||"页面资料读取失败");
       if (!silent) messageRef.current.error(`本地 API 未启动: ${error.message}`);
       setAuthChecked(true);
       return null;
+    } finally {
+      localStateReadRef.current.pending -= 1;
     }
   }, []);
+
+  const refreshCollectProgress = React.useCallback(async ({ids, signal}) => {
+    const scope = collectProgressScopeRef.current;
+    const generation = localStateReadRef.current.generation;
+    const isCurrent = () => !signal?.aborted && !localStateReadRef.current.pending
+      && generation === localStateReadRef.current.generation
+      && scope.accountId === collectProgressScopeRef.current.accountId
+      && scope.page === collectProgressScopeRef.current.page
+      && scope.items === collectProgressScopeRef.current.items;
+    if (!scope.accountId || !isCurrent()) return null;
+    return refreshCollectEnrichmentProgress({
+      ids, signal, request:apiRequest, isCurrent,
+      apply:progress => setLocalData(current => isCurrent()
+        ? mergeCollectEnrichmentProgress(current, progress, scope.items) : current),
+    });
+  }, []);
+
+  useEffect(()=>{
+    const key=`${route}${locationSearch}`;
+    if(account?.id&&lastPageRequestRef.current!==key)void refreshLocalState({source:"page-navigation"});
+  },[route,locationSearch,account?.id,refreshLocalState]);
+  const requiredStateView=localStatePathForPage(route,locationSearch);
+  const pageNeedsFullState=pageStateNeedsLoading(requiredStateView,loadedStateView);
 
   const collectorAuthAccountId = String(account?.id || "").trim();
   useEffect(() => {
@@ -761,7 +678,7 @@ export function AppShell({ initialState = null }) {
       document.title = "404: This page could not be found.";
       return;
     }
-    document.title = route === "/datascreen" ? `${PRODUCT_BRAND.displayName} · 订单数据大屏` : PRODUCT_BRAND.displayName;
+    document.title = PRODUCT_BRAND.displayName;
   }, [route]);
 
   useEffect(() => {
@@ -770,7 +687,7 @@ export function AppShell({ initialState = null }) {
   }, [route]);
 
   useEffect(() => {
-    const mobileMediaQuery = window.matchMedia("(max-width: 600px)");
+    const mobileMediaQuery = window.matchMedia("(max-width: 1180px)");
     const handleMobileViewportChange = (event) => {
       if (!event.matches) setMobileNavOpen(false);
     };
@@ -799,12 +716,6 @@ export function AppShell({ initialState = null }) {
       handleSync();
       return;
     }
-    if (nextRoute === "plugin") {
-      setPluginOpen(true);
-      setRoute("/extension");
-      window.history.pushState({}, "", "/extension/");
-      return;
-    }
     const rawRoute = String(nextRoute || "");
     let nextSearch = "";
     try {
@@ -822,6 +733,7 @@ export function AppShell({ initialState = null }) {
 
   const openBindModal = (store = null) => {
     const selectedStore = store && (store.id || store.storeId) ? store : null;
+    setBindingSaveError("");
     setEditingBindingStore(selectedStore);
     setBindOpen(true);
   };
@@ -832,27 +744,17 @@ export function AppShell({ initialState = null }) {
     form.resetFields();
   };
 
-  const handleAccountLogin = async (values) => {
-    if (loggingIn) return;
-    setLoggingIn(true);
-    try {
-      const response = await apiRequest("/local/accounts/login", {
-        method: "POST",
-        body: {
-          username: values.username,
-          password: values.password,
-        },
-      });
-      if (response.token) localStorage.setItem("token", response.token);
-      await applyLocalState(response.state || {});
-      message.success("登录成功");
-      if (route === "/404") navigate("/ozon/dashboard");
-    } catch (error) {
-      message.error(error.message || "登录失败");
-    } finally {
-      setLoggingIn(false);
-    }
-  };
+  const handleAccountLogin = createAppAccountLoginHandler({
+    isLoggingIn: () => loggingIn,
+    setLoggingIn,
+    request: apiRequest,
+    applyLocalState,
+    refreshLocalState,
+    showSuccess: text => message.success(text),
+    showError: text => message.error(text),
+    currentRoute: () => route,
+    navigate,
+  });
 
   const handleAccountLogout = async () => {
     try {
@@ -877,7 +779,6 @@ export function AppShell({ initialState = null }) {
     }
     if (syncing) return;
     const requestedTypes = Array.isArray(types) && types.length ? types : STORE_SYNC_TYPES;
-    const fullSync = requestedTypes.length === STORE_SYNC_TYPES.length;
     setSyncing(true);
     const nextSettings = { ...settings, lastSync: new Date().toISOString() };
     setSettings(nextSettings);
@@ -887,22 +788,12 @@ export function AppShell({ initialState = null }) {
       const labels = {
         WAREHOUSES: "仓库",
         PRODUCTS: "商品",
-        POSTINGS: "订单",
-        PROMOTIONS: "促销",
       };
       const states = await runBackendStoreSync({
         storeId,
         types: requestedTypes,
         request: apiRequest,
         onState: (nextStates) => {
-          setStoreSyncStates((current) => {
-            if (fullSync) return nextStates;
-            const nextByType = new Map(current.map((item) => [item.type, item]));
-            for (const item of nextStates) nextByType.set(item.type, item);
-            return STORE_SYNC_TYPES
-              .map((type) => nextByType.get(type))
-              .filter(Boolean);
-          });
           const running = nextStates.find((item) => item.status === "RUNNING");
           if (running) {
             message.loading({
@@ -922,7 +813,7 @@ export function AppShell({ initialState = null }) {
         .map((item) => item.type);
       if (failedTypes.length) {
         message.warning({
-          content: `${failedTypes.map((type) => labels[type]).join(" / ")}同步失败，可单独重试；其他成功结果已保留`,
+          content: `${failedTypes.map((type) => labels[type]).join(" / ")}同步失败，请再次同步；其他成功结果已保留`,
           key: "store-sync",
           duration: 6,
         });
@@ -939,7 +830,6 @@ export function AppShell({ initialState = null }) {
     }
   };
   const handleSync = () => runStoreSync(STORE_SYNC_TYPES);
-  const retryStoreSyncType = (type) => runStoreSync([type]);
 
   useEffect(() => {
     if (!bindOpen) return;
@@ -947,12 +837,15 @@ export function AppShell({ initialState = null }) {
       clientId: editingBindingStore?.clientId || "",
       apiKey: "",
       label: editingBindingStore?.label || editingBindingStore?.companyName || "",
-      apiKeyCreatedAt: dateInputValue(editingBindingStore?.apiKeyCreatedAt)
-        || (editingBindingStore ? "" : todayDateOnly()),
+      apiKeyCreatedAt: dateInputValue(editingBindingStore?.apiKeyCreatedAt),
     });
   }, [bindOpen, editingBindingStore, form]);
 
   const saveBinding = async (values) => {
+    if (savingBindingRef.current) return;
+    savingBindingRef.current = true;
+    setSavingBinding(true);
+    setBindingSaveError("");
     try {
       const clientId = values.clientId.trim();
       const label = (values.label || "").trim();
@@ -972,7 +865,7 @@ export function AppShell({ initialState = null }) {
             label,
             clientId,
             apiKey: values.apiKey || "",
-            apiKeyCreatedAt: values.apiKeyCreatedAt || todayDateOnly(),
+            apiKeyCreatedAt: values.apiKeyCreatedAt || "",
           },
         });
       if (editingStoreId) {
@@ -998,11 +891,26 @@ export function AppShell({ initialState = null }) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(nextBinding));
       localStorage.setItem("token", response.token);
       localStorage.setItem("currentOzonStoreId", store.id);
+      setSyncingNewStore(true);
+      let syncError = "";
+      try {
+        const synced = await apiRequest("/local/sync/WAREHOUSES", { method: "POST", body: { storeId: store.id } });
+        if (synced.job?.status && synced.job.status !== "SUCCESS") throw new Error("同步未完成");
+      } catch (error) {
+        syncError = error.message || "连接失败";
+      }
       closeBindModal();
-      await refreshLocalState({ source: "store-bind" });
-      message.success("门店已绑定");
+      try { await refreshLocalState({ source: "store-bind" }); }
+      catch { syncError = syncError || "页面资料刷新失败"; }
+      if (syncError) message.warning(`店铺已新增，但资料同步未完成：${syncError}。请在店铺配置点击“同步仓库”重试，无需重复新增。`, 10);
+      else message.success("店铺已新增，店铺资料和仓库已同步");
     } catch (error) {
+      setBindingSaveError(`保存失败: ${error.message}`);
       message.error(`保存失败: ${error.message}`);
+    } finally {
+      savingBindingRef.current = false;
+      setSavingBinding(false);
+      setSyncingNewStore(false);
     }
   };
 
@@ -1072,7 +980,6 @@ export function AppShell({ initialState = null }) {
     });
   };
 
-  const completeStepCount = [hasStore, settings.pluginInstalled, Boolean(settings.lastSync), false].filter(Boolean).length;
   const themeConfig = {
     token: {
       colorPrimary: "#005af8",
@@ -1082,6 +989,9 @@ export function AppShell({ initialState = null }) {
       colorBorder: "#dce8f7",
       colorBgLayout: "#f6fafe",
       colorBgContainer: "#ffffff",
+      controlHeight: 44,
+      controlHeightLG: 52,
+      controlHeightSM: 32,
       borderRadius: 12,
       borderRadiusLG: 18,
       boxShadowSecondary: "0 12px 38px rgba(24, 79, 151, 0.08)",
@@ -1095,7 +1005,7 @@ export function AppShell({ initialState = null }) {
         triggerBg: "#fff",
       },
       Card: {
-        borderRadiusLG: 18,
+        borderRadiusLG: 26,
       },
     },
   };
@@ -1141,10 +1051,10 @@ export function AppShell({ initialState = null }) {
       <div className="user-popover-head">
         <strong>{account?.displayName || account?.username || "未登录"}</strong>
         <span>{account?.role === "admin" ? "管理员账号" : "普通账号"}</span>
+        <span>{PRODUCT_BRAND.displayName} · v{PRODUCT_BRAND.version}</span>
       </div>
       {[
         ...(account?.role === "admin" ? [["账号管理", () => navigate("/ozon/settings/accounts")]] : []),
-        ...(account?.role === "admin" ? [["算价配置", () => navigate("/ozon/settings/pricing")]] : []),
         ["退出登录", handleAccountLogout],
       ].map(([label, onClick]) => (
         <button className="user-popover-item" type="button" onClick={onClick} key={label}>
@@ -1170,18 +1080,6 @@ export function AppShell({ initialState = null }) {
     );
   }
 
-  if (route === "/datascreen") {
-    return (
-      <ConfigProvider autoInsertSpaceInButton={false} locale={zhCN} theme={themeConfig}>
-        <DataScreenPage
-          hasStore={hasStore}
-          binding={binding}
-          localData={localData}
-          navigate={navigate}
-        />
-      </ConfigProvider>
-    );
-  }
 
   return (
     <ConfigProvider
@@ -1191,8 +1089,8 @@ export function AppShell({ initialState = null }) {
     >
       <Layout className="qh-shell prototype-shell">
         <Header className="qh-topbar">
-          <a className="qh-brand" onClick={() => navigate("/ozon/dashboard")}>
-            <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
+          <a className="qh-brand" aria-label="返回首页" href="/ozon/dashboard" onClick={(event) => { event.preventDefault(); navigate("/ozon/dashboard"); }}>
+            <img loading="lazy" decoding="async" src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
           </a>
           <Button
             aria-label="打开导航"
@@ -1201,13 +1099,15 @@ export function AppShell({ initialState = null }) {
             onClick={() => setMobileNavOpen(true)}
             type="text"
           />
+          <OzonRouteSwitch key={account.id} accountId={account.id} />
           <div className="qh-top-actions">
-            <HeaderAction
-              icon={<ChromeOutlined />}
-              title="浏览器插件"
-              subtitle="插件下载"
-              tone="blue"
-            />
+            <a className="qh-header-action tone-blue" href="/ozon/downloads" aria-label="软件下载" title="软件下载" onClick={(event) => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault(); navigate("/ozon/downloads");
+            }}>
+              <span><DownloadOutlined /></span>
+              <div><strong>软件下载</strong><em>扩展与采集助手</em></div>
+            </a>
             <Dropdown
               menu={{ items: storeDropdownItems, onClick: onStoreDropdownClick }}
               trigger={["click"]}
@@ -1223,87 +1123,52 @@ export function AppShell({ initialState = null }) {
                 />
               </span>
             </Dropdown>
+            <QualityInspectionBell key={account.id} reminders={inspection} navigate={navigate} />
             <Popover content={userPopover} trigger="click" placement="bottomRight" overlayClassName="topbar-overlay user-topbar-overlay prototype-overlay">
-              <div className="qh-user">
+              <button className="qh-user" aria-label="账户菜单" type="button">
                 <UserOutlined />
                 <div>
                   <span>当前用户</span>
                   <strong>已登录</strong>
                 </div>
-              </div>
+              </button>
             </Popover>
           </div>
         </Header>
         <Layout>
           <Sider
-            width={216}
+            width={244}
             className="qh-sider"
           >
             <Menu
               mode="inline"
               selectedKeys={[route]}
               openKeys={openKeys}
-              onOpenChange={setOpenKeys}
+              onOpenChange={handleMenuOpenChange}
               items={menuItems}
               onClick={({ key }) => navigate(key)}
             />
+            {account?.role === "admin" ? <AdminNavigation route={route} onNavigate={navigate} /> : null}
           </Sider>
           <Content className="qh-content">
-            {route === "/ozon/dashboard" ? (
-              <div className="qh-page-head">
-                <div>
-                  <span className="prototype-eyebrow">OZON SELLER WORKSPACE</span>
-                  <h1>{pageTitle}</h1>
-                  <p className="prototype-page-subtitle">
-                    先看经营结果，再处理今天最重要的异常
-                  </p>
-                  <div className="qh-date-row">
-                    <span>{currentDate}</span>
-                    <span className="qh-dot" />
-                    <span>自动同步 · 上次 {settings.lastSync ? new Date(settings.lastSync).toLocaleTimeString() : "—"}</span>
-                  </div>
-                </div>
-                <div className="page-head-actions">
-                  <Button type="primary" icon={<SyncOutlined />} onClick={handleSync} loading={syncing}>
-                    全部同步
-                    <kbd>⌘R</kbd>
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-            {route === "/ozon/dashboard" ? (
-              <DashboardPage
-                hasStore={hasStore}
-                binding={binding}
-                summary={localData.summary}
-                completeStepCount={completeStepCount}
-                navigate={navigate}
-                onBind={openBindModal}
-                onPlugin={() => setPluginOpen(true)}
-                onSync={handleSync}
-                onRetrySyncType={retryStoreSyncType}
-                storeSyncStates={storeSyncStates}
-                syncing={syncing}
-              />
-            ) : (
-              <GenericPage
-                route={route}
-                locationSearch={locationSearch}
-                binding={binding}
-                hasStore={hasStore}
-                localData={localData}
-                onBind={openBindModal}
-                onPlugin={() => setPluginOpen(true)}
-                onSync={handleSync}
-                onClear={clearBinding}
-                onSwitchStore={switchCurrentStore}
-                switchingStoreId={switchingStoreId}
-                onRefresh={refreshLocalState}
-                account={account}
-                accounts={accounts}
-                navigate={navigate}
-              />
-            )}
+            {pageNeedsFullState ? (stateReadError ? <Alert type="error" message="页面资料读取失败" description={stateReadError} action={<Button onClick={()=>refreshLocalState({silent:false,source:"page-retry"})}>重试</Button>}/> : <div role="status">正在读取页面资料…</div>) : <GenericPage
+              route={route}
+              locationSearch={locationSearch}
+              binding={binding}
+              hasStore={hasStore}
+              localData={localData}
+              onBind={openBindModal}
+              onSync={handleSync}
+              onClear={clearBinding}
+              onSwitchStore={switchCurrentStore}
+              switchingStoreId={switchingStoreId}
+              onRefresh={refreshLocalState}
+              onCollectProgress={refreshCollectProgress}
+              account={account}
+              accounts={accounts}
+              inspection={inspection}
+              navigate={navigate}
+            />}
           </Content>
         </Layout>
       </Layout>
@@ -1312,7 +1177,10 @@ export function AppShell({ initialState = null }) {
         title={isEditingBindingStore ? "修改 API 授权门店" : "新增 API 授权门店"}
         rootClassName="prototype-overlay"
         open={bindOpen}
-        onCancel={closeBindModal}
+        onCancel={() => { if (!savingBinding) closeBindModal(); }}
+        closable={!savingBinding}
+        maskClosable={!savingBinding}
+        keyboard={!savingBinding}
         footer={null}
         width={520}
         destroyOnHidden
@@ -1321,12 +1189,13 @@ export function AppShell({ initialState = null }) {
           form={form}
           layout="vertical"
           autoComplete="off"
+          disabled={savingBinding}
           onFinish={saveBinding}
           initialValues={{
             clientId: "",
             apiKey: "",
             label: "",
-            apiKeyCreatedAt: todayDateOnly(),
+            apiKeyCreatedAt: "",
           }}
         >
           <Form.Item
@@ -1359,7 +1228,7 @@ export function AppShell({ initialState = null }) {
           <Form.Item
             label="API Key 创建日期"
             name="apiKeyCreatedAt"
-            extra="系统按创建日期自动计算 180 天有效期；未填写时默认采用新增店铺当天计算。"
+            extra="创建日期仅作记录；有效期以 Ozon 返回的到期时间为准，未提供时显示未知。"
           >
             <Input
               className="bind-date-input"
@@ -1368,26 +1237,18 @@ export function AppShell({ initialState = null }) {
               onClick={openNativeDatePicker}
             />
           </Form.Item>
+          {bindingSaveError ? <Alert type="error" showIcon message={bindingSaveError} style={{marginBottom:16}}/> : null}
           <div className="bind-actions">
             <Space>
-              <Button onClick={closeBindModal}>取 消</Button>
-              <Button type="primary" htmlType="submit">
-                {isEditingBindingStore ? "保 存" : "新 增"}
+              <Button disabled={savingBinding} onClick={closeBindModal}>取 消</Button>
+              <Button type="primary" htmlType="submit" loading={savingBinding}>
+                {savingBinding ? (syncingNewStore ? "正在同步资料和仓库…" : isEditingBindingStore ? "正在保存…" : "正在新增…") : (isEditingBindingStore ? "保 存" : "新 增")}
               </Button>
             </Space>
           </div>
         </Form>
       </Modal>
 
-      <Drawer
-        title="浏览器插件"
-        rootClassName="prototype-overlay"
-        open={pluginOpen}
-        onClose={() => setPluginOpen(false)}
-        size={520}
-      >
-        <PluginPanel />
-      </Drawer>
 
       <Drawer
         className="prototype-mobile-nav"
@@ -1402,13 +1263,16 @@ export function AppShell({ initialState = null }) {
           mode="inline"
           selectedKeys={[route]}
           openKeys={openKeys}
-          onOpenChange={setOpenKeys}
+          onOpenChange={handleMenuOpenChange}
           items={menuItems}
           onClick={({ key }) => {
             setMobileNavOpen(false);
             navigate(key);
           }}
         />
+        {account?.role === "admin" ? <AdminNavigation route={route} onNavigate={(key) => {
+          setMobileNavOpen(false); navigate(key);
+        }} /> : null}
       </Drawer>
 
     </ConfigProvider>
@@ -1432,9 +1296,9 @@ function LoginPage({ checking = false, loading = false, onLogin }) {
     <div className="sonli-login-page">
       <div className="sonli-login-card">
         <div className="sonli-login-brand">
-          <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
+          <img loading="lazy" decoding="async" src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
           <div>
-            <span>Ozon 本地管理后台</span>
+            <span>{PRODUCT_BRAND.displayName} · v{PRODUCT_BRAND.version}</span>
           </div>
         </div>
         {checking ? (
@@ -1469,264 +1333,34 @@ function LoginPage({ checking = false, loading = false, onLogin }) {
   );
 }
 
-function DashboardPage({
-  hasStore,
-  binding,
-  summary,
-  completeStepCount,
-  navigate,
-  onBind,
-  onPlugin,
-  onSync,
-  onRetrySyncType,
-  storeSyncStates,
-  syncing,
-}) {
-  const currentSummary = summary || emptyLocalData.summary;
-  const metrics = dashboardMetricList(currentSummary);
-  const weeklyMetrics = [
-    ["本周 GMV", dashboardSummaryMoney(currentSummary, "week")],
-    ["本周利润", "¥—"],
-    ["本周订单", String(currentSummary.weekPostings || 0)],
-    ["退货率", "0.0%"],
-  ];
-  return (
-    <div className="dashboard-stack">
-      <div className="metric-grid top">
-        {metrics.slice(0, 4).map((metric) => (
-          <MetricCard metric={metric} key={metric.label} />
-        ))}
-      </div>
-      <div className="metric-grid">
-        {metrics.slice(4).map((metric) => (
-          <MetricCard metric={metric} key={metric.label} compact />
-        ))}
-      </div>
-      {storeSyncStates.length ? (
-        <Card className="panel-card">
-          <div className="card-title-row">
-            <span>店铺同步进度</span>
-            <Tag>仅由后端 Seller API 执行</Tag>
-          </div>
-          <Space wrap>
-            {storeSyncStates.map((state) => (
-              <Space key={state.type} size={6}>
-                <span>{({
-                  WAREHOUSES: "仓库",
-                  PRODUCTS: "商品",
-                  POSTINGS: "订单",
-                  PROMOTIONS: "促销",
-                })[state.type] || state.type}</span>
-                <Tag color={{
-                  PENDING: "default",
-                  RUNNING: "processing",
-                  SUCCESS: "success",
-                  FAILED: "error",
-                }[state.status]}>
-                  {state.status}
-                </Tag>
-                <span>{storeSyncDetailText(state)}</span>
-                {state.status === "FAILED" ? (
-                  <Button
-                    disabled={syncing}
-                    onClick={() => onRetrySyncType(state.type)}
-                    size="small"
-                  >
-                    单独重试
-                  </Button>
-                ) : null}
-              </Space>
-            ))}
-          </Space>
-        </Card>
-      ) : null}
-      <div className="dashboard-main-grid">
-        <Card className="panel-card todo-card">
-          <div className="card-title-row">
-            <span>待办与告警</span>
-            <Button type="text" size="small" icon={<SettingOutlined />}>
-              配置规则
-            </Button>
-          </div>
-          <div className="todo-skeleton-list" aria-label="待办与告警空状态">
-            {Array.from({ length: 4 }, (_, index) => (
-              <div className="todo-skeleton-row" key={index}>
-                <span className="todo-skeleton left" />
-                <span className="todo-skeleton-copy">
-                  <span className="todo-skeleton title" />
-                  <span className="todo-skeleton sub" />
-                </span>
-                <span className="todo-skeleton right" />
-              </div>
-            ))}
-          </div>
-        </Card>
-        <Card className="panel-card overview-card">
-          <div className="card-title-row">
-            <span>业务速览</span>
-            <Tag>数据滞后 ≤ 15 分钟</Tag>
-          </div>
-          <div className="empty-chart-grid">
-            <div>
-              <div className="chart-title">
-                <span>订单状态</span>
-                <em>共 {currentSummary.postingsTotal || currentSummary.postings || 0} 单</em>
-              </div>
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={(currentSummary.postingsTotal || currentSummary.postings) ? "订单明细请进入订单页" : "暂无订单"} />
-            </div>
-            <div>
-              <div className="chart-title">
-                <span>订单趋势</span>
-                <Segmented size="small" options={["7 日", "30 日"]} />
-              </div>
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无数据" />
-            </div>
-          </div>
-        </Card>
-      </div>
-      <Card className="panel-card quick-card">
-        <div className="card-title-row">
-          <span>快捷操作</span>
-          <em>
-            常用操作一键触达 · <kbd>⌘K</kbd> 唤起命令面板
-          </em>
-        </div>
-        <div className="quick-actions">
-          {quickActions.map((item, index) => (
-            <button
-              type="button"
-              className={index === 0 ? "primary" : ""}
-              key={item.label}
-              onClick={item.path === "sync" ? onSync : undefined}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-              {index === 0 ? <kbd>⌘R</kbd> : null}
-            </button>
-          ))}
-        </div>
-      </Card>
-      <div className="dashboard-bottom-grid">
-        <Card className="panel-card feature-card">
-          <div className="feature-head">
-            <span>功能入口</span>
-            <Space size={6}>
-              <Tag color="blue">{PRODUCT_BRAND.displayName}功能</Tag>
-              <Tag>外部资源</Tag>
-            </Space>
-          </div>
-          <div className="feature-grid">
-            {featureLinks.map((item) => (
-              <button key={item.label} type="button">
-                {item.icon}
-                <span>{item.label}</span>
-                {item.tag ? <Tag color="blue">{item.tag}</Tag> : null}
-              </button>
-            ))}
-          </div>
-        </Card>
-        <Card className="panel-card start-card">
-          <div className="start-head">
-            <span>快速上手</span>
-            <strong>
-              {completeStepCount}<em>/</em>{requiredSteps.length}
-            </strong>
-          </div>
-          <p>完成全部步骤后此模块自动隐藏</p>
-          <Steps
-            orientation="vertical"
-            current={completeStepCount}
-            items={[
-              {
-                title: "绑定店铺",
-                content: binding?.storeName || "添加 Ozon API Key",
-                onClick: onBind,
-              },
-              {
-                title: "安装浏览器插件",
-                content: `${PRODUCT_BRAND.displayName}助手已安装`,
-                onClick: onPlugin,
-              },
-              {
-                title: "同步商品数据",
-                content: "点击立即开始 · 预计 3 分钟",
-                onClick: onSync,
-              },
-              {
-                title: "处理首个订单",
-                content: "查看订单列表学习发货流程",
-                onClick: () => navigate("/ozon/postings/list"),
-              },
-            ]}
-          />
-        </Card>
-      </div>
-      <Card className="panel-card weekly-card">
-        <div className="weekly-grid">
-          {weeklyMetrics.map(([label, value]) => (
-            <div key={label}>
-              <span>{label}</span>
-              <strong>{value}</strong>
-            </div>
-          ))}
-        </div>
-        <p>每 5 分钟自动同步 · 上次 {currentSummary.lastSyncAt ? new Date(currentSummary.lastSyncAt).toLocaleTimeString() : "—"}</p>
-      </Card>
-    </div>
-  );
-}
+function GenericPage({ route, locationSearch, binding, hasStore, localData, onBind, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onCollectProgress, navigate, account, accounts, inspection }) {
 
-function MetricCard({ metric, compact = false }) {
-  return (
-    <button className={`metric-card ${compact ? "compact" : ""}`}>
-      <span>{metric.label}</span>
-      <strong>{metric.value}</strong>
-      <em>
-        {metric.note}
-        {metric.sub ? <small>{metric.sub}</small> : null}
-      </em>
-    </button>
-  );
-}
-
-function GenericPage({ route, locationSearch, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, navigate, account, accounts }) {
-  if (route === "/extension") {
-    return (
-      <Card className="panel-card">
-        <PluginPanel />
-      </Card>
-    );
-  }
-
-  const pageProps = { route, locationSearch, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, navigate, account, accounts };
-  if (route === "/ozon/products/list") return <ProductListPage {...pageProps} />;
+  const pageProps = { route, locationSearch, binding, hasStore, localData, onBind, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onCollectProgress, navigate, account, accounts };
+  if (route === "/ozon/dashboard") return <DashboardPage key={account?.id} {...pageProps} localData={{...localData, account}} />;
+  if (route === "/ozon/downloads") return <SoftwareDownloadsPage />;
+  if (route === "/ozon/orders/quality") return <QualityInspectionPage key={account?.id} {...pageProps} reminders={inspection} />;
+  if (route === "/ozon/orders") return <OrderManagementPage key={`orders:${account?.id || ""}:${binding?.id || ""}`} {...pageProps} />;
+  if (route === "/ozon/products/list") return <ProductListPage key={`products:${account?.id || ""}:${binding?.id || ""}`} {...pageProps} />;
   if (route.startsWith("/ozon/products/collect/edit")) return <CollectEditPage {...pageProps} />;
   if (route === "/ozon/products/collect") return <CollectPage {...pageProps} />;
   if (route === "/ozon/products/import-history") return <ImportHistoryPage {...pageProps} />;
-  if (route === "/ozon/products/stocks") return <StocksPage {...pageProps} />;
-  if (route === "/ozon/products/reshelf") return <ReshelfPage {...pageProps} />;
-  if (route === "/ozon/tools/ai-poster-records") return <AiPosterPage {...pageProps} />;
-  if (route === "/ozon/tools/auto-listing") return <AutoListingPage {...pageProps} />;
-  if (route === "/ozon/tools/auto-listing/ai-settings") return <AiModelSettingsPage
-    key={`ai-settings:${account?.id || ""}:${account?.role || ""}`} {...pageProps} />;
-  if (route === "/ozon/tools/category-strategies") return <CategoryStrategyPage
-    key={`category-strategies:${account?.id || ""}:${account?.role || ""}`} {...pageProps} />;
-  if (route === "/ozon/ai-image") return <AiImagePage />;
-  if (route === "/ozon/promotions/prices") return <PriceDiscountPage {...pageProps} />;
-  if (route === "/ozon/promotions/campaigns") return <CampaignsPage {...pageProps} />;
-  if (route === "/ozon/promotions/auto-delete") return <AutoDeletePromoPage {...pageProps} />;
-  if (route === "/ozon/postings/list") return <PostingsPage {...pageProps} />;
-  if (route === "/ozon/postings/returns") return <ReturnsPage {...pageProps} />;
-  if (route === "/ozon/postings/profit-trend") return <ProfitTrendPage {...pageProps} />;
-  if (route === "/ozon/postings/review-request") return <MessageTaskPage {...pageProps} type="review" />;
-  if (route === "/ozon/postings/pickup-reminder") return <MessageTaskPage {...pageProps} type="pickup" />;
-  if (route === "/ozon/messaging/templates") return <MessageTemplatesPage {...pageProps} />;
-  if (route === "/ozon/messaging/history") return <MessageHistoryPage {...pageProps} />;
+  if (route === "/ozon/tools/sale-pricing") return <SalePricingPage key={account?.id} {...pageProps} />;
+  if (route === "/ozon/settings/competitor-pricing") return <CompetitorPricingPage key={account?.id} {...pageProps} />;
+  if (route === "/ozon/tools/prompts") return <PromptManagementPage key={account?.id} {...pageProps} />;
+  if (route === "/ozon/messages") return <MessageManagementPage key={`messages:${account?.id || ""}:${binding?.id || ""}`} {...pageProps} request={apiRequest} />;
+  if (route === "/ozon/promotions") return <PromotionManagementPage key={`promotions:${account?.id || ""}:${binding?.id || ""}`} {...pageProps} request={apiRequest} />;
+  if (route === "/ozon/tools/ai-listing") return <AiListingPage
+    key={`ai-listing:${account?.id || ""}:${locationSearch}`} {...pageProps} request={apiRequest} />;
+  if (route === "/ozon/tools/auto-listing/ai-settings") return <AiUserChannelsPage {...pageProps} />;
   if (route === "/ozon/templates") return <ProductTemplatesPage {...pageProps} />;
   if (route === "/ozon/settings/stores") return <StoresSettingsPage {...pageProps} />;
+  if (route === "/ozon/settings/product-restrictions") return <ProductRestrictionsPage key={account?.id} {...pageProps} />;
+  if (route === "/ozon/settings/ai-billing") return <AiBillingPage key={account?.id} {...pageProps} />;
+  if (route === "/ozon/settings/recharge") return <AiRechargePage key={account?.id} {...pageProps} />;
+  if (route === "/ozon/settings/ai-user-channels") return <AiUserChannelsPage {...pageProps} />;
+  if (route === "/ozon/settings/ai-runtime-settings") return <AiRuntimeSettingsPage key={account?.id} {...pageProps} />;
   if (route === "/ozon/settings/accounts") return <AccountSettingsPage {...pageProps} />;
   if (route === "/ozon/settings/pricing") return <PricingSettingsPage {...pageProps} />;
-  if (route === "/datascreen") return <DataScreenPage {...pageProps} />;
 
   return (
     <div className="source-404-page">
@@ -1745,9 +1379,6 @@ const moneyText = (value, currency = "") => {
   return currency && !text.includes(currency) ? `${currency}${text}` : text;
 };
 
-const stockEntries = (item = {}) =>
-  Array.isArray(item.stocks?.stocks) ? item.stocks.stocks : [];
-
 const stockCountValue = (row = {}) =>
   Number(
     row.present ??
@@ -1762,13 +1393,7 @@ const stockCountValue = (row = {}) =>
     0
   ) || 0;
 
-const stockTotal = (item = {}) => {
-  const nested = stockEntries(item);
-  if (nested.length) {
-    return nested.reduce((sum, row) => sum + stockCountValue(row), 0);
-  }
-  return item.stocks?.present ?? item.stocks?.available ?? item.stock ?? "—";
-};
+const stockTotal = (item = {}) => productKnownStockValue(item) ?? "—";
 
 const stockDistribution = (item = {}) => {
   const nested = stockEntries(item);
@@ -1959,14 +1584,6 @@ const stockWarehouseEditorEntries = (item = {}, warehouses = []) => {
   return [...entries, ...editableWarehouses];
 };
 
-const productStatus = (item = {}) =>
-  item.statuses?.status_name ||
-  item.statuses?.status ||
-  item.visibility ||
-  item.status ||
-  item.state ||
-  "—";
-
 const firstProductImageUrl = (value) => {
   if (!value) return "";
   if (typeof value === "string") return value;
@@ -2007,83 +1624,6 @@ const productImageUrl = (item = {}) =>
     item.photos,
     item.media,
   ]);
-
-const PRODUCT_STATUS_BUCKETS = [
-  { label: "销售中", tone: "success" },
-  { label: "准备销售", tone: "processing" },
-  { label: "错误", tone: "danger" },
-  { label: "待修改", tone: "edit" },
-  { label: "商品已下架", tone: "offline" },
-  { label: "档案", tone: "archive" },
-];
-
-const productStatusMeta = (item = {}) => {
-  const raw = String(productStatus(item) || "").trim();
-  const rawSource = raw.toLowerCase();
-  const rawHas = (tokens) => tokens.some((token) => rawSource.includes(token));
-  const truthyFlag = (value) => value === true || String(value || "").toLowerCase() === "true";
-  const visibilitySource = [
-    item.visibility,
-    item.visibilityFilter,
-    item._visibility,
-    item.product_visibility,
-    item.productVisibility,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  const isArchived =
-    truthyFlag(item.is_archived) ||
-    truthyFlag(item.archived) ||
-    ["archived", "archive", "архив"].some((token) => visibilitySource.includes(token));
-  const statusSource = [
-    raw,
-    item.statuses?.status,
-    item.statuses?.status_name,
-    item.statuses?.status_failed,
-    item.statuses?.moderate_status,
-    item.statuses?.validation_status,
-    item.statuses?.status_description,
-    item.statuses?.status_tooltip,
-    item.visibility,
-    item.visibilityFilter,
-    item.status,
-    item.state,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  const has = (tokens) => tokens.some((token) => statusSource.includes(token));
-
-  if (isArchived) return { label: "档案", tone: "archive", raw: raw || "档案" };
-  if (!raw || raw === "—") return { label: "—", tone: "muted", raw };
-  if (rawHas(["ошибка", "error", "failed", "rejected", "declined"])) return { label: "错误", tone: "danger", raw };
-  if (rawHas(["не продается", "not for sale", "hidden", "inactive"])) return { label: "商品已下架", tone: "offline", raw };
-  if (rawHas(["архив", "archived", "archive"])) return { label: "档案", tone: "archive", raw };
-  if (rawHas(["продается", "for_sale", "for sale", "selling", "visible", "active", "on sale"])) {
-    return { label: "销售中", tone: "success", raw };
-  }
-  if (rawHas(["готов", "ready", "pending", "moderation", "created"])) return { label: "准备销售", tone: "processing", raw };
-  if (has(["ошибка", "error", "validation_error", "moderation_failed"])) {
-    return { label: "错误", tone: "danger", raw };
-  }
-  if (has(["failed", "rejected", "declined", "invalid", "need", "edit", "исправ", "отклон"])) {
-    return { label: "待修改", tone: "edit", raw };
-  }
-  if (has(["не продается", "not for sale", "hidden", "inactive", "stopped", "disabled", "blocked", "quarantine"])) {
-    return { label: "商品已下架", tone: "offline", raw };
-  }
-  if (has(["архив", "archived", "archive"])) {
-    return { label: "档案", tone: "archive", raw };
-  }
-  if (has(["готов", "ready", "price_sent", "pending", "moderation", "created"])) {
-    return { label: "准备销售", tone: "processing", raw };
-  }
-  if (has(["продается", "for_sale", "for sale", "selling", "visible", "active", "on sale"])) {
-    return { label: "销售中", tone: "success", raw };
-  }
-  return { label: raw, tone: "default", raw };
-};
 
 const productStoreRef = (binding = {}, localData = {}) => {
   const currentStoreId =
@@ -2146,17 +1686,6 @@ const scopedWarehousesForCurrentStore = (warehouses = [], binding = {}, localDat
   return list.filter((item) => warehouseBelongsToCurrentStore(item, ref));
 };
 
-const productStatusFilterOptions = (products = []) => {
-  const statusMap = new Map(PRODUCT_STATUS_BUCKETS.map((item) => [item.label, { ...item, count: 0 }]));
-  for (const product of products) {
-    const meta = productStatusMeta(product);
-    const current = statusMap.get(meta.label);
-    if (!current) continue;
-    current.count += 1;
-  }
-  return PRODUCT_STATUS_BUCKETS.map((item) => statusMap.get(item.label) || { ...item, count: 0 });
-};
-
 const STOCK_PAGE_PRODUCT_STATUSES = new Set(["销售中", "准备销售"]);
 
 const productVisibleInStockTable = (item = {}) =>
@@ -2189,13 +1718,6 @@ const normalizeOzonText = (value) =>
     .replace(/[.。]+$/, "")
     .toLowerCase();
 
-const OZON_MARKETING_TITLE_MAP = new Map([
-  ["максимальный бустинг: усиление", "最大提升：大幅折扣"],
-  ["максимальный бустинг", "最大提升"],
-  ["учебные скидки", "学校用品折扣"],
-  ["эластичный бустинг. без ограничения срока действия", "弹性提升（不限期）"],
-]);
-
 const OZON_PRODUCT_TITLE_MAP = new Map([
   ["левитирующая настольная лампа /с круглой подставкой", "悬浮台灯 / 圆形底座"],
 ]);
@@ -2214,16 +1736,6 @@ const OZON_PRODUCT_TITLE_REPLACEMENTS = [
   ["настольная лампа", "台灯"],
   ["круглой подставкой", "圆形底座"],
 ];
-
-const localizeOzonMarketingTitle = (value) => {
-  const raw = String(value || "").trim();
-  if (!raw) return "活动价";
-  const normalized = normalizeOzonText(raw);
-  const mapped = OZON_MARKETING_TITLE_MAP.get(normalized);
-  if (mapped) return mapped;
-  if (/рассрочка/i.test(raw)) return raw.replace(/РК\.?\s*/i, "").replace(/Рассрочка/i, "分期付款");
-  return hasCyrillicText(raw) ? "平台活动价" : raw;
-};
 
 const localizeOzonProductTitle = (value, fallbackSku = "") => {
   const raw = String(value || "").trim();
@@ -2336,7 +1848,7 @@ const productPriceActionRows = (item = {}) => {
   for (const action of item.marketing_actions?.actions || item.price_info?.marketing_actions?.actions || []) {
     if (!productMarketingActionIsPrice(action)) continue;
     pushRow({
-      title: localizeOzonMarketingTitle(action.title || "活动价"),
+      title: ozonPromotionTitle(action),
       value: action.value,
       date_from: action.date_from,
       date_to: action.date_to,
@@ -2391,8 +1903,6 @@ const productRows = (products = [], warehouses = []) =>
     };
   });
 
-const productPriceValue = (item = {}) =>
-  productEffectivePriceValue(item);
 
 const numberFromMoney = (value) => {
   if (value === null || value === undefined || value === "" || value === "—") return null;
@@ -2522,28 +2032,7 @@ const productCategoryLabel = (item = {}, id = "unknown") =>
   item.typeName ||
   (id === "unknown" ? "未归类" : `类目 ID ${id}`);
 
-const discountText = (item = {}) => {
-  const current = numberFromMoney(productPriceValue(item));
-  const old = numberFromMoney(item.price?.old_price || item.old_price || item.price?.marketing_price || item.marketing_price);
-  if (current === null || old === null || old <= 0 || current >= old) return "—";
-  return `${Math.max(0, Math.round((1 - current / old) * 100))}%`;
-};
 
-const priceDiscountRows = (products = [], activeTab = "价格") =>
-  products.map((item, index) => ({
-    id: item.id || item.product_id || item.offer_id || `price-product-${index}`,
-    "主图": item.primary_image ? "已同步" : "—",
-    "商品": item.name || item.offer_id || item.product_id || "—",
-    "当前价格": moneyText(productPriceValue(item)),
-    "划线价": moneyText(item.price?.old_price || item.old_price || item.price?.marketing_price || item.marketing_price),
-    "折扣": discountText(item),
-    "库存": stockTotal(item),
-    "状态": productStatus(item),
-    "目标价格": "—",
-    "草稿状态": "待编辑",
-    "操作": activeTab === "改价草稿" ? "查看" : "买家看 改价",
-    _raw: item,
-  }));
 
 const importTaskStatusGroups = {
   "已完成": new Set(["SUCCESS", "SUCCEEDED", "COMPLETE", "COMPLETED", "DONE"]),
@@ -2659,161 +2148,18 @@ const importTaskMatchesDateRange = (task, range) => {
   return (start == null || time >= start) && (end == null || time <= end);
 };
 
-const promotionDateText = (value) => {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString();
-};
 
-const promotionSearchText = (promotion = {}) =>
-  [
-    promotion.id,
-    promotion.action_id,
-    promotion.title,
-    promotion.description,
-    promotion.action_type,
-    promotion.discount_type,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
 
-const promotionMatchesQuery = (promotion, query) => {
-  const normalized = String(query || "").trim().toLowerCase();
-  return !normalized || promotionSearchText(promotion).includes(normalized);
-};
 
-const promotionStatusLabel = (promotion = {}) => {
-  if (promotion.is_participating) return "参与中";
-  if ((Number(promotion.potential_products_count) || 0) > 0) return "可参与";
-  return "全部";
-};
 
-const promotionIsEndingSoon = (promotion = {}) => {
-  const end = new Date(promotion.date_end || "");
-  if (Number.isNaN(end.getTime())) return false;
-  const diffDays = (end.getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-  return diffDays >= 0 && diffDays <= 7;
-};
 
-const promotionRows = (promotions = []) =>
-  promotions.map((promotion, index) => ({
-    id: promotion.id || promotion.action_id || `promotion-${index}`,
-    "活动": promotion.title || promotion.id || "—",
-    "状态": promotionStatusLabel(promotion),
-    "折扣": promotion.discount_type || promotion.action_type || "—",
-    "商品": `${Number(promotion.participating_products_count) || 0} / ${Number(promotion.potential_products_count) || 0}`,
-    "活动周期": `${promotionDateText(promotion.date_start)} - ${promotionDateText(promotion.date_end)}`,
-    "操作": "查看",
-  }));
 
-const promotionTypeText = (promotion = {}) =>
-  promotion.action_type || promotion.discount_type || promotion.type || "—";
 
-const promotionDiscountText = (promotion = {}) => {
-  const value = promotion.discount_value ?? promotion.discount ?? promotion.max_discount;
-  if (value === null || value === undefined || value === "") {
-    return promotion.discount_type || promotion.action_type || "—";
-  }
-  const numeric = Number(value);
-  if (Number.isFinite(numeric)) return `${numeric}%`;
-  return String(value);
-};
 
-const autoDeletePromotionRows = (promotions = []) =>
-  promotions.map((promotion, index) => ({
-    id: promotion.id || promotion.action_id || `auto-delete-promotion-${index}`,
-    "活动名称": promotion.title || promotion.id || "—",
-    "类型": promotionTypeText(promotion),
-    "折扣力度": promotionDiscountText(promotion),
-    "商品数量": `${Number(promotion.participating_products_count) || 0} / ${Number(promotion.potential_products_count) || 0}`,
-    "有效期": `${promotionDateText(promotion.date_start)} - ${promotionDateText(promotion.date_end)}`,
-    "状态": promotionStatusLabel(promotion),
-    "操作": "移除",
-  }));
 
-const productSearchText = (item = {}) =>
-  [
-    item.name,
-    item.offer_id,
-    item.product_id,
-    item.id,
-    item.barcode,
-    item.sku,
-    ...(Array.isArray(item.barcodes) ? item.barcodes : []),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
 
-const productMatchesQuery = (item, query) => {
-  const normalized = String(query || "").trim().toLowerCase();
-  return !normalized || productSearchText(item).includes(normalized);
-};
 
-const stockNumber = (item = {}) => {
-  const nested = stockEntries(item);
-  if (nested.length) {
-    return nested.reduce((sum, row) => sum + (Number(row.present) || 0), 0);
-  }
-  return Number(item.stocks?.present ?? item.stocks?.available ?? item.stock ?? 0) || 0;
-};
 
-const productMatchesStockFilter = (item, filter) => {
-  const stock = stockNumber(item);
-  if (filter === "缺货") return stock <= 0;
-  if (filter === "低库存") return stock > 0 && stock <= 10;
-  return true;
-};
-
-const postingRows = (postings = []) =>
-  postings.map((item, index) => ({
-    id: item.id || item.posting_number || `posting-${index}`,
-    "货件 / 状态": item.posting_number || item.order_id || "—",
-    "商品": Array.isArray(item.products) ? `${item.products.length} 件商品` : "—",
-    "店铺": "当前店铺",
-    "订单金额": dashboardMoneyGroups(postingMoneyGroups(item)),
-    "利润": "—",
-    "仓库 / 配送": item.delivery_method?.warehouse || item.delivery_method?.name || "—",
-    "倒计时": item.shipment_date ? new Date(item.shipment_date).toLocaleString() : "—",
-    "操作": "查看",
-  }));
-
-const postingSearchText = (posting = {}) =>
-  [
-    posting.posting_number,
-    posting.order_id,
-    posting.status,
-    posting.tracking_number,
-    posting.tracking?.tracking_number,
-    posting.delivery_method?.warehouse,
-    posting.delivery_method?.name,
-    ...(Array.isArray(posting.products)
-      ? posting.products.flatMap((product) => [
-          product.name,
-          product.offer_id,
-          product.sku,
-          product.product_id,
-          product.barcode,
-        ])
-      : []),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-const postingBusinessTime = (posting = {}) =>
-  posting.in_process_at ||
-  posting.shipment_date ||
-  posting.delivering_date ||
-  posting.created_at ||
-  posting.updated_at ||
-  posting.syncedAt;
-
-const postingMatchesQuery = (posting, query) => {
-  const normalized = String(query || "").trim().toLowerCase();
-  return !normalized || postingSearchText(posting).includes(normalized);
-};
 
 const pickerBoundaryMs = (value, edge) => {
   if (!value) return null;
@@ -2826,207 +2172,30 @@ const pickerBoundaryMs = (value, edge) => {
   return date.getTime();
 };
 
-const postingMatchesDateRange = (posting, range) => {
-  if (!Array.isArray(range) || !range[0] || !range[1]) return true;
-  const time = new Date(postingBusinessTime(posting) || "").getTime();
-  if (Number.isNaN(time)) return false;
-  const start = pickerBoundaryMs(range[0], "start");
-  const end = pickerBoundaryMs(range[1], "end");
-  return (start == null || time >= start) && (end == null || time <= end);
-};
 
-const csvValue = (value) => {
-  const text = String(value ?? "").replace(/\r?\n/g, " ");
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-};
 
-const downloadCsv = (filename, columns, rows) => {
-  const lines = [
-    columns.map(csvValue).join(","),
-    ...rows.map((row) => columns.map((column) => csvValue(row[column])).join(",")),
-  ];
-  const blob = new Blob(["\ufeff", lines.join("\n")], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-};
 
-const postingProductSummary = (posting = {}) => {
-  const products = Array.isArray(posting.products) ? posting.products : [];
-  if (!products.length) return "—";
-  return products
-    .slice(0, 2)
-    .map((product) => {
-      const name = product.name || product.offer_id || product.sku || product.product_id || "未命名商品";
-      const quantity = Number(product.quantity) || 1;
-      return `${product.offer_id || product.sku || ""} x${quantity} ${name}`.trim();
-    })
-    .join(" / ");
-};
 
-const postingDateTimeText = (value) => {
-  const date = new Date(value || "");
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
-};
 
-const postingMoney = (posting = {}) =>
-  moneyText(
-    posting.financial_data?.products?.[0]?.price ||
-      posting.products?.[0]?.price ||
-      posting.order_price ||
-      posting.total_price,
-  );
 
-const postingDeliveryName = (posting = {}) =>
-  posting.delivery_method?.name ||
-  posting.delivery_method?.service_name ||
-  posting.delivery_method?.delivery_method_name ||
-  posting.delivery_method?.warehouse ||
-  "—";
 
-const messageTaskPostings = (postings = [], type) =>
-  postings.filter((posting) => {
-    const status = postingStatus(posting);
-    if (type === "review") return status === "delivered";
-    return status === "delivering";
-  });
 
-const messageTaskRows = (postings = [], type) =>
-  postings.map((posting, index) => {
-    const base = {
-      id: posting.id || posting.posting_number || `${type}-message-${index}`,
-      "操作": "发送",
-      "店铺": "当前店铺",
-      "货件编号": posting.posting_number || posting.order_id || "—",
-      "图片": Array.isArray(posting.products) && posting.products.length ? "已同步" : "—",
-      "货号，数量 名称": postingProductSummary(posting),
-      "查看商品": "查看",
-    };
-    if (type === "review") {
-      return {
-        ...base,
-        "发运": postingDateTimeText(posting.shipment_date || posting.in_process_at),
-        "价格": postingMoney(posting),
-        "仓库": posting.delivery_method?.warehouse || "—",
-        "配送服务 方式": postingDeliveryName(posting),
-        "送达": postingDateTimeText(posting.delivering_date || posting.updated_at || posting.syncedAt),
-      };
-    }
-    return {
-      ...base,
-      "取货状态": "已到取件点",
-      "物流单号": posting.tracking_number || posting.tracking?.tracking_number || "—",
-      "配送": postingDeliveryName(posting),
-      "最近物流时间": postingDateTimeText(posting.delivering_date || posting.updated_at || posting.syncedAt),
-    };
-  });
 
-const rowMatchesAllTerms = (row, terms = []) =>
-  terms.every((term) => {
-    const normalized = String(term || "").trim().toLowerCase();
-    if (!normalized) return true;
-    return Object.values(row).some((value) => String(value || "").toLowerCase().includes(normalized));
-  });
 
-const postingStatusTabs = [
-  "所有订单",
-  "等待备货",
-  "等待发运",
-  "已超时",
-  "运输中",
-  "有争议的",
-  "已签收",
-  "已取消",
-];
 
-const postingStatusMap = {
-  "等待备货": ["awaiting_packaging"],
-  "等待发运": ["awaiting_deliver"],
-  "运输中": ["delivering"],
-  "有争议的": ["arbitration", "dispute"],
-  "已签收": ["delivered"],
-  "已取消": ["cancelled"],
-};
 
-const postingStatus = (posting = {}) => String(posting.status || "").toLowerCase();
 
-const isLatePosting = (posting = {}) => {
-  const status = postingStatus(posting);
-  if (!["awaiting_packaging", "awaiting_deliver"].includes(status)) return false;
-  const deadline = new Date(posting.shipment_date || posting.delivering_date || "");
-  return !Number.isNaN(deadline.getTime()) && deadline.getTime() < Date.now();
-};
 
-const postingMatchesTab = (posting, tab) => {
-  if (tab === "所有订单") return true;
-  if (tab === "已超时") return isLatePosting(posting);
-  return (postingStatusMap[tab] || []).includes(postingStatus(posting));
-};
 
-const postingStatusCount = (postings, tab) => {
-  if (tab === "所有订单") return postings.length;
-  if (tab === "已超时") return postings.filter(isLatePosting).length;
-  const statuses = postingStatusMap[tab] || [];
-  return postings.filter((posting) => statuses.includes(postingStatus(posting))).length;
-};
 
-const returnTypeMatches = (item = {}, activeType = "退货申请 (rFBS)") => {
-  const text = String(item.type || item.kind || "").toLowerCase();
-  if (activeType.includes("rFBS")) return !text || text.includes("rfbs") || text.includes("return");
-  if (activeType === "FBS") return text.includes("fbs") && !text.includes("rfbs");
-  if (activeType === "FBO") return text.includes("fbo");
-  return true;
-};
 
-const returnSearchText = (item = {}) =>
-  [
-    item.id,
-    item.returnId,
-    item.return_id,
-    item.refundId,
-    item.refund_id,
-    item.postingNumber,
-    item.posting_number,
-    item.sku,
-    item.offer_id,
-    item.productName,
-    item.product_name,
-    item.status,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
 
-const returnMatchesQuery = (item, query) => {
-  const normalized = String(query || "").trim().toLowerCase();
-  return !normalized || returnSearchText(item).includes(normalized);
-};
 
-const returnStatusText = (item = {}) => String(item.status || item.state || "").toLowerCase();
 
-const returnIsPendingApproval = (item) => /approv|pending|requested|created|new|待审|待处理/.test(returnStatusText(item));
 
-const returnIsWaitingReturn = (item) => /waiting.*return|awaiting.*return|returning|待退|等待退货/.test(returnStatusText(item));
 
-const returnIsWaitingRefund = (item) => /refund|money|compensat|待退款|等待退款/.test(returnStatusText(item));
 
-const returnDateText = (item = {}) =>
-  postingDateTimeText(item.requestedAt || item.createdAt || item.created_at || item.return_date || item.updatedAt);
 
-const returnRows = (items = []) =>
-  items.map((item, index) => ({
-    id: item.id || item.returnId || item.return_id || item.refundId || item.refund_id || `return-${index}`,
-    "申请 / 货件": item.id || item.returnId || item.return_id || item.refundId || item.refund_id || item.postingNumber || item.posting_number || "—",
-    "店铺": item.storeName || "当前店铺",
-    "商品": item.productName || item.product_name || item.sku || item.offer_id || "—",
-    "申请时间": returnDateText(item),
-    "操作": "查看",
-  }));
 
 const warehouseRows = (warehouses = []) =>
   warehouses.map((item, index) => ({
@@ -3056,44 +2225,7 @@ function StatusChips({ items, active = "全部", onChange }) {
   );
 }
 
-function SourceStatusTabs({ items, active, onChange }) {
-  return (
-    <div className="source-status-tabs">
-      {items.map((item) => {
-        const label = typeof item === "string" ? item : item.label;
-        const count = typeof item === "string" ? undefined : item.count;
-        return (
-          <button
-            className={label === active ? "active" : ""}
-            key={label}
-            onClick={() => onChange?.(label)}
-            type="button"
-          >
-            <span>{label}</span>
-            {count !== undefined ? <strong>{count}</strong> : null}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
-function SourceLineTabs({ items, active, onChange }) {
-  return (
-    <div className="source-line-tabs">
-      {items.map((item) => (
-        <button
-          className={item === active ? "active" : ""}
-          key={item}
-          onClick={() => onChange?.(item)}
-          type="button"
-        >
-          {item}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 function PromotionStatusButtons({ items, active, onChange }) {
   return (
@@ -3113,239 +2245,152 @@ function PromotionStatusButtons({ items, active, onChange }) {
   );
 }
 
-function ProductListPage({ binding, hasStore, localData, onSync, navigate }) {
+function ProductListPage({ binding, hasStore, localData, onRefresh, locationSearch = "" }) {
   const { message } = AntApp.useApp();
   const [query, setQuery] = useState("");
   const [activeStatus, setActiveStatus] = useState("销售中");
-  const [pageSizeChoice, setPageSizeChoice] = useState("20");
+  const homeStockFilter = () => { const value = new URLSearchParams(locationSearch).get("stock"); return ["缺货", "低库存", "attention"].includes(value) ? value : "全部"; };
+  const [stockFilter,setStockFilter] = useState(homeStockFilter);
+  useEffect(() => { setStockFilter(homeStockFilter()); setActiveStatus("销售中"); }, [locationSearch]);
+  const [page,setPage]=useState(1),[pageSize,setPageSize]=useState(5),[catalog,setCatalog]=useState(null),[catalogError,setCatalogError]=useState(""),[catalogLoading,setCatalogLoading]=useState(false),[catalogRevision,setCatalogRevision]=useState(0);
+  const selectionRows=useRef(new Map());
   const [priceDetail, setPriceDetail] = useState(null);
-  const products = scopedProductsForCurrentStore(localData?.caches?.products || [], binding, localData);
-  const statusOptions = productStatusFilterOptions(products);
-  useEffect(() => {
-    if (activeStatus !== "所有" && !statusOptions.some((item) => item.label === activeStatus)) {
-      setActiveStatus("所有");
-    }
-  }, [activeStatus, statusOptions]);
-  const visibleProducts = products.filter((item) => {
-    const meta = productStatusMeta(item);
-    return (activeStatus === "所有" || meta.label === activeStatus) && productMatchesQuery(item, query);
-  });
-  const rows = productRows(visibleProducts);
-  const resolvedPageSize = pageSizeChoice === "全部" ? Math.max(rows.length, 1) : Number(pageSizeChoice) || 20;
+  const [productDetail,setProductDetail] = useState(null);
+  const [stockEditor,setStockEditor] = useState(null);
+  const [selectedKeys,setSelectedKeys] = useState([]);
+  const [batchRows,setBatchRows] = useState(null);
+  useEffect(()=>{setPage(1);setSelectedKeys([]);selectionRows.current.clear();},[activeStatus,stockFilter,query]);
+  const [syncing,setSyncing] = useState(false);
+  const storeId = localData?.currentStoreId || binding?.id;
+  const costs = useProductCosts(storeId,hasStore);
+  const warehouses = scopedWarehousesForCurrentStore(localData?.caches?.warehouses || [], binding, localData);
+  const catalogQuery = new URLSearchParams({view:'page',storeId:storeId||'',page:String(page),pageSize:String(pageSize),status:activeStatus,stock:stockFilter,q:query}).toString();
+  useEffect(()=>{
+    const controller=new AbortController();setCatalogLoading(true);setCatalogError('');
+    if(!hasStore){setCatalog(null);setCatalogLoading(false);return;}
+    const timer=setTimeout(()=>{void apiRequest(`/ozon/products/cache?${catalogQuery}`,{signal:controller.signal}).then(result=>{
+      if(!controller.signal.aborted){setCatalog({...result,query:catalogQuery});if(result.page!==page)setPage(result.page);}
+    }).catch(error=>{if(!controller.signal.aborted)setCatalogError(error.message);}).finally(()=>{if(!controller.signal.aborted)setCatalogLoading(false);});},150);
+    return()=>{clearTimeout(timer);controller.abort();};
+  },[hasStore,catalogQuery,catalogRevision]);
+  const rows=productRows(catalog?.query===catalogQuery?catalog.items:[],warehouses);
+  const total=catalog?.total||0;
+  const statusOptions=catalog?.statusOptions||productStatusFilterOptions([]);
+  const stockCounts=catalog?.stockCounts||{};
+  async function openBatchStock(){
+    if(selectedKeys.length>100){message.warning("每次最多修改 100 个商品，请减少勾选数量");return;}
+    if(selectedKeys.length){setBatchRows(selectedKeys.map(id=>selectionRows.current.get(id)).filter(Boolean));return;}
+    if(total>100){message.warning("每次最多修改 100 个商品，请先筛选或勾选商品");return;}
+    try{
+      const params=new URLSearchParams(catalogQuery);params.set('pageSize','50');params.set('page','1');
+      const first=await apiRequest(`/ozon/products/cache?${params}`);
+      if(first.total>100){message.warning("每次最多修改 100 个商品，请先筛选或勾选商品");return;}
+      let items=first.items;
+      if(first.total>50){params.set('page','2');items=items.concat((await apiRequest(`/ozon/products/cache?${params}`)).items);}
+      setBatchRows(productRows(items,warehouses));
+    }catch(error){message.error(error.message);}
+  }
+  const productId = row=>String(row._raw.product_id||row._raw.id||"");
+  async function refreshProducts(){
+    if(!hasStore||syncing)return;setSyncing(true);
+    try{
+      await apiRequest("/local/sync/WAREHOUSES",{method:"POST",body:{storeId}});
+      await apiRequest("/local/sync/PRODUCTS",{method:"POST",body:{storeId}});
+      await onRefresh?.();setCatalogRevision(value=>value+1);message.success("商品与库存已同步");
+    }catch(e){message.error(`同步失败：${e.message}`);}finally{setSyncing(false);}
+  }
   const priceColumns = [
-    {
-      title: "活动",
-      dataIndex: "title",
-      key: "title",
-      ellipsis: true,
-      render: (value) => <span className="source-table-cell-text" title={value}>{value}</span>,
-    },
-    {
-      title: "活动价",
-      dataIndex: "value",
-      key: "value",
-      width: 110,
-      render: (value) => formatProductPrice(value),
-    },
-    {
-      title: "开始时间",
-      dataIndex: "date_from",
-      key: "date_from",
-      width: 150,
-      render: (value) => value ? new Date(value).toLocaleString() : "—",
-    },
-    {
-      title: "结束时间",
-      dataIndex: "date_to",
-      key: "date_to",
-      width: 150,
-      render: (value) => value ? new Date(value).toLocaleString() : "—",
-    },
+    {title:"活动",dataIndex:"title",ellipsis:true},
+    {title:"活动价",dataIndex:"value",width:110,render:value=>formatProductPrice(value)},
+    {title:"开始时间",dataIndex:"date_from",width:150,render:value=>value?new Date(value).toLocaleString():"—"},
+    {title:"结束时间",dataIndex:"date_to",width:150,render:value=>value?new Date(value).toLocaleString():"—"},
   ];
   const columns = [
-    {
-      title: "图片",
-      dataIndex: "_image",
-      width: 72,
-      ellipsis: false,
-      render: (value) => (
-        value ? (
-          <img className="product-thumb" src={value} alt="" loading="lazy" />
-        ) : (
-          <span className="product-thumb product-thumb-empty">—</span>
-        )
-      ),
-    },
-    {
-      title: "商品信息",
-      dataIndex: "商品信息",
-      width: 280,
-      render: (value, row) => {
-        const title = row._title || value || "—";
-        const sku = row._sku || "";
-        const offerId = row._offerId || "";
-        return (
-          <div className="product-info-cell">
-            <span className="source-table-cell-text product-info-name" title={title}>{title}</span>
-            {sku ? (
-              <span className="product-sku-row">
-                <span className="product-sku-text" title={sku}>SKU：{sku}</span>
-                <SkuCopyButton message={message} sku={sku} />
-              </span>
-            ) : null}
-            {offerId ? (
-              <span className="product-sku-row">
-                <span className="product-sku-text" title={offerId}>货号：{offerId}</span>
-              </span>
-            ) : null}
-          </div>
-        );
-      },
-    },
-    {
-      title: "状态",
-      dataIndex: "状态",
-      width: 120,
-      render: (value, row) => {
-        const meta = row._statusMeta || { label: value || "—", tone: "default", raw: value || "" };
-        return (
-          <span className={`product-status-tag status-${meta.tone}`} title={meta.raw || meta.label}>
-            {meta.label}
-          </span>
-        );
-      },
-    },
-    {
-      title: "售价",
-      dataIndex: "价格",
-      width: 108,
-      render: (value, row) => (
-        <Button
-          className="product-price-link"
-          onClick={() => setPriceDetail(row)}
-          size="small"
-          type="link"
-        >
-          {value}
-        </Button>
-      ),
-    },
-    "库存",
-    "货源 (¥)",
-    "最后同步",
+    {title:"商品信息",dataIndex:"商品信息",width:300,ellipsis:false,render:(value,row)=><div className="catalog-product-cell">
+      {row._image?<img className="product-thumb" src={row._image} alt="" loading="lazy"/>:<span className="product-thumb product-thumb-empty">—</span>}
+      <div className="product-info-cell"><span className="catalog-product-name" title={row._title}>{row._title||value}</span>
+        {row._sku?<span className="product-sku-row"><span className="product-sku-text" title={row._sku}>SKU：{row._sku}</span><SkuCopyButton message={message} sku={row._sku}/></span>:null}
+        {row._offerId?<span className="product-sku-text" title={row._offerId}>货号：{row._offerId}</span>:null}
+      </div></div>},
+    {title:"状态",dataIndex:"状态",width:100,render:(value,row)=><span className={`product-status-tag status-${row._statusMeta?.tone||"default"}`} title={row._statusMeta?.raw}>{row._statusMeta?.label||value}</span>},
+    {title:"售价",dataIndex:"价格",width:112,render:(value,row)=><Button className="product-price-link" type="link" size="small" onClick={()=>setPriceDetail(row)}>{value}</Button>},
+    {title:"采购成本",width:126,ellipsis:false,render:(_,row)=><ProductCostField productId={productId(row)} name={row._title} cost={costs.items[productId(row)]} onSave={costs.save} disabled={costs.loading||Boolean(costs.error)||costs.busy[productId(row)]}/>},
+    {title:"自动应用",width:92,render:(_,row)=><ProductCostSwitch productId={productId(row)} cost={costs.items[productId(row)]} onSave={costs.save} disabled={costs.loading||Boolean(costs.error)} loading={costs.busy[productId(row)]}/>},
+    {title:"库存",dataIndex:"库存",width:158,ellipsis:false,render:(value,row)=><div className="catalog-stock-cell"><Button onClick={()=>setStockEditor(row)} className="catalog-stock-button" aria-label={`修改 SKU ${row._sku} 库存`}>{value}</Button><span title={row["仓库分布"]}>{row["仓库分布"]||"点击查看仓库"}</span></div>},
+    {title:"操作",width:92,render:(_,row)=><Button type="link" icon={<EyeOutlined/>} onClick={()=>setProductDetail(row)} aria-label={`查看 SKU ${row._sku} 商品详情`}>详情</Button>},
   ];
-  return (
-    <div className="source-page">
-      <SourceSectionTitle
-        title="商品列表"
-        subtitle={storeLine(binding)}
-        actions={[
-          <Button type="primary" icon={<DatabaseOutlined />} onClick={() => navigate("/ozon/products/stocks")} key="stocks">库存管理</Button>,
-          <Button type="primary" icon={<SyncOutlined />} onClick={onSync} key="sync">同步全部</Button>,
-        ]}
-      />
-      <Card className="panel-card source-card">
-        <div className="table-action-row">
-          <Input.Search
-            className="toolbar-search"
-            placeholder="搜 SKU / 货号 / 标题…"
-            allowClear
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onSearch={() => message.success(`查询完成 · ${rows.length} 条`)}
-          />
-          <div className="table-result-title">共 {rows.length} 个</div>
-        </div>
-        <div className="product-status-filters" aria-label="商品状态筛选">
-          {statusOptions.map((item) => (
-            <button
-              className={`product-status-filter status-${item.tone}${activeStatus === item.label ? " active" : ""}`}
-              type="button"
-              aria-pressed={activeStatus === item.label}
-              key={`${item.label}-${item.tone}`}
-              onClick={() => setActiveStatus(item.label)}
-            >
-              <span>{item.label}</span>
-              <em>{item.count}</em>
-            </button>
-          ))}
-          <button
-            className={`product-status-filter status-all${activeStatus === "所有" ? " active" : ""}`}
-            type="button"
-            aria-pressed={activeStatus === "所有"}
-            onClick={() => setActiveStatus("所有")}
-          >
-            <span>所有</span>
-            <em>{products.length}</em>
-          </button>
-        </div>
-        <SourceTable
-          hasStore={hasStore}
-          key={`${activeStatus}-${query}-${pageSizeChoice}`}
-          rows={rows}
-          columns={columns}
-          pageSize={resolvedPageSize}
-          pageSizeControl={(
-            <div className="product-page-size-control">
-              <span>每页显示</span>
-              <Select
-                size="small"
-                value={pageSizeChoice}
-                options={[
-                  { value: "20", label: "20" },
-                  { value: "50", label: "50" },
-                  { value: "100", label: "100" },
-                  { value: "全部", label: "全部" },
-                ]}
-                onChange={setPageSizeChoice}
-                popupMatchSelectWidth={false}
-              />
-            </div>
-          )}
-          scrollX={1180}
-          empty="暂无商品"
-          sourceEmpty
-        />
-      </Card>
-      <Modal
-        rootClassName="prototype-overlay"
-        title="商品活动价格"
-        open={Boolean(priceDetail)}
-        footer={null}
-        onCancel={() => setPriceDetail(null)}
-        width={760}
-      >
-        {priceDetail ? (
-          <div className="product-price-modal">
-            <div className="product-price-modal-head">
-              <strong>{localizeOzonProductTitle(priceDetail._title, priceDetail._sku)}</strong>
-              <span>SKU：{priceDetail._sku || "—"}</span>
-              <span>货号：{priceDetail._offerId || "—"}</span>
-              <span>当前展示价：{priceDetail["价格"]}</span>
-            </div>
-            <Table
-              columns={priceColumns}
-              dataSource={priceDetail._priceActions || []}
-              pagination={false}
-              rowKey="key"
-              size="small"
-            />
-          </div>
-        ) : null}
-      </Modal>
-    </div>
-  );
+  return <div className="source-page products-page catalog-management-page">
+    <SourceSectionTitle title="商品管理" subtitle="统一管理当前店铺的商品成本、售价与仓库库存" actions={[
+      <Button icon={<DatabaseOutlined/>} disabled={!hasStore||catalogLoading||!rows.length} key="batch" onClick={openBatchStock}>批量修改库存</Button>,
+      <Button type="primary" icon={<SyncOutlined/>} onClick={refreshProducts} loading={syncing} disabled={!hasStore} key="sync">同步商品与库存</Button>,
+    ]}/>
+    <Card className="panel-card source-card">
+      <div className="product-store-context"><span className="product-store-icon"><ApartmentOutlined/></span><div><span>当前店铺</span><strong>{hasStore?visibleStoreName(binding?.storeName,binding?.clientId):"尚未绑定店铺"}</strong></div><span className="product-store-note">{hasStore?"点击库存数量，按仓库修改可售库存":"绑定店铺后显示真实商品"}</span></div>
+      {costs.error?<Alert showIcon type="warning" message={`采购成本暂时无法读取：${costs.error}`} action={<Button onClick={costs.reload}>重试</Button>}/>:null}
+      <div className="product-status-filters" aria-label="商品状态筛选">
+        {statusOptions.map(item=><button className={`product-status-filter status-${item.tone}${activeStatus===item.label?" active":""}`} type="button" aria-pressed={activeStatus===item.label} key={item.label} onClick={()=>setActiveStatus(item.label)}><span>{item.label}</span><em>{item.count}</em></button>)}
+      </div>
+      <div className="catalog-filter-row">
+        <div className="catalog-stock-filters"><PromotionStatusButtons active={stockFilter === "attention" ? "库存关注" : stockFilter} onChange={value=>setStockFilter(value === "库存关注" ? "attention" : value)} items={[
+          {label:"全部",count:stockCounts["全部"]||0,tone:"primary"},
+          {label:"缺货",count:stockCounts["缺货"]||0,tone:"primary"},
+          {label:"低库存",count:stockCounts["低库存"]||0,tone:"primary"},
+          ...(stockFilter==="attention"?[{label:"库存关注",value:"attention",count:(stockCounts["缺货"]||0)+(stockCounts["低库存"]||0),tone:"primary"}]:[]),
+        ]}/><span className="catalog-filter-note">低库存：1～10 件</span></div>
+        <Input.Search className="toolbar-search" placeholder="搜索商品名称 / SKU / 货号" allowClear value={query} onChange={e=>setQuery(e.target.value)} />
+      </div>
+      {catalogError&&<Alert showIcon type="error" title={catalogError} action={<Button onClick={()=>setCatalogRevision(value=>value+1)}>重试</Button>}/>}
+      <div className="table-result-title">共 {total} 项 · 已选择 {selectedKeys.length} 项</div>
+      <SourceTable hasStore={hasStore} rows={rows} columns={columns} selectedRowKeys={selectedKeys} preserveSelectedRowKeys onSelectionChange={keys=>{setSelectedKeys(keys);for(const row of rows)if(keys.includes(row.id))selectionRows.current.set(row.id,row);for(const id of selectionRows.current.keys())if(!keys.includes(id))selectionRows.current.delete(id);}} loading={catalogLoading} pagination={{current:page,pageSize,total,onChange:(next,size)=>{setPage(next);setPageSize(size);}}} scrollX={1080} empty="暂无商品" sourceEmpty/>
+    </Card>
+    <Modal rootClassName="prototype-overlay" title="商品活动价格" open={Boolean(priceDetail)} footer={null} onCancel={()=>setPriceDetail(null)} width={760}>
+      {priceDetail?<div className="product-price-modal"><div className="product-price-modal-head"><strong>{priceDetail._title}</strong><span>SKU：{priceDetail._sku||"—"}</span><span>货号：{priceDetail._offerId||"—"}</span><span>当前展示价：{priceDetail["价格"]}</span></div><Table columns={priceColumns} dataSource={priceDetail._priceActions||[]}  rowKey="key" size="small"/></div>:null}
+    </Modal>
+    <Modal rootClassName="prototype-overlay" title="商品详情" open={Boolean(productDetail)} onCancel={()=>setProductDetail(null)} footer={null} width={720}>
+      {productDetail?<div className="catalog-detail"><div className="catalog-detail-head">{productDetail._image?<img loading="lazy" decoding="async" src={productDetail._image} alt={productDetail._title}/>:null}<div><strong>{productDetail._title}</strong><p>SKU：{productDetail._sku}</p><p>货号：{productDetail._offerId}</p><Tag>{productDetail._statusMeta?.label}</Tag></div></div><p>售价：{productDetail["价格"]}</p><p>库存合计：{productDetail["库存"]}</p><p className="catalog-warehouse-detail">{productDetail["仓库分布"]}</p><Space><Button onClick={()=>{setProductDetail(null);setStockEditor(productDetail);}}>修改库存</Button><Button type="primary" href={`https://www.ozon.ru/product/${encodeURIComponent(productDetail._sku)}/`} target="_blank" rel="noopener noreferrer">打开平台商品</Button></Space></div>:null}
+    </Modal>
+    {batchRows?<BatchStockEditor storeId={storeId} rows={batchRows} onClose={()=>setBatchRows(null)} onChanged={refreshProducts} onInspect={row=>{setBatchRows(null);setStockEditor(row);}}/>:null}
+    {stockEditor?<StockEditor key={`${storeId}:${productId(stockEditor)}`} storeId={storeId} productId={productId(stockEditor)} row={stockEditor} onClose={()=>setStockEditor(null)} onChanged={refreshProducts}/>:null}
+  </div>;
 }
 
-function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account }) {
+function CollectPage(props) {
+  return <CollectPageForAccount key={props.account?.id || "anonymous"} {...props} />;
+}
+
+function CollectPageForAccount({ hasStore, localData, onBind, onRefresh: refreshBase, onCollectProgress, navigate, account }) {
   const { message } = AntApp.useApp();
+  const [pageSizeChoice, setPageSizeChoice] = useState("5");
+  const [expandedRowKeys, setExpandedRowKeys] = useState([]);
   const [activeStatus, setActiveStatus] = useState("全部");
   const [sourceFilter, setSourceFilter] = useState();
-  const [collectInput, setCollectInput] = useState("");
+  const [variantFilter, setVariantFilter] = useState("");
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+  const [variantSelections, setVariantSelections] = useState({});
   const [retryingEnrichmentId, setRetryingEnrichmentId] = useState("");
+  const [changingWebJobId, setChangingWebJobId] = useState("");
   const [retryEnrichmentOverrides, setRetryEnrichmentOverrides] = useState({});
-  const collectItems = localData?.caches?.collectBox || [];
+  const [page,setPage]=useState(1),[list,setList]=useState(null),[listError,setListError]=useState(''),[listLoading,setListLoading]=useState(false);
+  const listReadRef=useRef(0),selectionItemsRef=useRef(new Map());
+  const loadPage=React.useCallback(async ({signal}={})=>{
+    const generation=++listReadRef.current;
+    const query=new URLSearchParams({limit:pageSizeChoice,offset:String((page-1)*Number(pageSizeChoice)),status:activeStatus,source:sourceFilter||'',variant:variantFilter});
+    try {
+      let result;
+      try{result=await apiRequest(`/ozon/collect-box/summary?${query}`,{signal,timeoutMs:30000});}
+      catch(error){
+        if(error.status!==404)throw error;
+        const legacy=await apiRequest('/local/state',{signal});result={items:legacy.caches?.collectBox||[],legacy:true};
+      }
+      if(!signal?.aborted&&generation===listReadRef.current){setList(result);setListError('');
+        if(!result.legacy&&page>1&&(page-1)*Number(pageSizeChoice)>=result.total)setPage(Math.max(1,Math.ceil(result.total/Number(pageSizeChoice))));}
+      return result;
+    }catch(error){if(!signal?.aborted&&generation===listReadRef.current)setListError(error.message||'采集箱读取失败');throw error;}
+  },[account?.id,page,pageSizeChoice,activeStatus,sourceFilter,variantFilter]);
+  useEffect(()=>{const controller=new AbortController();setListLoading(true);void loadPage({signal:controller.signal}).catch(()=>{}).finally(()=>{if(!controller.signal.aborted)setListLoading(false);});return()=>controller.abort();},[loadPage]);
+  useEffect(()=>{setPage(1);setSelectedRowKeys([]);setExpandedRowKeys([]);selectionItemsRef.current.clear();},[account?.id,activeStatus,sourceFilter,variantFilter,pageSizeChoice]);
+  const onRefresh=loadPage;
+  const collectItems = list?.items || [];
   const rows = collectItems.map((item, index) => {
     const id = item.id || "collect-" + index;
     const enrichment = collectEnrichmentEffectiveSummary(item, retryEnrichmentOverrides[id]);
@@ -3353,6 +2398,19 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account
     const categoryResolutionViewState = categoryResolutionView(item.categoryResolution);
     return {
       id,
+      _webCollectionJob: item.webCollectionJob,
+      _selectable: item.selectable !== false && !item.webCollectionJob && item.status !== '已上架',
+      _variants: collectEditVariantSourceRows(item).map((variant, variantIndex) => {
+        const display = normalizeCollectEditVariantRow({ variant, index: variantIndex });
+        return {
+          key: display.sku || `variant-${variantIndex}`,
+          sku: display.sku,
+          name: display.name,
+          image: collectEditFirst(variant.image, variant.coverImage, variant.images?.[0]?.url, typeof variant.images?.[0] === "string" ? variant.images[0] : ""),
+          aspects: Object.values(variant.aspectValues || {}).map(collectEditText).filter(Boolean).join(" · "),
+          price: formatCollectSourcePrice(variant, item),
+        };
+      }),
       _image: item.image || item.primaryImage || (item.images || [])[0] || "",
       _title: item.name || item.title || item.productUrl || "—",
       _enrichment: enrichment,
@@ -3360,36 +2418,41 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account
       _categoryResolutionView: categoryResolutionViewState,
       sku: item.sku || item.id || "",
       "商品信息": item.name || item.title || item.productUrl || "—",
-      "采集价格": item.price || item.priceText || "—",
+      "采集价格": formatCollectSourcePrice(item),
       "卖家 / 来源": item.source || item.seller || item.sellerName || "—",
       "品牌": item.brand || "—",
       "下单链接": item.productUrl || item.url || "—",
       "采集时间": item.createdAt ? new Date(item.createdAt).toLocaleString() : "—",
-      "状态": collectWorkflowStatus(item),
+      "状态": item.webCollectionJob || item.status === '已上架' ? item.status : collectWorkflowStatus(item),
       "操作": "查看",
     };
   });
-  const sourceOptions = [
-    ...Array.from(new Set(rows.map((row) => row["卖家 / 来源"]).filter((value) => value && value !== "—"))).map((value) => ({
-      value,
-      label: value,
-    })),
-  ];
+  const sourceOptions = (list?.sources || [...new Set(rows.map(row=>row["卖家 / 来源"]).filter(value=>value&&value!=="—"))]).map(value=>({value,label:value}));
   const visibleRows = rows.filter((row) => {
     const statusMatched = activeStatus === "全部" || row["状态"] === activeStatus;
     const sourceMatched = !sourceFilter || row["卖家 / 来源"] === sourceFilter;
-    return statusMatched && sourceMatched;
+    const variantMatched = !variantFilter || (row._webCollectionJob ? variantFilter === '单 SKU' && row._webCollectionJob.scope === 'CURRENT' : variantFilter === "多变体" ? row._variants.length > 1 : row._variants.length <= 1);
+    return statusMatched && sourceMatched && variantMatched;
   });
-  const sellerSourceColumnWidth = adaptiveTextColumnWidth(visibleRows, "卖家 / 来源", { min: 132, max: 220 });
   const visibleRowIdSignature = visibleRows.map((row) => row.id).join("|");
-  const visibleEnrichmentPollKey = visibleRows
-    .map((row) => `${row.id}:${String(row._enrichment?.status || "")}`)
-    .join("|");
-  const countByStatus = (status) => rows.filter((row) => row["状态"] === status).length;
+  const pollingIds = collectEnrichmentPollingIds(visibleRows.map(row => ({id:row.id, enrichment:row._enrichment})));
+  const visibleEnrichmentPollKey = JSON.stringify(pollingIds);
+  const countByStatus = (status) => list?.counts?.[status] ?? rows.filter((row) => row["状态"] === status).length;
   useEffect(() => {
-    const visibleIds = new Set(visibleRows.map((row) => row.id));
-    setSelectedRowKeys((keys) => keys.filter((key) => visibleIds.has(key)));
-  }, [visibleRowIdSignature]);
+    const unavailable = new Set(rows.filter(row => !row._selectable).map(row => row.id));
+    setSelectedRowKeys(keys => keys.some(id => unavailable.has(id)) ? keys.filter(id => !unavailable.has(id)) : keys);
+    for (const id of unavailable) selectionItemsRef.current.delete(id);
+  }, [list]);
+  const changeWebJob = async (job, action) => {
+    if (changingWebJobId) return;
+    setChangingWebJobId(job.id);
+    try {
+      await apiRequest(`/ozon/collect-box/web-jobs/${encodeURIComponent(job.id)}/${action}`, { method: 'POST', body: {}, timeoutMs: 15000 });
+      message.success(action === 'cancel' ? '任务已取消' : '已重新排队，等待扩展领取');
+      await loadPage();
+    } catch (error) { message.error(error.message); }
+    finally { setChangingWebJobId(''); }
+  };
   useEffect(() => {
     setRetryEnrichmentOverrides((current) => {
       let changed = false;
@@ -3404,15 +2467,14 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account
   }, [collectItems]);
   useEffect(() => {
     if (
-      typeof onRefresh !== "function"
-      || !collectEnrichmentListNeedsPolling(visibleRows.map((row) => row._enrichment))
+      !pollingIds.length && !list?.hasActiveWebJobs
     ) return undefined;
     return startCollectEnrichmentPolling({
-      refresh: () => onRefresh({ silent: true, source: "collect-list-poll" }),
+      refresh: ({signal}) => document.hidden ? Promise.resolve() : loadPage({signal}),
       setIntervalFn: window.setInterval.bind(window),
       clearIntervalFn: window.clearInterval.bind(window),
     });
-  }, [visibleEnrichmentPollKey, onRefresh]);
+  }, [visibleEnrichmentPollKey, list?.hasActiveWebJobs, account?.id, loadPage]);
   const retryCollectEnrichment = async (collectItemId) => {
     const itemId = String(collectItemId || "").trim();
     if (!itemId || retryingEnrichmentId) return;
@@ -3473,126 +2535,61 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account
       },
     });
   };
-  const pushToAutoListing = () => {
+  const pushToAiListing = () => {
     try {
       const target = buildAutoListingCollectPush({
         selectedIds: selectedRowKeys,
-        visibleItems: visibleRows,
+        visibleItems: [...selectionItemsRef.current.values()],
         accountId: account?.id,
+        destination: "ai-listing",
       });
-      navigate(target.path);
+      const variants = Object.fromEntries(selectedRowKeys.filter(id=>variantSelections[id]).map(id=>[id,variantSelections[id]]));
+      navigate(target.path + "&variants=" + encodeURIComponent(JSON.stringify(variants)));
     } catch (error) {
       message.warning(error?.code === "AUTO_LISTING_COLLECT_SELECTION_EMPTY"
         ? "请先选择要推送的采集商品"
         : "选中的商品已不可用，请刷新采集箱后重试");
     }
   };
-  const handleCollectAdd = async (value) => {
-    const token = localStorage.getItem("token");
-    const readiness = collectAddReadiness({ value, token });
-    if (!readiness.ok) {
-      message.warning(readiness.message);
-      return;
-    }
-    const { input, isUrl } = readiness;
-    if (!isUrl) {
-      // SKU 输入：调用后端抓取端点，自动从 ozon.ru 获取竞品数据
-      message.loading({ content: "正在从 ozon.ru 抓取商品数据…", key: "collect-scrape", duration: 0 });
-      try {
-        const resp = await apiRequest("/ozon/collect-box/scrape", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-          body: { sku: input },
-        });
-        if (resp?.scraped) {
-          const enrichment = resp?.enrichment || resp?.data?.enrichment;
-          message.success({
-            content: enrichment
-              ? collectEnrichmentSuccessMessage(enrichment)
-              : "已抓取商品数据并加入采集箱",
-            key: "collect-scrape",
-          });
-        } else {
-          message.warning({ content: "未能抓取到商品数据，已创建待处理条目", key: "collect-scrape" });
-        }
-        await onRefresh?.();
-        return;
-      } catch (error) {
-        message.error({ content: `抓取失败: ${error.message}`, key: "collect-scrape" });
-        // 失败后仍尝试普通添加
-      }
-    }
-    try {
-      const response = await apiRequest("/ozon/collect-box", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: {
-          productUrl: isUrl ? input : "",
-          sku: isUrl ? "" : input,
-          name: input,
-          source: isUrl ? "链接添加" : "SKU 添加",
-          status: "待处理",
-          raw: { input },
-        },
-      });
-      message.success(collectEnrichmentSuccessMessage(response?.enrichment || response?.data?.enrichment));
-      await onRefresh?.();
-    } catch (error) {
-      message.error(`添加失败: ${error.message}`);
-    }
-  };
   return (
     <div className="source-page collect-page">
-      <Card className="collect-add-card">
-        <div className="collect-add-head">
-          <div className="collect-title-icon">
-            <InboxOutlined />
-          </div>
-          <div className="collect-title-copy">
-            <div className="collect-title-row">添加采集商品</div>
-            <span className="collect-subtitle">粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加</span>
-          </div>
-        </div>
-        <div className="collect-input-row">
-          <div className="collect-input-wrap">
-            <Input
-              size="large"
-              prefix={<LinkOutlined />}
-              value={collectInput}
-              onChange={(event) => setCollectInput(event.target.value)}
-              placeholder="https://www.ozon.ru/product/... 或直接输入 SKU"
-              onPressEnter={(event) => handleCollectAdd(event.currentTarget.value)}
-            />
-          </div>
-          <Button type="primary" size="large" icon={<PlusOutlined />} onClick={() => handleCollectAdd(collectInput)}>
-            添加采集
-          </Button>
-        </div>
-        <div className="collect-tips">
-          <Tag color="blue" icon={<CheckOutlined />}>自动识别价格 / 重量 / 卖家</Tag>
-          <Tag color="orange" icon={<ThunderboltOutlined />}>安装插件后一键采集</Tag>
-        </div>
-      </Card>
+      <SourceSectionTitle title="采集箱" subtitle="管理已采集商品，选择商品后推送到上架流程" />
+      <WebCollectionCard key={account?.id || "anonymous"} onRefresh={async () => {
+        setPage(1); setActiveStatus('全部'); setSourceFilter(undefined); setVariantFilter('');
+        await loadPage();
+      }} navigate={navigate} />
       <div className="collect-filter-row">
+        <div className="collect-filter-chips">
         <StatusChips
           active={activeStatus}
           onChange={setActiveStatus}
           items={[
-            { label: "全部", count: rows.length },
+            { label: "全部", count: list?.counts?.["全部"] ?? rows.length },
             { label: "待处理", count: countByStatus("待处理") },
             { label: "已上架", count: countByStatus("已上架") },
             { label: "已跳过", count: countByStatus("已跳过") },
             { label: "失败", count: countByStatus("失败") },
           ]}
         />
+        <div className="source-chip-row collect-variant-filters" role="group" aria-label="SKU 类型筛选">
+          {["多变体", "单 SKU"].map((label) => (
+            <button key={label} type="button" className={variantFilter === label ? "active" : ""}
+              aria-pressed={variantFilter === label}
+              onClick={() => setVariantFilter((current) => current === label ? "" : label)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        </div>
         <div className="collect-filter-actions">
+          <Button icon={<SyncOutlined />} loading={listLoading} onClick={() => void loadPage().catch(() => {})}>刷新</Button>
           <Button
             type="primary"
             disabled={!selectedRowKeys.length}
             icon={<ThunderboltOutlined />}
-            onClick={pushToAutoListing}
+            onClick={pushToAiListing}
           >
-            推送到自动上架
+            推送到 AI 上架
           </Button>
           <Button
             danger
@@ -3613,34 +2610,79 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account
           />
         </div>
       </div>
+      {listError&&<Alert type="error" showIcon message={listError} action={<Button onClick={()=>void loadPage().catch(()=>{})}>重试读取</Button>}/>}
       <div className="collect-table-panel">
         <SourceTable
           hasStore={hasStore}
           rows={visibleRows}
+          loading={listLoading}
+          preserveSelectedRowKeys
+          pagination={list&&!list.legacy?{current:page,pageSize:Number(pageSizeChoice),total:list.total,onChange:(next,size)=>{setPage(next);setPageSizeChoice(String(size));},showTotal:total=>`共 ${total} 件商品`}:undefined}
           selectedRowKeys={selectedRowKeys}
-          onSelectionChange={setSelectedRowKeys}
+          rowSelection={{ getCheckboxProps: row => ({ disabled: !row._selectable }) }}
+          onSelectionChange={(keys)=>{setSelectedRowKeys(keys);
+            for(const row of visibleRows)if(keys.includes(row.id))selectionItemsRef.current.set(row.id,row);
+            for(const id of selectionItemsRef.current.keys())if(!keys.includes(id))selectionItemsRef.current.delete(id);
+            setVariantSelections(current=>Object.fromEntries(Object.entries(current).filter(([id])=>keys.includes(id)&&selectedRowKeys.includes(id))));}}
+          expandable={{
+            expandedRowKeys,
+            showExpandColumn: false,
+            rowExpandable: (row) => row._variants.length > 1,
+            expandedRowRender: (row) => (
+              <div className="collect-variant-list" aria-label={`${row._title}的变体`}>
+                <div className="collect-variant-list-head"><span>变体商品 / 规格</span><span>SKU</span><span>采集价格</span></div>
+                {row._variants.map((variant) => (
+                  <div className="collect-variant-row" key={variant.key}>
+                    <div className="collect-variant-product">
+                      <Checkbox aria-label={`推送 SKU ${variant.sku}`} disabled={!row._selectable} checked={selectedRowKeys.includes(row.id) && (!variantSelections[row.id] || variantSelections[row.id].includes(variant.sku))} onChange={e=>{
+                        const current=selectedRowKeys.includes(row.id)?(variantSelections[row.id] || row._variants.map(v=>v.sku)):[];
+                        const next=e.target.checked?[...new Set([...current,variant.sku])]:current.filter(sku=>sku!==variant.sku);
+                        if(next.length)selectionItemsRef.current.set(row.id,row);else selectionItemsRef.current.delete(row.id);
+                        setVariantSelections(values=>({...values,[row.id]:next}));
+                        setSelectedRowKeys(keys=>next.length?[...new Set([...keys,row.id])]:keys.filter(id=>id!==row.id));
+                      }}/>
+
+                      {variant.image ? <img src={variant.image} alt="" loading="lazy" /> : null}
+                      <div><strong title={variant.name}>{variant.aspects || variant.name || "未提供规格"}</strong>{variant.aspects && variant.name ? <span title={variant.name}>{variant.name}</span> : null}</div>
+                    </div>
+                    <span className="collect-variant-sku">{variant.sku || "未提供"}</span>
+                    <span>{variant.price}</span>
+                  </div>
+                ))}
+              </div>
+            ),
+          }}
           columns={[
-            { title: "商品信息", dataIndex: "商品信息", render: (value, row) => (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {row._image ? <img src={row._image} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} /> : null}
+            { title: "商品信息", dataIndex: "商品信息", width: "32%",
+              onCell: row => row._variants.length > 1 ? {
+                style: { cursor: 'pointer' },
+                onClick: () => setExpandedRowKeys(keys => keys.includes(row.id) ? keys.filter(key => key !== row.id) : [...keys, row.id]),
+              } : {}, render: (value, row) => (
+              <div className="collect-product-group">
+                {row._variants.length > 1 ? (
+                  <button
+                    type="button"
+                    className="collect-variant-toggle"
+                    aria-label={`${expandedRowKeys.includes(row.id) ? "收起" : "展开"}${value}变体`}
+                    aria-expanded={expandedRowKeys.includes(row.id)}
+                    onClick={(event) => { event.stopPropagation(); setExpandedRowKeys((keys) => keys.includes(row.id) ? keys.filter((key) => key !== row.id) : [...keys, row.id]); }}
+                  ><span aria-hidden="true">›</span></button>
+                ) : <span className="collect-variant-toggle-spacer" />}
+                {row._image ? <img loading="lazy" decoding="async" src={row._image} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} /> : null}
                 <div style={{ display: "grid", minWidth: 0, gap: 2 }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={value}>{value}</span>
-                  <span className="product-sku-text" title={row.sku || ""}>SKU：{row.sku || "未提供"}</span>
+                  {row._webCollectionJob ? <span className="product-sku-text">{row._webCollectionJob.scope === 'ALL' ? '整组变体 · 采集完成后显示数量' : '仅当前 SKU'}</span> : row._variants.length > 1
+                    ? <span className="collect-variant-count">多变体 · {row._variants.length} 个 SKU</span>
+                    : <span className="product-sku-text" title={row.sku || ""}>单 SKU · {row.sku || "未提供"}</span>}
                 </div>
               </div>
             ) },
-            "采集价格",
-            {
-              title: "卖家 / 来源",
-              dataIndex: "卖家 / 来源",
-              width: sellerSourceColumnWidth,
-              render: renderSourceTextCell,
-            },
-            "品牌",
+            { title: "采集价格", dataIndex: "采集价格", width: "7%", render: renderSourceTextCell },
+
             {
               title: "下单链接",
               dataIndex: "下单链接",
-              width: 220,
+              width: "9%",
               render: (value) => {
                 const text = sourceCellText(value);
                 const href = safeExternalHttpUrl(value);
@@ -3652,33 +2694,33 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account
                 );
               },
             },
-            "采集时间",
+            { title: "采集时间", dataIndex: "采集时间", width: "12%", render: value => <span>{String(value).split(" ").map((part,i)=><React.Fragment key={i}>{i>0?<br/>:null}{part}</React.Fragment>)}</span> },
             {
               title: "状态",
               dataIndex: "状态",
-              width: 210,
+              width: "24%",
+              ellipsis: false,
               render: (value, row) => {
-                const view = row._enrichmentView;
-                if (!view?.label) return value;
-                return (
-                  <div className="collect-enrichment-cell">
-                    <Tag color={collectEnrichmentTagColors[view.tone]}>{view.label}</Tag>
-                    {view.detail ? <span title={view.detail}>{view.detail}</span> : null}
-                  </div>
-                );
+                if (row._webCollectionJob) {
+                  const job = row._webCollectionJob, view = webCollectionJobView(job);
+                  return <div className="collect-enrichment-cell"><Tag color={view.color}>{view.label}</Tag><span className="collect-enrichment-detail">{job.message}</span>{job.errorCode && <span className="collect-enrichment-detail">错误代码：{job.errorCode}</span>}</div>;
+                }
+                if (value === '已上架') return <Tag color="green">已上架</Tag>;
+                const views=row._enrichment?.status === "COLLECTION_FAILED"
+                  ? [row._enrichmentView] : [row._enrichmentView,row._categoryResolutionView];
+                const pending=views.filter(view=>view?.tone!=="success");
+                return <div className="collect-enrichment-cell">{pending.length ? pending.map((view,i)=><div key={i}><Tag color={collectEnrichmentTagColors[view?.tone]}>{view?.label || "资料状态待确认"}</Tag>{view?.detail?<span className="collect-enrichment-detail" title={view.detail}>{view.detail}</span>:null}</div>) : <Tag color="green">类目与包装已补全</Tag>}</div>;
               },
             },
-            {
-              title: "账号共享类目",
-              dataIndex: "类目匹配",
-              width: 174,
-              render: (_value, row) => {
-                const view = row._categoryResolutionView;
-                return <Tag color={collectEnrichmentTagColors[view.tone]}>{view.label}</Tag>;
-              },
-            },
-            { title: "操作", dataIndex: "操作", width: 230, ellipsis: false, render: (value, row) => (
-              <Space size={6} wrap={false}>
+            { title: "操作", dataIndex: "操作", width: "12%", ellipsis: false, render: (value, row) => row._webCollectionJob ? (() => {
+              const job = row._webCollectionJob, view = webCollectionJobView(job);
+              return <Space size={4} wrap>
+                {view.canRetry && <Button type="link" size="small" loading={changingWebJobId === job.id} disabled={Boolean(changingWebJobId && changingWebJobId !== job.id)} onClick={() => changeWebJob(job, 'retry')}>{view.retryLabel}</Button>}
+                {view.canCancel && <Button type="link" danger size="small" disabled={Boolean(changingWebJobId)} onClick={() => changeWebJob(job, 'cancel')}>取消</Button>}
+                {job.status === 'COMPLETED' && job.alreadyListed && <Button type="link" size="small" onClick={() => navigate('/ozon/products/import-history/')}>查看上架记录</Button>}
+              </Space>;
+            })() : row['状态'] === '已上架' ? <Button type="link" size="small" onClick={() => navigate('/ozon/products/import-history/')}>查看上架记录</Button> : (
+              <Space size={4} wrap>
                 <Button type="link" size="small" onClick={() => navigate(`/ozon/products/collect/edit/?id=${encodeURIComponent(row.id)}`)}>{value}</Button>
                 {row._enrichmentView?.retryable ? (
                   <Button
@@ -3696,14 +2738,14 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account
           ]}
           empty="暂无采集商品，请在上方添加"
           sourceEmpty
-          scrollX={1434}
+          scrollX={980}
         />
       </div>
     </div>
   );
 }
 
-export { CollectPage };
+export { CollectPage, ProductListPage };
 
 const collectEditText = (value) => {
   if (value === null || value === undefined) return "";
@@ -4961,7 +4003,7 @@ const collectEditContentRating = ({
   add(categoryMatched, 10, "产品类目已匹配");
   add(requiredAttributesReady, 15, "必填类目属性已填写");
   add(totalCategoryAttributeCount > 0 && attributeCoverage >= 0.6, 10, "类目属性填写覆盖率不低于 60%");
-  add(variantReady, 5, "变体 SKU、名称和售价完整");
+  add(variantReady, 5, "SKU、名称和售价完整");
   add(packageReady, 5, "物流重量和尺寸完整");
 
   return {
@@ -4972,8 +4014,19 @@ const collectEditContentRating = ({
   };
 };
 
+export const collectEditContentNotes = (row = {}) => [
+  ["description", "简介", row.description], ["richContent", "富内容", row.richContent],
+  ["color_image", "颜色样本", row.color_image], ["videoCoverUrl", "封面视频", row.videoCoverUrl],
+].map(([key, label, value]) => {
+  const evidence = row.contentDiagnostics?.[key];
+  const status = value ? "已保存" : evidence?.status === "read_failed" ? `读取失败：${evidence.message || "请重试或编辑"}`
+    : evidence?.status === "not_provided" ? "源未提供" : evidence?.status === "provided" ? "当前未填写" : "待核实";
+  return `${label}：${status}`;
+}).concat((row.contentDiagnostics?.issues || []).map(issue => `读取记录：${issue.message}`)).join("；");
+
 export const collectEditVariantRows = ({
   item = {},
+  sourceItem = item,
   sku = "",
   title = "",
   price = "",
@@ -4981,11 +4034,22 @@ export const collectEditVariantRows = ({
   offerPrefix = "jz-",
   targetStoreId = "",
   taxonomyScope = "OZON:DEFAULT",
+  targetCurrencyCode,
 }) => {
-  const sourceRows = collectEditVariantSourceRows(item);
+  const sourceRows = Array.isArray(item.listingDraft?.variants) && item.listingDraft.variants.length
+    ? item.listingDraft.variants : collectEditVariantSourceRows(item);
   const rows = sourceRows.length ? sourceRows : [item];
+  const originalRows = collectEditVariantSourceRows(sourceItem);
+  const savedDraft = sourceItem.listingDraft || {};
+  const savedRows = Array.isArray(savedDraft.variants) ? savedDraft.variants : [];
+  const priceSku = (row) => collectEditFirst(row.sku, row.variant_id, row.product_id, row.productId);
   return rows.map((variant, index) => {
     const aspectName = collectEditAspectName(variant);
+    const rowPriceSku = priceSku(variant) || sku;
+    const sourcePriceRow = originalRows.find((row) => priceSku(row) === rowPriceSku)
+      || (rowPriceSku === sku ? sourceItem : {});
+    const savedPriceRow = savedRows.find((row) => priceSku(row) === rowPriceSku)
+      || (rowPriceSku === collectEditFirst(savedDraft.sku, sku) ? savedDraft : {});
     const commercialFields = normalizeCollectEditVariantRow({
       variant,
       index,
@@ -4995,10 +4059,21 @@ export const collectEditVariantRows = ({
       fallbackPrice: price,
       offerPrefix,
       aspectName,
+      targetCurrencyCode,
+      sourceVariant: sourcePriceRow,
+      sourceCurrencyCode: collectPriceCurrencyCode(sourceItem),
+      draftVariant: savedPriceRow,
+      draftCurrencyCode: collectPriceCurrencyCode(savedDraft),
     });
     const rowSku = commercialFields.sku;
-    const sourceVariant = collectEditVariantSourceSnapshot(item, variant, rowSku);
-    const rowImages = collectEditImages({ ...sourceVariant, ...variant }, images[index] || images[0] || "");
+    const capturedVariant = collectEditVariantSourceSnapshot(item, variant, rowSku);
+    const sourceVariant = !Object.keys(capturedVariant).length && Array.isArray(variant.sourceCategory?.attributes)
+      ? { ...variant, attributes: variant.sourceCategory.attributes }
+      : capturedVariant;
+    const variantLogistics = variant.logistics || sourceVariant.logistics || {};
+    const rowImages = Array.isArray(variant.images)
+      ? [...new Set(variant.images.map(collectEditText).filter(Boolean))]
+      : collectEditImages({ ...sourceVariant, ...variant }, rowSku === sku ? images[0] || "" : "");
     const targetResolution = collectEditEffectiveCategoryResolution({
       item,
       itemId: collectEditFirst(item?.id, item?.collectItemId),
@@ -5007,32 +4082,45 @@ export const collectEditVariantRows = ({
     });
     const targetFields = listingCategoryFields(targetResolution, { taxonomyScope });
     return {
-      key: `${rowSku || sku || "sku"}-${index}`,
+      key: variant.key || `${rowSku || sku || "sku"}-${index}`,
       index: index + 1,
-      image: rowImages[0] || images[0] || "",
+      image: rowImages[0] || "",
       images: rowImages,
-      cover: rowImages[1] || rowImages[0] || images[0] || "",
+      cover: collectEditFirst(variant.videoCover, sourceVariant.videoCover, variant.videos?.[0]?.coverUrl, sourceVariant.videos?.[0]?.coverUrl),
+      videoCover: collectEditFirst(variant.videoCover, sourceVariant.videoCover, variant.videos?.[0]?.coverUrl, sourceVariant.videos?.[0]?.coverUrl),
+      videos: structuredClone(variant.videos ?? sourceVariant.videos ?? []),
+      color_image: variant.color_image ?? sourceVariant.color_image ?? "",
+      videoCoverUrl: variant.videoCoverUrl ?? sourceVariant.videoCoverUrl ?? "",
+      contentDiagnostics: structuredClone(variant.contentDiagnostics ?? sourceVariant.contentDiagnostics ?? {}),
       video: collectEditFirst(variant.video, variant.videoUrl, variant.video_url),
       sku: commercialFields.sku,
       offerId: commercialFields.offerId,
       name: commercialFields.name,
-      purchasePrice: collectEditFirst(variant.purchase_price, variant.cost_price),
+      specification: variant.specification ?? aspectName,
+      purchasePrice: collectEditFirst(variant.purchasePrice, variant.purchase_price, variant.cost_price),
       sellPrice: commercialFields.sellPrice,
       oldPrice: commercialFields.oldPrice,
+      ...(targetCurrencyCode !== undefined ? {
+        currencyCode: targetCurrencyCode,
+        sourcePriceDisplay: formatCollectSourcePrice(sourcePriceRow, sourceItem),
+      } : {}),
       stock: commercialFields.stock,
       sourceVariant,
-      description: collectEditFirst(variant.description, sourceVariant.description, sourceVariantText(sourceVariant, 4191)),
-      richContent: collectEditFirst(variant.richContent, variant.rich_content, sourceVariant.richContent, sourceVariantText(sourceVariant, 11254)),
-      barcode: collectEditFirst(variant.barcode, sourceVariant.barcode, sourceVariantText(sourceVariant, 7822)),
-      sourceCategory: sourceCategoryEvidenceOf({ _sourceVariant: sourceVariant }),
+      description: variant.description != null ? collectEditText(variant.description)
+        : collectEditFirst(sourceVariant.description, sourceVariantText(sourceVariant, 4191)),
+      richContent: variant.richContent ?? collectEditFirst(variant.rich_content, sourceVariant.richContent, sourceVariantText(sourceVariant, 11254)),
+      barcode: variant.barcode ?? collectEditFirst(sourceVariant.barcode, sourceVariantText(sourceVariant, 7822)),
+      sourceCategory: sourceCategoryEvidenceOf({ sourceCategory: variant.sourceCategory, _sourceVariant: sourceVariant }),
       ...(targetResolution ? { categoryResolution: targetResolution } : {}),
       descriptionCategoryId: targetFields.descriptionCategoryId || "",
       typeId: targetFields.typeId || "",
       categoryAttributes: Array.isArray(variant.categoryAttributes) ? variant.categoryAttributes : undefined,
-      packageWeight: collectEditFirst(variant.packageWeight, variant.weight, sourceVariantText(sourceVariant, 4497)),
-      packageLength: collectEditFirst(variant.packageLength, variant.depth, sourceVariantText(sourceVariant, 9454)),
-      packageWidth: collectEditFirst(variant.packageWidth, variant.width, sourceVariantText(sourceVariant, 9455)),
-      packageHeight: collectEditFirst(variant.packageHeight, variant.height, sourceVariantText(sourceVariant, 9456)),
+      logistics: structuredClone(variantLogistics),
+      packageEditedFields: Array.isArray(variant.packageEditedFields) ? variant.packageEditedFields : [],
+      packageWeight: variant.packageWeight ?? collectEditFirst(variant.weight, variantLogistics.weightG, sourceVariantText(sourceVariant, 4497)),
+      packageLength: variant.packageLength ?? collectEditFirst(variant.depth, variantLogistics.lengthMm, sourceVariantText(sourceVariant, 9454)),
+      packageWidth: variant.packageWidth ?? collectEditFirst(variant.width, variantLogistics.widthMm, sourceVariantText(sourceVariant, 9455)),
+      packageHeight: variant.packageHeight ?? collectEditFirst(variant.height, variantLogistics.heightMm, sourceVariantText(sourceVariant, 9456)),
       bundleComplexAttrs: variant.bundleComplexAttrs || sourceVariant._bundleComplexAttrs || undefined,
     };
   });
@@ -5087,8 +4175,8 @@ export const collectCategoryConfirmationIntent = ({
 } = {}) => {
   const draftVersion = Number(item?.draftVersion);
   if (!Number.isSafeInteger(draftVersion) || draftVersion < 1) {
-    const error = new Error("OZON_CATEGORY_CONFIRMATION_INVALID");
-    error.code = "OZON_CATEGORY_CONFIRMATION_INVALID";
+    const error = new Error("ZONGZI_CATEGORY_CONFIRMATION_INVALID");
+    error.code = "ZONGZI_CATEGORY_CONFIRMATION_INVALID";
     throw error;
   }
   return categoryConfirmationRequest({
@@ -5130,14 +4218,49 @@ export const collectEditDraftVariantCategory = ({
   };
 };
 
-function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navigate, account }) {
+function CollectEditSkuMedia({ row, onChange }) {
+  const { message } = AntApp.useApp();
+  const [imageUrl, setImageUrl] = useState("");
+  const images = row.images || [];
+  const changeImages = (next) => onChange({ images: next, image: next[0] || "" });
+  const addImage = () => {
+    const url = safeExternalHttpUrl(imageUrl);
+    if (!url) { message.warning("请填写完整的 http 或 https 图片链接"); return; }
+    if (!images.includes(url)) changeImages([...images, url]);
+    setImageUrl("");
+  };
+  return (
+    <div className="collect-edit-sku-media">
+      <div className="collect-edit-gallery-label">SKU {row.sku || "待填写"} 图库 · {images.length} 张<span>第一张为主图，点击图片可放大</span></div>
+      <Image.PreviewGroup>
+        <div className="collect-edit-gallery">
+          {images.map((url, index) => (
+            <div className="collect-edit-gallery-item" key={url}>
+              <Image src={url} alt={`SKU ${row.sku} 第 ${index + 1} 张商品图片`} />
+              <div className="collect-edit-gallery-actions">
+                {index === 0 ? <span>主图</span> : <Button type="link" size="small" onClick={() => changeImages([url, ...images.filter((image) => image !== url)])}>设为主图</Button>}
+              </div>
+            </div>
+          ))}
+          {!images.length && <div className="collect-edit-empty-note">请添加商品图片</div>}
+        </div>
+      </Image.PreviewGroup>
+      <div className="collect-edit-gallery-add">
+        <Input aria-label={`SKU ${row.sku} 新图片链接`} value={imageUrl} placeholder="添加图片链接" onChange={(event) => setImageUrl(event.target.value)} onPressEnter={addImage} />
+        <Button onClick={addImage}>添加图片</Button>
+      </div>
+    </div>
+  );
+}
+
+function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, onCollectProgress, navigate, account }) {
   const { message } = AntApp.useApp();
   const [loading, setLoading] = useState(false);
   const [listingResult, setListingResult] = useState(null);
   const [sku, setSku] = useState("");
   const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
-  const [currencyCode, setCurrencyCode] = useState("CNY");
+  const [currencyCode, setCurrencyCode] = useState("");
   const [image, setImage] = useState("");
   const [brand, setBrand] = useState("");
   const [modelName, setModelName] = useState("");
@@ -5157,6 +4280,16 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const [note, setNote] = useState("");
   const [variantRows, setVariantRows] = useState([]);
   const [selectedVariantKeys, setSelectedVariantKeys] = useState([]);
+  const [expandedVariantKeys, setExpandedVariantKeys] = useState([]);
+  const [variantSearch, setVariantSearch] = useState("");
+  const [variantFilter, setVariantFilter] = useState("all");
+  const [variantPage, setVariantPage] = useState(1), [variantPageSize, setVariantPageSize] = useState(5);
+  const [batchPrice, setBatchPrice] = useState("");
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const editRevisionRef = useRef(0);
+  const markDraftEdited = () => { editRevisionRef.current += 1; setDraftDirty(true); };
+  const editValue = (setter, value) => { markDraftEdited(); setter(value); };
   const [previewItem, setPreviewItem] = useState(null);
   const [categoryAutoError, setCategoryAutoError] = useState("");
   const [categorySchema, setCategorySchema] = useState([]);
@@ -5212,7 +4345,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   ).trim() || "OZON:DEFAULT";
   const effectiveEnrichment = collectEnrichmentEffectiveSummary(item, enrichmentRetryOverride);
   const enrichmentView = collectEnrichmentView(effectiveEnrichment);
-  const enrichmentPollStatus = String(effectiveEnrichment?.status || "");
+  const enrichmentShouldPoll = Boolean(collectCandidate) && collectEnrichmentNeedsPolling(effectiveEnrichment);
   React.useEffect(function() {
     if (enrichmentRetryOverride && enrichmentRetryOverride.baseItem !== item) {
       setEnrichmentRetryOverride(null);
@@ -5220,15 +4353,15 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   }, [item, enrichmentRetryOverride]);
   React.useEffect(function() {
     if (
-      typeof onRefresh !== "function"
-      || !collectEnrichmentNeedsPolling(effectiveEnrichment)
+      typeof onCollectProgress !== "function"
+      || !enrichmentShouldPoll
     ) return undefined;
     return startCollectEnrichmentPolling({
-      refresh: () => onRefresh({ silent: true, source: "collect-edit-poll" }),
+      refresh: ({signal}) => onCollectProgress({ids:[collectCandidate.id], signal}),
       setIntervalFn: window.setInterval.bind(window),
       clearIntervalFn: window.clearInterval.bind(window),
     });
-  }, [itemId, enrichmentPollStatus, onRefresh]);
+  }, [collectCandidate?.id, account?.id, enrichmentShouldPoll, onCollectProgress]);
   const retryCollectEnrichment = async function() {
     if (!item?.id || !enrichmentView.retryable || enrichmentRetrying) return;
     setEnrichmentRetrying(true);
@@ -5257,9 +4390,9 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     if (listingSubmissionIntentRef.current) listingSubmissionIntentRef.current = listingSubmissionIntent(listingSubmissionIntentRef.current, { collectItemId: itemId, targetStoreId: next });
     setPreviewItem(null);
     setCategoryAutoError("");
-    setTargetStoreId(next);
+    editValue(setTargetStoreId, next);
   };
-  const storeCurrencyCode = preparationModel.currencyCode;
+  const storeCurrencyCode = collectPriceCurrencyCode({ currencyCode: preparationModel.currencyCode });
   const readCategoryTree = React.useCallback((language) => apiRequest(`/ozon/categories/tree?language=${encodeURIComponent(language)}`, {
     headers: { "x-ozon-store-id": categoryStoreId },
   }), [categoryStoreId]);
@@ -5284,6 +4417,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       const draft = item.listingDraft || {};
       const itemScope = [
         categoryStoreId,
+        storeCurrencyCode,
         itemId,
         collectEditFirst(item.id, item.sku, item.product_id, item.offer_id),
       ].join("|");
@@ -5311,26 +4445,34 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setCategoryAttributeValues({});
       const nextSku = String(draft.sku || item.sku || item.product_id || item.offer_id || item.id || "");
       const nextTitle = collectEditFirst(draft.title, item.name, item.title, item.offer_id);
-      const nextPrice = collectEditFirst(draft.price, item.price?.price, item.price, item.priceText, item.marketing_price);
-      const nextCurrency = collectEditFirst(storeCurrencyCode, draft.currencyCode, item.price?.currency_code, item.priceCurrency, item.currencyCode, item.currency_code, item.currency) || "CNY";
+      const nextCurrency = storeCurrencyCode;
+      const nextPrice = normalizeCollectEditVariantRow({
+        variant: item, draftVariant: draft, targetCurrencyCode: nextCurrency,
+      }).sellPrice;
       const nextImages = collectEditImages({ ...item, images: draft.images || item.images }, draft.image || "");
       const nextOfferPrefix = draft.offerPrefix || "jz-";
       const draftVariants = Array.isArray(draft.variants) ? draft.variants : [];
       const variantSourceItem = draftVariants.length
         ? { ...item, variants: draftVariants }
         : item;
+      const nextVariantRows = collectEditVariantRows({
+        item: variantSourceItem, sourceItem: item, sku: nextSku, title: nextTitle,
+        price: nextPrice, images: nextImages, offerPrefix: nextOfferPrefix,
+        targetStoreId: categoryStoreId, taxonomyScope: categoryTaxonomyScope,
+        targetCurrencyCode: nextCurrency,
+      });
       setSku(nextSku);
       setTitle(nextTitle);
-      setPrice(nextPrice);
+      setPrice(nextVariantRows[0]?.sellPrice ?? nextPrice);
       setCurrencyCode(nextCurrency);
       setImage(nextImages[0] || "");
       setBrand(collectEditFirst(draft.brand, item.brand) || "Нет бренда");
       setModelName(collectEditFirst(draft.modelName, item.modelName, item.model_name, item.offer_id, nextSku));
       setOfferPrefix(nextOfferPrefix);
-      setDescription(collectEditFirst(draft.description, item.description, item.desc, item.subtitle, nextTitle));
+      setDescription(draft.description ?? collectEditFirst(item.description, item.desc, item.subtitle, nextVariantRows.find(row => row.sku === nextSku)?.description));
       setDescriptionMode("编辑");
       setTags(Array.isArray(draft.tags) && draft.tags.length ? draft.tags : collectEditTags(item, nextTitle));
-      setRichContent(collectEditFirst(draft.richContent) || collectEditRichContent(nextTitle, nextImages));
+      setRichContent(draft.richContent ?? collectEditFirst(item.richContent, nextVariantRows.find(row => row.sku === nextSku)?.richContent));
       setPackageWeight(collectEditPackageDimension(
         draft.packageWeight,
         item,
@@ -5365,8 +4507,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setListingStock(collectEditFirst(draft.listingStock, draft.stock, item.listingStock, item.listing_stock, "5"));
       setSourceLink(collectEditFirst(draft.sourceLink) || collectEditSourceUrl(item, nextSku));
       setNote(collectEditFirst(draft.note, item.note, item.remark));
-      setVariantRows(collectEditVariantRows({ item: variantSourceItem, sku: nextSku, title: nextTitle, price: nextPrice, images: nextImages, offerPrefix: nextOfferPrefix, targetStoreId: categoryStoreId, taxonomyScope: categoryTaxonomyScope }));
+      setVariantRows(nextVariantRows);
       setSelectedVariantKeys([]);
+      setExpandedVariantKeys([]);
+      setVariantSearch("");
+      setVariantFilter("all");
+      setVariantPage(1);
+      setDraftDirty(false);
     } else {
       setPreviewItem(null);
       setCategoryAutoError("");
@@ -5407,6 +4554,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const categoryTreeOptionsRu = useMemo(() => collectEditCategoryTreeOptions(scopedTrees.ruTree), [scopedTrees]);
 
   const runListingRequest = async function({ dryRun = false } = {}) {
+    if (listingResult?.submitted) {
+      message.info("该草稿已提交，请到上架记录查看结果");
+      return;
+    }
     if (!itemScopeCurrent) {
       message.error("当前商品店铺数据未就绪，不能预检或上架");
       return;
@@ -5425,6 +4576,12 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       message.warning(listingMissingRequiredText);
       return;
     }
+    if (variantPackageMissingRows.length) {
+      setExpandedVariantKeys([variantPackageMissingRows[0].key]);
+      message.warning(`请填写 SKU ${variantPackageMissingRows[0].sku} 的有效包装重量和尺寸，再进行上架预检`);
+      document.getElementById("SKU 与图片")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     if (!item?.id || !isCollectItem) {
       message.warning("请从采集箱进入商品信息编辑页后再上架");
       return;
@@ -5435,6 +4592,14 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     }
     if (!hasStore) {
       if (!categoryStoreId) { message.warning("请先选择上架店铺"); onBind?.(); return; }
+    }
+    if (!storeCurrencyCode || currencyCode !== storeCurrencyCode) {
+      message.warning("请先确认目标店铺的上架币种");
+      return;
+    }
+    if (!variantRows.length || variantRows.some((row) => !(numberFromMoney(row.sellPrice) > 0))) {
+      message.warning(`请为每个 SKU 填写有效的 ${storeCurrencyCode} 售价，来源价格不会自动换汇`);
+      return;
     }
     const numericPrice = numberFromMoney(price);
     if (!numericPrice || numericPrice <= 0) {
@@ -5451,7 +4616,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     setListingResult({
       status: "pending",
       title: dryRun ? "正在预检上架数据" : "正在提交上架任务",
-      detail: dryRun ? "正在保存当前草稿，并用数据库草稿做 Ozon 上架预检。" : `正在保存当前草稿，并冻结目标店铺「${targetStoreOptions.find((option) => option.value === categoryStoreId)?.label || categoryStoreId}」。`,
+      detail: dryRun ? "正在保存当前修改并检查上架资料。" : `正在保存当前修改并提交到「${targetStoreOptions.find((option) => option.value === categoryStoreId)?.label || categoryStoreId}」。`,
     });
     message.loading({
       content: dryRun ? "正在保存草稿并预检上架数据…" : "正在保存草稿并提交上架…",
@@ -5471,6 +4636,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         },
       });
       if (!dryRun && listingSubmissionIntentRef.current?.requestId === submissionIntent.requestId) listingSubmissionIntentRef.current = settleListingSubmissionIntent(submissionIntent, { definitive: true });
+      const warnings = result?.warnings || [];
       if (dryRun && result?.ok) {
         const preview = result || {};
         const first = Array.isArray(preview.items) ? preview.items[0] : null;
@@ -5479,25 +4645,28 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
           ? `类目 ${first.description_category_id || "—"} / 类型 ${first.type_id || "—"} / 属性 ${first.attributeCount || 0} / 图片 ${first.imageCount || 0}`
           : `共 ${preview.itemCount || 0} 个商品`;
         setListingResult({
-          status: "success",
-          title: "预检通过",
+          status: warnings.length ? "warning" : "success",
+          title: warnings.length ? "预检通过，部分资料需补充" : "预检通过",
           detail: summary,
+          warnings,
         });
-        message.success({ content: `预检通过：${summary}`, key: "edit-submit", duration: 5 });
+        message[warnings.length ? "warning" : "success"]({ content: warnings.length ? "预检通过，请查看下方资料提示" : `预检通过：${summary}`, key: "edit-submit", duration: 5 });
         return;
       }
       if (result?.ok) {
         await onRefresh?.();
         const taskId = result.task_id || result.result?.task_id || result.job?.taskId || "";
         setListingResult({
-          status: "pending",
+          status: warnings.length ? "warning" : "pending",
           title: result.queued ? "已进入正式上架队列" : "Ozon 已受理，等待最终结果",
+          warnings,
+          submitted: true,
           detail: taskId
-            ? `任务 ID ${taskId}；${draftSave?.unchanged ? "页面未修改，直接使用已有草稿快照" : "已保存修改并生成不可变快照"}。`
-            : "上架任务已创建，正在等待 Worker 处理。",
+            ? `任务 ID ${taskId}；当前商品资料已保存，请在上架记录中查看平台处理结果。`
+            : "上架任务已创建，请在上架记录中查看平台处理结果。",
         });
         message.info({ content: result.queued ? "已进入上架队列，最终结果请以上架记录为准" : "Ozon 已受理，最终结果请以上架记录为准", key: "edit-submit" });
-        setTimeout(function() { navigate("/ozon/products/import-history"); }, 800);
+        if (!warnings.length) setTimeout(function() { navigate("/ozon/products/import-history"); }, 800);
       } else {
         setListingResult({
           status: "error",
@@ -5536,7 +4705,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     }
   };
 
-  const productImageList = collectEditImages(item || {}, image);
+  const anchorVariant = variantRows.find((row) => String(row.sku || "") === String(sku || ""));
+  const productImageList = anchorVariant?.images ?? (Array.isArray(item?.listingDraft?.images)
+    ? item.listingDraft.images : collectEditImages(item || {}, image));
+  const isSingleSku = variantRows.length <= 1;
   const isCollectItem = Boolean(itemScopeCurrent && item?.id && collectItems.some(function(i) { return String(i.id) === String(item.id); }));
   const handleCategoryPreview = function() {
     if (account?.role !== "admin") {
@@ -5579,9 +4751,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       };
     });
     const anchorSku = String(sku || "");
-    const anchorIndex = Math.max(0, variantRows.findIndex((row) => String(row.sku || "") === anchorSku));
+    const anchorIndex = variantRows.findIndex((row) => String(row.sku || "") === anchorSku);
     const draftVariants = variantRows.map((row, index) => {
       const {
+        sourcePriceDisplay: _sourcePriceDisplay,
         descriptionCategoryId: _historicalDescriptionCategoryId,
         description_category_id: _historicalDescriptionCategoryIdSnake,
         typeId: _historicalTypeId,
@@ -5613,6 +4786,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       if (index !== anchorIndex) return normalizedRow;
       return {
         ...normalizedRow,
+        contentDiagnostics: {
+          ...row.contentDiagnostics,
+          description: description.trim() === String(row.description || "").trim() ? row.contentDiagnostics?.description
+            : { status: description.trim() ? "provided" : "not_provided", source: "manual" },
+          richContent: richContent.trim() === String(row.richContent || "").trim() ? row.contentDiagnostics?.richContent
+            : { status: richContent.trim() ? "provided" : "not_provided", source: "manual" },
+        },
         description,
         richContent,
         brand,
@@ -5621,6 +4801,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         packageLength,
         packageWidth,
         packageHeight,
+        logistics: { ...row.logistics, weightG: packageWeight, lengthMm: packageLength, widthMm: packageWidth, heightMm: packageHeight },
         descriptionCategoryId: rowTarget.descriptionCategoryId || "",
         typeId: rowTarget.typeId || "",
         categoryPath: categoryLabel,
@@ -5646,6 +4827,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       packageLength,
       packageWidth,
       packageHeight,
+      logistics: { weightG: packageWeight, lengthMm: packageLength, widthMm: packageWidth, heightMm: packageHeight },
       listingWarehouseId,
       warehouseId: listingWarehouseId,
       listingStock,
@@ -5664,6 +4846,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       sourceLink,
       note,
       variants: draftVariants,
+      contentDiagnostics: draftVariants[anchorIndex]?.contentDiagnostics,
       savedAt: new Date().toISOString(),
     };
   };
@@ -5674,6 +4857,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       if (!silent) message.warning(detail);
       throw new Error(detail);
     }
+    const savedRevision = editRevisionRef.current;
     const draft = buildListingDraft();
     const comparableDraft = (value = {}) => {
       const next = { ...(value || {}) };
@@ -5691,8 +4875,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
           name: title,
           title,
           sku,
-          price,
-          currency_code: currencyCode,
           image: productImageList[0] || image,
           images: productImageList,
           brand,
@@ -5709,6 +4891,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         },
       });
       await onRefresh?.();
+      if (editRevisionRef.current === savedRevision) setDraftDirty(false);
       if (!silent) message.success("草稿已保存");
       return { draft, saved, unchanged: false };
     } catch (error) {
@@ -5718,7 +4901,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   };
 
   const handleSaveDraft = async function() {
-    await saveListingDraft({ silent: false }).catch(function() {});
+    if (savingDraft || loading) return;
+    setSavingDraft(true);
+    try { await saveListingDraft({ silent: false }); } catch { /* The save error is already displayed. */ }
+    finally { setSavingDraft(false); }
   };
   const currentDraft = item?.listingDraft || {};
   const categoryResolution = collectEditEffectiveCategoryResolution({
@@ -5819,7 +5005,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     item?.category,
     item?.category_name,
     item?.type_name,
-  ) || (categoryMatched ? `类目 ${categoryDescriptionId || "—"} / 类型 ${categoryTypeId || "—"}` : "点击内容体检后自动匹配");
+  ) || (categoryMatched ? "已保存上架类目，名称待加载" : "等待确认上架类目");
   const categoryRussianLabel = categoryPathRu || collectEditFirst(
     scopedPreviewItem?.categoryPathRu,
     scopedPreviewItem?.category_path_ru,
@@ -5887,7 +5073,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       const confirmationResult = categoryConfirmationResponse(result?.data, confirmation.body);
       const confirmed = confirmationResult?.categoryResolution;
       if (!confirmed) {
-        throw new Error("OZON_CATEGORY_CONFIRMATION_RESPONSE_INVALID");
+        throw new Error("ZONGZI_CATEGORY_CONFIRMATION_RESPONSE_INVALID");
       }
       categoryConfirmationIntentRef.current = null;
       setPreviewItem((prev) => ({
@@ -6089,7 +5275,9 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
 
   const hasPackageDimensions = [packageWeight, packageLength, packageWidth, packageHeight]
     .every((value) => numberFromMoney(value) > 0);
-  const activeCurrencyCode = storeCurrencyCode || currencyCode;
+  const variantPackageMissingRows = variantRows.filter((row) => row.sku !== sku
+    && (row.packageEditedFields || []).some((field) => !(numberFromMoney(row[field]) > 0)));
+  const activeCurrencyCode = storeCurrencyCode;
   const listingStockNumber = numberFromMoney(listingStock);
   const listingStockReady = collectEditText(listingStock) !== "" && listingStockNumber !== null && listingStockNumber >= 0;
   const listingWarehouseReady = listingWarehouseOptions.some((option) => option.value === String(listingWarehouseId));
@@ -6097,8 +5285,11 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const missingRequiredCategoryAttributes = requiredCategoryAttributeRows
     .filter((row) => !collectEditRequiredValueFilled(categoryAttributeValues[row.key] ?? row.value, row))
     .map((row) => row.label || row.key);
+  const editorCategoryStatus = categoryMatched
+    ? (missingRequiredCategoryAttributes.length ? `类目已匹配，待填写：${missingRequiredCategoryAttributes.join("、")}` : "类目已匹配")
+    : categoryResolutionViewState?.label || "商品类目状态暂时无法确认，请联系管理员";
   const variantRequiredReady = Boolean(variantRows.length) && variantRows.every((row) => {
-    const rowPrice = collectEditFirst(row.sellPrice, row.price, price);
+    const rowPrice = row.sellPrice;
     return collectEditRequiredValueFilled(collectEditFirst(row.offerId, row.offer_id))
       && collectEditRequiredValueFilled(collectEditFirst(row.name, row.title))
       && numberFromMoney(rowPrice) > 0;
@@ -6111,26 +5302,26 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     !targetStoreId ? "上架店铺" : "",
     !collectEditRequiredValueFilled(sku) ? "SKU（商品编码）" : "",
     !collectEditRequiredValueFilled(title) ? "俄语标题" : "",
-    !collectEditRequiredValueFilled(description) ? "商品简介/描述" : "",
     numberFromMoney(price) <= 0 ? "售价" : "",
     !productImageList.length ? "商品图片" : "",
     !collectEditRequiredValueFilled(brand) ? "品牌" : "",
-    !collectEditRequiredValueFilled(activeCurrencyCode) ? "上架货币" : "",
+    !collectEditRequiredValueFilled(activeCurrencyCode) || currencyCode !== activeCurrencyCode ? "上架货币" : "",
     !listingWarehouseReady ? "上架仓库" : "",
     !listingStockReady ? "上架库存" : "",
     !hasPackageDimensions ? "包装重量和尺寸" : "",
+    ...variantPackageMissingRows.map((row) => `SKU ${row.sku} 包装重量和尺寸`),
     !categoryMatched ? "产品类目" : "",
     !categoryReadinessState.ready ? "真实类目数据可用" : "",
     categorySchemaLoading ? "类目属性加载完成" : "",
     categorySchemaError ? "类目属性重新加载" : "",
-    !variantRequiredReady ? "变体 SKU 货号、名称和售价" : "",
+    !variantRequiredReady ? "SKU 货号、名称和售价" : "",
     ...missingRequiredCategoryAttributes.map((label) => `类目属性「${label}」`),
   ].filter(Boolean);
   const listingMissingRequiredText = enrichmentListingBlockedText || (listingRequiredMissingFields.length
     ? `请先完善必填项：${listingRequiredMissingFields.slice(0, 6).join("、")}${listingRequiredMissingFields.length > 6 ? `等 ${listingRequiredMissingFields.length} 项` : ""}`
     : "");
-  const listingSubmitDisabledReason = listingMissingRequiredText || categoryReadinessState.message;
-  const listingSubmitDisabled = loading || Boolean(listingRequiredMissingFields.length) || !categoryReadinessState.ready;
+  const listingSubmitDisabledReason = listingResult?.submitted ? "该草稿已提交，请到上架记录查看结果" : listingMissingRequiredText || categoryReadinessState.message;
+  const listingSubmitDisabled = loading || Boolean(listingResult?.submitted) || Boolean(listingRequiredMissingFields.length) || !categoryReadinessState.ready;
   const readyChecks = [
     !preparationModel.listingBlocked,
     Boolean(targetStoreId),
@@ -6139,7 +5330,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     numberFromMoney(price) > 0,
     Boolean(productImageList.length),
     collectEditRequiredValueFilled(brand),
-    hasPackageDimensions,
+    hasPackageDimensions && !variantPackageMissingRows.length,
     categoryReadinessState.ready && !categorySchemaLoading && !categorySchemaError && !missingRequiredCategoryAttributes.length,
     listingWarehouseReady,
     listingStockReady,
@@ -6164,86 +5355,150 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     packageReady: hasPackageDimensions,
   });
   const sectionNav = [
-    { title: "店铺与基础", note: hasStore ? "已选 1" : "未绑定" },
-    { title: "产品类目", note: categoryResolutionViewState?.label || "商品类目状态暂时无法确认，请联系管理员" },
+    { title: "店铺与基础", note: targetStoreId ? "已选择店铺" : "待选择" },
+    { title: "SKU 与图片", note: isSingleSku ? "单 SKU 商品" : `${variantRows.length} 个可编辑 SKU` },
+    { title: "产品类目", note: editorCategoryStatus },
     { title: "标题与文案", note: title ? "已填写" : "待填写" },
     { title: "物流尺寸", note: packageWeight && packageLength && packageWidth && packageHeight ? "已填写" : "待填写" },
     { title: "类目属性", note: categoryAttributeInputRows.length ? `${categoryAttributeInputRows.length} 项` : categorySchemaLoading ? "加载中" : "待匹配" },
-    { title: "变体设置", note: `${variantRows.length || 1} 个变体` },
     { title: "货源信息", note: sourceLink ? "已填写" : "可选" },
   ];
   const reindexVariantRows = (rows) => rows.map((row, index) => ({ ...row, index: index + 1 }));
   const updateVariantRow = (key, patch) => {
-    setVariantRows((rows) => rows.map((row) => row.key === key ? { ...row, ...patch } : row));
-  };
-  const duplicateVariantRow = (row) => {
-    setVariantRows((rows) => reindexVariantRows([
-      ...rows,
-      {
-        ...row,
-        key: `${row.key}-copy-${Date.now()}`,
-        offerId: `${row.offerId || offerPrefix}${rows.length + 1}`,
-      },
-    ]));
+    const row = variantRows.find((row) => row.key === key);
+    if (!row) return;
+    markDraftEdited();
+    const packageFields = { packageWeight: "weightG", packageLength: "lengthMm", packageWidth: "widthMm", packageHeight: "heightMm" };
+    const logisticsPatch = Object.fromEntries(Object.entries(packageFields).filter(([field]) => Object.hasOwn(patch, field)).map(([field, target]) => [target, patch[field]]));
+    const mediaEdits = Object.fromEntries(['color_image', 'videoCoverUrl'].filter(field => Object.hasOwn(patch, field))
+      .map(field => [field, { status: String(patch[field] || '').trim() ? 'provided' : 'not_provided', source: 'manual' }]));
+    setVariantRows((rows) => rows.map((row) => row.key === key ? { ...row, ...patch,
+      ...(Object.keys(mediaEdits).length ? { contentDiagnostics: { ...row.contentDiagnostics, ...patch.contentDiagnostics, ...mediaEdits } } : {}),
+      ...(Object.keys(logisticsPatch).length ? {
+        logistics: { ...row.logistics, ...logisticsPatch },
+        packageEditedFields: [...new Set([...(row.packageEditedFields || []), ...Object.keys(packageFields).filter((field) => Object.hasOwn(patch, field))])],
+      } : {}),
+    } : row));
+    if (key === variantRows[0]?.key && Object.hasOwn(patch, "sellPrice")) setPrice(patch.sellPrice);
+    if (variantRows.length === 1 && Object.hasOwn(patch, "stock")) setListingStock(String(patch.stock));
+    if (row.sku === sku) {
+      if (Object.hasOwn(patch, "name")) setTitle(patch.name);
+      if (Object.hasOwn(patch, "image")) setImage(patch.image);
+    }
   };
   const deleteVariantRow = (key) => {
     if (variantRows.length <= 1) {
-      message.warning("至少保留 1 个变体");
+      message.warning("至少保留 1 个 SKU");
       return;
     }
     if (!variantRows.some((row) => row.key === key)) {
-      message.warning("未找到要删除的变体");
+      message.warning("未找到要删除的 SKU");
       return;
     }
-    setVariantRows((rows) => reindexVariantRows(rows.filter((row) => row.key !== key)));
+    markDraftEdited();
+    const nextRows = reindexVariantRows(variantRows.filter((row) => row.key !== key));
+    setVariantRows(nextRows);
+    setPrice(nextRows[0]?.sellPrice || "");
     setSelectedVariantKeys((keys) => keys.filter((value) => value !== key));
-    message.success("已删除变体");
+    setExpandedVariantKeys((keys) => keys.filter((value) => value !== key));
+    message.success("已从草稿移除 SKU，保存后生效");
   };
   const deleteSelectedVariants = () => {
     if (!selectedVariantKeys.length) return;
     const selectedSet = new Set(selectedVariantKeys);
     const nextRows = variantRows.filter((row) => !selectedSet.has(row.key));
     if (!nextRows.length) {
-      message.warning("至少保留 1 个变体");
+      message.warning("至少保留 1 个 SKU");
       return;
     }
+    markDraftEdited();
     setVariantRows(reindexVariantRows(nextRows));
+    setPrice(nextRows[0]?.sellPrice || "");
     setSelectedVariantKeys([]);
-    message.success(`已删除 ${variantRows.length - nextRows.length} 个变体`);
+    setExpandedVariantKeys((keys) => keys.filter((value) => !selectedSet.has(value)));
+    message.success(`已从草稿移除 ${variantRows.length - nextRows.length} 个 SKU，保存后生效`);
   };
+  const applySelectedVariantValues = () => {
+    const patch = batchPrice !== "" ? { sellPrice: batchPrice } : {};
+    if (!selectedVariantKeys.length || !Object.keys(patch).length) return;
+    markDraftEdited();
+    const selected = new Set(selectedVariantKeys);
+    setVariantRows((rows) => rows.map((row) => selected.has(row.key) ? { ...row, ...patch } : row));
+    if (selected.has(variantRows[0]?.key) && Object.hasOwn(patch, "sellPrice")) setPrice(patch.sellPrice);
+  };
+  const skuMissingFields = (row) => [
+    !collectEditText(row.offerId) ? "货号" : "",
+    !collectEditText(row.name) ? "名称" : "",
+    !(numberFromMoney(row.sellPrice) > 0) ? "售价" : "",
+    !listingStockReady ? "上架库存" : "",
+    !row.images?.length ? "图片" : "",
+    variantPackageMissingRows.some((missingRow) => missingRow.key === row.key) ? "包装重量和尺寸" : "",
+  ].filter(Boolean);
+  const filteredVariantRows = variantRows.filter((row) => {
+    const matchesSearch = [row.sku, row.offerId, row.name, row.specification].some((value) => String(value || "").toLocaleLowerCase().includes(variantSearch.trim().toLocaleLowerCase()));
+    return matchesSearch && (variantFilter !== "missing" || skuMissingFields(row).length > 0);
+  });
+  const renderSkuAdvanced = (row) => (
+    <div className="collect-edit-sku-details">
+      {!isSingleSku && <CollectEditSkuMedia row={row} onChange={(patch) => updateVariantRow(row.key, patch)} />}
+      <Form layout="vertical" className="collect-edit-grid">
+        <Form.Item label="来源 SKU"><Input aria-label={`来源 SKU ${row.sku}`} value={row.sku} readOnly /></Form.Item>
+        <Form.Item label="SKU 货号"><Input aria-label={`SKU ${row.sku} 货号`} value={row.offerId} onChange={(event) => updateVariantRow(row.key, { offerId: event.target.value })} /></Form.Item>
+        <Form.Item label="采集规格"><Input aria-label={`SKU ${row.sku} 采集规格`} value={row.specification} placeholder="未记录规格说明" readOnly /></Form.Item>
+        <Form.Item label={`划线价 ${currencyCode}`}><Input aria-label={`SKU ${row.sku} 划线价`} value={row.oldPrice} inputMode="decimal" onChange={(event) => updateVariantRow(row.key, { oldPrice: event.target.value })} /></Form.Item>
+        {row.purchasePrice && <Form.Item label="采购原记录（币种未记录）"><Input aria-label={`SKU ${row.sku} 采购原记录`} value={row.purchasePrice} readOnly /></Form.Item>}
+        <Form.Item label="采集条形码"><Input aria-label={`SKU ${row.sku} 采集条形码`} value={row.barcode} readOnly /></Form.Item>
+      </Form>
+      <Form layout="vertical">
+        <Form.Item label="SKU 名称"><Input aria-label={`SKU ${row.sku} 名称`} value={row.name} onChange={(event) => updateVariantRow(row.key, { name: event.target.value })} /></Form.Item>
+      </Form>
+      {row.sku === sku ? <p className="collect-edit-scope-note">此 SKU 的文案、包装与类目属性在下方主商品资料中编辑。</p> : <>
+        <Form layout="vertical" className="collect-edit-size-grid">
+          {[["packageWeight", "包装重量", "克"], ["packageLength", "包装长", "毫米"], ["packageWidth", "包装宽", "毫米"], ["packageHeight", "包装高", "毫米"]].map(([field, label, unit]) => {
+            const invalidEdit = row.packageEditedFields?.includes(field) && !(numberFromMoney(row[field]) > 0);
+            return <Form.Item key={field} label={label} required validateStatus={invalidEdit ? "error" : undefined} help={invalidEdit ? "上架前请填写大于 0 的数值" : undefined}><Input aria-label={`SKU ${row.sku} ${label}`} value={row[field]} suffix={unit} onChange={(event) => updateVariantRow(row.key, { [field]: event.target.value })} /></Form.Item>;
+          })}
+        </Form>
+        <Form layout="vertical">
+          <Form.Item label="SKU 专属简介"><Input.TextArea aria-label={`SKU ${row.sku} 简介`} value={row.description} rows={4} onChange={(event) => updateVariantRow(row.key, { description: event.target.value, contentDiagnostics: { ...row.contentDiagnostics, description: { status: event.target.value.trim() ? "provided" : "not_provided", source: "manual" } } })} /></Form.Item>
+          <Form.Item label="SKU 原采集富内容 JSON"><Input.TextArea aria-label={`SKU ${row.sku} 原采集富内容`} value={row.richContent} rows={3} readOnly /></Form.Item>
+        </Form>
+      </>}
+      <details className="collect-edit-details">
+        <summary>视频、颜色样本与资料来源</summary>
+        <Form layout="vertical" className="collect-edit-grid">
+          <Form.Item label="采集视频链接"><Input aria-label={`SKU ${row.sku} 采集视频链接`} value={row.video} readOnly /></Form.Item>
+          <Form.Item label="独立颜色样本"><Input aria-label={`SKU ${row.sku} 独立颜色样本`} value={row.color_image} onChange={(event) => updateVariantRow(row.key, { color_image: event.target.value })} /></Form.Item>
+          <Form.Item label="封面视频"><Input aria-label={`SKU ${row.sku} 封面视频`} value={row.videoCoverUrl} placeholder="MP4 / MOV（选填）" onChange={(event) => updateVariantRow(row.key, { videoCoverUrl: event.target.value })} /></Form.Item>
+        </Form>
+        {!!row.videos?.length && <div className="collect-edit-video-list">{row.videos.map((video, index) => <a key={index} href={safeExternalHttpUrl(typeof video === "string" ? video : video.url || video.videoUrl)} target="_blank" rel="noreferrer">{video.coverUrl && <img loading="lazy" decoding="async" src={video.coverUrl} alt="" />}原采集视频 {index + 1}</a>)}</div>}
+        <p className="collect-edit-scope-note">{collectEditContentNotes(row)}</p>
+        <div className="collect-edit-attribute-list">{collectEditAttributeRows({ attributes: row.categoryAttributes || row.sourceVariant?.attributes || [] }).map((attribute, index) => <div className="collect-edit-attribute-row" key={index}><span>{attribute.label || attribute.name || attribute.key}</span><strong>{attribute.value || "—"}</strong></div>)}</div>
+      </details>
+      {!isSingleSku && <div className="collect-edit-sku-detail-actions"><Button size="small" danger onClick={() => deleteVariantRow(row.key)}>从草稿移除</Button></div>}
+    </div>
+  );
   const variantColumns = [
-    { title: "#", dataIndex: "index", width: 48, fixed: "left" },
-    { title: "图片", dataIndex: "image", width: 76, render: (value) => value ? <img className="collect-edit-table-image" src={value} alt="" /> : <span className="collect-edit-empty-cell">—</span> },
-    { title: "视频封面", dataIndex: "cover", width: 86, render: (value) => value ? <img className="collect-edit-table-image" src={value} alt="" /> : <span className="collect-edit-empty-cell">—</span> },
-    { title: "视频", dataIndex: "video", width: 130, render: (value, row) => <Input size="small" value={value} placeholder="视频链接" onChange={(event) => updateVariantRow(row.key, { video: event.target.value })} /> },
-    { title: "SKU 货号", dataIndex: "offerId", width: 190, render: (value, row) => <Input size="small" value={value} onChange={(event) => updateVariantRow(row.key, { offerId: event.target.value })} /> },
-    { title: "SKU 名称", dataIndex: "name", width: 280, render: (value, row) => <Input size="small" value={value} onChange={(event) => updateVariantRow(row.key, { name: event.target.value })} /> },
-    { title: "采购价", dataIndex: "purchasePrice", width: 112, render: (value, row) => <Input size="small" value={value} placeholder="—" onChange={(event) => updateVariantRow(row.key, { purchasePrice: event.target.value })} /> },
-    { title: `售价 ${currencyCode === "CNY" ? "¥" : currencyCode}`, dataIndex: "sellPrice", width: 120, render: (value, row, index) => (
-      <Input
-        size="small"
-        value={value}
-        onChange={(event) => {
-          updateVariantRow(row.key, { sellPrice: event.target.value });
-          if (index === 0) setPrice(event.target.value);
-        }}
-      />
-    ) },
-    { title: `划线价 ${currencyCode === "CNY" ? "¥" : currencyCode}`, dataIndex: "oldPrice", width: 120, render: (value, row) => <Input size="small" value={value} onChange={(event) => updateVariantRow(row.key, { oldPrice: event.target.value })} /> },
-    { title: "库存", dataIndex: "stock", width: 92, render: (value, row) => <Input size="small" value={value} onChange={(event) => updateVariantRow(row.key, { stock: event.target.value })} /> },
-    { title: "操作", dataIndex: "actions", width: 112, fixed: "right", render: (_, row) => (
-      <Space size={4}>
-        <Button size="small" type="link" onClick={(event) => { event.stopPropagation(); duplicateVariantRow(row); }}>复制</Button>
-        <Button size="small" type="link" danger disabled={variantRows.length <= 1} onClick={(event) => { event.stopPropagation(); deleteVariantRow(row.key); }}>删除</Button>
-      </Space>
-    ) },
+    { title: "规格 / SKU", key: "sku", render: (_, row) => <div className="collect-edit-sku-identity">{row.image ? <Image width={44} height={44} className="collect-edit-table-image" src={row.image} alt="" /> : <PictureOutlined />}<div><strong title={row.specification || row.name}>{row.specification || row.name || "未填写名称"}</strong><span>SKU {row.sku || "待填写"}</span><span>货号 {row.offerId || "待填写"}</span></div></div> },
+    { title: `售价 ${currencyCode}`, dataIndex: "sellPrice", width: 132, render: (value, row) => <div className="collect-edit-sku-price"><Input size="small" aria-label={`SKU ${row.sku} 售价`} inputMode="decimal" value={value} onChange={(event) => updateVariantRow(row.key, { sellPrice: event.target.value })} /><span>采集 {row.sourcePriceDisplay || "—"}</span></div> },
+    { title: "上架库存", key: "listingStock", width: 86, render: () => <span title="使用本组统一上架库存">{listingStock || "待填写"}</span> },
+    { title: "图片", key: "images", width: 66, render: (_, row) => <span>{row.images?.length || 0} 张</span> },
+    { title: "基础资料", key: "status", width: 100, render: (_, row) => <Tooltip rootClassName="prototype-overlay" title={skuMissingFields(row).join("、") || "货号、名称、售价、库存与图片已填写；提交结果以预检为准"}><Tag color={skuMissingFields(row).length ? "orange" : "green"}>{skuMissingFields(row).length ? "待填写" : "已填写"}</Tag></Tooltip> },
+    { title: "操作", key: "actions", width: 78, render: (_, row) => <Button size="small" type="link" aria-label={`编辑 SKU ${row.sku}`} aria-expanded={expandedVariantKeys.includes(row.key)} onClick={() => setExpandedVariantKeys(expandedVariantKeys.includes(row.key) ? [] : [row.key])}>{expandedVariantKeys.includes(row.key) ? "收起" : "编辑"}</Button> },
   ];
 
   if (!itemId || !item) {
     return (
       <div className="source-page">
         <Card>
-          <Empty description="未找到采集商品" />
+          <Empty
+            description="当前没有可编辑的待上架商品。若已完成上架，请在上架记录中查看。"
+          >
+            <Space wrap>
+              <Button onClick={() => navigate("/ozon/products/collect")}>返回采集箱</Button>
+              <Button type="primary" onClick={() => navigate("/ozon/products/import-history")}>查看上架记录</Button>
+            </Space>
+          </Empty>
         </Card>
       </div>
     );
@@ -6254,28 +5509,41 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       <div className="collect-edit-header">
         <div className="collect-edit-product">
           <div className="collect-edit-cover">
-            {productImageList[0] ? <img src={productImageList[0]} alt="" /> : <PictureOutlined />}
+            {productImageList[0] ? <img loading="lazy" decoding="async" src={productImageList[0]} alt="" /> : <PictureOutlined />}
           </div>
           <div className="collect-edit-title-block">
             <h1>{title || "商品信息编辑"}</h1>
             <div className="collect-edit-meta">
               <span>SKU {sku || "—"}</span>
-              <span>{variantRows.length || 1} 个变体</span>
-              <span>{productImageList.length} 张图片</span>
+              <span>{isSingleSku ? "单 SKU 商品" : `${variantRows.length} 个可编辑 SKU`}</span>
+              <span>{isSingleSku ? "商品图库" : "主商品图库"} {productImageList.length} 张</span>
             </div>
           </div>
         </div>
         <div className="collect-edit-head-actions">
           <Button onClick={function() { navigate("/ozon/products/collect"); }}>返回列表</Button>
           <div className="collect-edit-ready">
-            <span>{readyCount}/{readyChecks.length}</span>
-            <strong>{readyPercent}% 就绪</strong>
+            <span>基础资料完整度</span>
+            <strong>{readyCount}/{readyChecks.length} 项</strong>
             <div><i style={{ width: `${readyPercent}%` }} /></div>
           </div>
         </div>
       </div>
 
-      {enrichmentView.label ? (
+      <div className="collect-edit-status-bar">
+        <div className="collect-edit-status-summary">
+          {enrichmentView.label && <Tag color={collectEnrichmentTagColors[enrichmentView.tone] || "default"}>{enrichmentView.label}</Tag>}
+          {Number(effectiveEnrichment?.totalSkus) > 0 && <span>原采集补全 {Number(effectiveEnrichment.completedSkus) || 0}/{Number(effectiveEnrichment.totalSkus)} 个 SKU{Number(effectiveEnrichment.totalSkus) > variantRows.length ? "（含已上架 SKU）" : ""}</span>}
+          <span>{listingResult?.submitted ? "已提交，等待平台结果" : draftDirty ? "有未保存修改" : "正在编辑草稿"}</span>
+        </div>
+        <details className="collect-edit-status-details">
+          <summary>{listingRequiredMissingFields.length ? `${listingRequiredMissingFields.length} 项资料待完善` : "基础资料已填写"} · {contentRating.missing.length} 项优化建议</summary>
+          <p>完整度只表示基础字段填写情况。预检及平台处理结果会单独显示。</p>
+          {!!listingRequiredMissingFields.length && <ul>{listingRequiredMissingFields.map((field) => <li key={field}><a href={`#${field.includes("类目") ? "产品类目" : field.includes("包装") ? "物流尺寸" : field.includes("标题") ? "标题与文案" : field.includes("SKU") || field.includes("售价") || field.includes("图片") ? "SKU 与图片" : "店铺与基础"}`}>{field}</a></li>)}</ul>}
+          {!!contentRating.missing.length && <p>本地内容优化建议：{contentRating.missing.join("；")}。这些建议不是 Ozon 的审核评分。</p>}
+        </details>
+      </div>
+      {enrichmentView.label && (enrichmentView.listingBlocked || enrichmentView.retryable) ? (
         <Alert
           className="collect-enrichment-alert"
           type={collectEnrichmentAlertTypes[enrichmentView.tone] || "info"}
@@ -6291,34 +5559,17 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
           ) : undefined}
         />
       ) : null}
-      <Alert
-        className="collect-listing-status"
-        type="success"
-        showIcon
-        message="正式上架链路"
-        description="插件只负责前置采集入库；当前页面保存草稿后，预检和上架都会使用数据库中的最新草稿，不会重新通过插件采集商品数据。"
-        action={
-          <Space>
-            <Button size="small" onClick={handleSaveDraft}>保存草稿</Button>
-          </Space>
-        }
-      />
-      <Alert
-        className="collect-content-rating"
-        type={contentRating.alertType}
-        showIcon
-        message={`内容评级 ${contentRating.score}/100`}
-        description={contentRating.missing.length
-          ? `按 Ozon 商品内容规则本地评估，建议继续完善：${contentRating.missing.slice(0, 5).join("、")}${contentRating.missing.length > 5 ? `等 ${contentRating.missing.length} 项` : ""}。主题标签将按上传规则清洗为 ${contentRating.sanitizedTagCount} 个。`
-          : `当前内容完整度较好；主题标签将按上传规则清洗为 ${contentRating.sanitizedTagCount} 个，富内容 JSON 会在上传前按 Ozon 模板合规化。`}
-      />
       {listingResult ? (
         <Alert
           className="collect-listing-result"
           type={listingResult.status === "success" ? "success" : listingResult.status === "pending" ? "info" : listingResult.status === "warning" ? "warning" : "error"}
           showIcon
           message={listingResult.title}
-          description={listingResult.detail}
+          description={<>
+            <div>{listingResult.detail}</div>
+            {!!listingResult.warnings?.length && <ul>{listingResult.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
+            {listingResult.submitted && <Button type="link" onClick={() => navigate("/ozon/products/import-history")}>查看上架记录</Button>}
+          </>}
         />
       ) : null}
 
@@ -6337,12 +5588,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             <div className="collect-edit-section-head">
               <div>
                 <h2>店铺与基础</h2>
-                <p>{hasStore ? "已选 1" : "未绑定店铺"}</p>
+                <p>{isSingleSku ? "选择本商品的上架店铺与仓库" : "公共上架设置；SKU 专属内容在列表中编辑"}</p>
               </div>
               <Space>
                 <Button size="small" onClick={onBind}>店铺管理 →</Button>
-                <Button size="small" onClick={() => message.success("已选择当前店铺")}>全选</Button>
-                <Button size="small" onClick={() => message.info("当前店铺会保留用于上架")}>清空</Button>
               </Space>
             </div>
             <Form layout="vertical" className="collect-edit-grid">
@@ -6350,12 +5599,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 <Select showSearch value={targetStoreId || undefined} options={targetStoreOptions} placeholder="明确选择目标经营店铺" notFoundContent="没有启用且已保存凭据的经营店铺" optionFilterProp="label" onChange={selectListingTarget} />
               </Form.Item>
               <Form.Item label="品牌">
-                <Input value={brand} onChange={(event) => setBrand(event.target.value)} placeholder="Нет бренда" />
+                <Input value={brand} onChange={(event) => editValue(setBrand, event.target.value)} placeholder="Нет бренда" />
               </Form.Item>
               <Form.Item label="上架货币">
                 <Select
-                  value={currencyCode}
-                  onChange={setCurrencyCode}
+                  value={storeCurrencyCode || undefined}
+                  disabled
+                  placeholder="请先同步目标店铺币种"
                   options={[
                     { value: "CNY", label: "[¥] 人民币" },
                     { value: "RUB", label: "[₽] 卢布" },
@@ -6363,15 +5613,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                     { value: "EUR", label: "[€] 欧元" },
                   ]}
                 />
-              </Form.Item>
-              <Form.Item label="合并变体型号">
-                <Input value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="输入型号" />
-              </Form.Item>
-              <Form.Item label="货号前缀 offer_id 前缀">
-                <Input value={offerPrefix} onChange={(event) => setOfferPrefix(event.target.value)} placeholder="jz-" />
-              </Form.Item>
-              <Form.Item label="SKU（商品编码）">
-                <Input value={sku} onChange={(event) => setSku(event.target.value)} placeholder="输入 SKU" />
+                <div className="collect-edit-field-note">
+                  来源采集价：{formatCollectSourcePrice(item || {})}。
+                  {storeCurrencyCode ? `请按 ${storeCurrencyCode} 为每个 SKU 填写上架售价；不同币种不会自动换汇。` : "目标店铺币种确认后才能填写上架售价。"}
+                </div>
               </Form.Item>
               <Form.Item label="上架仓库">
                 <Select
@@ -6379,31 +5624,85 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                   value={listingWarehouseId || undefined}
                   options={listingWarehouseOptions}
                   placeholder="选择上架库存仓库"
-                  notFoundContent="当前店铺暂无活跃 FBS 仓库，请先完成商品同步"
+                  notFoundContent="当前店铺暂无可用 FBS / RFBS 仓库，请到店铺管理同步仓库"
                   optionFilterProp="label"
-                  onChange={(value) => setListingWarehouseId(value || "")}
-                />
-              </Form.Item>
-              <Form.Item label="上架库存">
-                <InputNumber
-                  min={0}
-                  precision={0}
-                  value={Number(listingStock) || 0}
-                  onChange={(value) => setListingStock(String(value ?? 0))}
-                  style={{ width: "100%" }}
+                  onChange={(value) => editValue(setListingWarehouseId, value || "")}
                 />
               </Form.Item>
             </Form>
+            <details className="collect-edit-details">
+              <summary>商品标识与货号规则</summary>
+              <Form layout="vertical" className="collect-edit-grid">
+                <Form.Item label={isSingleSku ? "商品型号" : "合并变体型号"}><Input value={modelName} onChange={(event) => editValue(setModelName, event.target.value)} placeholder="输入型号" /></Form.Item>
+                <Form.Item label="新增货号前缀"><Input value={offerPrefix} onChange={(event) => editValue(setOfferPrefix, event.target.value)} placeholder="jz-" /></Form.Item>
+                <Form.Item label="主商品来源 SKU"><Input aria-label="主商品来源 SKU" value={sku} readOnly /></Form.Item>
+              </Form>
+            </details>
+          </section>
+
+          <section className="collect-edit-section" id="SKU 与图片">
+            <div className="collect-edit-section-head">
+              <div>
+                <h2>{isSingleSku ? "售价、库存与图片" : "SKU 列表"}</h2>
+                <p>{isSingleSku ? "单 SKU 商品，直接编辑并保存" : `${variantRows.length} 个可编辑 SKU；售价与图库独立编辑，上架库存统一设置`}</p>
+              </div>
+            </div>
+            {isSingleSku ? variantRows[0] && <>
+              <Form layout="vertical" className="collect-edit-grid collect-edit-single-commerce">
+                <Form.Item label={`上架售价 ${currencyCode || "（待确认币种）"}`} required>
+                  <Input aria-label={`SKU ${variantRows[0].sku} 售价`} value={variantRows[0].sellPrice} inputMode="decimal" onChange={(event) => updateVariantRow(variantRows[0].key, { sellPrice: event.target.value })} />
+                  <span className="collect-edit-inline-note">采集价 {variantRows[0].sourcePriceDisplay || formatCollectSourcePrice(item)}</span>
+                </Form.Item>
+                <Form.Item label="上架库存" required><Input aria-label={`SKU ${variantRows[0].sku} 上架库存`} value={listingStock} inputMode="numeric" onChange={(event) => updateVariantRow(variantRows[0].key, { stock: event.target.value })} /></Form.Item>
+                <Form.Item label="SKU 货号" required><Input aria-label={`SKU ${variantRows[0].sku} 货号`} value={variantRows[0].offerId} onChange={(event) => updateVariantRow(variantRows[0].key, { offerId: event.target.value })} /></Form.Item>
+              </Form>
+              <CollectEditSkuMedia row={variantRows[0]} onChange={(patch) => updateVariantRow(variantRows[0].key, patch)} />
+              <details className="collect-edit-details"><summary>更多 SKU 信息（规格、划线价、视频等）</summary>{renderSkuAdvanced(variantRows[0])}</details>
+            </> : <>
+              <div className="collect-edit-group-stock">
+                <label htmlFor="collect-edit-listing-stock">每个 SKU 上架库存</label>
+                <Input id="collect-edit-listing-stock" aria-label="每个 SKU 上架库存" value={listingStock} inputMode="numeric" onChange={(event) => editValue(setListingStock, event.target.value)} />
+                <span>本组 {variantRows.length} 个 SKU 上架时，每个 SKU 均使用此数量。</span>
+              </div>
+              <div className="collect-edit-sku-toolbar">
+                <Input.Search aria-label="搜索规格或 SKU" allowClear value={variantSearch} placeholder="搜索规格 / SKU / 货号" onChange={(event) => { setVariantSearch(event.target.value); setVariantPage(1); }} />
+                <Select aria-label="SKU 资料筛选" value={variantFilter} onChange={(value) => { setVariantFilter(value); setVariantPage(1); }} options={[{ value: "all", label: "全部 SKU" }, { value: "missing", label: "基础资料待填写" }]} />
+                <span>找到 {filteredVariantRows.length} 个 SKU</span>
+              </div>
+              {!!selectedVariantKeys.length && <div className="collect-edit-sku-batch">
+                <strong>已选 {selectedVariantKeys.length} 个 SKU</strong>
+                <Input aria-label="批量售价" value={batchPrice} inputMode="decimal" placeholder={`售价 ${currencyCode}`} onChange={(event) => setBatchPrice(event.target.value)} />
+                <Button disabled={batchPrice === ""} onClick={applySelectedVariantValues}>应用售价到已选</Button>
+                <Button danger onClick={deleteSelectedVariants}>移除已选</Button>
+                <Button type="text" onClick={() => setSelectedVariantKeys([])}>取消选择</Button>
+              </div>}
+              <Table
+              className="collect-edit-variant-table"
+              size="small"
+              rowKey="key"
+              columns={variantColumns}
+              dataSource={filteredVariantRows}
+              pagination={{ current: Math.min(variantPage, Math.max(1, Math.ceil(filteredVariantRows.length / variantPageSize))), pageSize: variantPageSize, onChange: (page, size) => { setVariantPage(page); setVariantPageSize(size); }, showTotal: (total) => `共 ${total} 个 SKU` }}
+              scroll={{ x: 740 }}
+              expandable={{ expandedRowKeys: expandedVariantKeys, showExpandColumn: false, expandedRowRender: renderSkuAdvanced }}
+              rowSelection={{
+                columnWidth: 36,
+                preserveSelectedRowKeys: true,
+                selectedRowKeys: selectedVariantKeys,
+                onChange: setSelectedVariantKeys,
+              }}
+            />
+            </>}
           </section>
 
           <section className="collect-edit-section" id="产品类目">
             <div className="collect-edit-section-head">
               <div>
                 <h2>产品类目</h2>
-                <p>{categoryResolutionViewState?.label || "使用采集类目准备上架"}</p>
+                <p>{editorCategoryStatus}</p>
               </div>
               <Space size={8}>
-                <Button
+                {account?.role === "admin" && <Button
                   size="small"
                   loading={categoryAutoLoading}
                   disabled={categoryAutoLoading}
@@ -6411,9 +5710,9 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                   onClick={handleCategoryPreview}
                 >
                   管理员确认类目
-                </Button>
-                <Tooltip rootClassName="prototype-overlay" title={categoryResolutionViewState?.label || "商品类目状态暂时无法确认，请联系管理员"}>
-                  <Tag color={categoryMatched ? "green" : collectEnrichmentTagColors[categoryResolutionViewState?.tone || (categoryAutoLoading ? "processing" : "default")]}>{categoryResolutionViewState?.label || "商品类目状态暂时无法确认，请联系管理员"}</Tag>
+                </Button>}
+                <Tooltip rootClassName="prototype-overlay" title={editorCategoryStatus}>
+                  <Tag color={categoryMatched ? "green" : collectEnrichmentTagColors[categoryResolutionViewState?.tone || (categoryAutoLoading ? "processing" : "default")]}>{editorCategoryStatus}</Tag>
                 </Tooltip>
               </Space>
             </div>
@@ -6437,7 +5736,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 notFoundContent={categoryTreeLoading ? "正在加载类目..." : "暂无类目"}
                 onChange={handleCategoryChange}
                 options={categoryTreeOptionsZh}
-                placeholder={categoryResolutionViewState?.label || categoryLabel}
+                placeholder={categoryLabel}
                 showSearch={{
                   filter: (inputValue, path) => path.some((option) =>
                     collectEditText(option.label).toLowerCase().includes(String(inputValue || "").toLowerCase()),
@@ -6447,6 +5746,8 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 value={categoryCascaderValue}
               />
             </div>
+            <details className="collect-edit-details">
+              <summary>查看类目来源与编号</summary>
             <div className="collect-edit-attr-strip">
               <span title={`来源 description_category_id: ${sourceCategory.descriptionCategoryId || "—"} / 候选 type_id: ${sourceCategory.typeIdCandidate || "—"}`}>
                 采集来源：{sourceCategoryLabel}
@@ -6457,6 +5758,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 账号共享类目：{categoryMatched ? `${categoryRussianLabel}（${categoryDescriptionId} / ${categoryTypeId}）` : categoryNeedsManualSelection ? "无法确认商品类目，请人工选择" : categoryResolutionViewState?.label || "商品类目状态暂时无法确认，请联系管理员"}
               </span>
             </div>
+            </details>
             {categoryAutoError || categoryNeedsManualSelection ? <div className="collect-edit-empty-note">账号共享类目待处理：{categoryAutoError || "请由管理员选择类目并确认，确认成功后会继续使用同一共享类目。"}</div> : null}
           </section>
 
@@ -6464,13 +5766,12 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             <div className="collect-edit-section-head">
               <div>
                 <h2>标题与文案</h2>
-                <p>{title ? "已填写" : "待填写"}</p>
+                <p>{isSingleSku ? (title ? "已填写" : "待填写") : `主商品 SKU ${sku} 的资料；其他 SKU 的专属内容在列表中编辑`}</p>
               </div>
-              <Button size="small" icon={<ThunderboltOutlined />} onClick={() => message.info("AI 优化已接入按钮位，当前保留原始采集文案")}>AI 优化</Button>
             </div>
             <Form layout="vertical">
               <Form.Item label="俄语标题">
-                <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="输入俄语标题" />
+                <Input value={title} onChange={(event) => { if (anchorVariant) updateVariantRow(anchorVariant.key, { name: event.target.value }); else editValue(setTitle, event.target.value); }} placeholder="输入俄语标题" />
               </Form.Item>
               <div className="collect-edit-field-note">{title.length} 字符 · 建议 50-80</div>
               <Form.Item label="简介">
@@ -6485,13 +5786,15 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                     className="collect-edit-description"
                     value={description}
                     rows={5}
-                    onChange={(event) => setDescription(event.target.value)}
+                    onChange={(event) => editValue(setDescription, event.target.value)}
                     placeholder="商品描述（支持 HTML 格式）"
                   />
                 ) : (
                   <div className="collect-edit-preview">{description || "暂无商品描述"}</div>
                 )}
               </Form.Item>
+              <details className="collect-edit-details">
+                <summary>主题标签与富内容</summary>
               <Form.Item label={`主题标签 ${tags.length}/30`}>
                 <div className="collect-edit-tag-row">
                   {tags.length ? tags.map((tag) => <Tag key={tag}>#{tag}</Tag>) : <span>暂无标签</span>}
@@ -6501,10 +5804,11 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 <Input.TextArea
                   value={richContent}
                   rows={6}
-                  onChange={(event) => setRichContent(event.target.value)}
+                  onChange={(event) => editValue(setRichContent, event.target.value)}
                   placeholder="Ozon 富内容 JSON"
                 />
               </Form.Item>
+              </details>
             </Form>
           </section>
 
@@ -6512,32 +5816,32 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             <div className="collect-edit-section-head">
               <div>
                 <h2>物流尺寸</h2>
-                <p>{hasPackageDimensions ? "已填写" : "待填写"}</p>
+                <p>{hasPackageDimensions ? "已填写" : "待填写"}{!isSingleSku && ` · 主商品 SKU ${sku}；其他 SKU 的包装数据在列表中编辑`}</p>
               </div>
             </div>
             <Form layout="vertical" className="collect-edit-size-grid">
               <Form.Item label="包装重量">
                 <Input value={packageWeight} suffix="克" onChange={(event) => {
                   collectEditDimensionDirtyRef.current.add("packageWeight");
-                  setPackageWeight(event.target.value);
+                  editValue(setPackageWeight, event.target.value);
                 }} />
               </Form.Item>
               <Form.Item label="包装长">
                 <Input value={packageLength} suffix="毫米" onChange={(event) => {
                   collectEditDimensionDirtyRef.current.add("packageLength");
-                  setPackageLength(event.target.value);
+                  editValue(setPackageLength, event.target.value);
                 }} />
               </Form.Item>
               <Form.Item label="包装宽">
                 <Input value={packageWidth} suffix="毫米" onChange={(event) => {
                   collectEditDimensionDirtyRef.current.add("packageWidth");
-                  setPackageWidth(event.target.value);
+                  editValue(setPackageWidth, event.target.value);
                 }} />
               </Form.Item>
               <Form.Item label="包装高">
                 <Input value={packageHeight} suffix="毫米" onChange={(event) => {
                   collectEditDimensionDirtyRef.current.add("packageHeight");
-                  setPackageHeight(event.target.value);
+                  editValue(setPackageHeight, event.target.value);
                 }} />
               </Form.Item>
             </Form>
@@ -6561,6 +5865,8 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 {categoryAttributeInputRows.length ? "已加载类目属性" : "待加载"}
               </Tag>
             </div>
+            <details className="collect-edit-details">
+              <summary>采集参考信息</summary>
             <div className="collect-edit-attribute-grid">
               <div><span>品牌</span><strong>{brand || "Нет бренда"}</strong></div>
               <div><span>评分</span><strong>{item?.rating ? `${item.rating}★` : "—"}</strong></div>
@@ -6569,6 +5875,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
               <div><span>类目 ID</span><strong>{categoryDescriptionId || "—"}</strong></div>
               <div><span>类型 ID</span><strong>{categoryTypeId || "—"}</strong></div>
             </div>
+            </details>
             {categorySchemaError ? (
               <div className="collect-edit-empty-note">类目属性加载失败：{categorySchemaError}</div>
             ) : categorySchemaLoading ? (
@@ -6598,22 +5905,22 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                         optionFilterProp="searchText"
                         optionLabelProp="value"
                         optionRender={collectEditRenderDictionaryOption}
-                        onChange={(value) => setCategoryAttributeValues((prev) => ({
+                        onChange={(value) => { markDraftEdited(); setCategoryAttributeValues((prev) => ({
                           ...prev,
                           [row.key]: collectEditSelectControlValue(value, row),
-                        }))}
+                        })); }}
                       />
                     ) : String(categoryAttributeValues[row.key] ?? row.value ?? "").length > 90 ? (
                       <Input.TextArea
                         autoSize={{ minRows: 2, maxRows: 5 }}
                         value={categoryAttributeValues[row.key] ?? row.value ?? ""}
-                        onChange={(event) => setCategoryAttributeValues((prev) => ({ ...prev, [row.key]: event.target.value }))}
+                        onChange={(event) => { markDraftEdited(); setCategoryAttributeValues((prev) => ({ ...prev, [row.key]: event.target.value })); }}
                         placeholder={row.required ? "必填属性" : "可选属性"}
                       />
                     ) : (
                       <Input
                         value={categoryAttributeValues[row.key] ?? row.value ?? ""}
-                        onChange={(event) => setCategoryAttributeValues((prev) => ({ ...prev, [row.key]: event.target.value }))}
+                        onChange={(event) => { markDraftEdited(); setCategoryAttributeValues((prev) => ({ ...prev, [row.key]: event.target.value })); }}
                         placeholder={row.required ? "必填属性" : "可选属性"}
                       />
                     )}
@@ -6629,32 +5936,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             )}
           </section>
 
-          <section className="collect-edit-section" id="变体设置">
-            <div className="collect-edit-section-head">
-              <div>
-                <h2>变体设置</h2>
-                <p>{variantRows.length || 1} 个变体</p>
-              </div>
-              <Space>
-                <Button size="small" icon={<PlusOutlined />} onClick={() => duplicateVariantRow(variantRows[0] || collectEditVariantRows({ item, sku, title, price, images: productImageList, offerPrefix, targetStoreId: categoryStoreId, taxonomyScope: categoryTaxonomyScope })[0])}>添加变体</Button>
-                <Button size="small" danger disabled={!selectedVariantKeys.length} onClick={deleteSelectedVariants}>批量删除变体</Button>
-              </Space>
-            </div>
-            <Table
-              className="collect-edit-variant-table"
-              size="small"
-              rowKey="key"
-              columns={variantColumns}
-              dataSource={variantRows}
-              pagination={false}
-              scroll={{ x: 1420 }}
-              rowSelection={{
-                selectedRowKeys: selectedVariantKeys,
-                onChange: setSelectedVariantKeys,
-              }}
-            />
-          </section>
-
           <section className="collect-edit-section" id="货源信息">
             <div className="collect-edit-section-head">
               <div>
@@ -6664,24 +5945,21 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             </div>
             <Form layout="vertical">
               <Form.Item label="货源链接">
-                <Input value={sourceLink} onChange={(event) => setSourceLink(event.target.value)} placeholder="Ozon 商品链接" />
+                <Input value={sourceLink} onChange={(event) => editValue(setSourceLink, event.target.value)} placeholder="Ozon 商品链接" />
               </Form.Item>
               <Form.Item label="备注">
-                <Input.TextArea value={note} rows={3} onChange={(event) => setNote(event.target.value)} placeholder="备注" />
+                <Input.TextArea value={note} rows={3} onChange={(event) => editValue(setNote, event.target.value)} placeholder="备注" />
               </Form.Item>
             </Form>
           </section>
 
           <div className="collect-edit-footer-actions">
-            {listingSubmitDisabledReason ? (
-              <div className="collect-edit-submit-reason">{listingSubmitDisabledReason}</div>
-            ) : null}
-            <Button icon={<ThunderboltOutlined />} onClick={() => message.info("AI 一键生成保留当前采集文案，未写入示例数据")}>AI 一键生成俄文文案</Button>
-            <Button loading={categoryAutoLoading} disabled={preparationModel.listingBlocked || !categoryReadinessState.ready} aria-label="上架预检" onClick={handlePreview} icon={<EyeOutlined />}>内容体检</Button>
-            <Button onClick={handleSaveDraft}>保存草稿</Button>
+            <div className="collect-edit-save-state"><strong>{savingDraft ? "正在保存…" : draftDirty ? "有未保存修改" : "草稿修改后请保存"}</strong>{listingSubmitDisabledReason ? <span className="collect-edit-submit-reason">{listingSubmitDisabledReason}</span> : <span>预检会先保存当前修改</span>}</div>
+            <Button loading={savingDraft} disabled={loading} onClick={handleSaveDraft}>保存草稿</Button>
+            <Button loading={loading && !listingResult?.submitted} disabled={savingDraft || Boolean(listingResult?.submitted) || preparationModel.listingBlocked || !categoryReadinessState.ready} aria-label="上架预检" onClick={handlePreview} icon={<EyeOutlined />}>上架预检</Button>
             <Tooltip rootClassName="prototype-overlay" title={listingSubmitDisabledReason || ""}>
               <span className="collect-edit-submit-wrapper">
-                <Button type="primary" loading={loading} disabled={listingSubmitDisabled} aria-label="提交上架到 Ozon" onClick={handleSubmit} icon={<CloudUploadOutlined />}>上架到 Ozon</Button>
+                <Button type="primary" loading={loading} disabled={savingDraft || listingSubmitDisabled} aria-label="提交上架到 Ozon" onClick={handleSubmit} icon={<CloudUploadOutlined />}>上架到 Ozon</Button>
               </span>
             </Tooltip>
           </div>
@@ -6693,7 +5971,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
 
 export { CollectEditPage };
 
-function ImportHistoryPage({ binding, hasStore, localData, onRefresh }) {
+function ImportHistoryPage({ binding, hasStore, localData, onRefresh, account }) {
   const { message } = AntApp.useApp();
   const [activeStatus, setActiveStatus] = useState("全部");
   const [query, setQuery] = useState("");
@@ -6832,6 +6110,7 @@ function ImportHistoryPage({ binding, hasStore, localData, onRefresh }) {
   }, [hasStore, refreshableTaskKey]);
   return (
     <div className="source-page">
+      <AiListingCompletedRecords isAdmin={account?.role === "admin"} accountId={account?.id} storeId={currentStoreId} stores={localData?.stores||[]}/>
       <div className="stat-strip">
         {[
           ["累计批次", String(tasks.length), "全部历史"],
@@ -6936,7 +6215,7 @@ function ImportHistoryPage({ binding, hasStore, localData, onRefresh }) {
                 <span>商品处理明细</span>
                 <Table
                   size="small"
-                  pagination={false}
+
                   rowKey={(row, index) => `${row.offer_id || row.product_id || "item"}-${index}`}
                   dataSource={detailStatusItems}
                   scroll={{ x: 680 }}
@@ -6954,7 +6233,7 @@ function ImportHistoryPage({ binding, hasStore, localData, onRefresh }) {
                 <span>任务事件</span>
                 <Table
                   size="small"
-                  pagination={false}
+
                   rowKey="id"
                   dataSource={selectedDetailTask.events}
                   columns={[
@@ -6972,1816 +6251,13 @@ function ImportHistoryPage({ binding, hasStore, localData, onRefresh }) {
   );
 }
 
-function StocksPage({ binding, hasStore, localData, onRefresh }) {
-  const { message } = AntApp.useApp();
-  const [activeStock, setActiveStock] = useState("全部");
-  const [query, setQuery] = useState("");
-  const [pageSizeChoice, setPageSizeChoice] = useState("20");
-  const [syncingStocks, setSyncingStocks] = useState(false);
-  const [stockEditor, setStockEditor] = useState(null);
-  const products = scopedProductsForCurrentStore(localData?.caches?.products || [], binding, localData);
-  const stockTableProducts = products.filter(productVisibleInStockTable);
-  const warehouses = scopedWarehousesForCurrentStore(localData?.caches?.warehouses || [], binding, localData);
-  const outOfStockCount = stockTableProducts.filter((item) => productMatchesStockFilter(item, "缺货")).length;
-  const lowStockCount = stockTableProducts.filter((item) => productMatchesStockFilter(item, "低库存")).length;
-  const filteredProducts = stockTableProducts.filter((item) =>
-    productMatchesQuery(item, query) && productMatchesStockFilter(item, activeStock)
-  );
-  const rows = productRows(filteredProducts, warehouses);
-  const resolvedPageSize = pageSizeChoice === "全部" ? Math.max(rows.length, 1) : Number(pageSizeChoice) || 20;
-  const openStockEditor = (row) => {
-    const product = row?._raw || {};
-    const entries = stockWarehouseEditorEntries(product, warehouses);
-    setStockEditor({ row, product, entries });
-  };
-  const closeStockEditor = () => {
-    setStockEditor(null);
-  };
-  const stockEditorEntries = stockEditor?.entries || [];
-  const stockColumns = [
-    {
-      title: "主图",
-      dataIndex: "_image",
-      width: 72,
-      ellipsis: false,
-      render: (value) => (
-        value ? (
-          <img className="product-thumb" src={value} alt="" loading="lazy" />
-        ) : (
-          <span className="product-thumb product-thumb-empty">—</span>
-        )
-      ),
-    },
-    {
-      title: "商品",
-      dataIndex: "商品",
-      width: 300,
-      render: (value, row) => {
-        const title = row._title || value || "—";
-        const sku = row._sku || "";
-        const offerId = row._offerId || "";
-        return (
-          <div className="product-info-cell">
-            <span className="source-table-cell-text product-info-name" title={title}>{title}</span>
-            {sku ? (
-              <span className="product-sku-row">
-                <span className="product-sku-text" title={sku}>SKU：{sku}</span>
-                <SkuCopyButton message={message} sku={sku} />
-              </span>
-            ) : null}
-            {offerId ? (
-              <span className="product-sku-row">
-                <span className="product-sku-text" title={offerId}>货号：{offerId}</span>
-              </span>
-            ) : null}
-          </div>
-        );
-      },
-    },
-    "总库存",
-    {
-      title: "仓库分布",
-      dataIndex: "仓库分布",
-      width: 260,
-      render: (value) => {
-        const text = value === null || value === undefined || value === "" ? "—" : String(value);
-        const lines = text === "—" ? ["—"] : text.split("\n").filter(Boolean);
-        return (
-          <div className="stock-warehouse-lines" title={text}>
-            {lines.map((line) => <span key={line}>{line}</span>)}
-          </div>
-        );
-      },
-    },
-    {
-      title: "操作",
-      dataIndex: "操作",
-      width: 88,
-      render: (_, row) => (
-        <Button
-          className="source-table-link"
-          onClick={() => openStockEditor(row)}
-          size="small"
-          type="link"
-        >
-          查看
-        </Button>
-      ),
-    },
-  ];
-  const refreshStocks = async () => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    if (syncingStocks) return;
-    setSyncingStocks(true);
-    message.loading({ content: "正在只读同步库存", key: "stocks-sync", duration: 0 });
-    try {
-      const storeId = localData?.currentStoreId || binding?.id;
-      const warehouseReport = await apiRequest("/local/sync/WAREHOUSES", {
-        method: "POST",
-        body: { storeId },
-      });
-      const productReport = await apiRequest("/local/sync/PRODUCTS", {
-        method: "POST",
-        body: { storeId },
-      });
-      await onRefresh?.();
-      const productCount = Number(productReport?.job?.fetchedCount ?? productReport?.fetchedCount) || 0;
-      const warehouseCount = Number(warehouseReport?.job?.fetchedCount ?? warehouseReport?.fetchedCount) || 0;
-      message.success({ content: `库存已刷新 · 商品 ${productCount} · 仓库 ${warehouseCount}`, key: "stocks-sync" });
-    } catch (error) {
-      message.error({ content: `库存同步失败: ${error.message}`, key: "stocks-sync" });
-    } finally {
-      setSyncingStocks(false);
-    }
-  };
-  const searchStocks = () => message.success(`查询完成 · ${rows.length} 条`);
-  return (
-    <div className="source-page">
-      <SourceSectionTitle
-        title="库存管理"
-        subtitle="只读查看各商品库存与仓库分布；安全库存写入队列上线前暂不支持直接修改"
-      />
-      <div className="stock-top-grid">
-        <Card className="panel-card source-card stock-main-card">
-          <div className="card-title-row">
-            <span>商品库存</span>
-          </div>
-          <div className="stock-summary-grid">
-            {[
-              ["商品总数", String(stockTableProducts.length), "销售中/准备销售商品"],
-              ["缺货 (全部)", String(outOfStockCount), outOfStockCount ? "需补货" : "当前店铺无缺货"],
-              ["低库存 ≤10 (全部)", String(lowStockCount), lowStockCount ? "需关注" : "当前店铺无低库存"],
-            ].map(([title, value, note]) => (
-              <div key={title}>
-                <span>{title}</span>
-                <strong>{value}</strong>
-                <em>{note}</em>
-              </div>
-            ))}
-          </div>
-        </Card>
-        <Card className="panel-card source-card stock-draft-card">
-          <span>写入模式</span>
-          <strong>只读</strong>
-          <em>等待安全任务队列与对账流程</em>
-        </Card>
-      </div>
-      <Card className="panel-card source-card">
-        <div className="card-title-row">
-          <span>库存</span>
-          <Space>
-            <Button loading={syncingStocks} onClick={refreshStocks} type="primary">刷新</Button>
-          </Space>
-        </div>
-        <div className="filter-panel inline">
-          <PromotionStatusButtons
-            active={activeStock}
-            onChange={setActiveStock}
-            items={[
-              { label: "全部", count: stockTableProducts.length, tone: "primary" },
-              { label: "缺货", count: outOfStockCount, tone: "primary" },
-              { label: "低库存", count: lowStockCount, tone: "primary" },
-            ]}
-          />
-          <Input.Search
-            placeholder="搜索商品名 / 货号"
-            allowClear
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onSearch={searchStocks}
-          />
-        </div>
-        <div className="table-result-title">商品库存· 共 {rows.length} 条</div>
-        <SourceTable
-          hasStore={hasStore}
-          key={`${activeStock}-${query}-${pageSizeChoice}`}
-          rows={rows}
-          columns={stockColumns}
-          pageSize={resolvedPageSize}
-          pageSizeControl={(
-            <div className="product-page-size-control">
-              <span>每页显示</span>
-              <Select
-                size="small"
-                value={pageSizeChoice}
-                options={[
-                  { value: "20", label: "20" },
-                  { value: "50", label: "50" },
-                  { value: "100", label: "100" },
-                  { value: "全部", label: "全部" },
-                ]}
-                onChange={setPageSizeChoice}
-                popupMatchSelectWidth={false}
-              />
-            </div>
-          )}
-          empty={false}
-          sourceEmpty
-        />
-      </Card>
-      <Modal
-        rootClassName="prototype-overlay"
-        title="查看 SKU 库存"
-        open={!!stockEditor}
-        onCancel={closeStockEditor}
-        footer={null}
-        width={720}
-        destroyOnHidden
-      >
-        <div className="stock-edit-modal">
-          <div className="product-price-modal-head">
-            <strong title={stockEditor?.row?._title}>{stockEditor?.row?._title || "—"}</strong>
-            <span>SKU：{stockEditor?.row?._sku || "—"}</span>
-            <span>货号：{stockEditor?.row?._offerId || "—"}</span>
-          </div>
-          <Alert
-            message="当前为只读模式。为避免网络超时造成重复写入，单独修改库存功能将在持久化任务和对账流程完成后开放。"
-            showIcon
-            type="info"
-          />
-          <Table
-            size="small"
-            pagination={false}
-            rowKey="key"
-            dataSource={stockEditorEntries}
-            columns={[
-              {
-                title: "仓库",
-                dataIndex: "label",
-                render: (value, entry) => (
-                  <div className="stock-edit-warehouse">
-                    <strong title={value}>{value}</strong>
-                    <span>{entry.warehouseId ? `仓库 ID：${entry.warehouseId}` : "缺少仓库 ID"}</span>
-                  </div>
-                ),
-              },
-              {
-                title: "当前库存",
-                dataIndex: "present",
-                width: 100,
-              },
-              {
-                title: "预留",
-                dataIndex: "reserved",
-                width: 90,
-              },
-              {
-                title: "写入状态",
-                dataIndex: "writeStatus",
-                width: 140,
-                render: () => <Tag>只读</Tag>,
-              },
-            ]}
-            locale={{
-              emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无库存明细" />,
-            }}
-          />
-        </div>
-      </Modal>
-    </div>
-  );
-}
-
-function ReshelfPage({ binding, hasStore, localData, onSync }) {
-  const { message } = AntApp.useApp();
-  const [query, setQuery] = useState("");
-  const products = localData?.caches?.products || [];
-  const rows = productRows(products.filter((item) => productMatchesQuery(item, query)));
-  return (
-    <div className="source-page">
-      <SourceSectionTitle
-        title="下架重上"
-        subtitle={storeLine(binding)}
-        actions={[
-          <Button danger disabled key="reshelf">下架重上</Button>,
-          <Button type="primary" icon={<SyncOutlined />} onClick={onSync} key="sync">同步全部</Button>,
-        ]}
-      />
-      <Card className="panel-card source-card">
-        <div className="table-action-row">
-          <Input.Search
-            className="toolbar-search"
-            placeholder="搜 SKU / 货号 / 标题…"
-            allowClear
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onSearch={() => message.success(`查询完成 · ${rows.length} 条`)}
-          />
-          <div className="table-result-title">共 {rows.length} 个</div>
-        </div>
-        <SourceTable
-          hasStore={hasStore}
-          rows={rows}
-          columns={["商品信息", "类目佣金", "店铺", "状态", "下架原因", "价格", "库存", "货源 (¥)", "最后同步", "操作"]}
-          empty={false}
-          sourceEmpty
-          scrollX={1480}
-        />
-      </Card>
-    </div>
-  );
-}
-
-function AiPosterPage({ localData, onRefresh }) {
-  const { message } = AntApp.useApp();
-  const [collapsed, setCollapsed] = useState(false);
-  const [imageLinks, setImageLinks] = useState("");
-  const [uploadedImageCount, setUploadedImageCount] = useState(0);
-  const [status, setStatus] = useState("全部状态");
-  const [productName, setProductName] = useState("");
-  const [categoryName, setCategoryName] = useState("");
-  const [query, setQuery] = useState("");
-  const [dateStart, setDateStart] = useState(null);
-  const [dateEnd, setDateEnd] = useState(null);
-  const [submittingAiTask, setSubmittingAiTask] = useState(false);
-  const parsedImageLinks = imageLinks
-    .split(/[\n\r,\s]+/)
-    .map((value) => value.trim())
-    .filter((value) => /^https?:\/\//i.test(value))
-    .slice(0, 10);
-  const imageCount = Math.min(10, uploadedImageCount + parsedImageLinks.length);
-  const submitCost = imageCount ? imageCount : 0;
-  const aiJobs = Object.values(localData?.jobs || {})
-    .filter((job) => String(job.type || "").toUpperCase() === "AI_POSTER")
-    .sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
-  const aiStatusText = (job = {}) => {
-    const raw = String(job.status || "").toUpperCase();
-    if (["SUCCESS", "COMPLETED", "DONE"].includes(raw)) return "已完成";
-    if (["FAILED", "ERROR"].includes(raw)) return "失败";
-    return "处理中";
-  };
-  const filteredAiJobs = aiJobs.filter((job) => {
-    const statusText = aiStatusText(job);
-    const createdAt = new Date(job.createdAt || "");
-    const createdMs = createdAt.getTime();
-    const start = pickerBoundaryMs(dateStart, "start");
-    const end = pickerBoundaryMs(dateEnd, "end");
-    const queryText = String(query || "").trim().toLowerCase();
-    const searchable = [job.clientJobId, job.id, job.productName, job.categoryName]
-      .map((value) => String(value || "").toLowerCase())
-      .join(" ");
-    return (status === "全部状态" || statusText === status) &&
-      (!queryText || searchable.includes(queryText)) &&
-      (start == null || (!Number.isNaN(createdMs) && createdMs >= start)) &&
-      (end == null || (!Number.isNaN(createdMs) && createdMs <= end));
-  });
-  const rows = filteredAiJobs.map((job, index) => ({
-    id: job.id || job.clientJobId || `ai-poster-${index}`,
-    "原图": `${Number(job.imageCount || 0)} 张`,
-    "改图结果": aiStatusText(job) === "已完成" ? "已生成" : "本地记录",
-    "货号": job.productName || job.clientJobId || "本地任务",
-    "状态": aiStatusText(job),
-    "创建时间": job.createdAt ? new Date(job.createdAt).toLocaleString() : "—",
-    "操作": "查看",
-  }));
-  const submitAiTask = async () => {
-    if (!imageCount) {
-      message.warning("请先上传图片或填写图片链接");
-      return;
-    }
-    setSubmittingAiTask(true);
-    try {
-      const clientJobId = `ai-poster-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await apiRequest("/ozon/sync/client-report", {
-        method: "POST",
-        body: {
-          clientJobId,
-          type: "AI_POSTER",
-          status: "PENDING",
-          imageCount,
-          uploadedImageCount,
-          linkCount: parsedImageLinks.length,
-          productName: productName.trim(),
-          categoryName: categoryName.trim(),
-          localOnly: true,
-        },
-      });
-      setImageLinks("");
-      setUploadedImageCount(0);
-      await onRefresh?.();
-      message.success(`AI 改图任务已记录 · ${imageCount} 张`);
-    } catch (error) {
-      message.error(`任务记录失败: ${error.message}`);
-    } finally {
-      setSubmittingAiTask(false);
-    }
-  };
-  const resetFilters = () => {
-    setQuery("");
-    setDateStart(null);
-    setDateEnd(null);
-    setStatus("全部状态");
-    message.info("筛选条件已重置");
-  };
-  const addImageFiles = (files) => {
-    const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
-    if (!imageFiles.length) return;
-    setUploadedImageCount((current) => {
-      const next = Math.min(10, current + imageFiles.length);
-      message.success(`已识别 ${next} 张图片`);
-      return next;
-    });
-  };
-  return (
-    <div className="source-page ai-page">
-      <SourceSectionTitle
-        title="AI 改图神器"
-        subtitle="Gemini 大模型改图历史 · 原图 vs 改图 实时对比"
-        actions={[<Select className="source-select narrow" key="status" value={status} onChange={setStatus} options={[{ value: "全部状态", label: "全部状态" }, { value: "处理中", label: "处理中" }, { value: "已完成", label: "已完成" }, { value: "失败", label: "失败" }]} />]}
-      />
-      {!collapsed ? (
-        <Card className="panel-card ai-upload">
-          <div className="card-title-row">
-            <span>Gemini 快速改图 <em>上传图片或粘贴图片链接,无需绑定商品</em></span>
-            <Button onClick={() => setCollapsed(true)}>收起</Button>
-          </div>
-          <div className="ai-upload-label">上传图片</div>
-          <label
-            className="upload-drop"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              event.preventDefault();
-              addImageFiles(event.dataTransfer.files);
-            }}
-            onPaste={(event) => addImageFiles(event.clipboardData.files)}
-          >
-            <input
-              className="upload-drop-input"
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={(event) => {
-                addImageFiles(event.target.files);
-                event.target.value = "";
-              }}
-            />
-            <PictureOutlined />
-            <strong>点击、拖拽,或 Ctrl/⌘+V 粘贴图片</strong>
-            <span>支持多张,单次最多 10 张</span>
-          </label>
-          <div className="ai-work-grid">
-            <div className="ai-link-panel">
-              <label>或粘贴图片链接</label>
-              <Input.TextArea
-                rows={5}
-                placeholder={"每行一个图片链接,http(s)://...\nhttps://example.com/a.jpg"}
-                value={imageLinks}
-                onChange={(event) => setImageLinks(event.target.value)}
-              />
-            </div>
-            <div className="ai-queue-panel">
-              <strong>已识别 {imageCount} 条</strong>
-              <span>待处理图片{imageCount} / 10</span>
-              <p>上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里</p>
-            </div>
-          </div>
-          <div className="ai-meta-row">
-            <label className="ai-meta-field">
-              <span>商品名(可选)</span>
-              <Input placeholder="例:女士夏季短袖 T 恤" allowClear value={productName} onChange={(event) => setProductName(event.target.value)} />
-            </label>
-            <label className="ai-meta-field">
-              <span>类目(可选)</span>
-              <Input placeholder="例:服饰 / 电子 / 家居" allowClear value={categoryName} onChange={(event) => setCategoryName(event.target.value)} />
-            </label>
-            <Tag className="ai-submit-summary">将提交 {imageCount} 张,预计消耗 {submitCost}</Tag>
-          </div>
-          <Space>
-            <Button
-              type="primary"
-              icon={<ThunderboltOutlined />}
-              loading={submittingAiTask}
-              onClick={submitAiTask}
-            >
-              开始生成
-            </Button>
-          </Space>
-        </Card>
-      ) : (
-        <Button icon={<PictureOutlined />} onClick={() => setCollapsed(false)}>展开上传</Button>
-      )}
-      <Card className="panel-card source-card">
-        <div className="filter-panel inline">
-          <DatePicker placeholder="开始日期" value={dateStart} onChange={setDateStart} />
-          <DatePicker placeholder="结束日期" value={dateEnd} onChange={setDateEnd} />
-          <Input.Search placeholder="搜索货号" allowClear value={query} onChange={(event) => setQuery(event.target.value)} onSearch={() => message.success(`查询完成 · ${rows.length} 条`)} />
-          <Button type="primary" onClick={() => message.success(`查询完成 · ${rows.length} 条`)}>查询</Button>
-          <Button onClick={resetFilters}>重置</Button>
-        </div>
-        <SourceTable
-          hasStore
-          rows={rows}
-          rowSelection={false}
-          columns={["原图", "改图结果", "货号", "状态", "创建时间", "操作"]}
-          empty="暂无改图记录"
-          sourceEmpty
-        />
-      </Card>
-    </div>
-  );
-}
-
-function AiImagePage() {
-  return (
-    <div className="ai-image-gated-page">
-      <div className="ai-image-gated-content">
-        <AppstoreOutlined />
-        <h2>AI 商品套图</h2>
-        <p>该功能正在灰度内测中，尚未对当前账号开放。</p>
-      </div>
-    </div>
-  );
-}
-
-function SourceQueryBar({
-  fields = [],
-  buttons = [],
-  expanded,
-  onToggle,
-  onReset,
-  onSearch,
-  values = {},
-  onFieldChange,
-}) {
-  return (
-    <Card className="panel-card source-card">
-      <div className="source-query-grid">
-        {fields.map((field) => (
-          <label key={field.name}>
-            <span>{field.label}</span>
-            {field.type === "select" ? (
-              <Select
-                placeholder={field.placeholder || "请选择"}
-                options={field.options || []}
-                allowClear
-                value={values[field.name]}
-                onChange={(value) => onFieldChange?.(field.name, value)}
-              />
-            ) : (
-              <Input
-                placeholder={field.placeholder || "请输入"}
-                allowClear
-                value={values[field.name]}
-                onChange={(event) => onFieldChange?.(field.name, event.target.value)}
-              />
-            )}
-          </label>
-        ))}
-        <Space className="source-query-actions">
-          {buttons.includes("重 置") ? <Button onClick={onReset}>重 置</Button> : null}
-          {buttons.includes("查 询") ? <Button type="primary" onClick={onSearch}>查 询</Button> : null}
-          {onToggle ? (
-            <Button type="link" onClick={onToggle}>
-              {expanded ? "收起" : "展开"}
-            </Button>
-          ) : null}
-        </Space>
-      </div>
-    </Card>
-  );
-}
-
-function PriceDiscountPage({ hasStore, binding, localData, onRefresh }) {
-  const { message } = AntApp.useApp();
-  const [activeTab, setActiveTab] = useState("价格");
-  const [query, setQuery] = useState("");
-  const [draftIds, setDraftIds] = useState([]);
-  const [syncingProducts, setSyncingProducts] = useState(false);
-  const products = localData?.caches?.products || [];
-  const draftIdSet = useMemo(() => new Set(draftIds), [draftIds]);
-  const visibleProducts = products
-    .filter((item) => productMatchesQuery(item, query))
-    .filter((item, index) => {
-      if (activeTab !== "改价草稿") return true;
-      const id = item.id || item.product_id || item.offer_id || `price-product-${index}`;
-      return draftIdSet.has(String(id));
-    });
-  const rows = priceDiscountRows(visibleProducts, activeTab).map((row) => ({
-    ...row,
-    _drafted: draftIdSet.has(String(row.id)),
-  }));
-  const syncProducts = async () => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    if (syncingProducts) return;
-    setSyncingProducts(true);
-    try {
-      message.loading({ content: "正在只读同步商品价格", key: "price-products-sync", duration: 0 });
-      const response = await apiRequest("/local/sync/PRODUCTS", { method: "POST", body: { storeId: binding?.id } });
-      await onRefresh?.();
-      const fetched = Number(response?.job?.fetchedCount ?? response?.fetchedCount) || 0;
-      message.success({ content: `商品价格已刷新 · ${fetched} 条`, key: "price-products-sync" });
-    } catch (error) {
-      message.error({ content: `刷新失败: ${error.message}`, key: "price-products-sync" });
-    } finally {
-      setSyncingProducts(false);
-    }
-  };
-  const addDraft = (record) => {
-    const id = String(record.id);
-    setDraftIds((current) => current.includes(id) ? current : [...current, id]);
-    message.success("已加入本地改价草稿");
-  };
-  const removeDraft = (record) => {
-    const id = String(record.id);
-    setDraftIds((current) => current.filter((item) => item !== id));
-    message.success("已移出草稿");
-  };
-  const openBuyerView = (record) => {
-    const url = record._raw?.url || record._raw?.product_url || record._raw?.productUrl || record._raw?.link;
-    if (!url) {
-      message.info("暂无买家页链接");
-      return;
-    }
-    window.open(url, "_blank", "noopener,noreferrer");
-  };
-  const priceColumns = [
-    "主图",
-    "商品",
-    "当前价格",
-    ...(activeTab === "折扣" ? ["划线价", "折扣"] : []),
-    ...(activeTab === "选择商品" ? ["库存", "状态"] : []),
-    ...(activeTab === "改价草稿" ? ["目标价格", "草稿状态"] : []),
-    {
-      title: "操作",
-      dataIndex: "操作",
-      width: activeTab === "改价草稿" ? 112 : 156,
-      render: (_value, record) => activeTab === "改价草稿" ? (
-        <Button type="link" size="small" onClick={() => removeDraft(record)}>移出草稿</Button>
-      ) : (
-        <Space size={0}>
-          <Button type="link" size="small" onClick={() => openBuyerView(record)}>买家看</Button>
-          <Button type="link" size="small" onClick={() => addDraft(record)} disabled={record._drafted}>改价</Button>
-        </Space>
-      ),
-    },
-  ];
-  return (
-    <div className="source-page">
-      <SourceSectionTitle
-        title="价格与折扣"
-        subtitle="从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。"
-      />
-      <Card className="panel-card source-card">
-        <SourceLineTabs
-          active={activeTab}
-          onChange={setActiveTab}
-          items={["价格", "折扣", "选择商品", "改价草稿"]}
-        />
-        <div className="table-action-row">
-          <label className="source-inline-field">
-            <span>搜索</span>
-            <Input
-              className="toolbar-search"
-              placeholder="请输入"
-              allowClear
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <Space>
-            <Button onClick={() => {
-              setQuery("");
-              message.success("已重置");
-            }}>重 置</Button>
-            <Button type="primary" onClick={() => message.success(`查询完成 · ${rows.length} 条`)}>查 询</Button>
-            <Button loading={syncingProducts} onClick={syncProducts}>刷新</Button>
-            {activeTab === "改价草稿" ? (
-              <Button disabled={!draftIds.length} onClick={() => {
-                setDraftIds([]);
-                message.success("草稿已清空");
-              }}>
-                清空草稿
-              </Button>
-            ) : null}
-          </Space>
-        </div>
-        <SourceTable
-          hasStore={hasStore}
-          rows={rows}
-          rowSelection={false}
-          loading={syncingProducts}
-          columns={priceColumns}
-          empty="暂无数据"
-          sourceEmpty
-          scrollX={1120}
-        />
-      </Card>
-    </div>
-  );
-}
-
-function CampaignsPage({ hasStore, binding, localData, onRefresh }) {
-  const { message } = AntApp.useApp();
-  const [activeStatus, setActiveStatus] = useState("全部");
-  const [query, setQuery] = useState("");
-  const [syncingPromotions, setSyncingPromotions] = useState(false);
-  const promotions = localData?.caches?.promotions || [];
-  const counts = {
-    total: promotions.length,
-    participating: promotions.filter((item) => item.is_participating).length,
-    available: promotions.filter((item) => !item.is_participating && (Number(item.potential_products_count) || 0) > 0).length,
-    endingSoon: promotions.filter(promotionIsEndingSoon).length,
-  };
-  const filteredPromotions = promotions.filter((promotion) => {
-    if (!promotionMatchesQuery(promotion, query)) return false;
-    if (activeStatus === "参与中") return Boolean(promotion.is_participating);
-    if (activeStatus === "可参与") return !promotion.is_participating && (Number(promotion.potential_products_count) || 0) > 0;
-    if (activeStatus === "即将结束") return promotionIsEndingSoon(promotion);
-    return true;
-  });
-  const rows = promotionRows(filteredPromotions);
-  const syncPromotions = async () => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    if (syncingPromotions) return;
-    setSyncingPromotions(true);
-    try {
-      message.loading({ content: "正在只读同步促销活动", key: "promotions-sync", duration: 0 });
-      await apiRequest("/local/sync/PROMOTIONS", { method: "POST", body: { storeId: binding?.id } });
-      await onRefresh?.();
-      message.success({ content: "促销活动已同步", key: "promotions-sync" });
-    } catch (error) {
-      message.error({ content: `同步失败: ${error.message}`, key: "promotions-sync" });
-    } finally {
-      setSyncingPromotions(false);
-    }
-  };
-  return (
-    <div className="source-page">
-      <SourceSectionTitle
-        title="促销活动"
-        subtitle="实时同步 Ozon 平台促销活动，掌握参与状态、商品数量与活动周期"
-      />
-      <SourceMetricStrip
-        items={[
-          ["全部活动", String(counts.total), "平台当前可见活动"],
-          ["参与中", String(counts.participating), counts.participating ? "本店已参与" : "暂未参与"],
-          ["可参与", String(counts.available), counts.available ? "可加入活动" : "尚未加入"],
-          ["即将结束（7天内）", String(counts.endingSoon), counts.endingSoon ? "需关注" : "暂无临期活动"],
-        ]}
-      />
-      <Card className="panel-card source-card">
-        <div className="filter-panel inline">
-          <span className="source-filter-label">筛选</span>
-          <Input.Search
-            className="toolbar-search"
-            placeholder="搜索活动名称 / ID"
-            allowClear
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onSearch={() => message.success(`查询完成 · ${rows.length} 条`)}
-          />
-          <PromotionStatusButtons
-            active={activeStatus}
-            onChange={setActiveStatus}
-            items={[
-              { label: "全部", count: counts.total },
-              { label: "参与中", count: counts.participating },
-              { label: "可参与", count: counts.available },
-              { label: "即将结束", count: counts.endingSoon },
-            ]}
-          />
-          <Button loading={syncingPromotions} onClick={syncPromotions}>刷新</Button>
-        </div>
-      </Card>
-      <Card className="panel-card source-card">
-        <div className="table-result-title">活动列表· 共 {rows.length} 条</div>
-        <SourceTable
-          hasStore={hasStore}
-          rows={rows}
-          rowSelection={false}
-          columns={["活动", "状态", "折扣", "商品", "活动周期", "操作"]}
-          empty="暂无数据"
-          sourceEmpty
-          scrollX={1050}
-          showPageSizeText
-        />
-      </Card>
-    </div>
-  );
-}
-
-function AutoDeletePromoPage({ hasStore, binding, localData, onRefresh }) {
-  const { message } = AntApp.useApp();
-  const [queryExpanded, setQueryExpanded] = useState(false);
-  const [syncingPromotions, setSyncingPromotions] = useState(false);
-  const [filters, setFilters] = useState({ name: "", type: undefined, status: undefined });
-  const promotions = localData?.caches?.promotions || [];
-  const storeLabel = hasStore ? (binding?.storeName || binding?.storeId || "当前店铺") : "加载店铺中…";
-  const typeOptions = Array.from(new Set(promotions.map(promotionTypeText).filter((value) => value && value !== "—")))
-    .map((value) => ({ value, label: value }));
-  const statusOptions = Array.from(new Set(promotions.map(promotionStatusLabel).filter(Boolean)))
-    .map((value) => ({ value, label: value }));
-  const filteredPromotions = promotions.filter((promotion) => {
-    const matchesName = promotionMatchesQuery(promotion, filters.name);
-    const matchesType = !filters.type || promotionTypeText(promotion) === filters.type;
-    const matchesStatus = !filters.status || promotionStatusLabel(promotion) === filters.status;
-    return matchesName && matchesType && matchesStatus;
-  });
-  const rows = autoDeletePromotionRows(filteredPromotions);
-  const warnReadonly = () => message.warning("本地复刻仅做只读验证，自动删促销写入已禁用");
-  const updateFilter = (name, value) => {
-    setFilters((current) => ({ ...current, [name]: value }));
-  };
-  const resetFilters = () => {
-    setFilters({ name: "", type: undefined, status: undefined });
-    message.success("已重置");
-  };
-  const syncPromotions = async () => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    if (syncingPromotions) return;
-    setSyncingPromotions(true);
-    try {
-      message.loading({ content: "正在只读同步促销活动", key: "auto-delete-promotions-sync", duration: 0 });
-      await apiRequest("/local/sync/PROMOTIONS", { method: "POST", body: { storeId: binding?.id } });
-      await onRefresh?.();
-      message.success({ content: "促销活动已同步", key: "auto-delete-promotions-sync" });
-    } catch (error) {
-      message.error({ content: `同步失败: ${error.message}`, key: "auto-delete-promotions-sync" });
-    } finally {
-      setSyncingPromotions(false);
-    }
-  };
-  return (
-    <div className="source-page">
-      <SourceSectionTitle
-        title="促销活动自动清理 · 利润保护"
-        subtitle="按设定频率自动检测各店铺正在参与的促销，将折扣力度 ≥「最大可接受折扣」的活动商品自动移出，避免被过深折扣拖垮利润。检测在服务端定时执行，无需保持页面打开。 首次使用请先点下方「从 Ozon 同步」拉取当前店铺的促销活动。"
-      />
-      <Card className="panel-card source-card auto-delete-config-card">
-        <div className="card-title-row">
-          <span>自动清理配置</span>
-          <Tag>{storeLabel}</Tag>
-        </div>
-        <div className="auto-delete-config-grid">
-          <label className="auto-delete-config-item switch-item">
-            <span>自动清理</span>
-            <Switch checked={false} checkedChildren="开" unCheckedChildren="关" onChange={warnReadonly} />
-          </label>
-          <label className="auto-delete-config-item">
-            <span>最大可接受折扣 %</span>
-            <Input value="30" onChange={warnReadonly} />
-          </label>
-          <label className="auto-delete-config-item">
-            <span>检测频率</span>
-            <Select
-              value="daily"
-              options={[{ value: "daily", label: "每天一次" }]}
-              onChange={warnReadonly}
-            />
-          </label>
-        </div>
-      </Card>
-      <SourceQueryBar
-        fields={[
-          { label: "活动名称", name: "name", placeholder: "请输入" },
-          { label: "类型", name: "type", type: "select", placeholder: "请选择", options: typeOptions },
-          ...(queryExpanded
-            ? [
-                { label: "状态", name: "status", type: "select", placeholder: "请选择", options: statusOptions },
-              ]
-            : []),
-        ]}
-        buttons={["重 置", "查 询"]}
-        expanded={queryExpanded}
-        values={filters}
-        onFieldChange={updateFilter}
-        onToggle={() => setQueryExpanded((value) => !value)}
-        onReset={resetFilters}
-        onSearch={() => message.success(`查询完成，共 ${rows.length} 条`)}
-      />
-      <Card className="panel-card source-card">
-        <div className="table-action-row">
-          <strong>当前店铺促销活动 · 共 {rows.length} 条</strong>
-          <Space>
-            <Button loading={syncingPromotions} onClick={syncPromotions}>从 Ozon 同步</Button>
-            <Button loading={syncingPromotions} onClick={syncPromotions}>刷新</Button>
-          </Space>
-        </div>
-        <SourceTable
-          hasStore={hasStore}
-          rows={rows}
-          loading={syncingPromotions}
-          rowSelection={false}
-          columns={["活动名称", "类型", "折扣力度", "商品数量", "有效期", "状态", "操作"]}
-          empty={hasStore ? "暂无促销活动，请先从 Ozon 同步" : "请先绑定门店"}
-          sourceEmpty
-          scrollX={1080}
-        />
-      </Card>
-    </div>
-  );
-}
-
-function PostingsPage({ binding, hasStore, localData, onRefresh }) {
-  const { message } = AntApp.useApp();
-  const [activeStatus, setActiveStatus] = useState("所有订单");
-  const [query, setQuery] = useState("");
-  const [dateRange, setDateRange] = useState(null);
-  const [syncingPostings, setSyncingPostings] = useState(false);
-  const [autoSync, setAutoSync] = useState(false);
-  const postings = scopedPostingsForCurrentStore(localData?.caches?.postings || [], binding, localData);
-  const pendingPostings = postings.filter((posting) =>
-    ["awaiting_packaging", "awaiting_deliver"].includes(postingStatus(posting))
-  ).length;
-  const currentStoreMoney = dashboardMoneyGroups(summarizePostingMoney(postings).byCurrency);
-  const statusItems = postingStatusTabs.map((label) => ({
-    label,
-    count: postingStatusCount(postings, label),
-  }));
-  const filteredPostings = postings.filter((posting) =>
-    postingMatchesTab(posting, activeStatus) &&
-    postingMatchesQuery(posting, query) &&
-    postingMatchesDateRange(posting, dateRange),
-  );
-  const rows = postingRows(filteredPostings);
-  const orderColumns = ["倒计时", "货件 / 状态", "店铺", "商品", "仓库 / 配送", "订单金额", "利润", "操作"];
-
-  const syncPostings = async (days, successText) => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    if (syncingPostings) return;
-    setSyncingPostings(true);
-    message.loading({ content: "正在只读同步订单", key: "postings-sync", duration: 0 });
-    try {
-      const report = await apiRequest("/local/sync/POSTINGS", {
-        method: "POST",
-        body: { storeId: binding?.id, postingsSinceDays: days },
-      });
-      await onRefresh?.();
-      const fetched = Number(report?.fetchedCount) || 0;
-      message.success({ content: `${successText} · ${fetched} 条`, key: "postings-sync" });
-    } catch (error) {
-      message.error({ content: `同步失败: ${error.message}`, key: "postings-sync" });
-    } finally {
-      setSyncingPostings(false);
-    }
-  };
-
-  const resetFilters = () => {
-    setQuery("");
-    setDateRange(null);
-    setActiveStatus("所有订单");
-    message.success("已重置");
-  };
-
-  const exportOrders = () => {
-    if (!rows.length) {
-      message.warning("暂无可导出的数据");
-      return;
-    }
-    downloadCsv(`qh-orders-${localDayKey(new Date())}.csv`, orderColumns, rows);
-    message.success(`已导出 ${rows.length} 条订单`);
-  };
-
-  return (
-    <div className="source-page">
-      <SourceSectionTitle
-        title="订单"
-        subtitle={`${formatDate()} · ${binding?.storeName || "当前店铺"} · 已关闭自动同步`}
-        actions={[
-          <Button key="refresh" loading={syncingPostings} onClick={() => syncPostings(30, "订单已刷新")}><span>刷新</span></Button>,
-          <Button className="dark-action-button" key="pull" loading={syncingPostings} onClick={() => syncPostings(1, "最新订单已拉取")}>拉取最新订单</Button>,
-          <Button key="doing" loading={syncingPostings} onClick={() => syncPostings(7, "进行中订单已刷新")}>刷新进行中订单</Button>,
-        ]}
-      />
-      <Alert
-        type="info"
-        showIcon
-        message="同步范围：已同步过：上次同步前 1 天至现在；首次同步：最近 30 天至现在"
-      />
-      <SourceMetricStrip
-        items={[
-          ["累计 GMV", currentStoreMoney, "当前店铺"],
-          ["本周利润", "¥—", "当前店铺"],
-          ["本周利润率", "—%", "当前店铺"],
-          ["待处理", String(pendingPostings), pendingPostings ? "需及时处理" : "↑ 全部已处理"],
-        ]}
-      />
-      <Card className="panel-card source-card">
-        <SourceStatusTabs
-          active={activeStatus}
-          onChange={setActiveStatus}
-          items={statusItems}
-        />
-        <div className="table-action-row">
-          <Space wrap>
-            <Select className="source-select" value="current" options={[{ value: "current", label: "当前店铺" }]} />
-            <Select className="source-select narrow" value="postingNumber" options={[{ value: "postingNumber", label: "货件编号" }]} />
-            <Input
-              className="toolbar-search wide"
-              placeholder="搜索货件号 / SKU / 货号 / 物流单号…"
-              allowClear
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onPressEnter={() => message.success(`筛选完成 · ${rows.length} 条`)}
-            />
-            <DatePicker.RangePicker value={dateRange} onChange={setDateRange} placeholder={["下单时间", "结束时间"]} />
-            <Button onClick={() => message.success(`筛选完成 · ${rows.length} 条`)}>筛 选</Button>
-            <Button onClick={resetFilters}>重 置</Button>
-            <Button className="warning-action-button" onClick={exportOrders}>订单导出</Button>
-          </Space>
-          <Space>
-            <span className="sync-label">自动同步</span>
-            <Switch
-              size="small"
-              checked={autoSync}
-              onChange={(checked) => {
-                setAutoSync(checked);
-                message.info(checked ? "已开启本地自动同步开关" : "已关闭自动同步");
-              }}
-            />
-          </Space>
-        </div>
-        <SourceTable
-          hasStore={hasStore}
-          rows={rows}
-          columns={orderColumns}
-          empty="暂无数据"
-          sourceEmpty
-          scrollX={1280}
-        />
-      </Card>
-      <SourceMetricStrip
-        items={[
-          ["近 7 天订单", "—", "当前筛选"],
-          ["客单价", "¥—", "当前筛选"],
-          ["当前筛选", `${rows.length}`, "条订单"],
-          ["待处理", "0", "已关闭自动同步"],
-        ]}
-      />
-    </div>
-  );
-}
-
-function ReturnsPage({ binding, hasStore, localData, onRefresh }) {
-  const { message } = AntApp.useApp();
-  const [activeType, setActiveType] = useState("退货申请 (rFBS)");
-  const [query, setQuery] = useState("");
-  const [syncingReturns, setSyncingReturns] = useState(false);
-  const returnItems = [
-    ...(localData?.caches?.returns || []),
-    ...(localData?.caches?.refunds || []),
-  ];
-  const visibleItems = returnItems.filter((item) => returnTypeMatches(item, activeType) && returnMatchesQuery(item, query));
-  const rows = returnRows(visibleItems);
-  const pendingApprovalCount = visibleItems.filter(returnIsPendingApproval).length;
-  const waitingReturnCount = visibleItems.filter(returnIsWaitingReturn).length;
-  const waitingRefundCount = visibleItems.filter(returnIsWaitingRefund).length;
-  const refreshReturns = async () => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    if (syncingReturns) return;
-    setSyncingReturns(true);
-    try {
-      const response = await apiRequest(`/ozon/returns?type=${encodeURIComponent(activeType)}&q=${encodeURIComponent(query)}`);
-      await onRefresh?.();
-      message.success(`退货缓存已刷新 · ${Number(response?.total) || 0} 条`);
-    } catch (error) {
-      message.error(`刷新失败: ${error.message}`);
-    } finally {
-      setSyncingReturns(false);
-    }
-  };
-  const runSearch = () => message.success(`搜索完成 · ${rows.length} 条`);
-  const resetReturns = () => {
-    setQuery("");
-    message.success("已重置");
-  };
-  return (
-    <div className="source-page">
-      <SourceSectionTitle
-        title="退货 / 退款"
-        subtitle={`${formatDate()} · ${binding?.storeName || "—"} · 透传 Ozon API,刷新即同步`}
-        actions={[<Button key="refresh" loading={syncingReturns} onClick={refreshReturns}>刷新</Button>]}
-      />
-      <SourceMetricStrip
-        items={[
-          ["本页申请数", String(rows.length), "已到末页"],
-          ["待审批", String(pendingApprovalCount), pendingApprovalCount ? "需处理" : "无待处理"],
-          ["等待退货", String(waitingReturnCount), waitingReturnCount ? "等待买家退回" : "无"],
-          ["等待退款", String(waitingRefundCount), waitingRefundCount ? "需跟进退款" : "无"],
-        ]}
-      />
-      <Card className="panel-card source-card">
-        <SourceStatusTabs
-          active={activeType}
-          onChange={setActiveType}
-          items={["退货申请 (rFBS)", "FBS", "FBO"]}
-        />
-        <div className="table-action-row">
-          <Space>
-            <Input
-              className="toolbar-search wide"
-              placeholder="搜索货件号 / 货号 / SKU"
-              allowClear
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onPressEnter={runSearch}
-            />
-            <Button className="dark-action-button" onClick={runSearch}>搜 索</Button>
-            <Button onClick={resetReturns}>重 置</Button>
-          </Space>
-          <Tag>{returnItems.length ? "本地缓存,按当前店铺过滤" : "暂无本地退货缓存"}</Tag>
-        </div>
-        <SourceTable
-          hasStore={hasStore}
-          rowSelection={false}
-          rows={rows}
-          columns={["申请 / 货件", "店铺", "商品", "申请时间", "操作"]}
-          empty="暂无数据"
-          sourceEmpty
-          scrollX={980}
-        />
-        <div className="source-pager">
-          <span>第 1 页</span>
-          <span>·</span>
-          <span>本页 {rows.length} 条</span>
-          <span>20/页</span>
-          <Button size="small" disabled>上一页</Button>
-          <Button size="small" type="primary" disabled>下一页</Button>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-function MessageTaskPage({ type, hasStore, binding, localData, onRefresh, navigate }) {
-  const isReview = type === "review";
-  const { message } = AntApp.useApp();
-  const [selectedRowKeys, setSelectedRowKeys] = useState([]);
-  const [taskOpen, setTaskOpen] = useState(false);
-  const [templateOpen, setTemplateOpen] = useState(false);
-  const [syncingPostings, setSyncingPostings] = useState(false);
-  const [filters, setFilters] = useState({
-    postingNumber: "",
-    extra: "",
-    productName: "",
-    sku: "",
-  });
-  const postings = localData?.caches?.postings || [];
-  const messageHistory = localData?.caches?.messageHistory || [];
-  const localRecords = messageHistory.filter((item) => item.kind === type);
-  const candidatePostings = messageTaskPostings(postings, type);
-  const rows = messageTaskRows(candidatePostings, type).filter((row) =>
-    rowMatchesAllTerms(row, [filters.postingNumber, filters.extra, filters.productName, filters.sku])
-  );
-  const selectedRows = rows.filter((row) => selectedRowKeys.includes(row.id));
-  const showTaskMonitor = () => {
-    setTaskOpen(true);
-  };
-  const showTemplateModal = () => {
-    setTemplateOpen(true);
-  };
-  const handleSync = async (label) => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    if (syncingPostings) return;
-    setSyncingPostings(true);
-    message.loading({ content: "正在只读同步订单", key: `message-task-sync-${type}`, duration: 0 });
-    try {
-      const report = await apiRequest("/local/sync/POSTINGS", {
-        method: "POST",
-        body: { storeId: binding?.id, postingsSinceDays: label.includes("全部") ? 60 : 30 },
-      });
-      await onRefresh?.();
-      const fetched = Number(report?.fetchedCount) || 0;
-      message.success({ content: `${label}已同步 · ${fetched} 条`, key: `message-task-sync-${type}` });
-    } catch (error) {
-      message.error({ content: `同步失败: ${error.message}`, key: `message-task-sync-${type}` });
-    } finally {
-      setSyncingPostings(false);
-    }
-  };
-  const updateFilter = (name, value) => {
-    setFilters((current) => ({ ...current, [name]: value }));
-  };
-  const resetFilters = () => {
-    setFilters({ postingNumber: "", extra: "", productName: "", sku: "" });
-    setSelectedRowKeys([]);
-    message.success("已重置");
-  };
-  const recordLocalSend = async () => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    if (!selectedRows.length) {
-      message.warning("请先选择数据");
-      return;
-    }
-    const templateName = isReview ? "索要好评" : "提醒取货";
-    const content = isReview
-      ? "本地记录：索要好评邀请未真实发送"
-      : "本地记录：取货提醒未真实发送";
-    try {
-      await apiRequest("/ozon/message-history/batch", {
-        method: "POST",
-        body: {
-          items: selectedRows.map((row) => ({
-            kind: type,
-            receiver: row["货件编号"],
-            postingNumber: row["货件编号"],
-            templateName,
-            content,
-            status: "local_record",
-          })),
-        },
-      });
-      setSelectedRowKeys([]);
-      await onRefresh?.();
-      message.success(`已记录 ${selectedRows.length} 条本地发送记录`);
-    } catch (error) {
-      message.error(`记录失败: ${error.message}`);
-    }
-  };
-  return (
-    <div className="source-page">
-      <SourceSectionTitle
-        title={isReview ? "索要好评" : "提醒取货"}
-        subtitle={`${formatDate()} · 当前店铺`}
-        actions={[
-          isReview ? <Button key="template" onClick={showTemplateModal}>文案模板</Button> : null,
-          <Button key="monitor" onClick={showTaskMonitor}>任务监控 (0)</Button>,
-        ].filter(Boolean)}
-      />
-      <SourceMetricStrip
-        items={isReview
-          ? [
-              ["当前筛选", String(rows.length), "条候选记录"],
-              ["待发送", String(rows.length), "本页待处理"],
-              ["已发送", String(localRecords.length), "本地记录"],
-              ["失败 / 不可发", "0", "需查看原因"],
-            ]
-          : [
-              ["当前筛选", String(rows.length), "条候选记录"],
-              ["待发送", String(rows.length), "本页待处理"],
-              ["已发送", String(localRecords.length), "本地记录"],
-              ["到货未取", String(rows.length), "本页可提醒"],
-            ]}
-      />
-      <Card className="panel-card source-card">
-        <div className="table-action-row">
-          <Space wrap>
-            <Select className="source-select" value="current" options={[{ value: "current", label: "当前店铺" }]} />
-            <Input
-              className="toolbar-search compact"
-              placeholder="货件编号"
-              allowClear
-              value={filters.postingNumber}
-              onChange={(event) => updateFilter("postingNumber", event.target.value)}
-            />
-            <Input
-              className="toolbar-search compact"
-              placeholder={isReview ? "货号" : "物流单号"}
-              allowClear
-              value={filters.extra}
-              onChange={(event) => updateFilter("extra", event.target.value)}
-            />
-            <Input
-              className="toolbar-search compact"
-              placeholder="商品名称"
-              allowClear
-              value={filters.productName}
-              onChange={(event) => updateFilter("productName", event.target.value)}
-            />
-            <Input
-              className="toolbar-search compact"
-              placeholder="SKU"
-              allowClear
-              value={filters.sku}
-              onChange={(event) => updateFilter("sku", event.target.value)}
-            />
-            {!isReview ? (
-              <>
-                <Select className="source-select" value="arrived" options={[{ value: "arrived", label: "已到取件点" }]} />
-                <Select className="source-select" value="notPicked" options={[{ value: "notPicked", label: "买家未取" }]} />
-              </>
-            ) : null}
-            <Button onClick={() => message.success("筛选条件已应用")}>筛选</Button>
-            <Button onClick={resetFilters}>重置</Button>
-          </Space>
-          <Space wrap>
-            {isReview ? <Button onClick={() => navigate("/ozon/messaging/history")}>查看结果</Button> : null}
-            <Button loading={syncingPostings} onClick={() => handleSync("当前店铺")}>同步当前店铺</Button>
-            <Button loading={syncingPostings} onClick={() => handleSync("全部店铺")}>同步全部店铺</Button>
-            <Button disabled={!selectedRowKeys.length} onClick={recordLocalSend}>批量发送</Button>
-          </Space>
-        </div>
-        <Alert
-          type="info"
-          showIcon
-          message={isReview
-            ? "建议仅对履约体验稳定、商品质量有把握的订单发送评价邀请，以提升好评转化并降低负面反馈风险。"
-            : "默认仅展示已到取件点且买家未取的订单；需要排查更多物流阶段时，可切换到货状态和取货状态筛选。"}
-        />
-        <SourceTable
-          hasStore={hasStore}
-          selectedRowKeys={selectedRowKeys}
-          onSelectionChange={setSelectedRowKeys}
-          rows={rows}
-          columns={isReview
-            ? ["操作", "店铺", "货件编号", "发运", "图片", "货号，数量 名称", "查看商品", "价格", "仓库", "配送服务 方式", "送达"]
-            : ["操作", "店铺", "货件编号", "取货状态", "图片", "货号，数量 名称", "物流单号", "配送", "最近物流时间", "查看商品"]}
-          empty="暂无数据"
-          sourceEmpty
-          scrollX={isReview ? 1540 : 1420}
-        />
-      </Card>
-      <Modal
-        rootClassName="prototype-overlay"
-        title="索要好评文案模板"
-        open={templateOpen}
-        footer={null}
-        onCancel={() => setTemplateOpen(false)}
-        width={760}
-      >
-        <div className="review-template-modal">
-          <p className="review-template-copy">
-            可为不同店铺保存多套文案，发送前选择模板后仍可临时修改。
-          </p>
-          <div className="review-template-action">
-            <Button type="primary">新建模板</Button>
-          </div>
-          <SourceTable
-            hasStore={hasStore}
-            rowSelection={false}
-            columns={["模板名称", "适用范围", "内容预览", "操作"]}
-            empty="暂无文案模板"
-            sourceEmpty
-            scrollX={640}
-          />
-        </div>
-      </Modal>
-      <Drawer
-        rootClassName="prototype-overlay"
-        title="任务监控"
-        open={taskOpen}
-        onClose={() => setTaskOpen(false)}
-        width={420}
-      >
-        {isReview ? (
-          <div className="task-empty-list">
-            <Tag>{localRecords.length} 条本地记录</Tag>
-            <p>{localRecords.length ? "最近本地记录已写入发送记录" : "暂无本页触发的任务"}</p>
-          </div>
-        ) : (
-          <SourceTable
-            hasStore={hasStore}
-            rowSelection={false}
-            rows={localRecords.slice(0, 20).map((item) => ({
-              id: item.id,
-              "店铺": item.storeName || "当前店铺",
-              "状态": "本地记录",
-              "错误": "未真实发送",
-            }))}
-            columns={["店铺", "状态", "错误"]}
-            empty="暂无数据"
-            sourceEmpty
-            scrollX={360}
-          />
-        )}
-      </Drawer>
-    </div>
-  );
-}
-
-const messageTemplateCategoryOptions = [
-  { value: "review", label: "索要好评" },
-  { value: "pickup", label: "提醒取货" },
-  { value: "custom", label: "自定义" },
-];
-
-const messageTemplateCategoryLabel = (value) =>
-  messageTemplateCategoryOptions.find((item) => item.value === value)?.label || "自定义";
-
-const formatTemplateTime = (value) => {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
-};
-
-const rangeBoundary = (value, position) => {
-  if (!value) return null;
-  if (position === "start" && value.startOf) return value.startOf("day").valueOf();
-  if (position === "end" && value.endOf) return value.endOf("day").valueOf();
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.getTime();
-};
-
-function MessageTemplatesPage({ hasStore, localData, onRefresh }) {
-  const { message, modal } = AntApp.useApp();
-  const [form] = Form.useForm();
-  const [templateForm] = Form.useForm();
-  const [expanded, setExpanded] = useState(false);
-  const [filters, setFilters] = useState({});
-  const [templateOpen, setTemplateOpen] = useState(false);
-  const [editingTemplate, setEditingTemplate] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const templates = localData?.caches?.messageTemplates || [];
-
-  const filteredTemplates = useMemo(() => {
-    const values = filters || {};
-    const nameFilter = String(values.templateName || "").trim().toLowerCase();
-    const contentFilter = String(values.contentPreview || "").trim().toLowerCase();
-    const categoryFilter = values.category || "";
-    const [startValue, endValue] = values.updatedAt || [];
-    const startAt = rangeBoundary(startValue, "start");
-    const endAt = rangeBoundary(endValue, "end");
-    return templates.filter((item) => {
-      const itemName = String(item.templateName || item.name || "").toLowerCase();
-      const itemContent = String(item.content || "").toLowerCase();
-      const updatedAt = new Date(item.updatedAt || item.createdAt || "").getTime();
-      if (nameFilter && !itemName.includes(nameFilter)) return false;
-      if (categoryFilter && item.category !== categoryFilter) return false;
-      if (contentFilter && !itemContent.includes(contentFilter)) return false;
-      if (startAt !== null && (!updatedAt || updatedAt < startAt)) return false;
-      if (endAt !== null && (!updatedAt || updatedAt > endAt)) return false;
-      return true;
-    });
-  }, [filters, templates]);
-
-  const openCreateTemplate = () => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    setEditingTemplate(null);
-    templateForm.resetFields();
-    setTemplateOpen(true);
-  };
-
-  const openEditTemplate = (record) => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    setEditingTemplate(record);
-    templateForm.setFieldsValue({
-      templateName: record.templateName || record.name || "",
-      category: record.category || "custom",
-      content: record.content || "",
-    });
-    setTemplateOpen(true);
-  };
-
-  const closeTemplateModal = () => {
-    setTemplateOpen(false);
-    setEditingTemplate(null);
-    templateForm.resetFields();
-  };
-
-  const saveTemplate = async () => {
-    if (!hasStore) {
-      message.warning("请先绑定门店");
-      return;
-    }
-    const values = await templateForm.validateFields();
-    setSaving(true);
-    try {
-      const isEditing = Boolean(editingTemplate?.id);
-      await apiRequest(
-        isEditing ? `/ozon/message-templates/${encodeURIComponent(editingTemplate.id)}` : "/ozon/message-templates",
-        {
-          method: isEditing ? "PUT" : "POST",
-          body: values,
-        },
-      );
-      await onRefresh?.();
-      closeTemplateModal();
-      message.success("模板已保存");
-    } catch (error) {
-      message.error(`保存失败: ${error.message}`);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const deleteTemplate = (record) => {
-    modal.confirm({
-      title: "删除模板",
-      icon: null,
-      content: "确认删除该模板？",
-      okText: "删 除",
-      okButtonProps: { danger: true },
-      cancelText: "取 消",
-      onOk: async () => {
-        try {
-          await apiRequest(`/ozon/message-templates/${encodeURIComponent(record.id)}`, { method: "DELETE" });
-          await onRefresh?.();
-          message.success("模板已删除");
-        } catch (error) {
-          message.error(`删除失败: ${error.message}`);
-        }
-      },
-    });
-  };
-
-  const rows = filteredTemplates.map((item) => ({
-    ...item,
-    id: item.id,
-    "模板名称": item.templateName || item.name || "—",
-    "分类": messageTemplateCategoryLabel(item.category),
-    "内容预览": item.content || "",
-    "更新时间": formatTemplateTime(item.updatedAt || item.createdAt),
-  }));
-
-  const columns = [
-    "模板名称",
-    "分类",
-    {
-      title: "内容预览",
-      dataIndex: "内容预览",
-      key: "内容预览",
-      width: 280,
-      render: (value) => {
-        const text = String(value || "");
-        return <span className="source-table-cell-text" title={text || "—"}>{text || "—"}</span>;
-      },
-    },
-    "更新时间",
-    {
-      title: "操作",
-      dataIndex: "操作",
-      key: "操作",
-      width: 96,
-      ellipsis: false,
-      render: (_, record) => (
-        <Space size={2}>
-          <Tooltip rootClassName="prototype-overlay" title="编辑">
-            <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEditTemplate(record)} />
-          </Tooltip>
-          <Tooltip rootClassName="prototype-overlay" title="删除">
-            <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => deleteTemplate(record)} />
-          </Tooltip>
-        </Space>
-      ),
-    },
-  ];
-
-  return (
-    <div className="source-page">
-      <Card className="panel-card source-card">
-        <Form form={form} layout="inline" className="template-query-form">
-          <Form.Item label="模板名称" name="templateName">
-            <Input placeholder="请输入" allowClear />
-          </Form.Item>
-          <Form.Item label="分类" name="category">
-            <Select
-              className="template-category-select"
-              placeholder="请选择"
-              allowClear
-              options={messageTemplateCategoryOptions}
-            />
-          </Form.Item>
-          {expanded && (
-            <>
-              <Form.Item label="内容预览" name="contentPreview">
-                <Input placeholder="请输入" allowClear />
-              </Form.Item>
-              <Form.Item label="更新时间" name="updatedAt">
-                <DatePicker.RangePicker placeholder={["", ""]} />
-              </Form.Item>
-            </>
-          )}
-          <Space>
-            <Button
-              onClick={() => {
-                form.resetFields();
-                setFilters({});
-                message.success("已重置");
-              }}
-            >
-              重 置
-            </Button>
-            <Button
-              type="primary"
-              onClick={() => {
-                setFilters(form.getFieldsValue());
-                message.success(`查询完成 · ${rows.length} 条`);
-              }}
-            >
-              查 询
-            </Button>
-            <a onClick={() => setExpanded((value) => !value)}>
-              {expanded ? "收起" : "展开"}
-            </a>
-          </Space>
-        </Form>
-      </Card>
-      <Card className="panel-card source-card">
-        <div className="table-action-row">
-          <strong>模板列表</strong>
-          <Space size={12}>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateTemplate}>
-              新建模板
-            </Button>
-            <Button type="text" size="small" className="source-icon-button" icon={<SyncOutlined />} />
-            <Button type="text" size="small" className="source-icon-button" icon={<SettingOutlined />} />
-          </Space>
-        </div>
-        <SourceTable
-          hasStore={hasStore}
-          rowSelection={false}
-          columns={columns}
-          rows={rows}
-          empty="暂无模板"
-          sourceEmpty
-          scrollX={980}
-        />
-      </Card>
-      <Modal
-        rootClassName="prototype-overlay"
-        title={editingTemplate ? "编辑模板" : "新建模板"}
-        open={templateOpen}
-        className="message-template-modal"
-        wrapClassName="message-template-modal-wrap"
-        okText="保 存"
-        cancelText="取 消"
-        confirmLoading={saving}
-        onOk={saveTemplate}
-        onCancel={closeTemplateModal}
-        footer={[
-          <Button key="cancel" onClick={closeTemplateModal}>
-            取 消
-          </Button>,
-          <Button key="submit" type="primary" loading={saving} onClick={saveTemplate}>
-            保 存
-          </Button>,
-        ]}
-        destroyOnHidden
-        transitionName=""
-        maskTransitionName=""
-      >
-        <Form form={templateForm} layout="vertical" className="template-preview">
-          <Form.Item label="模板名称" name="templateName" rules={[{ required: true, message: "请输入模板名称" }]}>
-            <Input placeholder="请输入" maxLength={80} />
-          </Form.Item>
-          <Form.Item label="所属分类" name="category" rules={[{ required: true, message: "请选择分类" }]}>
-            <Select placeholder="请选择" options={messageTemplateCategoryOptions} />
-          </Form.Item>
-          <Form.Item label="消息内容" name="content">
-            <Input.TextArea rows={5} placeholder="请输入" maxLength={2000} showCount />
-          </Form.Item>
-        </Form>
-      </Modal>
-    </div>
-  );
-}
-
-const messageHistoryStatusLabel = (value) => ({
-  local_record: "本地记录",
-  success: "成功",
-  failed: "失败",
-  pending: "待发送",
-}[value] || "本地记录");
-
-function MessageHistoryPage({ hasStore, localData, onRefresh }) {
-  const { message } = AntApp.useApp();
-  const [form] = Form.useForm();
-  const [expanded, setExpanded] = useState(false);
-  const [filters, setFilters] = useState({});
-  const historyRecords = localData?.caches?.messageHistory || [];
-  const filteredRecords = useMemo(() => {
-    const values = filters || {};
-    const receiverFilter = String(values.receiver || "").trim().toLowerCase();
-    const templateFilter = String(values.template || "").trim().toLowerCase();
-    const contentFilter = String(values.content || "").trim().toLowerCase();
-    const statusFilter = values.status || "";
-    const [startValue, endValue] = values.sentAt || [];
-    const startAt = rangeBoundary(startValue, "start");
-    const endAt = rangeBoundary(endValue, "end");
-    return historyRecords.filter((item) => {
-      const receiver = String(item.receiver || item.postingNumber || "").toLowerCase();
-      const template = String(item.templateName || "").toLowerCase();
-      const content = String(item.content || "").toLowerCase();
-      const sentAt = new Date(item.sentAt || item.createdAt || "").getTime();
-      if (receiverFilter && !receiver.includes(receiverFilter)) return false;
-      if (templateFilter && !template.includes(templateFilter)) return false;
-      if (contentFilter && !content.includes(contentFilter)) return false;
-      if (statusFilter && item.status !== statusFilter) return false;
-      if (startAt !== null && (!sentAt || sentAt < startAt)) return false;
-      if (endAt !== null && (!sentAt || sentAt > endAt)) return false;
-      return true;
-    });
-  }, [filters, historyRecords]);
-  const rows = filteredRecords.map((item) => ({
-    id: item.id,
-    "接收人": item.receiver || item.postingNumber || "—",
-    "使用模板": item.templateName || "—",
-    "发送内容": item.content || "—",
-    "状态": messageHistoryStatusLabel(item.status),
-    "发送时间": formatTemplateTime(item.sentAt || item.createdAt),
-    "操作": "查看",
-  }));
-  return (
-    <div className="source-page">
-      <Card className="panel-card source-card">
-        <Form form={form} layout="inline" className="template-query-form">
-          <Form.Item label="接收人" name="receiver">
-            <Input placeholder="请输入" allowClear />
-          </Form.Item>
-          <Form.Item label="使用模板" name="template">
-            <Input placeholder="请输入" allowClear />
-          </Form.Item>
-          {expanded && (
-            <>
-              <Form.Item label="发送内容" name="content">
-                <Input placeholder="请输入" allowClear />
-              </Form.Item>
-              <Form.Item label="状态" name="status">
-                <Select
-                  className="template-category-select"
-                  placeholder="请选择"
-                  allowClear
-                  options={[
-                    { value: "local_record", label: "本地记录" },
-                    { value: "success", label: "成功" },
-                    { value: "failed", label: "失败" },
-                    { value: "pending", label: "待发送" },
-                  ]}
-                />
-              </Form.Item>
-              <Form.Item label="发送时间" name="sentAt">
-                <DatePicker.RangePicker placeholder={["", ""]} />
-              </Form.Item>
-            </>
-          )}
-          <Space>
-            <Button
-              onClick={() => {
-                form.resetFields();
-                setFilters({});
-                message.success("已重置");
-              }}
-            >
-              重 置
-            </Button>
-            <Button
-              type="primary"
-              onClick={() => {
-                setFilters(form.getFieldsValue());
-                message.success(`查询完成 · ${rows.length} 条`);
-              }}
-            >
-              查 询
-            </Button>
-            <a onClick={() => setExpanded((value) => !value)}>
-              {expanded ? "收起" : "展开"}
-            </a>
-          </Space>
-        </Form>
-      </Card>
-      <Card className="panel-card source-card">
-        <div className="table-action-row table-action-row-compact">
-          <strong>历史记录</strong>
-          <Space size={12}>
-            <Button
-              type="text"
-              size="small"
-              className="source-icon-button"
-              icon={<SyncOutlined />}
-              onClick={async () => {
-                await onRefresh?.();
-                message.success("已刷新");
-              }}
-            />
-            <Button type="text" size="small" className="source-icon-button" icon={<SettingOutlined />} />
-          </Space>
-        </div>
-        <SourceTable
-          hasStore={hasStore}
-          rowSelection={false}
-          rows={rows}
-          columns={["接收人", "使用模板", "发送内容", "状态", "发送时间", "操作"]}
-          empty="暂无发送记录"
-          sourceEmpty
-          scrollX={1050}
-        />
-      </Card>
-    </div>
-  );
-}
-
 
 function ProductTemplatesPage({ hasStore, binding, localData, onRefresh }) {
+  const formatTemplateTime = (value) => {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+  };
   const { message, modal } = AntApp.useApp();
   const [form] = Form.useForm();
   const [templateForm] = Form.useForm();
@@ -9106,107 +6582,6 @@ function ProductTemplatesPage({ hasStore, binding, localData, onRefresh }) {
   );
 }
 
-function PluginPanel() {
-  const [pingState, setPingState] = useState({ status: "checking", version: "", error: "" });
-  const runPing = async () => {
-    setPingState({ status: "checking", version: "", error: "" });
-    try {
-      const resp = await requestExtensionPing(1500);
-      setPingState(listingBridgeStatusFromPing(resp));
-    } catch (error) {
-      setPingState({
-        status: "error",
-        version: "",
-        error: error?.message || "本地浏览器插件未响应",
-      });
-    }
-  };
-  useEffect(() => {
-    runPing();
-  }, []);
-  const connected = pingState.status === "ok";
-  const partial = pingState.status === "partial";
-  return (
-    <div className="plugin-panel">
-      <div className="plugin-hero">
-        <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} style={pluginWordmarkStyle} />
-        <div>
-          <h2>{PRODUCT_BRAND.displayName} 浏览器插件</h2>
-          <p>版本 {EXTENSION_VERSION}</p>
-          <Space size={8} wrap>
-            <Tag color="green">已复制到本地项目</Tag>
-            <Tag color={connected ? "blue" : partial ? "orange" : pingState.status === "checking" ? "processing" : "red"}>
-              {connected ? `已连接 ${pingState.version}` : partial ? "兼容模式" : pingState.status === "checking" ? "检测中" : "未连接"}
-            </Tag>
-          </Space>
-        </div>
-      </div>
-      <Alert
-        className="plugin-status"
-        type={connected ? "success" : pingState.status === "checking" ? "info" : "warning"}
-        showIcon
-        message={connected ? "插件桥接已响应" : partial ? "源插件兼容采集模式" : "插件桥接未响应"}
-        description={
-          connected
-            ? "插件负责把 Ozon 源商品采集入库；采集箱上架会读取当前草稿并提交到当前绑定店铺，不会重新采集覆盖数据。"
-            : partial
-              ? `${pingState.error}。当前可用源插件 prefetch 采集 SKU 入库；后台预检/上架只读取已保存草稿。重载本项目 extension 目录后可使用完整 follow-sell 桥。`
-              : pingState.status === "checking"
-                ? "正在检测当前 Chrome 是否已加载本项目插件。"
-                : `${pingState.error}。请在 Chrome 扩展管理页重新加载下面的本地目录后刷新本页。`
-        }
-        action={
-          <Button size="small" icon={<SyncOutlined />} loading={pingState.status === "checking"} onClick={runPing}>
-            重新检测
-          </Button>
-        }
-      />
-      <div className="plugin-path">
-        <span>加载目录</span>
-        <code>/Users/songliang/Documents/sonli ozon3.0/extension</code>
-      </div>
-      <div className="plugin-checklist">
-        {[
-          ["1", "打开 Chrome 扩展管理页", "进入 chrome://extensions/ 并开启开发者模式"],
-          ["2", "加载或重新加载本地目录", "选择上面的 extension 目录；已加载时点击扩展卡片的刷新按钮"],
-          ["3", "回到本页重新检测", `状态应显示 已连接 ${EXTENSION_VERSION}，然后再做上架预检`],
-        ].map(([step, title, desc]) => (
-          <div key={step}>
-            <strong>{step}</strong>
-            <span>{title}</span>
-            <em>{desc}</em>
-          </div>
-        ))}
-      </div>
-      <div className="plugin-actions">
-        <a
-          className="ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid plugin-download"
-          href={EXTENSION_DOWNLOAD_PATH}
-          download
-        >
-          <DownloadOutlined />
-          <span>插件下载</span>
-        </a>
-        <Button icon={<EyeOutlined />} href={EXTENSION_POPUP_PREVIEW_PATH} target="_blank">
-          弹窗预览
-        </Button>
-      </div>
-      <div className="plugin-package-status">
-        <CheckOutlined />
-        <span>下载包 sonli-extension-{EXTENSION_VERSION}.zip 已与本地 extension 目录逐文件校验一致</span>
-      </div>
-      <div className="plugin-capabilities">
-        {EXTENSION_CAPABILITIES.map(([title, file]) => (
-          <div key={title}>
-            <ChromeOutlined />
-            <span>{title}</span>
-            <code>{file}</code>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 export function App() {
   return (

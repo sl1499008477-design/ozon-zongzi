@@ -4,6 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { createPricingIdempotencyState } from "../pricing-idempotency-state.mjs";
 import { savePricingSnapshot } from "../pricing-config-service.mjs";
+
+const previousDatabaseUrl = process.env.DATABASE_URL;
+const previousPostgresHost = process.env.POSTGRES_HOST;
+delete process.env.DATABASE_URL;
+delete process.env.POSTGRES_HOST;
+
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pricing-idem-"));
 const adapter = createPricingIdempotencyState({ dataFile: path.join(dir, "state.json") });
 const scope = { accountId: "a", storeId: "s", action: "PRICING_SNAPSHOT", key: "k" };
@@ -88,11 +94,7 @@ await assert.rejects(() => savePricingSnapshot({ ...args, payloadHash: "differen
 
 const defaultStateFile = path.join(dir, "default-save-pricing-snapshot.json");
 const previousStateFile = process.env.PRICING_IDEMPOTENCY_STATE_FILE;
-const previousDatabaseUrl = process.env.DATABASE_URL;
-const previousPostgresHost = process.env.POSTGRES_HOST;
 process.env.PRICING_IDEMPOTENCY_STATE_FILE = defaultStateFile;
-delete process.env.DATABASE_URL;
-delete process.env.POSTGRES_HOST;
 try {
   const defaultBase = {
     accountId: "default-account",

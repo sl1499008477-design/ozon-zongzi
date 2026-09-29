@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const trusted = (url) => {
-    try { const u = new URL(String(url || '')); return (u.protocol === 'https:' && (u.hostname === 'qh.jizhangerp.com' || u.hostname.endsWith('.qh.jizhangerp.com'))) || (u.protocol === 'http:' && ['localhost', '127.0.0.1', 'store.localhost'].includes(u.hostname) && u.port === '3000'); } catch { return false; }
+    try { const u = new URL(String(url || '')); return (u.protocol === 'https:' && (u.hostname === 'www.ozonzongzi.com' || u.hostname.endsWith('.www.ozonzongzi.com'))) || (u.protocol === 'http:' && ['localhost', '127.0.0.1', 'store.localhost'].includes(u.hostname) && u.port === '3000'); } catch { return false; }
   };
   const copy = (source, fields) => Object.fromEntries(fields.filter((field) => source[field] !== undefined).map((field) => [field, source[field]]));
   const collectorKeys = Object.freeze({

@@ -5,7 +5,7 @@ const LANGUAGES = new Set(["ru"]);
 const BRAND_MODES = new Set(["PREFER_SOURCE", "FORCE_NO_BRAND"]);
 const ROLE_RANGES = Object.freeze({
   main: [1, 1],
-  sellingPoint: [2, 5],
+  sellingPoint: [1, 5],
   detail: [1, 2],
   scene: [1, 2],
   specification: [0, 1],
@@ -14,10 +14,10 @@ const ROLE_RANGES = Object.freeze({
 
 const DEFAULT_ROLES = Object.freeze({
   main: 1,
-  sellingPoint: 2,
+  sellingPoint: 1,
   detail: 1,
   scene: 1,
-  specification: 0,
+  specification: 1,
   infographic: 1,
 });
 
@@ -123,12 +123,11 @@ function option(value, fallback, allowed) {
   return result;
 }
 
-function rolesFor(requested = {}, hasReliableProductDimensions) {
+function rolesFor(requested = {}) {
   if (!onlyKeys(requested, new Set(Object.keys(ROLE_RANGES)))) throw configError();
   const output = {};
   for (const [role, [minimum, maximum]] of Object.entries(ROLE_RANGES)) {
     let count = requested[role] ?? DEFAULT_ROLES[role];
-    if (role === "specification" && !hasReliableProductDimensions) count = 0;
     if (!Number.isInteger(count) || count < minimum || count > maximum) throw configError();
     output[role] = count;
   }
@@ -136,16 +135,18 @@ function rolesFor(requested = {}, hasReliableProductDimensions) {
 }
 
 export function deriveAutoListingConfig(input = {}, {
-  hasReliableProductDimensions = true,
+  hasReliableProductDimensions: _hasReliableProductDimensions = true,
 } = {}) {
   if (!onlyKeys(input, new Set([
-    "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplier", "brandMode", "image",
+    "targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "priceMultiplier", "brandMode",
+    "useCategoryStrategy", "image",
   ])) || !Number.isInteger(input.stock) || input.stock <= 0) throw configError();
+  if (input.useCategoryStrategy !== undefined && typeof input.useCategoryStrategy !== "boolean") throw configError();
   const imageInput = input.image ?? {};
   if (!onlyKeys(imageInput, new Set(["ratio", "resolution", "quality", "language", "roles"]))) {
     throw configError();
   }
-  const roles = rolesFor(imageInput.roles ?? {}, hasReliableProductDimensions === true);
+  const roles = rolesFor(imageInput.roles ?? {});
   const total = Object.values(roles).reduce((sum, count) => sum + count, 0);
   if (total < 6 || total > 13) throw configError();
   return Object.freeze({
@@ -155,6 +156,7 @@ export function deriveAutoListingConfig(input = {}, {
     priceAdjustmentKopecks: signedInteger(input.priceAdjustmentKopecks),
     priceMultiplierMicros: multiplierToMicros(input.priceMultiplier ?? "1"),
     brandMode: option(input.brandMode, "FORCE_NO_BRAND", BRAND_MODES),
+    useCategoryStrategy: input.useCategoryStrategy !== false,
     image: Object.freeze({
       ratio: option(imageInput.ratio, AUTO_LISTING_IMAGE_DEFAULTS.ratio, RATIOS),
       resolution: option(imageInput.resolution, AUTO_LISTING_IMAGE_DEFAULTS.resolution, RESOLUTIONS),
@@ -258,10 +260,9 @@ export function autoListingWarehouseOptions({
       const platformWarehouseId = firstText(warehouse.warehouse_id, warehouse.warehouseId);
       if (!localWarehouseId || !platformWarehouseId) return null;
       const name = firstText(warehouse.name, warehouse.label, warehouse.warehouse_name, platformWarehouseId);
-      const visibleStatus = pending || fulfillmentType === "RFBS" ? ` · ${statusLabel}` : "";
       return Object.freeze({
         value: localWarehouseId,
-        label: `${name}（${fulfillmentType}${visibleStatus}）`,
+        label: name,
         fulfillmentType,
         evidenceRequired: eligibility.evidenceRequired === true,
         statusLabel,

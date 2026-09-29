@@ -25,6 +25,29 @@ async function mutateArchive(buffer, mutate) {
   return archive.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
+async function prefixMainSpreadsheetNamespace(buffer) {
+  return mutateArchive(buffer, async (archive) => {
+    const names = [
+      "xl/workbook.xml",
+      "xl/worksheets/sheet1.xml",
+      "xl/styles.xml",
+      "xl/sharedStrings.xml",
+    ];
+    for (const name of names) {
+      const file = archive.file(name);
+      if (!file) continue;
+      const source = await file.async("string");
+      const prefixed = source
+        .replace(
+          'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"',
+          'xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"',
+        )
+        .replace(/<(\/?)([A-Za-z_][\w.-]*)(?=[\s>])/gu, "<$1x:$2");
+      archive.file(name, prefixed);
+    }
+  });
+}
+
 function corruptCentralUncompressedSize(buffer, entryName) {
   const copy = Buffer.from(buffer);
   for (let offset = 0; offset + 46 < copy.length; offset += 1) {
@@ -123,6 +146,24 @@ test("accepts the three specified headers without depending on case or spacing",
     const parsed = await parseRows([[header], ["4862904234"]]);
     assert.deepEqual(parsed.acceptedRows, [{ rowNumber: 2, rawSku: "4862904234", sku: "4862904234" }]);
   }
+});
+
+test("accepts valid OOXML whose main spreadsheet namespace uses an explicit prefix", async () => {
+  const base = await workbookBuffer(async (workbook) => {
+    workbook.addWorksheet("SKU").addRows([
+      ["SKU"],
+      ["4381017127"],
+      ["3779547127"],
+    ]);
+  });
+  const prefixed = await prefixMainSpreadsheetNamespace(base);
+
+  const parsed = await parseAutoListingSkuWorkbook({ buffer: prefixed, name: "prefixed.xlsx" });
+
+  assert.deepEqual(parsed.acceptedRows, [
+    { rowNumber: 2, rawSku: "4381017127", sku: "4381017127" },
+    { rowNumber: 3, rawSku: "3779547127", sku: "3779547127" },
+  ]);
 });
 
 test("normalizes text and safe numeric SKU cells without scientific notation", async () => {
@@ -357,11 +398,27 @@ test("bounds shared strings, worksheet width, and cell count while accepting a l
     parseAutoListingSkuWorkbook({ buffer: ultraWide, name: "wide.xlsx" }),
     assertCode("AUTO_LISTING_EXCEL_ARCHIVE_LIMIT_EXCEEDED"),
   );
+  await assert.rejects(
+    parseAutoListingSkuWorkbook({
+      buffer: await prefixMainSpreadsheetNamespace(ultraWide),
+      name: "prefixed-wide.xlsx",
+    }),
+    assertCode("AUTO_LISTING_EXCEL_ARCHIVE_LIMIT_EXCEEDED"),
+  );
 
   await assert.rejects(
     parseAutoListingSkuWorkbook({
       buffer: sharedStrings,
       name: "cells.xlsx",
+      maxRows: 19,
+      maxWorksheetCells: 20,
+    }),
+    assertCode("AUTO_LISTING_EXCEL_ARCHIVE_LIMIT_EXCEEDED"),
+  );
+  await assert.rejects(
+    parseAutoListingSkuWorkbook({
+      buffer: await prefixMainSpreadsheetNamespace(sharedStrings),
+      name: "prefixed-cells.xlsx",
       maxRows: 19,
       maxWorksheetCells: 20,
     }),

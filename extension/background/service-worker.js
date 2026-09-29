@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"ozon 粽子","productName":"ozon 粽子","primaryColor":"#1268FF","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/ozon-zongzi-symbol.svg") : null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"ozon 粽子","productName":"ozon 粽子","primaryColor":"#1268FF","apiHost":"www.ozonzongzi.com/api","webHost":"www.ozonzongzi.com","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/ozon-zongzi-symbol.svg") : null};
 // Electron host compatibility shim — Electron 36+ extension system 不实现
 // chrome.contextMenus / chrome.cookies / chrome.notifications,SW 顶层调到
 // chrome.contextMenus.onClicked.addListener 会抛 TypeError 导致整个 SW 注册失败。
@@ -43,6 +43,7 @@ try {
     '../lib/ozon-enrichment-contract.js',
     '../lib/collector-capture-deadline.js',
     '../lib/frontend-tab-opener.js',
+    '../lib/seller-route.js',
     '../lib/seller-identity-policy.js',
     '../lib/seller-context-ui-message-policy.js',
     '../lib/seller-recovery-tab.js',
@@ -54,8 +55,10 @@ try {
     '../lib/ozon-video-extract.js',
     'follow-sell-request.js',
     'collector-client.js',
+    'collector-account-status.js',
     'collector-ozon-enrichment-agent.js',
     'collector-ozon-enrichment-client.js',
+    'ozon-web-collection.js',
   );
 } catch (e) {
   console.warn('[SW] dependency import failed:', e?.message || e);
@@ -68,32 +71,32 @@ try {
 
   // Backend 路由策略:
   //   - dev (直接加载 extension/ 源码,不跑 build.js) → globalThis.__JZ_PROD_BUILD__
-  //     未定义 → 固定使用统一入口 127.0.0.1:3000/api
+  //     未定义 → 固定使用统一入口 www.ozonzongzi.com/api
   //   - prod (走 npm run build 出的 dist/zip,esbuild define 把
-  //     globalThis.__JZ_PROD_BUILD__ 替换成 "true") → 只走 api.jizhangerp.com,
+  //     globalThis.__JZ_PROD_BUILD__ 替换成 "true") → 只走 www.ozonzongzi.com/api,
   //     不再 fallback localhost。防止从 jizhangerp.com 下载安装的扩展在用户本地
   //     不再暴露或探测独立的 3001 API 入口。
-  const LOCAL_FRONTEND_BASE_URL = 'http://127.0.0.1:3000';
+  const LOCAL_FRONTEND_BASE_URL = 'https://www.ozonzongzi.com';
   const LOCAL_FRONTEND_TAB_URLS = [
     'http://localhost:3000/*',
-    'http://127.0.0.1:3000/*',
+    'https://www.ozonzongzi.com/*',
     'http://store.localhost:3000/*',
   ];
   const LOCAL_FRONTEND_ORIGINS = [
     'http://localhost:3000',
-    'http://127.0.0.1:3000',
+    'https://www.ozonzongzi.com',
     'http://store.localhost:3000',
   ];
-  const BACKEND_URLS = ['http://127.0.0.1:3000/api'];
+  const BACKEND_URLS = ['https://www.ozonzongzi.com/api'];
   const isLocalBackendUrl = (value) => /^http:\/\/127\.0\.0\.1:3000\/api\b/.test(String(value || ''));
 
-  // dev 直接加载源码时 build.js 没跑,qh.jizhangerp.com 保持字面量 → 运行时兜底平台默认。
+  // dev 直接加载源码时 build.js 没跑,www.ozonzongzi.com 保持字面量 → 运行时兜底平台默认。
   // 影响:受信 Web 标签页查找和 openFrontend 跳转域名。
   // 用 /__BRAND/ 探测(不写全占位符),避免 build textual replace 把探测逻辑也换掉
   // 而导致分销商 build 被误兜底成平台默认。
-  const BRAND_WEB_HOST = /__BRAND/.test('qh.jizhangerp.com')
-    ? 'store.jizhangerp.com'
-    : 'qh.jizhangerp.com';
+  const BRAND_WEB_HOST = /__BRAND/.test('www.ozonzongzi.com')
+    ? 'www.ozonzongzi.com'
+    : 'www.ozonzongzi.com';
   const TRUSTED_FRONTEND_TAB_URLS = [
     `https://${BRAND_WEB_HOST}/*`,
     ...LOCAL_FRONTEND_TAB_URLS,
@@ -110,8 +113,6 @@ try {
 
   // 跟卖任务失败检查配置
   const FOLLOW_SELL_CHECK_ALARM = 'follow-sell-task-check';
-  const FOLLOW_SELL_CHECK_INTERVAL_MINUTES = 5; // 每 5 分钟拉一次最近任务
-  const FOLLOW_SELL_RECENT_WINDOW_MS = 60 * 60 * 1000; // 只通知最近 1 小时内创建的失败任务
   const COLLECTOR_OZON_ENRICHMENT_ALARM = 'collectorOzonEnrichmentTick';
   const COLLECTOR_OZON_DRAIN_MS = 20_000;
 
@@ -120,7 +121,6 @@ try {
     latestDownloadUrl: 'extensionLatestDownloadUrl',
     latestSha256: 'extensionLatestSha256',
     updateDismissedVersion: 'extensionUpdateDismissedVersion',
-    followSellNotifiedIds: 'followSellNotifiedLocalTaskIds',
     deviceFingerprint: 'ozonExtensionFingerprint',
     // v2 (deprecated) → v3 (2026-05-27 起):v2 含 devicePixelRatio + languages 数组
     // 在同台 Edge 不同 profile/zoom 算成两台机器,导致 4 台套餐错占名额。
@@ -370,8 +370,8 @@ try {
       activeLeases.set(key, leases);
       return true;
     };
-    const preflightFailure = () => Object.assign(new Error('OZON_ENRICH_PREFLIGHT_FAILED'), {
-      code: 'OZON_ENRICH_PREFLIGHT_FAILED',
+    const preflightFailure = () => Object.assign(new Error('ZONGZI_ENRICH_PREFLIGHT_FAILED'), {
+      code: 'ZONGZI_ENRICH_PREFLIGHT_FAILED',
     });
     const exactAvailability = async (response) => {
       if (!response?.ok) throw preflightFailure();
@@ -688,6 +688,27 @@ try {
     sessionManager: collectorSessionManager,
     getDeviceFingerprint: () => getExtensionFingerprint(),
   });
+  const sellerRoute = globalThis.JzActiveSellerRoute = globalThis.JzSellerRoute.createAccountSellerRoute({
+    storage: chrome.storage.local,
+    sessionManager: collectorSessionManager,
+    getBackendUrl,
+    isBusy: async ({resume = false, request} = {}) => {
+      await ozonWebCollection.ready;
+      if (collectorOzonAgent.isBusy() || (!resume && ozonWebCollection.isBusy())) return true;
+      const tabs = await chrome.tabs.query({ url: [
+        'https://www.ozon.ru/*', 'https://ozon.ru/*', 'https://www.ozon.kz/*', 'https://ozon.kz/*',
+      ] });
+      const activity = await Promise.all(tabs.map(tab => chrome.tabs.sendMessage(tab.id, {
+        action: 'getSellerRouteActivity',...(request?.tabId === tab.id ? {excludeRequestId:request.requestId} : {}),
+      }).catch(() => null)));
+      return activity.some(result => result?.busy) || collectorOzonAgent.isBusy() || (!resume && ozonWebCollection.isBusy());
+    },
+    onChange: async () => {
+      await sellerCompanyContextRuntime.resetForRouteChange();
+      confirmedPackagingBySku.clear();
+    },
+  });
+  const getSellerOrigin = () => sellerRoute.getOrigin();
   const sellerCompanyContextRuntime =
     globalThis.JzSellerCompanyContextRuntime.createSellerCompanyContextRuntime({
       chromeApi: chrome,
@@ -702,19 +723,61 @@ try {
     readyStatus: globalThis.JzSellerRecoveryTab.STATUS.READY,
     sessionManager: collectorSessionManager,
   });
+  const confirmedPackagingBySku = new Map();
+  const packagingOwnerIsCurrent = async (entry) => {
+    if (!await sellerCompanyContextRuntime.isSnapshotCurrent(entry.sellerContext)) return false;
+    const current = await collectorSessionManager.beginCollectorOperation();
+    return current?.accountId === entry.accountId
+      && current.permissions.includes('collector.ozon.read');
+  };
+  const readConfirmedPackaging = async (sku) => {
+    const entry = confirmedPackagingBySku.get(String(sku));
+    return entry && await packagingOwnerIsCurrent(entry) ? entry.packaging : null;
+  };
+  const publishConfirmedPackaging = async ({ sku, variantData, collectorOperation, sellerContext }) => {
+    const entry = {
+      accountId: collectorOperation.accountId,
+      sellerContext,
+      // 两组包装证据时，与服务端既有规则一致：采用商品包顶层的第一组。
+      packaging: variantData.packagingCandidates?.length === 2 ? { ...variantData.packagingCandidates[0] } : {
+        weightG: variantData.weight,
+        lengthMm: variantData.depth,
+        widthMm: variantData.width,
+        heightMm: variantData.height,
+      },
+    };
+    if (!await packagingOwnerIsCurrent(entry)) return;
+    const key = String(sku);
+    confirmedPackagingBySku.delete(key);
+    confirmedPackagingBySku.set(key, entry);
+    if (confirmedPackagingBySku.size > 200) {
+      confirmedPackagingBySku.delete(confirmedPackagingBySku.keys().next().value);
+    }
+    // 通知不携带资料；面板重新读取时再次检查当前粽子账号和 Seller 身份。
+    const tabs = await chrome.tabs.query({ url: [
+      'https://www.ozon.ru/*', 'https://ozon.ru/*',
+      'https://www.ozon.kz/*', 'https://ozon.kz/*',
+    ] });
+    await Promise.allSettled(tabs.map((tab) => chrome.tabs.sendMessage(tab.id, {
+      action: 'ozonPackagingUpdated', sku: key,
+    })));
+  };
   const collectorOzonAgent = globalThis.JzCollectorOzonAgent.create({
     sessionManager: collectorSessionManager,
     sellerContextRuntime: collectorSellerContextLeaseBridge.sellerContextRuntime,
     canCapture: collectorSellerContextLeaseBridge.canCapture,
-    captureVariant: ({ sku, noProxy, readOnly, forceRefresh, deadlineAt, sellerContext }) => searchVariantsLocal({
+    beforeClaim: () => sellerRoute.prepareNewWork(),
+    onResult: publishConfirmedPackaging,
+    captureVariant: ({ sku, noProxy, readOnly, automaticCapture, forceRefresh, deadlineAt, sellerContext }) => sellerRoute.run(() => searchVariantsLocal({
       sku,
       noProxy: noProxy === true,
       readOnly: readOnly === true,
+      automaticCapture: automaticCapture === true,
       forceRefresh: forceRefresh === true,
       deadlineAt,
       sellerContext,
       sender: null,
-    }),
+    })),
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   });
   const collectorOzonClient = globalThis.JzCollectorOzonClient.create({
@@ -722,8 +785,16 @@ try {
     agent: collectorOzonAgent,
     getBackendUrl,
   });
-  const kickCollectorOzonEnrichment = () => {
+  const ozonWebCollection = globalThis.JzOzonWebCollection.create({
+    chromeApi: chrome,
+    sessionManager: collectorSessionManager,
+    beforeClaim: () => sellerRoute.prepareNewWork(),
+    beforeResume: snapshot => sellerRoute.resumeWork(snapshot),
+  });
+  ozonWebCollection.start();
+  const kickCollectorOzonEnrichment = async () => {
     try {
+      await sellerRoute.prepareNewWork();
       const drain = collectorOzonAgent.drainAvailable({
         deadlineAt: Date.now() + COLLECTOR_OZON_DRAIN_MS,
       });
@@ -757,7 +828,7 @@ try {
     status: Number.isInteger(Number(error?.status)) ? Number(error.status) : 0,
     code: globalThis.JzCollectorSession.sanitizeCollectorErrorCode(
       error?.code,
-      'OZON_ENRICH_UPSTREAM_FAILED',
+      'ZONGZI_ENRICH_UPSTREAM_FAILED',
     ),
     error: globalThis.JzCollectorSession.redactCollectorSecrets(
       error?.message || 'Ozon 商品资料补全失败',
@@ -774,12 +845,13 @@ try {
         ].includes(field)),
     )],
     retryable: error?.retryable === true,
+    ...(error?.diagnostic ? { diagnostic: globalThis.JzCollectorSession.sanitizeCollectorDiagnostic(error.diagnostic) } : {}),
   });
   const invalidOzonRuntimeMessage = () => Object.assign(
     new Error('Ozon 商品补全请求格式无效'),
     {
       status: 400,
-      code: 'OZON_ENRICH_REQUEST_INVALID',
+      code: 'ZONGZI_ENRICH_REQUEST_INVALID',
       missingFields: [],
       retryable: false,
     },
@@ -808,10 +880,10 @@ try {
     };
     const normalizedUnit = (rawValue, rawLabel, weight) => {
       const units = weight ? '(кг|kg|г|g)' : '(мм|mm|см|cm|м|m)';
-      const valueMatch = String(rawValue || '').toLowerCase()
+      const valueMatch = String(rawValue || '').replace(/千克|公斤/g, 'kg').replace(/克/g, 'g').replace(/毫米/g, 'mm').replace(/厘米/g, 'cm').toLowerCase()
         .match(new RegExp(`-?\\d+(?:[.,]\\d+)?\\s*${units}(?=\\s|$|[),;])`, 'iu'));
       if (valueMatch?.[1]) return valueMatch[1].toLowerCase();
-      const labelMatch = String(rawLabel || '').toLowerCase()
+      const labelMatch = String(rawLabel || '').replace(/千克|公斤/g, 'kg').replace(/克/g, 'g').replace(/毫米/g, 'mm').replace(/厘米/g, 'cm').replace(/，/g, ',').toLowerCase()
         .match(new RegExp(`(?:[,([/:\\-–]|\\s)\\s*${units}\\s*[)\\]]?\\s*$`, 'iu'));
       return labelMatch?.[1]?.toLowerCase() || '';
     };
@@ -840,12 +912,14 @@ try {
     };
     let candidateOrder = 0;
     const candidateScore = (label) => {
-      if (/(?:упаков|packag|брутто|gross)/iu.test(label)) return 3;
+      if (/(?:упаков|packag|брутто|gross|包装|毛重)/iu.test(label)) return 3;
       if (/(?:товар|product|нетто|net)/iu.test(label)) return 1;
       return 2;
     };
     const recordCandidate = (field, value, label) => {
       if (!value) return;
+      // Explicit product/net measurements are not shipping package measurements.
+      if (/(?:товар|product|нетто|\bnet\b|商品|净重)/iu.test(label) && !/(?:упаков|packag|брутто|gross|包装|毛重)/iu.test(label)) return;
       const candidate = { value, score: candidateScore(label), order: candidateOrder++ };
       const current = candidates[field];
       if (!current || candidate.score > current.score) candidates[field] = candidate;
@@ -857,7 +931,7 @@ try {
       const label = String(labelValue || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const value = String(rawValue || '').trim();
       if (!label || !value) return;
-      if (/(?:размер|габарит|dimensions|size)/iu.test(label)) {
+      if (/(?:размер|габарит|dimensions|size|尺寸|规格)/iu.test(label)) {
         const unit = normalizedUnit(value, label, false);
         const parts = value.replace(/,/g, '.').split(/\s*[x×*хХ;,，]\s*/u)
           .map((part) => part.match(/-?\d+(?:\.\d+)?/)?.[0] || '')
@@ -867,13 +941,13 @@ try {
           recordCandidate('width', positiveMeasure(`${parts[1]}${unit}`, label), label);
           recordCandidate('height', positiveMeasure(`${parts[2]}${unit}`, label), label);
         }
-      } else if (/(?:вес|масса|weight)/iu.test(label)) {
+      } else if (/(?:вес|масса|weight|重量|毛重|净重)/iu.test(label)) {
         recordCandidate('weight', positiveMeasure(value, label, { weight: true }), label);
-      } else if (/(?:длина|глубина|length|depth)/iu.test(label)) {
+      } else if (/(?:длина|глубина|length|depth|长度|深度)/iu.test(label)) {
         recordCandidate('depth', positiveMeasure(value, label), label);
-      } else if (/(?:ширина|width)/iu.test(label)) {
+      } else if (/(?:ширина|width|宽度)/iu.test(label)) {
         recordCandidate('width', positiveMeasure(value, label), label);
-      } else if (/(?:высота|height)/iu.test(label)) {
+      } else if (/(?:высота|height|高度)/iu.test(label)) {
         recordCandidate('height', positiveMeasure(value, label), label);
       }
     };
@@ -903,12 +977,11 @@ try {
       `/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(path)}`,
       `/api/composer-api.bx/page/json/v2?url=${encodeURIComponent(path)}`,
     ];
-    const deadlineAt = Date.now() + Math.max(1, Number(timeoutMs) || 1);
+    let successfulReads = 0;
+    let readError = Object.assign(new Error('来源未返回包装资料'), {code:'ZONGZI_ENRICH_INCOMPLETE'});
     for (const endpoint of endpoints) {
-      const remainingMs = Math.floor(deadlineAt - Date.now());
-      if (remainingMs < 1) break;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), remainingMs);
+      const timer = null;
       try {
         const response = await fetchImpl(endpoint, {
           method: 'GET',
@@ -916,23 +989,27 @@ try {
           headers: { accept: 'application/json', 'x-o3-app-name': 'dweb_client' },
           signal: controller.signal,
         });
-        if (!response?.ok) continue;
+        if (!response?.ok) { readError = Object.assign(new Error(`HTTP_${Number(response?.status) || 502}`), {status:Number(response?.status)||502,code:`HTTP_${Number(response?.status)||502}`}); continue; }
         const data = await response.json();
+        successfulReads++;
         visit(data?.widgetStates || {});
         if (Object.values(candidates).every((candidate) => candidate?.score === 3)) {
           return currentPhysicals();
         }
-      } catch {
-        // A single shared deadline covers both response headers and body parsing.
+      } catch (error) {
+        const code = error?.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR';
+        readError = Object.assign(new Error(error?.message || code), {code});
       } finally {
         clearTimeout(timer);
       }
     }
+    if (!successfulReads) throw readError;
     const physicals = currentPhysicals();
     return Object.values(physicals).some((value) => value > 0) ? physicals : null;
   };
 
   const fetchReadOnlyOzonPublicPhysicals = async ({
+    forceRefresh = false,
     sku,
     deadlineAt,
     now = () => Date.now(),
@@ -967,7 +1044,7 @@ try {
         height: Number(cached?.heightMm),
       };
       if (
-        Number.isFinite(observedAt)
+        !forceRefresh && Number.isFinite(observedAt)
         && Number.isFinite(currentAt)
         && observedAt <= currentAt
         && currentAt - observedAt <= 30 * 24 * 60 * 60 * 1000
@@ -1236,16 +1313,21 @@ try {
         complexAttributes.push(raw);
         continue;
       }
-      const key = String(raw?.attribute_id || '');
-      if (!key || keys.has(key)) continue;
-      const values = Array.isArray(raw?.values)
-        ? raw.values.filter((value) => value && value.value != null && value.value !== '')
-        : [];
-      if (!values.length) continue;
-      attributes.push(values.length > 1
-        ? { key, collection: values.map((value) => String(value.value)) }
-        : { key, value: String(values[0].value) });
-      keys.add(key);
+      const attribute = globalThis.JzOzonEnrichmentContract.projectBundleAttribute(raw);
+      if (!attribute) continue;
+      const key = attribute.key;
+      const index = attributes.findIndex(entry => String(entry.key) === key);
+      if (index >= 0) {
+        const existing = attributes[index];
+        const knownId = [existing, ...(Array.isArray(existing.collection) ? existing.collection : [])]
+          .some(value => Number(value?.dictionary_value_id ?? value?.dictionaryValueId) > 0);
+        if (Array.isArray(existing.values) || ['4497', '9454', '9455', '9456'].includes(key)
+          || (knownId && !attribute.values.some(value => value.dictionary_value_id))) continue;
+        attributes[index] = attribute;
+      } else {
+        attributes.push(attribute);
+        keys.add(key);
+      }
     }
 
     return {
@@ -1286,8 +1368,23 @@ try {
     return merged;
   };
 
+  const assertAutomaticCaptureBundle = (item, variantId) => {
+    if (!item || String(item.origin_variant_id) !== String(variantId)) {
+      throw Object.assign(new Error('商品包与请求变体不一致'), {code:'ZONGZI_ENRICH_NOT_FOUND'});
+    }
+    const direct = {}, attributes = {};
+    for (const [field, key, target] of [['weight','4497','weightG'],['depth','9454','lengthMm'],['width','9455','widthMm'],['height','9456','heightMm']]) {
+      direct[target] = Number(item[field]);
+      const attribute = (item.attributes || []).find(a => String(a.attribute_id) === key);
+      attributes[target] = Number(attribute?.values?.[0]?.value) || direct[target];
+    }
+    const conflict = Object.keys(direct).some(key => direct[key] > 0 && attributes[key] > 0 && direct[key] !== attributes[key]);
+    return conflict ? [direct, attributes] : null;
+  };
+
   const fetchBundleByVariantId = async (sku, variantId, companyId, opts = {}) => {
-    const cacheKey = _bundleCacheKey(companyId, variantId);
+    const identityCacheKey = _bundleCacheKey(companyId, variantId);
+    const cacheKey = `${identityCacheKey}:ru`; // 保留旧语言缓存，不让历史中文命中新采集。
     // L1: chrome.storage.local cache(同 company+variant 24h 复用)
     // forceRefresh=true 跳过 cache 命中,直接调 endpoint 拉新 bundle(用于源商品改了类目/属性时手动刷新)
     if (!opts.forceRefresh) {
@@ -1311,10 +1408,18 @@ try {
       } catch {}
     }
 
-    // L2: 真调 endpoint(有副作用)
+    // Creating a bundle is a write. All full captures retain its uncertain
+    // outcome and use one transport strategy, including ordinary manual reads.
     const captureOptions = globalThis.JzCollectorCaptureDeadline.portalRequestOptions({
-      deadlineAt: opts.deadlineAt,
+      deadlineAt: opts.deadlineAt, automaticCapture: opts.automaticCapture,
     });
+    const pendingKey = `${identityCacheKey}:automatic-pending`; // 防重复草稿标记不随语言变化。
+    {
+      const pending = await chrome.storage.local.get([pendingKey]);
+      if (pending?.[pendingKey]) throw Object.assign(new Error('上次商品包创建结果未确认，停止重复创建'), {code:'ZONGZI_ENRICH_BUNDLE_UNCERTAIN'});
+      await chrome.storage.local.set({[pendingKey]: {at:Date.now(),sku:String(sku)}});
+    }
+    // L2: 真调 endpoint(有副作用)
     const resp = await fetchSellerPortal(
       '/seller-prototype/create-bundle-by-variant-id',
       {
@@ -1326,27 +1431,34 @@ try {
         urlPrefix: '/api/site',
         pageType: 'products',
         ...captureOptions,
+        singleStrategy: true,
         preferTabId: opts.preferTabId,
         strictPreferredSellerTab: opts.strictPreferredSellerTab === true,
         companyId,
+        language: 'ru',
       },
     );
     const item = resp?.item || null;
-    if (!item) return null;
+    if (!item) {
+      throw Object.assign(new Error('商品包响应缺少资料'), {code:'ZONGZI_ENRICH_BUNDLE_UNCERTAIN'});
+    }
 
     // 写 cache(包括 sku + bundle_id 便于 debug,但 item 才是数据本体)。
     // 真拉回来仍无 attributes → 打 attrsEmptyVerifiedAt 标记:6h 内按"确实没有"复用,
     // 过期再验(与上面读侧守卫配对,避免对天生无属性的品每次采集都真拉)。
     try {
       const hasSimpleAttrs = Array.isArray(item.attributes) && item.attributes.length > 0;
-      chrome.storage.local.set({
+      await chrome.storage.local.set({
         [cacheKey]: {
           at: Date.now(), item, sku, bundleId: resp.bundle_id || null,
           ...(hasSimpleAttrs ? {} : { attrsEmptyVerifiedAt: Date.now() }),
         },
       });
-    } catch {}
+    } catch (error) {
+      throw Object.assign(new Error('商品包已创建但结果保存失败'), {code:'ZONGZI_ENRICH_BUNDLE_UNCERTAIN'});
+    }
 
+    await chrome.storage.local.remove(pendingKey);
     return item;
   };
 
@@ -1413,17 +1525,13 @@ try {
 
   const getSellerCompanyIdCandidates = async (options = {}) => {
     if (options.sender?.tab && !globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(options.sender.tab)) return [];
-    try {
-      const sellerContext = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
-      return sellerContext.status === globalThis.JzSellerRecoveryTab.STATUS.READY
-        ? [sellerContext.companyId]
-        : [];
-    } catch (error) {
-      if (/SELLER_(?:COMPANY_CONTEXT_CONFLICT|CONTEXT_RECOVERY_FAILED)/.test(error?.message || '')) {
-        throw error;
-      }
-      return [];
+    const sellerContext = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
+    if (sellerContext.status === globalThis.JzSellerRecoveryTab.STATUS.RECOVERING) {
+      throw Object.assign(new Error('SELLER_CONTEXT_RECOVERING'), { code: 'SELLER_CONTEXT_RECOVERING' });
     }
+    return sellerContext.status === globalThis.JzSellerRecoveryTab.STATUS.READY
+      ? [sellerContext.companyId]
+      : [];
   };
 
   // 解析当前 Seller 页面实际使用的公司编号。Cookie 是第一来源；Ozon 不再下发
@@ -1455,7 +1563,7 @@ try {
     // 后端给了目标店铺的 company_id 且与当前登录不一致 → 会建到错误店铺,立即中止并提示切换。
     const storeCompanyId = result.store_company_id ? String(result.store_company_id) : '';
     if (storeCompanyId && storeCompanyId !== String(companyId)) {
-      throw new Error(`所选店铺与当前 seller.ozon.ru 登录店铺不一致(目标 ${storeCompanyId} / 当前 ${companyId}),门户上架请先在浏览器切换到该店铺登录`);
+      throw new Error(`所选店铺与当前 Seller 线路登录店铺不一致(目标 ${storeCompanyId} / 当前 ${companyId}),门户上架请先在浏览器切换到该店铺登录`);
     }
     const withRetry = async (fn, label, maxAttempts = 3) => {
       for (let i = 1; i <= maxAttempts; i++) {
@@ -1511,7 +1619,8 @@ try {
    */
   // 内部实现;对外用下方带 single-flight 的 ensureSellerTab 包装。
   const _ensureSellerTabImpl = async (timeoutMs = 20000) => {
-    const queryTabs = () => chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
+    await sellerRoute.ready;
+    const queryTabs = async () => (await chrome.tabs.query({ url: getSellerOrigin() + '/*' })).filter(tab => globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(tab));
     // 2026-05-30:排除 signin/registration/auth/login 页 —— 它们的 URL 也含 /app/
     // (如 /app/registration/signin),旧 find(url.includes('/app/')) 会误选到登录页,
     // 注入后页面无有效会话 / SPA 拦截 fetch。优先选真业务页,auth 页排最后兜底。
@@ -1532,8 +1641,7 @@ try {
     // 有 tab 但都在 loading → 等它们 complete；途中全被关掉就落到下面 create
     if (tabs.length) {
       console.log('[ensureSellerTab] 已有 tab 但都在加载中，等待 complete...');
-      const waitDeadline = Date.now() + timeoutMs;
-      while (Date.now() < waitDeadline) {
+      while (tabs.length) {
         await new Promise(r => setTimeout(r, 500));
         tabs = await queryTabs();
         ready = pickReadyTab(tabs);
@@ -1546,13 +1654,12 @@ try {
 
     console.log('[ensureSellerTab] 无可用 seller.ozon.ru tab，后台打开...');
     const created = await chrome.tabs.create({
-      url: 'https://seller.ozon.ru/app/products/copy/list',
+      url: getSellerOrigin() + '/app/products/copy/list',
       active: false,
       pinned: true,
     });
 
-    const createDeadline = Date.now() + timeoutMs;
-    while (Date.now() < createDeadline) {
+    while (true) {
       await new Promise(r => setTimeout(r, 500));
       try {
         const t = await chrome.tabs.get(created.id);
@@ -1564,7 +1671,6 @@ try {
         throw new Error('自动打开的 seller.ozon.ru tab 已被关闭');
       }
     }
-    throw new Error(`seller.ozon.ru tab 加载超时（${timeoutMs / 1000}s）`);
   };
 
   // single-flight 包装:并发调用(列表页多卡同时要市场数据/变体、或 fast-path 回退叠加)
@@ -1643,8 +1749,7 @@ try {
     let ready = pickReady(tabs);
     if (ready) return ready;
     if (tabs.length) {
-      const waitDeadline = Date.now() + timeoutMs;
-      while (Date.now() < waitDeadline) {
+      while (tabs.length) {
         await new Promise(r => setTimeout(r, 500));
         tabs = await queryTabs();
         ready = pickReady(tabs);
@@ -1654,8 +1759,7 @@ try {
     }
     console.log('[ensureBuyerTab] 无可用 www.ozon.ru tab，后台打开...');
     const created = await chrome.tabs.create({ url: 'https://www.ozon.ru/', active: false, pinned: true });
-    const createDeadline = Date.now() + timeoutMs;
-    while (Date.now() < createDeadline) {
+    while (true) {
       await new Promise(r => setTimeout(r, 500));
       try {
         const t = await chrome.tabs.get(created.id);
@@ -1673,13 +1777,14 @@ try {
   const transferVideoToOzon = async (srcUrl) => {
     if (!srcUrl || typeof srcUrl !== 'string') return { ok: false, error: 'srcUrl required' };
     const targetTab = await ensureSellerTab();
-    const scCookies = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
-    const companyId = scCookies[0]?.value || '';
+    const scCookies = await chrome.cookies.getAll({ url: getSellerOrigin() + '/', name: 'sc_company_id' });
+    const companyId = globalThis.JzSellerIdentityPolicy.resolveTrustedSellerCompanyId(scCookies);
     if (!companyId) {
-      return { ok: false, error: 'AUTH_REQUIRED', message: 'sc_company_id cookie 未找到，请先登录 seller.ozon.ru' };
+      return { ok: false, error: 'AUTH_REQUIRED', message: 'sc_company_id cookie 未找到，请先登录所选 Seller 线路' };
     }
     // 在 seller.ozon.ru tab 的 MAIN world 跑:跨源拉源 .mp4 → multipart 同源 POST(带 cookie)。
-    const doUpload = async (src, xCompanyId, timeout) => {
+    const doUpload = async (src, xCompanyId, timeout, sellerOrigin) => {
+      if (window.location.origin !== sellerOrigin) return { ok: false, error: 'SELLER_CONTEXT_CHANGED' };
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout);
       try {
@@ -1692,7 +1797,7 @@ try {
         fd.append('file_name', fname);
         fd.append('tmp', 'true');
         fd.append('body', new File([blob], fname, { type: blob.type || 'video/mp4' }));
-        const resp = await fetch('https://seller.ozon.ru/api/media-storage/upload-file', {
+        const resp = await fetch(sellerOrigin + '/api/media-storage/upload-file', {
           method: 'POST',
           signal: controller.signal,
           credentials: 'include',
@@ -1712,7 +1817,7 @@ try {
       }
     };
     const results = await Promise.race([
-      chrome.scripting.executeScript({ target: { tabId: targetTab.id }, func: doUpload, args: [srcUrl, companyId, 90000], world: 'MAIN' }),
+      chrome.scripting.executeScript({ target: { tabId: targetTab.id }, func: doUpload, args: [srcUrl, companyId, 90000, getSellerOrigin()], world: 'MAIN' }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('executeScript 超时')), 95000)),
     ]);
     const r = results && results[0] && results[0].result;
@@ -2213,15 +2318,19 @@ try {
     const opts = typeof timeoutMsOrOpts === "number"
       ? { timeoutMs: timeoutMsOrOpts }
       : (timeoutMsOrOpts || {});
-    const timeoutMs = opts.timeoutMs || 30000;
+    let timeoutMs = opts.timeoutMs === 0 ? 0 : (opts.timeoutMs || 30000);
     const urlPrefix = opts.urlPrefix !== undefined ? opts.urlPrefix : "/api/v1";
     const pageType = opts.pageType || "products-other";
+    const productCapture = [`/api/v1/search`, `/api/site/seller-prototype/create-bundle-by-variant-id`].includes(urlPrefix + path);
+    const language = productCapture ? 'ru' : (opts.language || 'zh-Hans');
+    if (productCapture) timeoutMs = 0;
 
     // 0. 跨域快路:opts.allowOzonTab 的调用(/search、create-bundle —— company_id 在 body、
     // 无需 x-o3-* 自定义头)优先在「当前 ozon.ru 标签页」内直发,免依赖 seller 专用标签。
     // 成功直接返回;404/ResourceNotFound 是权威空结果(SKU 不在目录)也直接抛;
     // 其余失败(无 ozon 标签 / 注入失败 / 反爬 / 网络)静默回退到下面的 seller-tab 老路。
-    if (opts.allowOzonTab) {
+    // 商品属性必须显式 RU；www 跨域简单请求不能携带语言头，走 Seller 同源路径。
+    if (getSellerOrigin() === 'https://seller.ozon.ru' && opts.allowOzonTab && !productCapture && !opts.language) {
       try {
         return await fetchSellerViaOzonTab(path, body, opts, opts.preferTabId);
       } catch (e) {
@@ -2248,11 +2357,12 @@ try {
     if (!companyId) throw new Error('SELLER_COMPANY_CONTEXT_REQUIRED');
 
     // 3. Try executeScript first (with hard timeout), fallback to bridge
-    const doFetch = async (apiPath, reqBody, xCompanyId, timeout, prefix, pageTypeHdr) => {
+    const doFetch = async (apiPath, reqBody, xCompanyId, timeout, prefix, pageTypeHdr, languageHdr, sellerOrigin) => {
+      if (window.location.origin !== sellerOrigin) return { ok: false, code: 'SELLER_CONTEXT_CHANGED', error: 'SELLER_CONTEXT_CHANGED' };
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
+      const timer = timeout > 0 ? setTimeout(() => controller.abort(), timeout) : null;
       try {
-        const resp = await fetch('https://seller.ozon.ru' + (prefix || '/api/v1') + apiPath, {
+        const resp = await fetch(sellerOrigin + (prefix || '/api/v1') + apiPath, {
           method: 'POST',
           signal: controller.signal,
           credentials: 'include',
@@ -2261,7 +2371,7 @@ try {
             'content-type': 'application/json',
             'x-o3-app-name': 'seller-ui',
             'x-o3-company-id': xCompanyId,
-            'x-o3-language': 'zh-Hans',
+            'x-o3-language': languageHdr,
             'x-o3-page-type': pageTypeHdr || 'products-other',
           },
           body: JSON.stringify(reqBody),
@@ -2300,23 +2410,25 @@ try {
       chrome.scripting.executeScript({
         target: { tabId: targetTab.id },
         func: doFetch,
-        args: [path, body, companyId, timeoutMs, urlPrefix, pageType],
+        args: [path, body, companyId, timeoutMs, urlPrefix, pageType, language, getSellerOrigin()],
         world: 'MAIN',
       }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('executeScript 超时')), timeoutMs + 5000)),
+      ...(timeoutMs > 0 ? [new Promise((_, reject) => setTimeout(() => reject(new Error('executeScript 超时')), timeoutMs + 5000))] : []),
     ]);
 
     // Bridge fallback (tabs.sendMessage to ozon-seller-bridge.js)
     const tryBridge = () => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('bridge 超时')), timeoutMs + 5000);
+      const timer = timeoutMs > 0 ? setTimeout(() => reject(new Error('bridge 超时')), timeoutMs + 5000) : null;
       chrome.tabs.sendMessage(targetTab.id, {
         type: 'sellerPortalFetch',
+        sellerOrigin: getSellerOrigin(),
         apiPath: path,
         reqBody: body,
         fallbackCompanyId: companyId,
         timeoutMs,
         urlPrefix,
         pageType,
+        language,
       }, (resp) => {
         clearTimeout(timer);
         if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
@@ -2332,6 +2444,7 @@ try {
       const err = new Error(r.error || 'unknown');
       if (typeof r.status === 'number') err.status = r.status;
       if (typeof r.code === 'string') err.code = r.code;
+      err.diagnostic = { stage: path.includes('create-bundle') ? 'bundle' : 'search', requestSent: true, ...(r.status ? {upstreamStatus:r.status} : {}), ...(r.code ? {upstreamCode:r.code} : {}) };
       return err;
     };
 
@@ -2372,7 +2485,7 @@ try {
         if (e.status === 404 && e.code === 'ResourceNotFound') {
           throw e;
         }
-        lastErrors.push({ name: m.name, msg, status: e.status, code: e.code });
+        lastErrors.push({ name: m.name, msg, status: e.status, code: e.code, diagnostic: e.diagnostic });
       }
     }
     const detail = lastErrors.map(x => `${x.name}: ${x.msg}`).join(' | ');
@@ -2384,6 +2497,7 @@ try {
       err.status = firstWithStatus.status;
       if (firstWithStatus.code) err.code = firstWithStatus.code;
     }
+    err.diagnostic = lastErrors.find(x => x.diagnostic)?.diagnostic || {stage:path.includes('create-bundle') ? 'bundle' : 'search'};
     throw err;
   };
 
@@ -2415,7 +2529,7 @@ try {
           method: 'GET',
           credentials: 'include',
           headers: { Accept: 'application/json' },
-          signal: AbortSignal.timeout(timeoutMs),
+          ...(timeoutMs > 0 ? {signal: AbortSignal.timeout(timeoutMs)} : {}),
         });
         if (!resp.ok) {
           return { ok: false, status: resp.status, error: `Ozon ${resp.status}` };
@@ -2429,7 +2543,7 @@ try {
     // executeScript 注入 MAIN world,fetch 跑在 page 上下文,带 www.ozon.ru 完整 cookies。
     const doFetchInPage = async (url, timeout) => {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
+      const timer = timeout > 0 ? setTimeout(() => controller.abort(), timeout) : null;
       try {
         const resp = await fetch(url, {
           method: 'GET',
@@ -2456,9 +2570,9 @@ try {
           args: [apiUrl, timeoutMs],
           world: 'MAIN',
         }),
-        new Promise((_, reject) =>
+        ...(timeoutMs > 0 ? [new Promise((_, reject) =>
           setTimeout(() => reject(new Error('executeScript 超时')), timeoutMs + 5000),
-        ),
+        )] : []),
       ]);
       const r = results?.[0]?.result;
       if (!r) return { ok: false, error: 'executeScript 未返回结果' };
@@ -2539,7 +2653,7 @@ try {
     const path = `${source.pathname}${source.search}`;
     const apiUrl = `${source.origin}/api/composer-api.bx/page/json/v2?url=${encodeURIComponent(path)}`;
     const fetched = await fetchOzonWwwViaTab(sender, apiUrl, 15_000);
-    if (!fetched?.ok) throw categoryStrategyError('CATEGORY_STRATEGY_SAMPLING_OZON_CAPTURE_FAILED');
+    if (!fetched?.ok) throw categoryStrategyError('CATEGORY_STRATEGY_SAMPLING_ZONGZI_CAPTURE_FAILED');
     const responseHash = await categoryStrategySha256Hex(fetched.data);
     if (expectedSku === null) return { responseHash };
     const extracted = globalThis.JzCategoryStrategySampling.extractOzonCapturedFacts({
@@ -3497,74 +3611,9 @@ try {
     });
   };
 
-  // ── 跟卖任务失败检查 ──
-  const checkFollowSellTasks = async () => {
-    try {
-      const data = await getStorage([STORAGE_KEYS.followSellNotifiedIds]);
-      const token = null;
-      const storeId = null;
-      if (!token || !storeId) return; // 未登录或未选店铺，跳过
-
-      const backendUrl = await getBackendUrl();
-      const resp = await apiRequest(
-        'GET',
-        `${backendUrl}/ozon/products/import-by-sku/tasks?current=1&pageSize=20`,
-        null,
-        token,
-        storeId,
-        15_000,
-      );
-      const items = resp?.items || [];
-      if (!Array.isArray(items) || items.length === 0) return;
-
-      const notified = new Set(Array.isArray(data[STORAGE_KEYS.followSellNotifiedIds]) ? data[STORAGE_KEYS.followSellNotifiedIds] : []);
-      const cutoff = Date.now() - FOLLOW_SELL_RECENT_WINDOW_MS;
-      const newlyFailed = items.filter(t => {
-        if (t.status !== 'FAILED') return false;
-        if (!t.localTaskId) return false;
-        if (notified.has(t.localTaskId)) return false;
-        const createdAtMs = t.createdAt ? new Date(t.createdAt).getTime() : 0;
-        return createdAtMs >= cutoff;
-      });
-
-      for (const task of newlyFailed) {
-        const firstItem = Array.isArray(task.itemsPreview) && task.itemsPreview.length > 0 ? task.itemsPreview[0] : null;
-        const itemCount = Array.isArray(task.itemsPreview) ? task.itemsPreview.length : 0;
-        const title = itemCount > 1
-          ? `跟卖失败 (${itemCount} 个商品)`
-          : `跟卖失败${firstItem?.name ? `：${String(firstItem.name).slice(0, 30)}` : ''}`;
-        const message = task.errorMessage
-          ? String(task.errorMessage).slice(0, 180)
-          : '跟卖任务后台执行失败，请在插件弹窗「上架记录」中查看。';
-        try {
-          chrome.notifications.create(`follow-sell-fail-${task.localTaskId}`, {
-            type: 'basic',
-            iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-            title,
-            message,
-            priority: 1,
-          });
-        } catch (e) {
-          // notification 权限缺失时静默
-        }
-        notified.add(task.localTaskId);
-      }
-
-      if (newlyFailed.length > 0) {
-        // 保留最近 200 条，防止存储无限增长
-        const pruned = Array.from(notified).slice(-200);
-        await setStorage({ [STORAGE_KEYS.followSellNotifiedIds]: pruned });
-      }
-    } catch (e) {
-      console.log('[followSell-check] failed:', e?.message || e);
-    }
-  };
-
+  // Clear persisted alarms from versions that still checked retired follow-sell tasks.
   const setupFollowSellCheckAlarm = () => {
-    chrome.alarms.create(FOLLOW_SELL_CHECK_ALARM, {
-      delayInMinutes: 1,
-      periodInMinutes: FOLLOW_SELL_CHECK_INTERVAL_MINUTES,
-    });
+    chrome.alarms.clear(FOLLOW_SELL_CHECK_ALARM);
   };
 
   // ── ozon 粽子算价：按 SKU 采集 Ozon 前台 RUB/CNY 实价 ──
@@ -3587,59 +3636,22 @@ try {
     };
   };
 
+  const collectorAccountStatus = globalThis.JzCollectorAccountStatus.createCollectorAccountStatus({
+    sessionManager: collectorSessionManager,
+    getBackendUrl,
+    getDeviceFingerprint: getExtensionFingerprint,
+    storage: { get: getStorage, set: setStorage, remove: removeStorage },
+    collectFxProbe,
+  });
   let lastFxRefreshError = '';
   let fxRefreshInFlight = null;
   const performExchangeRateRefresh = async () => {
     try {
       lastFxRefreshError = '';
-      const token = null;
-      if (!token) throw new Error('请先登录 ozon 粽子');
-      const backendUrl = await getBackendUrl();
-      const deviceId = await getExtensionFingerprint();
-      let probeResponse = await apiRequest('GET', `${backendUrl}/pricing/fx/probes/active`, null, token, null, 15_000);
-      const accountId = String(probeResponse?.scope?.accountId || '').trim();
-      if (!accountId) throw new Error('FX_REPLAY_SCOPE_REQUIRED');
-      const backendOrigin = new URL(backendUrl).origin;
-      if (!backendOrigin) throw new Error('FX_REPLAY_SCOPE_REQUIRED');
-      const scope = { backendOrigin, accountId, deviceId, action: 'FX_OBSERVATION' };
-      const replay = globalThis.JzFxObservationReplay.createFxObservationReplay({
-        list: async () => getStorage(null),
-        set: async (key, value) => setStorage({ [key]: value }),
-        remove: async (keys) => removeStorage(Array.isArray(keys) ? keys : [keys]),
-        makeKey: () => `fx-observation:${deviceId}:${crypto.randomUUID()}`,
-      });
-      const result = await replay.run(
-        scope,
-        async () => {
-          const probes = Array.isArray(probeResponse?.probes) ? probeResponse.probes : [];
-          if (!probes.length) return { observations: [], errors: [], deviceId };
-          const observations = []; const errors = [];
-          for (const probe of probes) {
-            try { observations.push(await collectFxProbe(probe.sku)); }
-            catch (error) { errors.push({ sku: probe.sku, error: error?.message || String(error) }); }
-            await new Promise((resolve) => setTimeout(resolve, 250));
-          }
-          return { observations, errors, deviceId };
-        },
-        (body) => apiRequest('POST', `${backendUrl}/pricing/fx/observations`, body, token, null, 60_000),
-      );
-      if (!probeResponse && !(result?.rate?.rate > 0)) throw new Error('本轮没有可用汇率');
-      const rate = Number(result?.rate?.rate || probeResponse?.rate?.rate || 0);
-      if (!(rate > 0)) throw new Error('本轮没有可用汇率');
-      await setStorage({
-        [FX_STORAGE_KEY]: {
-          rate,
-          ts: Date.now(),
-          source: 'ozon_sku_frontend',
-          sampleCount: Number(result?.rate?.acceptedCount || 0),
-          confidence: result?.rate?.confidence || 'LOW',
-        },
-      });
-      console.info(`[jzc-fx] rate=${rate} accepted=${result?.accepted || 0} rejected=${result?.rejected || 0}`);
-      return rate;
+      return await collectorAccountStatus.refreshFx();
     } catch (e) {
-      lastFxRefreshError = e?.message || String(e);
-      console.warn('[jzc-fx] refresh failed:', e?.message || e);
+      lastFxRefreshError = globalThis.JzCollectorSession.redactCollectorSecrets(e?.message || String(e));
+      console.warn('[jzc-fx] refresh failed:', lastFxRefreshError);
       return null;
     }
   };
@@ -3659,28 +3671,19 @@ try {
 
   const setupCollectorOzonEnrichmentAlarm = () => {
     chrome.alarms.create(COLLECTOR_OZON_ENRICHMENT_ALARM, {
-      periodInMinutes: 1,
+      periodInMinutes: 0.5,
     });
   };
 
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === UPDATE_CHECK_ALARM) {
       checkForUpdate();
-    } else if (alarm.name === FOLLOW_SELL_CHECK_ALARM) {
-      checkFollowSellTasks();
     } else if (alarm.name === FX_ALARM) {
       refreshExchangeRate();
     } else if (alarm.name === COLLECTOR_OZON_ENRICHMENT_ALARM) {
       kickCollectorOzonEnrichment();
     } else if (alarm.name === globalThis.JzCollectorAuthCoordinator.COLLECTOR_AUTH_RETRY_ALARM) {
       resumeCollectorAuth('retry alarm');
-    }
-  });
-
-  chrome.notifications.onClicked.addListener((notificationId) => {
-    if (notificationId.startsWith('follow-sell-fail-')) {
-      chrome.action.openPopup().catch(() => {});
-      chrome.notifications.clear(notificationId);
     }
   });
 
@@ -3791,6 +3794,7 @@ try {
 
   const enrichSellerSearchItems = async ({
     readOnly,
+    automaticCapture = false,
     items,
     sku,
     companyId,
@@ -3822,11 +3826,11 @@ try {
           ['height', '9456'],
         ].every(([field, key]) => positivePhysical(field, key) > 0);
         if (!complete) {
-          const physicals = await fetchPublicPhysicals({ sku, deadlineAt });
+          const physicals = await fetchPublicPhysicals({ sku, deadlineAt, forceRefresh });
           if (physicals) items[0] = mergePublicPhysicals(source, physicals);
         }
       } catch (error) {
-        console.warn(`[searchVariants] read-only public physical capture failed for sku=${sku}:`, error?.message || error);
+        throw error;
       }
       return items;
     }
@@ -3834,21 +3838,25 @@ try {
       const variantId = items[0].variant_id;
       if (!variantId) return items;
       const bundleItem = await fetchBundle(sku, variantId, companyId, {
-        forceRefresh,
+        automaticCapture,
+        forceRefresh: automaticCapture ? false : forceRefresh,
         preferTabId,
         strictPreferredSellerTab,
         deadlineAt,
       });
       if (!bundleItem) return items;
+      const packagingCandidates = automaticCapture ? assertAutomaticCaptureBundle(bundleItem, variantId) : null;
       if (!Array.isArray(bundleItem.attributes) || bundleItem.attributes.length === 0) {
         console.warn(`[searchVariants] bundle attributes EMPTY for sku=${sku} — 特征属性无法随上架带出(仅物理字段)`);
       }
       items[0] = mergeBundle(items[0], bundleItem);
+      if (packagingCandidates) items[0].packagingCandidates = packagingCandidates;
       if (items[0]._bundleComplexAttrs?.length) {
         console.log(`[searchVariants] bundle complex attrs (视频/PDF): ${items[0]._bundleComplexAttrs.length} for sku=${sku}`);
       }
     } catch (e) {
-      console.warn(`[searchVariants] bundle injection failed for sku=${sku}:`, e.message || e);
+      e.diagnostic = {stage: 'bundle', ...e.diagnostic};
+      throw e;
     }
     return items;
   };
@@ -3883,6 +3891,7 @@ try {
         ...requestOptions,
         preferTabId,
         companyId,
+        language: 'ru',
       },
     );
     const rawVariants = Array.isArray(response?.variants) ? response.variants
@@ -3891,7 +3900,9 @@ try {
       : Array.isArray(response) ? response : [];
     return {
       response,
-      items: rawVariants.map(normalizeVariant).filter(Boolean),
+      items: rawVariants.filter(v => (v.skus || []).some(entry =>
+        String(typeof entry === 'object' ? entry?.sku : entry) === String(sku)
+      )).map(normalizeVariant).filter(Boolean),
     };
   };
 
@@ -3900,6 +3911,7 @@ try {
       sku: input.sku,
       noProxy: input.noProxy,
       readOnly: input.readOnly === true,
+      automaticCapture: input.automaticCapture === true,
       forceRefresh: input.forceRefresh,
       deadlineAt: input.deadlineAt,
     };
@@ -3918,7 +3930,7 @@ try {
       sender,
     });
     // 灰度:服务端 collect(search→bundle 链式;命中走俄罗斯 VPS,失败/未命中回落老路)
-    if (!message.readOnly && await isFleetServerSide(backendUrl, token)) {
+    if (!message.readOnly && !message.automaticCapture && await isFleetServerSide(backendUrl, token)) {
       const _ck = `${_FLEET_COLLECT_CACHE_PREFIX}${String(sku)}`;
       // 本地缓存 24h(≤后端 30d,不引入更陈数据);forceRefresh 跳读不跳写,
       // 与老路 fetchBundleByVariantId 的 forceRefresh 语义一致。fleet collect
@@ -3965,7 +3977,9 @@ try {
       const status = typeof e.status === 'number' ? e.status : null;
       const code = typeof e.code === 'string' ? e.code : null;
       let errorCode = 'UNKNOWN_ERROR';
-      if (status === 404 && code === 'ResourceNotFound') {
+      if (status === 429) {
+        errorCode = 'HTTP_429';
+      } else if (status === 404 && code === 'ResourceNotFound') {
         errorCode = 'NOT_IN_OWN_CATALOG';
       } else if (msg.includes('请先打开') || msg.includes('No seller tab')) {
         errorCode = 'NO_SELLER_TAB';
@@ -3982,9 +3996,9 @@ try {
         const looksHtmlChallenge = /<html|<!doctype|just a moment|attention required|enable javascript|are you a robot|вы не робот|captcha|challenge|too many requests/.test(blob);
         const looksStructuredApiError = /"code"|"message"|permission_?denied|company_?id|sc_company|unauthenticated|invalid.?token|session/.test(blob);
         errorCode = (looksStructuredApiError && !looksHtmlChallenge) ? 'AUTH_REQUIRED' : 'ANTIBOT_BLOCKED';
-      } else if (msg.includes('超时') || msg.includes('timeout') || msg.includes('AbortError') || msg.includes('Timeout')) {
+      } else if (msg.includes('超时') || msg.includes('timeout') || msg.includes('AbortError') || msg.includes('Timeout') || code === 'TIMEOUT') {
         errorCode = 'TIMEOUT';
-      } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('network')) {
+      } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('network') || code === 'NETWORK_ERROR') {
         errorCode = 'NETWORK_ERROR';
       }
       return { errorCode, msg };
@@ -4006,29 +4020,41 @@ try {
         const proxied = await proxyCollectVariant(backendUrl, token, storeId, sku);
         if (proxied) return proxied;
       }
-      const contextMessage = contextError?.message || '';
-      const contextCode = /CONFLICT/.test(contextMessage)
+      const contextCause = String(contextError?.code || contextError?.message || '');
+      const contextCode = /CONFLICT/.test(contextCause)
         ? 'SELLER_COMPANY_CONTEXT_CONFLICT'
-        : /RECOVERY_FAILED/.test(contextMessage)
-          ? 'SELLER_CONTEXT_RECOVERY_FAILED'
-          : 'SELLER_CONTEXT_REQUIRED';
+        : contextCause === 'SELLER_CONTEXT_RECOVERING'
+          ? contextCause
+          : /^(?:SELLER_CONTEXT_SYNC_[A-Z_]+|COLLECTOR_[A-Z_]+)$/.test(contextCause)
+            ? contextCause
+            : /^SELLER_(?:COMPANY_)?CONTEXT_REQUIRED$/.test(contextCause)
+              ? 'SELLER_CONTEXT_REQUIRED'
+              : 'SELLER_CONTEXT_RECOVERY_FAILED';
+      const currentRoute = `当前 Seller 线路（${getSellerOrigin()}）`;
+      const contextMessage = contextCode === 'SELLER_COMPANY_CONTEXT_CONFLICT'
+        ? '检测到多个公司编号，请只保留当前经营公司的 Seller 页面后重试'
+        : contextCode === 'SELLER_CONTEXT_RECOVERING'
+          ? '正在恢复公司信息，请稍后重试'
+          : /^COLLECTOR_(?:AUTH|SESSION|PERMISSION|TICKET)_/.test(contextCode)
+            ? '的粽子授权未就绪，请在扩展中重新连接粽子后重试'
+            : contextCode.startsWith('SELLER_CONTEXT_SYNC_') || contextCode.startsWith('COLLECTOR_')
+              ? `公司信息同步${contextCode.endsWith('_TIMEOUT') ? '超时' : '失败'}，请检查粽子连接或网络后重试`
+              : contextCode === 'SELLER_CONTEXT_REQUIRED'
+                ? '尚未确认登录，请打开并登录此线路的 Seller 页面后重试'
+                : '公司信息恢复失败，请手动刷新此线路的 Seller 页面后重试';
       return {
         ok: false,
         error: contextCode,
-        message: contextCode === 'SELLER_COMPANY_CONTEXT_CONFLICT'
-          ? '检测到多个 Seller 公司编号，请只保留当前经营公司的 Seller 页面后重试'
-          : contextCode === 'SELLER_CONTEXT_RECOVERY_FAILED'
-            ? '扩展已尝试恢复 Seller 页面，但公司上下文仍未就绪，请手动刷新 Seller 页面后重试'
-            : '请先打开并登录 Seller 页面后重试',
+        message: currentRoute + contextMessage,
       };
     }
 
     const deadlineBound = Number.isFinite(Number(message.deadlineAt));
-    const MAX_RETRIES = deadlineBound ? 1 : 2;
+    const MAX_RETRIES = message.automaticCapture || deadlineBound ? 1 : 2;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const captureOptions = globalThis.JzCollectorCaptureDeadline.portalRequestOptions({
-          deadlineAt: message.deadlineAt,
+          deadlineAt: message.deadlineAt, automaticCapture: message.automaticCapture,
         });
         const { response: resp, items } = await readSellerSearchVariants({
           sku,
@@ -4046,11 +4072,11 @@ try {
           return { ok: true, data: { items: [] } };
         }
 
-        // Step 2: bundle 补完整 attributes(物理 + 含 40-63 个完整 attr)
-        // 失败不致命 — items 已有基础元数据(品牌/类目/GTIN/图片),caller 仍可用,
-        // 只是 4497/9454-9456 物理 attr 缺失 → 数据卡片重量·尺寸退化为公开兜底。
+        // Full collection reports bundle failures; read-only panels keep their
+        // public physical-data path without creating a Seller draft.
         await enrichSellerSearchItems({
           readOnly: message.readOnly,
+          automaticCapture: message.automaticCapture,
           items,
           sku,
           companyId,
@@ -4062,6 +4088,7 @@ try {
 
         return { ok: true, data: { items } };
       } catch (e) {
+        if (message.automaticCapture && String(e?.code || "").startsWith("ZONGZI_ENRICH_")) return {ok:false,error:e.code,message:e.message,diagnostic:e.diagnostic};
         const { errorCode, msg } = classifyError(e);
         // 业务空结果(罕见 — /search 通常返 200 + 空 variants):立即降级
         if (errorCode === 'NOT_IN_OWN_CATALOG') {
@@ -4069,9 +4096,9 @@ try {
           return { ok: true, data: { items: [] } };
         }
         console.warn(`[searchVariants] attempt ${attempt}/${MAX_RETRIES} failed [${errorCode}]:`, msg, e);
-        const isRetryable = ['TIMEOUT', 'NETWORK_ERROR', 'UNKNOWN_ERROR'].includes(errorCode);
+        const isRetryable = e.diagnostic?.stage !== 'bundle' && ['TIMEOUT', 'NETWORK_ERROR', 'UNKNOWN_ERROR'].includes(errorCode);
         if (attempt >= MAX_RETRIES || !isRetryable) {
-          return { ok: false, error: errorCode, message: msg };
+          return { ok: false, error: errorCode, message: msg, diagnostic: { ...e.diagnostic, upstreamCode: e.diagnostic?.upstreamCode || errorCode, ...(e.status ? {upstreamStatus:e.status} : {}) } };
         }
         await new Promise(r => setTimeout(r, 2000));
       }
@@ -4079,6 +4106,7 @@ try {
   };
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.action === 'ozonWebCollectionEvent') return false;
     const webBridgePolicy = globalThis.JzWebBridgePolicy;
     const senderIsWebPortal = webBridgePolicy?.isTrustedWebBridgeSender(sender);
     const senderIsPrivilegedExtensionPage = (() => {
@@ -4142,6 +4170,7 @@ try {
     //   fields: { title, sku, productId, price, currency, images[], coverImage,
     //             aspects[], seller:{name,link}, brand, category }
     if (message?.action === 'fetchProductPageState') {
+      const sourceKeepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 15_000);
       (async () => {
         try {
           const inputUrl = String(message?.url || '').trim();
@@ -4164,7 +4193,7 @@ try {
           // 通过 sender 的 ozon.ru tab 注入 MAIN world,带用户真实 cookie + fingerprint。
           // (2026-05-26 修复:fetchProductPageState 在采集面板报 "Ozon 403"。)
           const apiUrl = `https://www.ozon.ru/api/composer-api.bx/page/json/v2?url=${encodeURIComponent(productPath)}`;
-          const fetchResult = await fetchOzonWwwViaTab(sender, apiUrl, 15_000);
+          const fetchResult = await fetchOzonWwwViaTab(sender, apiUrl, 0);
           if (!fetchResult.ok) {
             sendResponse({ ok: false, error: fetchResult.error || `Ozon ${fetchResult.status}` });
             return;
@@ -4268,7 +4297,7 @@ try {
         } catch (e) {
           sendResponse({ ok: false, error: e?.message || String(e) });
         }
-      })();
+      })().finally(() => clearInterval(sourceKeepAlive));
       return true;
     }
 
@@ -4339,9 +4368,12 @@ try {
     }
   const sellerContextStatusProjection = async () => {
     try {
-      const context = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
-      return globalThis.JzSellerContextUiMessagePolicy.projectSellerContextStatus(context);
-    } catch {}
+      // 轮询仅观察已有 Seller 状态；恢复辅助页由显式登录或实际任务管理。
+      const context = await sellerCompanyContextRuntime.resolveCurrent();
+      return globalThis.JzSellerContextUiMessagePolicy.projectSellerContextStatus({ ...context, status: 'READY' });
+    } catch (error) {
+      if ((error?.code || error?.message) === 'SELLER_CONTEXT_RECOVERING') return { status: 'RECOVERING' };
+    }
     return { status: 'LOGIN_REQUIRED' };
   };
 
@@ -4361,21 +4393,36 @@ try {
     injectCollectorAuth: injectCollectorAuthIntoTab,
   });
 
-    // Record the intent synchronously at message arrival. The runtime advances
-    // its epoch before its first await, closing terminal dispatch immediately.
+    // After persisted route initialization, record the intent synchronously.
+    // The runtime advances its epoch before its first await to fence old results.
     const sellerContextObservation = message?.action === 'sellerCompanyContextObserved'
-      ? sellerCompanyContextRuntime.rememberFromSender(sender, message.companyId).then(
+      ? sellerRoute.run(() => sellerCompanyContextRuntime.rememberFromSender(sender, message.companyId)).then(
           () => ({ ok: true }),
           (error) => ({ ok: false, error }),
         )
       : null;
 
     const handle = async () => {
+      await sellerRoute.ready;
       if (CATEGORY_STRATEGY_AUTH_ACTIONS.has(message?.action)) {
         const operation = await ensureCategoryStrategyCollectorAuth();
         if (!operation) throw categoryStrategyError('COLLECTOR_AUTH_REQUIRED');
       }
       switch (message?.action) {
+        case 'getSellerRoute': {
+          if (!senderIsPrivilegedExtensionPage || sender.url !== chrome.runtime.getURL('popup/popup.html')) return { ok: false, error: 'SELLER_ROUTE_FORBIDDEN' };
+          try {
+            await sellerRoute.sync();
+          } catch (error) {
+            // Authorization can disappear or change during this status read.
+            // Return expected expired states without reporting a worker fault.
+            if (['COLLECTOR_AUTH_REQUIRED','COLLECTOR_SESSION_CHANGED'].includes(error?.message)) {
+              return {ok:false,error:error.message};
+            }
+            throw error;
+          }
+          return { ok: true, data: { origin: getSellerOrigin(), ...sellerRoute.getStatus() } };
+        }
         case 'CATEGORY_STRATEGY_READINESS': {
           if (!exactRuntimeMessage(message, ['action'])) {
             throw categoryStrategyError('CATEGORY_STRATEGY_SAMPLING_REQUEST_INVALID');
@@ -4494,6 +4541,20 @@ try {
             ok: false,
             error: observation.error?.message || 'SELLER_COMPANY_CONTEXT_INVALID',
           };
+        }
+        case 'getSalePricingProfiles': {
+          if(sender?.id!==chrome.runtime.id || !/^https:\/\/(?:www\.)?ozon\.(?:ru|kz)\//i.test(sender?.url||''))return {ok:false};
+          const response=await collectorSessionManager.collectorFetch('/collector/sale-pricing',{collectorOperation,permission:'collector.config.read',method:'GET'});
+          if(!response.ok)return {ok:false,error:response.status===401?'请先连接粽子采集账号':'售价配置读取失败，请刷新重试'};
+          const data=JSON.parse(await response.text());
+          return {ok:true,data:{...data,backendOrigin:new URL(backendUrl).origin}};
+        }
+        case 'getCollectionSkuStatus': {
+          if(sender?.id !== chrome.runtime.id || !/^https:\/\/(?:www\.)?ozon\.(?:ru|kz)\//i.test(sender?.url||'') || !/^\d{6,16}$/.test(String(message.sku||''))) return {ok:false};
+          const response=await collectorSessionManager.collectorFetch(`/collector/ozon/sku-status/${message.sku}`,{collectorOperation,permission:'collector.ozon.read',method:'GET'});
+          if(!response.ok)return {ok:false};
+          const data=JSON.parse(await response.text());
+          return {ok:true,data:{status:['AVAILABLE','COLLECTED','LISTED'].includes(data.status)?data.status:'UNKNOWN'}};
         }
         case 'getSellerContextStatus': {
           if (!globalThis.JzSellerContextUiMessagePolicy.isAllowedSellerContextUiMessage(
@@ -4874,7 +4935,7 @@ try {
           // 数据卡片「需登录卖家中心」提示按钮 → 复用已有 seller tab(避免重复开),
           // 没有就新开一个 active tab 让用户登录。content script 无 chrome.tabs,走 SW。
           try {
-            const existing = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
+            const existing = (await chrome.tabs.query({ url: getSellerOrigin() + '/*' })).filter(tab => globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(tab));
             if (existing.length && existing[0].id) {
               await chrome.tabs.update(existing[0].id, { active: true });
               if (existing[0].windowId != null) {
@@ -4882,7 +4943,7 @@ try {
               }
               return { ok: true, data: { reused: true } };
             }
-            await chrome.tabs.create({ url: 'https://seller.ozon.ru/app/products', active: true });
+            await chrome.tabs.create({ url: getSellerOrigin() + '/app/products', active: true });
             return { ok: true, data: { reused: false } };
           } catch (e) {
             return { ok: false, error: e?.message || 'open seller portal failed' };
@@ -4928,6 +4989,10 @@ try {
 
 
         case 'getProductStats': {
+          // The current extension owns only a Collector session. This legacy
+          // Web-only source already yields null without a Web token; do not
+          // wait for a batch 401 and a second per-SKU 401 before showing Seller data.
+          if (!token) return { ok: true, data: null };
           let sku = message.sku;
           if (!sku && message.url) {
             const m = message.url.match(/\/product\/.*-(\d{5,})/);
@@ -5007,23 +5072,23 @@ try {
           // (后端服务器 IP 直连 data/v3 会撞反爬 307 loop,只能借用户浏览器)。
           // noProxy 防递归 —— 代采执行方本身已登录,直接跑下面的本地路径。
           if (!message.noProxy) {
-            const _scLocal = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
+            const _scLocal = await chrome.cookies.getAll({ url: getSellerOrigin() + '/', name: 'sc_company_id' });
             if (!_scLocal[0]?.value) {
               const proxied = await proxyMarketData(backendUrl, token, storeId, mSku, mPeriod);
               if (proxied) return proxied; // 代采成功({ ok, data });失败则落到下面走「需登录」
             }
           }
           try {
-            let sellerTabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
+            let sellerTabs = (await chrome.tabs.query({ url: getSellerOrigin() + '/*' })).filter(tab => globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(tab));
             // 没开任何 seller tab。选品库稀疏,多数商品市场数据仍依赖 seller tab 的 what_to_sell;
             // #82 后变体查询走 www 不再顺带开 seller tab → 这里在「已登录 seller」时自己开一个
             // (ensureSellerTab 内含 single-flight,列表页多卡并发只开一个)。未登录则不开无用
             // signin tab,直接走下面的「需登录」提示。
             if (!sellerTabs.length) {
-              const _sc = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
+              const _sc = await chrome.cookies.getAll({ url: getSellerOrigin() + '/', name: 'sc_company_id' });
               if (_sc[0]?.value) {
                 try { await ensureSellerTab(); } catch (e) { console.log('[getMarketStats] ensureSellerTab 失败:', e?.message || e); }
-                sellerTabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
+                sellerTabs = (await chrome.tabs.query({ url: getSellerOrigin() + '/*' })).filter(tab => globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(tab));
               }
             }
             // 仍没有(未登录 / 开 tab 失败)→ 会话信号(不是"该 SKU 无数据")。卡片据此显示
@@ -5053,7 +5118,8 @@ try {
               (a, b) => (isAuthUrl(a.url) ? 1 : 0) - (isAuthUrl(b.url) ? 1 : 0),
             );
 
-            const injectFetch = async (sku, period) => {
+            const injectFetch = async (sku, period, sellerOrigin) => {
+              if (window.location.origin !== sellerOrigin) return { ok: false, reason: 'seller_context_changed' };
               try {
                 const cookies = document.cookie.split(';').map((c) => c.trim());
                 const scCookie = cookies.find((c) => c.startsWith('sc_company_id='));
@@ -5096,7 +5162,7 @@ try {
                 injected = await chrome.scripting.executeScript({
                   target: { tabId: tab.id },
                   func: injectFetch,
-                  args: [mSku, mPeriod],
+                  args: [mSku, mPeriod, getSellerOrigin()],
                 });
               } catch (e) {
                 // 个别 tab 注入失败(页面 crash / 权限)不致命,继续试下一个
@@ -5205,14 +5271,6 @@ try {
           }
           return { ok: true, data: { supported: true, results: bResults, pending: bPending } };
         }
-        case 'getMembershipSummary': {
-          try {
-            const summary = await apiRequest('GET', `${backendUrl}/membership/usage-summary`, null, token, storeId);
-            return { ok: true, data: summary };
-          } catch (e) {
-            return { ok: false, error: e.message };
-          }
-        }
         case 'getAiQuota': {
           // AI 改图：按极点余额 / 单价 计算可用张数，但受会员等级限制（免费版 24h 试用）
           // AI 重写：按次扣极点(2026-07 起,不再是会员权益)，余额不足内容脚本默认关闭
@@ -5263,10 +5321,7 @@ try {
           }
         }
         case 'followSell': {
-          return globalThis.JzFollowSellRequest.runFollowSellRequest(
-            { message, sender, token, storeId, backendUrl },
-            { apiRequest, importViaPortal, deriveImportEntry, aiWizardDebugMeta, log: console },
-          );
+          return { ok: false, error: '扩展已移除手动跟卖，请使用 Web AI 上架' };
         }
         case 'importFromPublic': {
           // maozi 公开商详上架(灰度 ozon_public_import):从公开买家商详页 page-json
@@ -5376,20 +5431,9 @@ try {
           }
         }
         case 'listFollowSellTasks': {
-          const listStoreId = message.storeId || storeId;
-          const current = Math.max(1, parseInt(message.current || 1, 10) || 1);
-          const pageSize = Math.max(1, Math.min(50, parseInt(message.pageSize || 10, 10) || 10));
-          return {
-            ok: true,
-            data: await apiRequest(
-              'GET',
-              `${backendUrl}/ozon/products/import-by-sku/tasks?current=${current}&pageSize=${pageSize}`,
-              null,
-              token,
-              listStoreId
-            ),
-          };
+          return { ok: false, status: 410, code: 'FOLLOW_SELL_RETIRED', error: '模拟跟卖功能已移除，请使用 Web 上架流程' };
         }
+
         case 'importBySku': {
           // items: [{ sku, offer_id, price, vat, currency_code }]
           return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/products/import-by-sku`, { items: message.items, entry: deriveImportEntry(message, sender) }, token, storeId) };
@@ -5545,6 +5589,7 @@ try {
                 allowOzonTab: true,
                 preferTabId: senderTabId,
                 companyId,
+                language: 'ru',
               },
             );
             // /api/v1/search 返回字段是 `variants`，且 shape 跟 sv 不同
@@ -5605,6 +5650,19 @@ try {
             return { ok: true, data: { richContent: '', description: '', hashtags: [] } };
           }
         }
+        case 'getConfirmedPackaging': {
+          let trusted = false;
+          try {
+            const url = new URL(sender?.url || '');
+            trusted = sender?.id === chrome.runtime.id && sender.frameId === 0
+              && url.protocol === 'https:' && !url.port
+              && ['www.ozon.ru', 'ozon.ru', 'www.ozon.kz', 'ozon.kz'].includes(url.hostname);
+          } catch {}
+          if (!trusted || !exactRuntimeMessage(message, ['action', 'sku']) || !/^\d+$/.test(String(message.sku))) {
+            return { ok: false, error: 'PACKAGING_REQUEST_FORBIDDEN' };
+          }
+          return { ok: true, data: await readConfirmedPackaging(message.sku) };
+        }
         case 'searchVariants':
           return searchVariantsLocal({
             sku: message.sku,
@@ -5635,10 +5693,11 @@ try {
           }
         }
         case 'syncSellerCookies': {
+          if (getSellerOrigin() !== 'https://seller.ozon.ru') return { ok: false, error: '中国线路仅使用当前浏览器登录态，不同步 Cookie 到其他线路' };
           let identity;
           try {
             identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity({
-              findSellerTabs: () => chrome.tabs.query({ url: 'https://seller.ozon.ru/*' }),
+              findSellerTabs: () => chrome.tabs.query({ url: getSellerOrigin() + '/*' }),
               getCookies: (details) => chrome.cookies.getAll(details),
               getObservedContexts: (sellerTabs) =>
                 sellerCompanyContextRuntime.observationsForTabs(sellerTabs),
@@ -5669,11 +5728,17 @@ try {
           return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/extension/translate`, { texts: message.texts, from: message.from || 'ru', to: message.to || 'zh' }, token, storeId) };
         }
 
+        case 'getCollectorAccountSummary': {
+          return { ok: true, data: await collectorAccountStatus.getAccountSummary() };
+        }
+        // Older popup callers also stay within the same restricted Collector summary.
         case 'getCollectCount': {
-          return { ok: true, data: await apiRequest('GET', `${backendUrl}/ozon/collect-box?currentPage=1&pageSize=1`, null, token, storeId) };
+          const summary = await collectorAccountStatus.getAccountSummary();
+          return { ok: true, data: { total: summary.counts.collect } };
         }
         case 'getProductStatusCounts': {
-          return { ok: true, data: await apiRequest('GET', `${backendUrl}/ozon/products/cache/status-counts`, null, token, storeId) };
+          const summary = await collectorAccountStatus.getAccountSummary();
+          return { ok: true, data: { ALL: summary.counts.products, total: summary.counts.products } };
         }
 
         case 'getStores': {
@@ -5782,8 +5847,24 @@ try {
         : (AI_WIZARD_LONG_ACTIONS.has(message?.action)
           ? 150_000
           : (COLLECTOR_AUTH_LONG_ACTIONS.has(message?.action) ? 75_000 : 50_000)));
-    const handlerPromise = Promise.race([
-      handle(),
+    const collectionAction = ['searchVariants','searchProductBySku','fetchProductPageState','enrichOzonCollect','enrichOzonCollectBatch','pushSourceCollect'].includes(message?.action);
+    const sellerActions = new Set(['getSellerContextStatus','openSellerLogin','openSellerPortal',
+      'enrichOzonCollect','enrichOzonCollectBatch','searchProductBySku','searchVariants',
+      'getMarketStats','getMarketStatsBatch','getConfirmedPackaging','portalImportStatus',
+      'uploadFollowSellVideo','transferVariantVideo','fetchVariantRichContent','syncSellerCookies',
+      'followSell','importFromPublic','followFromPublic','importBySku']);
+    const runHandle = async () => {
+      if (!sellerActions.has(message?.action)) return handle();
+      // The page marks a new request busy before sending it. Exclude only that
+      // request from admission; all already running requests keep their locks.
+      const request = ['enrichOzonCollect','enrichOzonCollectBatch'].includes(message?.action)
+        && sender?.tab?.id != null && typeof message.requestId === 'string'
+        ? {tabId:sender.tab.id,requestId:message.requestId} : undefined;
+      await sellerRoute.prepareNewWork({request});
+      return sellerRoute.run(handle);
+    };
+    const handlerPromise = collectionAction ? runHandle() : Promise.race([
+      runHandle(),
       new Promise((_, reject) =>
         setTimeout(
           () => reject(new Error(`SW handler ${message?.action} 总超时 (${HANDLER_TOTAL_TIMEOUT_MS / 1000}s)`)),

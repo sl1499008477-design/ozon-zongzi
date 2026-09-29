@@ -342,11 +342,11 @@ export function createCategoryStrategyReadModel({ pool }) {
   const select = `SELECT draft.id AS draft_id,draft.account_id,draft.taxonomy_scope,
       draft.description_category_id,draft.type_id,draft.draft_version,draft.status,
       draft.source_collect_item_id,draft.expected_source_version,
-      COALESCE(NULLIF(current_draft.data->>'buyerCategoryUrl',''),item.source_url) AS browser_url,
+      COALESCE(NULLIF(draft.source_snapshot->'productDraft'->>'buyerCategoryUrl',''),draft.source_snapshot->>'sourceUrl',NULLIF(current_draft.data->>'buyerCategoryUrl',''),item.source_url) AS browser_url,
       sample_set.id AS sample_set_id,
       COALESCE(sample_set.sample_count,0)::INTEGER AS sample_count
     FROM auto_listing_category_strategy_drafts draft
-    JOIN collect_items item ON item.account_id=draft.account_id AND item.id=draft.source_collect_item_id
+    LEFT JOIN collect_items item ON item.account_id=draft.account_id AND item.id=draft.source_collect_item_id
     LEFT JOIN product_drafts current_draft
       ON current_draft.id=item.current_draft_id AND current_draft.collect_item_id=item.id
     LEFT JOIN LATERAL (
@@ -374,7 +374,7 @@ export function createCategoryStrategyReadModel({ pool }) {
   return Object.freeze({
     async listStrategies({ accountId }) {
       const result = await pool.query(`${select}
-        WHERE draft.account_id=$1
+        WHERE draft.account_id=$1 AND draft.removed_at IS NULL
         ORDER BY draft.updated_at DESC,draft.id DESC LIMIT 1000`, [accountId]);
       return result.rows.map(row);
     },

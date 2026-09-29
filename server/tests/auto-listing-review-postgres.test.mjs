@@ -34,7 +34,7 @@ function asset(index, role = index === 0 ? "MAIN" : "SELLING_POINT", visualGroup
   };
 }
 
-function scripted({ row = mainRow(), assets = Array.from({ length: 6 }, (_, index) => asset(index)), rich = {
+function scripted({ row = mainRow(), sourceAnalysis = [], assets = Array.from({ length: 6 }, (_, index) => asset(index)), rich = {
   account_id: "account-a", status: "ACCEPTED", group_key: "group-a", rich_content: {
     version: "AUTO_LISTING_RICH_CONTENT_V1", language: "ru",
     blocks: [{ type: "HEADING", text: "Новый заголовок" },
@@ -51,6 +51,7 @@ function scripted({ row = mainRow(), assets = Array.from({ length: 6 }, (_, inde
       if (/^(BEGIN|COMMIT|ROLLBACK)/u.test(sql)) { control.push(sql); return { rows: [] }; }
       calls.push({ sql, values });
       if (/FROM auto_listing_job_items AS item/i.test(sql)) return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+      if (/FROM auto_listing_source_image_analysis_runs AS run/i.test(sql)) return { rows: sourceAnalysis, rowCount: sourceAnalysis.length };
       if (/FROM ai_generation_assets AS asset/i.test(sql)) return { rows: assets, rowCount: assets.length };
       if (/FROM ai_rich_content_results AS rich/i.test(sql)) {
         const rows = Array.isArray(rich) ? rich : rich ? [rich] : [];
@@ -74,7 +75,7 @@ test("review repository reads one account-scoped repeatable snapshot and returns
   assert.deepEqual(evidence.item.price, price);
   assert.equal(evidence.images.length, 6);
   assert.equal(evidence.images[0].visualGroupKey, "group-a");
-  assert.equal(evidence.images[0].publicUrl, "/auto-listing/items/item-a/assets/asset-group-a-1");
+  assert.equal(evidence.images[0].publicUrl, "/auto-listing/items/item-a/assets/asset-group-a-1/preview");
   assert.equal(evidence.richContent.previewText, "Новый заголовок\nТекст рядом с изображением\nОписание");
   assert.deepEqual(db.control, ["BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", "COMMIT"]);
   assert.match(db.calls[0].sql, /JOIN auto_listing_jobs AS job[\s\S]*job\.account_id=item\.account_id/u);
@@ -83,11 +84,50 @@ test("review repository reads one account-scoped repeatable snapshot and returns
   assert.match(db.calls[0].sql, /warehouse\.store_id=store\.id/u);
   assert.match(db.calls[0].sql, /plan\.id=item\.active_content_plan_id/u);
   assert.match(db.calls[0].sql, /JOIN auto_listing_listing_bases AS base[\s\S]*base\.source_snapshot_id=item\.snapshot_id/u);
-  assert.match(db.calls.find((call) => /FROM ai_generation_assets AS asset/i.test(call.sql)).sql, /visual_group_key/u);
-  assert.match(db.calls.find((call) => /FROM ai_generation_assets AS asset/i.test(call.sql)).sql,
-    /expected_status_version DESC NULLS LAST/u);
+  const assetSql = db.calls.find((call) => /FROM ai_generation_assets AS asset/i.test(call.sql)).sql;
+  assert.match(assetSql, /visual_group_key/u);
+  assert.match(assetSql, /expected_status_version DESC NULLS LAST/u);
+  assert.match(assetSql,
+    /plan\.prompt_template_version='AUTO_LISTING_CONTENT_PLAN_FILL_V6'[\s\S]*planned_slot->>'role'='MAIN'/iu,
+    "review evidence must include a claimless V6 MAIN that carries the required product title");
   for (const call of db.calls) assert.equal(call.values[0], "account-a");
   assert.doesNotMatch(JSON.stringify(evidence), /object_key|private\//i);
+});
+
+test("confirmation-blocked review loads current accepted source evidence without a content plan", async () => {
+  const row = mainRow({
+    status: "BLOCKED", status_version: 8,
+    failure_code: "AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED",
+    active_content_plan_id: null, plan_id: null, plan_document: null,
+    current_source_image_analysis_run_id: "run-a",
+  });
+  const sourceAnalysis = [{
+    analysis_run_id: "run-a", run_status: "CONFIRMATION_REQUIRED", summary_hash: "a".repeat(64),
+    expected_asset_count: 1, terminal_asset_count: 1,
+    summary: { eligibleAssetIds: [], excludedAssetIds: ["source-a"], factCandidates: [], markingDecisions: [],
+      requiredConfirmations: [{ sourceAssetId: "source-a", kind: "UNCERTAIN_MARKING", regions: [], reasonCodes: [] }],
+      summaryHash: "a".repeat(64) },
+    source_asset_id: "source-a", source_ordinal: 0, terminal_status: "ANALYZED",
+    assessment: { contentKinds: ["PRODUCT_VIEW"], viewpoints: [], quality: { reasonCodes: [] }, eligibleUses: [], reasonCodes: [] },
+    derivatives: [{ sourceAssetId: "source-a", derivativeAttemptId: "cleanup-attempt-3",
+      attemptNo: 3, status: "REJECTED", hasGeneratedCandidate: true,
+      reasonCodes: ["SOURCE_IMAGE_CLEANUP_OVERLAY_REMAINS"],
+      generatedObjectKey: "must-not-leak/private.webp", checkerGatewayRequestId: "must-not-leak" }],
+  }];
+  const db = scripted({ row, sourceAnalysis, assets: [], rich: null });
+  const evidence = await createPostgresAutoListingReviewRepository({ pool: db.pool })
+    .loadReviewEvidence({ accountId: "account-a", itemId: "item-a" });
+  assert.equal(evidence.sourceImageAnalysis.analysisRunId, "run-a");
+  assert.equal(evidence.sourceImageAnalysis.assessments[0].sourceAssetId, "source-a");
+  assert.deepEqual(evidence.sourceImageAnalysis.derivatives, [{
+    sourceAssetId: "source-a", derivativeAttemptId: "cleanup-attempt-3", attemptNo: 3,
+    status: "REJECTED", hasGeneratedCandidate: true,
+    reasonCodes: ["SOURCE_IMAGE_CLEANUP_OVERLAY_REMAINS"],
+  }]);
+  assert.doesNotMatch(JSON.stringify(evidence.sourceImageAnalysis), /generatedObjectKey|checkerGatewayRequestId|must-not-leak/u);
+  assert.deepEqual(evidence.images, []);
+  assert.equal(evidence.richContent, null);
+  assert.equal(db.calls.some(({ sql }) => /FROM ai_generation_assets/u.test(sql)), false);
 });
 
 test("review repository exposes only planned role substitutions and third-attempt warning codes", async () => {
@@ -120,13 +160,38 @@ test("review repository exposes only planned role substitutions and third-attemp
     manualReviewWarnings: ["SUBJECT_NOT_DOMINANT"],
     slotKey: "group-a:slot-2",
     accepted: true,
-    publicUrl: "/auto-listing/items/item-a/assets/asset-group-a-2",
+    publicUrl: "/auto-listing/items/item-a/assets/asset-group-a-2/preview",
   });
   assert.deepEqual(evidence.images[2].manualReviewWarnings, []);
   const sql = db.calls.find((call) => /FROM ai_generation_assets AS asset/i.test(call.sql)).sql;
   assert.match(sql, /planned_slot->>'requestedRole' AS requested_role/iu);
   assert.match(sql, /asset\.checker_result/iu);
   assert.match(sql, /asset\.attempt_no/iu);
+});
+
+test("review repository exposes exhausted soft image-group warnings only on affected slots", async () => {
+  const rows = Array.from({ length: 6 }, (_, index) => asset(index));
+  const events = [
+    { account_id: "account-a", event_type: "SOURCE_CAPTURED", to_status: "SOURCE_READY",
+      details: { price }, created_at: new Date("2026-08-08T00:00:00.000Z") },
+    { account_id: "account-a", event_type: "AI_IMAGE_GROUP_RETRY_EXHAUSTED", to_status: "GENERATING",
+      details: {
+        planId: "plan-a",
+        visualGroupKey: "group-a",
+        retrySlotKeys: ["group-a:slot-2"],
+        reasonCodes: ["IMAGE_GROUP_DUPLICATE_VIEW", "IMAGE_GROUP_VIEW_MISMATCH"],
+      }, created_at: new Date("2026-08-08T00:30:00.000Z") },
+    { account_id: "account-a", event_type: "CONTENT_READY", to_status: "READY_FOR_REVIEW",
+      details: {}, created_at: new Date("2026-08-08T01:00:00.000Z") },
+  ];
+  const db = scripted({ assets: rows, events });
+
+  const evidence = await createPostgresAutoListingReviewRepository({ pool: db.pool })
+    .loadReviewEvidence({ accountId: "account-a", itemId: "item-a" });
+
+  assert.deepEqual(evidence.images[0].manualReviewWarnings, []);
+  assert.deepEqual(evidence.images[1].manualReviewWarnings,
+    ["IMAGE_GROUP_DUPLICATE_VIEW", "IMAGE_GROUP_VIEW_MISMATCH"]);
 });
 
 test("review preview includes every visual group's accepted rich content", async () => {
@@ -194,6 +259,63 @@ test("review asset lookup never accepts an object key and is bound to current ac
   assert.deepEqual(calls[0].values, ["account-a", "item-a", "asset-1"]);
   assert.match(calls[0].sql, /asset\.plan_id=item\.active_content_plan_id/i);
   assert.match(calls[0].sql, /asset\.status='ACCEPTED'/i);
+  assert.match(calls[0].sql,
+    /plan\.prompt_template_version='AUTO_LISTING_CONTENT_PLAN_FILL_V6'[\s\S]*planned_slot->>'role'='MAIN'/iu,
+    "accepted preview lookup must use the same V6 MAIN eligibility contract as review loading");
+});
+
+test("source asset lookup is account/item/current-run scoped and returns no historical selector", async () => {
+  const calls = [];
+  const pool = { async query(sql, values) {
+    calls.push({ sql, values });
+    return { rows: [{
+      account_id: "account-a", item_id: "item-a", source_asset_id: "source-a",
+      object_key: "private/source-a.webp", content_type: "image/webp",
+      content_hash: "a".repeat(64), size_bytes: 1024,
+    }], rowCount: 1 };
+  }, async connect() {} };
+  const repository = createPostgresAutoListingReviewRepository({ pool });
+  assert.deepEqual(await repository.loadCurrentSourceAsset({
+    accountId: "account-a", itemId: "item-a", sourceAssetId: "source-a",
+  }), {
+    accountId: "account-a", itemId: "item-a", sourceAssetId: "source-a",
+    objectKey: "private/source-a.webp", contentType: "image/webp",
+    contentHash: "a".repeat(64), sizeBytes: 1024,
+  });
+  assert.deepEqual(calls[0].values, ["account-a", "item-a", "source-a"]);
+  assert.match(calls[0].sql, /item\.account_id=\$1 AND item\.id=\$2/u);
+  assert.match(calls[0].sql, /run\.id=item\.current_source_image_analysis_run_id/u);
+  assert.match(calls[0].sql, /assessment\.analysis_run_id=run\.id/u);
+  assert.match(calls[0].sql, /assessment\.record_status='ACCEPTED'/u);
+  assert.doesNotMatch(calls[0].sql, /\$4|requested_run|object_key=/u);
+});
+
+test("source derivative lookup is scoped to the current run and returns only verified candidate storage evidence", async () => {
+  const calls = [];
+  const pool = { async query(sql, values) {
+    calls.push({ sql, values });
+    return { rows: [{
+      account_id: "account-a", item_id: "item-a", source_asset_id: "source-a",
+      derivative_attempt_id: "cleanup-attempt-3",
+      generated_object_key: "auto-listing/source-derivative/v1/private.webp",
+      generated_content_type: "image/webp", generated_content_hash: "b".repeat(64),
+      generated_size_bytes: 2048,
+    }], rowCount: 1 };
+  }, async connect() {} };
+  const repository = createPostgresAutoListingReviewRepository({ pool });
+  assert.deepEqual(await repository.loadCurrentSourceDerivative({
+    accountId: "account-a", itemId: "item-a", sourceAssetId: "source-a",
+    derivativeAttemptId: "cleanup-attempt-3",
+  }), {
+    accountId: "account-a", itemId: "item-a", sourceAssetId: "source-a",
+    derivativeAttemptId: "cleanup-attempt-3",
+    objectKey: "auto-listing/source-derivative/v1/private.webp", contentType: "image/webp",
+    contentHash: "b".repeat(64), sizeBytes: 2048,
+  });
+  assert.deepEqual(calls[0].values, ["account-a", "item-a", "source-a", "cleanup-attempt-3"]);
+  assert.match(calls[0].sql, /item\.current_source_image_analysis_run_id=run\.id/iu);
+  assert.match(calls[0].sql, /derivative\.analysis_run_id=run\.id/iu);
+  assert.match(calls[0].sql, /derivative\.status IN \('ACCEPTED','REJECTED'\)/iu);
 });
 
 test("review repository rolls back and returns a stable failure when a database query fails", async () => {

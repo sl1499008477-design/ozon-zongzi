@@ -8,6 +8,7 @@ export function createObjectCleanupWorker({
   logger = console,
 }) {
   let running = false;
+  let active = null;
   const runStateTransaction = typeof stateTransaction?.run === "function"
     ? (operation) => stateTransaction.run(operation)
     : (operation) => operation();
@@ -25,14 +26,16 @@ export function createObjectCleanupWorker({
     }
     running = true;
     try {
-      return await runStateTransaction(async () => {
-        const latest = state || await loadState();
+      active = runStateTransaction(async () => {
+        const latest = state || await loadState({ hydrateCatalog: false });
         const cleanup = await processPendingObjectDeletions(latest, removeObject);
         if (cleanup.attempted > 0) await saveState(latest);
         return cleanup;
       });
+      return await active;
     } finally {
       running = false;
+      active = null;
     }
   }
 
@@ -49,9 +52,10 @@ export function createObjectCleanupWorker({
     initialTimer.unref?.();
     const intervalTimer = setInterval(run, intervalMs);
     intervalTimer.unref?.();
-    return () => {
+    return async () => {
       clearTimeout(initialTimer);
       clearInterval(intervalTimer);
+      await active;
     };
   }
 

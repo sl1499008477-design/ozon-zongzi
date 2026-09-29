@@ -1,7 +1,8 @@
-import { cp, mkdir, readFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 
+const extensionOnly = process.argv.includes("--extension-only");
 const source = path.resolve("brand-assets/ozon-zongzi");
 const webBrand = path.resolve("app/public/brand");
 const webIcons = path.resolve("app/public/icons");
@@ -17,11 +18,14 @@ const brandFiles = [
 await Promise.all([webBrand, webIcons, extensionIcons].map((directory) => mkdir(directory, { recursive: true })));
 
 for (const file of brandFiles) {
-  await cp(path.join(source, file), path.join(webBrand, file));
+  if (!extensionOnly) await cp(path.join(source, file), path.join(webBrand, file));
   await cp(path.join(source, file), path.join(extensionIcons, file));
 }
 
 const suppliedSymbol = await readFile(path.join(source, "ozon-zongzi-symbol.svg"), "utf8");
+// Extension images cannot inherit page CSS currentColor. Bake in blue and a white tile.
+await writeFile(path.join(extensionIcons, "ozon-zongzi-symbol.svg"),
+  suppliedSymbol.replaceAll("currentColor", "#1268FF").replace('<g fill=', '<rect width="512" height="512" fill="#fff"/><g fill='));
 const blueSymbol = Buffer.from(suppliedSymbol.replaceAll("currentColor", "#1268FF"));
 
 for (const size of [16, 48, 128]) {
@@ -40,11 +44,16 @@ for (const size of [16, 48, 128]) {
       width: size,
       height: size,
       channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
     },
   })
     .composite([{ input: renderedSymbol, left: safePadding, top: safePadding }])
     .png()
     .toFile(extensionIcon);
-  await cp(extensionIcon, path.join(webIcons, `icon${size}.png`));
+  if (!extensionOnly) {
+    await sharp({ create: { width: size, height: size, channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+      .composite([{ input: renderedSymbol, left: safePadding, top: safePadding }])
+      .png().toFile(path.join(webIcons, `icon${size}.png`));
+  }
 }

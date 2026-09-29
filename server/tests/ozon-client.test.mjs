@@ -11,6 +11,7 @@ try {
     return { ok: true, status: 200, text: async () => '{"result":{"ok":true}}' };
   };
   assert.deepEqual(await callOzonSellerApi(store, "/v1/post", { value: 1 }), { result: { ok: true } });
+  assert.equal(captured.url, `${process.env.OZON_API_BASE || "https://api-seller.ozon.ru"}/v1/post`);
   assert.equal(captured.options.method, "POST");
   assert.equal(captured.options.headers["Client-Id"], "client-1");
   assert.equal(captured.options.headers["Api-Key"], "secret-1");
@@ -30,7 +31,7 @@ try {
   externallyAborted.catch(() => {});
   externalAbort.abort();
   assert.equal(transportSignal.aborted, true);
-  await assert.rejects(externallyAborted, (error) => error.code === "OZON_TIMEOUT");
+  await assert.rejects(externallyAborted, (error) => error.code === "ZONGZI_TIMEOUT");
 
   globalThis.fetch = async (url, options) => {
     captured = { url, options };
@@ -38,13 +39,14 @@ try {
   };
 
   await getOzonSellerApi(store, "/v1/get");
+  assert.equal(captured.url, `${process.env.OZON_API_BASE || "https://api-seller.ozon.ru"}/v1/get`);
   assert.equal(captured.options.method, "GET");
   assert.equal("body" in captured.options, false);
   assert.equal("Content-Type" in captured.options.headers, false);
 
   await assert.rejects(
     () => callOzonSellerApi({}, "/v1/post", {}),
-    (error) => error.status === 400 && error.code === "OZON_CREDENTIALS_MISSING",
+    (error) => error.status === 400 && error.code === "ZONGZI_CREDENTIALS_MISSING",
   );
 
   globalThis.fetch = async () => {
@@ -64,15 +66,15 @@ try {
     () => callOzonSellerApi(store, "/v1/post", {}),
     (error) => {
       assert.equal(error.status, 429);
-      assert.equal(error.code, "OZON_HTTP_429");
+      assert.equal(error.code, "ZONGZI_HTTP_429");
       assert.equal(
         error.message,
-        "Ozon 429: /v1/post (OZON_HTTP_429)",
+        "Ozon 429: /v1/post (ZONGZI_HTTP_429)",
       );
       assert.deepEqual(error.body, {
         apiPath: "/v1/post",
         status: 429,
-        code: "OZON_HTTP_429",
+        code: "ZONGZI_HTTP_429",
         responseFormat: "text",
       });
       assert.equal(error.cause, null);
@@ -91,8 +93,8 @@ try {
   await assert.rejects(
     () => getOzonSellerApi(store, "/v1/product/import/info"),
     (error) => {
-      assert.equal(error.message, "Ozon 404: /v1/product/import/info (OZON_HTTP_404)");
-      assert.equal(error.code, "OZON_HTTP_404");
+      assert.equal(error.message, "Ozon 404: /v1/product/import/info (ZONGZI_HTTP_404)");
+      assert.equal(error.code, "ZONGZI_HTTP_404");
       assert.equal(error.message.includes(store.clientId), false);
       assert.equal(error.message.includes(store.apiKey), false);
       assert.equal(JSON.stringify(error.body).includes(store.clientId), false);
@@ -124,12 +126,12 @@ try {
     (error) => {
       assert.equal(
         error.message,
-        "Ozon 403: /v1/sensitive (OZON_HTTP_403)",
+        "Ozon 403: /v1/sensitive (ZONGZI_HTTP_403)",
       );
       assert.deepEqual(error.body, {
         apiPath: "/v1/sensitive",
         status: 403,
-        code: "OZON_HTTP_403",
+        code: "ZONGZI_HTTP_403",
         responseFormat: "json",
         ozonCode: "ACCESS.DENIED-1",
       });
@@ -161,7 +163,7 @@ try {
       assert.deepEqual(error.body, {
         apiPath: "/v1/credential-code",
         status: 401,
-        code: "OZON_HTTP_401",
+        code: "ZONGZI_HTTP_401",
         responseFormat: "json",
       });
       assert.equal(JSON.stringify(error.body).includes(store.apiKey), false);
@@ -174,7 +176,7 @@ try {
   });
   await assert.rejects(
     () => getOzonSellerApi(store, "/v1/get", 5),
-    (error) => error.status === 504 && error.code === "OZON_TIMEOUT",
+    (error) => error.status === 504 && error.code === "ZONGZI_TIMEOUT",
   );
 
   globalThis.fetch = async () => {
@@ -182,7 +184,7 @@ try {
   };
   await assert.rejects(
     () => getOzonSellerApi(store, "/v1/get"),
-    (error) => error.status === 504 && error.code === "OZON_TIMEOUT",
+    (error) => error.status === 504 && error.code === "ZONGZI_TIMEOUT",
   );
 
   globalThis.fetch = async () => {
@@ -229,7 +231,7 @@ try {
     };
     await assert.rejects(
       () => callOzonSellerApi(store, "/v2/bounded-content-length", {}, 1_000, { maxResponseBytes: 8 }),
-      (error) => error.status === 502 && error.code === "OZON_RESPONSE_TOO_LARGE"
+      (error) => error.status === 502 && error.code === "ZONGZI_RESPONSE_TOO_LARGE"
         && error.body.phase === "读取响应",
     );
     assert.equal(cancelled, 1);
@@ -263,7 +265,7 @@ try {
     };
     await assert.rejects(
       () => callOzonSellerApi(store, "/v2/bounded-stream", {}, 1_000, { maxResponseBytes: 8 }),
-      (error) => error.status === 502 && error.code === "OZON_RESPONSE_TOO_LARGE"
+      (error) => error.status === 502 && error.code === "ZONGZI_RESPONSE_TOO_LARGE"
         && error.body.phase === "读取响应",
     );
     assert.equal(pulls, 2);
@@ -294,7 +296,7 @@ try {
     });
     await assert.rejects(
       () => callOzonSellerApi(store, "/v2/bounded-body-timeout", {}, 5, { maxResponseBytes: 8 }),
-      (error) => error.status === 504 && error.code === "OZON_TIMEOUT",
+      (error) => error.status === 504 && error.code === "ZONGZI_TIMEOUT",
     );
     assert.deepEqual({ reads, released }, { reads: 1, released: 1 });
   }

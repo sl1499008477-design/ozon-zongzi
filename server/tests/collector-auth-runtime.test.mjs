@@ -88,9 +88,23 @@ function jsonRuntime(state, {
   });
 }
 
+function postgresWebAuthPool(state) {
+  return { async query(sql, [token]) {
+    assert.match(sql, /FROM sessions/);
+    assert.match(sql, /s\.revoked_at IS NULL/);
+    assert.match(sql, /s\.expires_at > NOW\(\)/);
+    const session = state.sessions[token];
+    const account = state.accounts.find(account => account.id === session?.accountId);
+    const valid = account && !session.revokedAt && (!session.expiresAt || new Date(session.expiresAt) > new Date());
+    return { rows: valid ? [{ id: account.id, display_name: account.displayName,
+      status: account.status, expires_at: account.expiresAt, role: account.role }] : [] };
+  } };
+}
+
 function postgresRuntimeHarness() {
   const state = initialState();
   const tickets = new Map();
+  const sessions = new Map();
   const audits = [];
   let initialized = false;
   let legacyReadsAfterInitialization = 0;
@@ -117,10 +131,12 @@ function postgresRuntimeHarness() {
       return { outcome: "consumed", ticket: contextFor(record) };
     },
     async createSession(record) {
+      sessions.set(record.tokenHash, structuredClone(record));
       return { session: contextFor(record), supersededCount: 2 };
     },
-    async findActiveSession() {
-      return null;
+    async findActiveSession({ tokenHash }) {
+      const record = sessions.get(tokenHash);
+      return record ? contextFor(record) : null;
     },
     async touchSession() {
       return false;
@@ -145,6 +161,7 @@ function postgresRuntimeHarness() {
       }
     },
     persistenceMode: () => "postgres",
+    postgresPool: postgresWebAuthPool(state),
     stateTransaction: createJsonStateTransactionBoundary({ enabled: () => false }),
     async initializePostgresRepository() {
       initialized = true;
@@ -755,6 +772,7 @@ test("PostgreSQL repository initialization retries after failure and retains suc
     loadState,
     saveState: async () => {},
     persistenceMode: () => "postgres",
+    postgresPool: postgresWebAuthPool(state),
     stateTransaction: createJsonStateTransactionBoundary({
       enabled: () => false,
     }),
@@ -800,12 +818,16 @@ test("PostgreSQL repository initialization retries after failure and retains suc
   assert.equal(initializationAttempts, 2);
 });
 
-test("default PostgreSQL first ticket loads legacy Web auth state once before focused repository work", async () => {
+test("default PostgreSQL first ticket reads only its account and session, never the full product state", async () => {
   const state = initialState();
   const phases = [];
   let loadCalls = 0;
   const pool = {
     async query(sql, values) {
+      if (/FROM sessions/.test(sql)) {
+        phases.push("scoped-web-auth");
+        return postgresWebAuthPool(state).query(sql, values);
+      }
       phases.push(/INSERT\s+INTO\s+collector_auth_tickets/i.test(sql) ? "ticket-insert" : "other-sql");
       if (/INSERT\s+INTO\s+collector_auth_tickets/i.test(sql)) {
         return {
@@ -824,7 +846,7 @@ test("default PostgreSQL first ticket loads legacy Web auth state once before fo
     async loadState() {
       loadCalls += 1;
       phases.push("web-auth-state");
-      return structuredClone(state);
+      throw new Error("full product state must never be loaded for a ticket");
     },
     async saveState() {},
     persistenceMode: () => "postgres",
@@ -839,6 +861,41 @@ test("default PostgreSQL first ticket loads legacy Web auth state once before fo
     authorization: `Bearer ${WEB_TOKEN}`,
   });
   assert.equal(issued.status, 200);
-  assert.equal(loadCalls, 1);
-  assert.deepEqual(phases, ["web-auth-state", "ticket-insert", "focused-audit"]);
+  assert.equal(loadCalls, 0);
+  assert.deepEqual(phases, ["scoped-web-auth", "ticket-insert", "focused-audit"]);
+});
+
+test("PostgreSQL ticket auth preserves disabled/expired/revoked account and session boundaries without global reads", async (t) => {
+  for (const fixture of [
+    { name: "missing", change: s => { delete s.sessions[WEB_TOKEN]; }, code: "WEB_AUTH_REQUIRED", status: 401 },
+    { name: "revoked", change: s => { s.sessions[WEB_TOKEN].revokedAt = new Date().toISOString(); }, code: "WEB_AUTH_REQUIRED", status: 401 },
+    { name: "expired session", change: s => { s.sessions[WEB_TOKEN].expiresAt = "2000-01-01"; }, code: "WEB_AUTH_REQUIRED", status: 401 },
+    { name: "disabled", change: s => { s.accounts[0].status = "disabled"; }, code: "COLLECTOR_ACCOUNT_DISABLED", status: 403 },
+    { name: "expired account", change: s => { s.accounts[0].expiresAt = "2000-01-01"; }, code: "COLLECTOR_ACCOUNT_EXPIRED", status: 403 },
+  ]) await t.test(fixture.name, async () => {
+    const state = initialState(); fixture.change(state);
+    const runtime = createCollectorAuthRuntime({
+      loadState: async () => { throw new Error("unrelated catalog read"); },
+      saveState: async () => { throw new Error("unrelated state write"); },
+      persistenceMode: () => "postgres", postgresPool: postgresWebAuthPool(state),
+      stateTransaction: createJsonStateTransactionBoundary({ enabled: () => false }), readJson, sendJson,
+    });
+    const result = await request(runtime, "POST", "/extension/collector-auth/ticket", { authorization: `Bearer ${WEB_TOKEN}` });
+    assert.equal(result.status, fixture.status); assert.equal(result.body.code, fixture.code);
+    assert.equal(JSON.stringify(result.body).includes(WEB_TOKEN), false);
+  });
+});
+
+
+test("PostgreSQL Collector authentication reuses its validated account without a global state read", async () => {
+  const harness = postgresRuntimeHarness();
+  const issued = await request(harness.runtime, "POST", "/extension/collector-auth/ticket", { authorization: `Bearer ${WEB_TOKEN}` });
+  const exchanged = await request(harness.runtime, "POST", "/extension/collector-auth/exchange", { body: { ticket: issued.body.ticket, deviceFingerprint: "focused-pg-auth" } });
+  assert.equal(exchanged.status, 200);
+  const account = await harness.runtime.authenticateRequest(collectorRequest(exchanged.body.collectorToken), "collector.job.read");
+  assert.deepEqual(account, { id: ACCOUNT.id, displayName: ACCOUNT.displayName });
+  const status = await request(harness.runtime, "GET", "/extension/collector-auth/status", { authorization: `Collector ${exchanged.body.collectorToken}` });
+  assert.equal(status.status, 200);
+  assert.deepEqual(status.body.account, account);
+  assert.deepEqual(harness.legacyAttempts(), { reads: 0, writes: 0 });
 });

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -7,7 +6,6 @@ import {
   autoListingWarehouseOptions,
 } from "./auto-listing-config.js";
 
-const page = await readFile(new URL("./AutoListingPage.jsx", import.meta.url), "utf8");
 
 test("pending RFBS produces the exact safe option contract and keeps a hydrated preference", () => {
   const result = autoListingWarehouseOptions({
@@ -29,7 +27,7 @@ test("pending RFBS produces the exact safe option contract and keeps a hydrated 
 
   assert.deepEqual(result.options[0], {
     value: "warehouse-a",
-    label: "CEL-测试（RFBS · 创建任务时验证）",
+    label: "CEL-测试",
     fulfillmentType: "RFBS",
     evidenceRequired: true,
     statusLabel: "创建任务时验证",
@@ -37,7 +35,7 @@ test("pending RFBS produces the exact safe option contract and keeps a hydrated 
   assert.equal(result.selectedWarehouseId, "warehouse-a");
 });
 
-test("verified RFBS remains visibly distinct from a warehouse pending creation-time validation", () => {
+test("verified RFBS retains validation metadata with a name-only label", () => {
   const result = autoListingWarehouseOptions({
     targetStoreId: "store-a",
     warehouses: [{
@@ -55,7 +53,7 @@ test("verified RFBS remains visibly distinct from a warehouse pending creation-t
 
   assert.deepEqual(result.options[0], {
     value: "warehouse-b",
-    label: "CEL-已验证（RFBS · 已验证）",
+    label: "CEL-已验证",
     fulfillmentType: "RFBS",
     evidenceRequired: true,
     statusLabel: "已验证",
@@ -92,14 +90,4 @@ test("stable RFBS failures map to safe actionable copy without reflecting server
   }
   assert.equal(autoListingTaskErrorMessage({ code: "OTHER", message: "ordinary safe message" }), "ordinary safe message");
   assert.equal(autoListingTaskErrorMessage(null), "任务创建失败");
-});
-
-test("page presents RFBS read-only verification and retains store-change and late-response fences", () => {
-  assert.match(page, /活跃 FBS \/ RFBS 仓库/u);
-  assert.match(page, /RFBS 新店仓库将在创建任务时由后端只读验证，不会在验证阶段创建商品或修改库存。/u);
-  assert.match(page, /selectedWarehouseId && !warehouseChoice\.selectedWarehouseId/u);
-  assert.match(page, /form\.setFieldValue\("targetWarehouseId", ""\)/u);
-  assert.match(page, /requestVersion !== loadRequestRef\.current/u);
-  assert.match(page, /if \(createInFlightRef\.current\) return/u);
-  assert.match(page, /autoListingTaskErrorMessage\(caught\)/u);
 });

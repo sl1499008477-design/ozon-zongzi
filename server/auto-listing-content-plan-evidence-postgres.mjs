@@ -3,16 +3,18 @@ import { types } from "node:util";
 
 const HASH = /^[a-f0-9]{64}$/u;
 const CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
-const CONTRACTS = new Set(["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"]);
+const CONTRACTS = new Set(["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"]);
 const RESPONSE_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "owner", "planningContract",
   "inputHash", "skeletonHash", "profileId", "profileVersion", "modelName",
-  "promptTemplateVersion", "gatewayRequestId", "response",
+  "promptTemplateVersion", "gatewayRequestId", "response", "gatewayConnectionId", "gatewayConnectionVersion",
 ]);
+const INTELLIGENT_RESPONSE_KEYS = new Set([...RESPONSE_KEYS, "sourceImageAnalysisRunId", "sourceImageIntelligenceHash"]);
 const LOAD_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "owner", "planningContract",
-  "inputHash", "skeletonHash", "profileId", "profileVersion",
+  "inputHash", "skeletonHash", "profileId", "profileVersion", "gatewayConnectionId", "gatewayConnectionVersion",
 ]);
+const INTELLIGENT_LOAD_KEYS = new Set([...LOAD_KEYS, "sourceImageAnalysisRunId", "sourceImageIntelligenceHash"]);
 const OWNER_KEYS = new Set(["kind", "id"]);
 const VALIDATION_KEYS = new Set(["accountId", "responseId", "status", "validatorVersion", "issues"]);
 const ISSUE_KEYS = new Set(["code", "slotKey", "claimIndex", "field", "expected", "actual"]);
@@ -154,15 +156,25 @@ function projectOwner(value) {
   return owner;
 }
 
-function assertContract(value, skeletonHash) {
+function assertContract(value, skeletonHash, input) {
   if (!CONTRACTS.has(value)) throw invalid();
   if (value === "LEGACY_FULL_PLAN_V3" && skeletonHash !== null) throw invalid();
-  if (value === "FIXED_SKELETON_V1" && !HASH.test(skeletonHash || "")) throw invalid();
+  if (["FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(value)
+    && !HASH.test(skeletonHash || "")) throw invalid();
+  if (value === "FIXED_SKELETON_SOURCE_IMAGE_V1") {
+    if (!safeId(input.sourceImageAnalysisRunId) || !HASH.test(input.sourceImageIntelligenceHash || "")) throw invalid();
+  } else if (Object.hasOwn(input, "sourceImageAnalysisRunId") || Object.hasOwn(input, "sourceImageIntelligenceHash")) throw invalid();
 }
 
 function projectResponseCommand(raw) {
   const input = projectedData(raw);
-  if (!exact(input, RESPONSE_KEYS)) throw invalid();
+  if (input?.owner?.kind === "DIAGNOSTIC" && !Object.hasOwn(input, "gatewayConnectionId")
+    && !Object.hasOwn(input, "gatewayConnectionVersion")) {
+    input.gatewayConnectionId = null;
+    input.gatewayConnectionVersion = null;
+  }
+  if (!exact(input, input.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1"
+    ? INTELLIGENT_RESPONSE_KEYS : RESPONSE_KEYS)) throw invalid();
   for (const key of ["accountId", "jobId", "itemId", "sourceSnapshotId", "profileId"]) {
     if (!safeId(input[key])) throw invalid();
   }
@@ -171,10 +183,15 @@ function projectResponseCommand(raw) {
     || !safeText(input.modelName) || !safeText(input.promptTemplateVersion)
     || !(input.gatewayRequestId === null || safeText(input.gatewayRequestId))) throw invalid();
   input.owner = projectOwner(input.owner);
-  assertContract(input.planningContract, input.skeletonHash);
-  const rootKeys = input.planningContract === "FIXED_SKELETON_V1" ? FIXED_ROOT_KEYS : LEGACY_ROOT_KEYS;
+  if (!((input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+    || (safeId(input.gatewayConnectionId) && Number.isInteger(input.gatewayConnectionVersion)
+      && input.gatewayConnectionVersion >= 1 && input.gatewayConnectionVersion <= 2_147_483_647))
+    || (input.owner.kind === "DIAGNOSTIC" && input.gatewayConnectionId !== null)) throw invalid();
+  assertContract(input.planningContract, input.skeletonHash, input);
+  const fixed = ["FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(input.planningContract);
+  const rootKeys = fixed ? FIXED_ROOT_KEYS : LEGACY_ROOT_KEYS;
   if (!exact(input.response, rootKeys)) throw invalid();
-  if (input.planningContract === "FIXED_SKELETON_V1") {
+  if (fixed) {
     if (!plain(input.response.fills) || Object.keys(input.response.fills).length > MAX_SLOTS) throw invalid();
   } else if (!Array.isArray(input.response.slots) || input.response.slots.length > MAX_SLOTS) throw invalid();
   const serialized = canonicalText(input.response);
@@ -206,14 +223,24 @@ function projectValidationCommand(raw) {
 
 function projectLoadScope(raw) {
   const input = projectedData(raw);
-  if (!exact(input, LOAD_KEYS)) throw invalid();
+  if (input?.owner?.kind === "DIAGNOSTIC" && !Object.hasOwn(input, "gatewayConnectionId")
+    && !Object.hasOwn(input, "gatewayConnectionVersion")) {
+    input.gatewayConnectionId = null;
+    input.gatewayConnectionVersion = null;
+  }
+  if (!exact(input, input.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1"
+    ? INTELLIGENT_LOAD_KEYS : LOAD_KEYS)) throw invalid();
   for (const key of ["accountId", "jobId", "itemId", "sourceSnapshotId", "profileId"]) {
     if (!safeId(input[key])) throw invalid();
   }
   if (!HASH.test(input.inputHash || "") || !Number.isInteger(input.profileVersion)
     || input.profileVersion < 1 || input.profileVersion > 2_147_483_647) throw invalid();
   input.owner = projectOwner(input.owner);
-  assertContract(input.planningContract, input.skeletonHash);
+  if (!((input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+    || (safeId(input.gatewayConnectionId) && Number.isInteger(input.gatewayConnectionVersion)
+      && input.gatewayConnectionVersion >= 1 && input.gatewayConnectionVersion <= 2_147_483_647))
+    || (input.owner.kind === "DIAGNOSTIC" && input.gatewayConnectionId !== null)) throw invalid();
+  assertContract(input.planningContract, input.skeletonHash, input);
   return deepFreeze(input);
 }
 
@@ -239,6 +266,10 @@ function mapResponse(row) {
     planningContract: row.planning_contract,
     inputHash: row.input_hash,
     skeletonHash: row.skeleton_hash ?? null,
+    ...(row.planning_contract === "FIXED_SKELETON_SOURCE_IMAGE_V1" ? {
+      sourceImageAnalysisRunId: row.source_image_analysis_run_id,
+      sourceImageIntelligenceHash: row.source_image_intelligence_hash,
+    } : {}),
     profileId: row.profile_id,
     profileVersion: Number(row.profile_version),
     modelName: row.model_name,
@@ -281,6 +312,8 @@ function responseMatches(record, input) {
     && record.owner.kind === input.owner.kind && record.owner.id === input.owner.id
     && record.planningContract === input.planningContract && record.inputHash === input.inputHash
     && record.skeletonHash === input.skeletonHash && record.profileId === input.profileId
+    && (record.sourceImageAnalysisRunId ?? null) === (input.sourceImageAnalysisRunId ?? null)
+    && (record.sourceImageIntelligenceHash ?? null) === (input.sourceImageIntelligenceHash ?? null)
     && record.profileVersion === input.profileVersion && record.modelName === input.modelName
     && record.promptTemplateVersion === input.promptTemplateVersion
     && record.gatewayRequestId === input.gatewayRequestId && sameJson(record.response, input.response)
@@ -327,7 +360,8 @@ export function createPostgresContentPlanEvidenceRepository({
         ? "auto_listing_content_plan_attempts" : "auto_listing_content_plan_diagnostic_runs";
       const locked = await client.query(
         `SELECT id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,
-                planning_contract,input_hash,skeleton_hash
+                planning_contract,input_hash,skeleton_hash,source_image_analysis_run_id,source_image_intelligence_hash,
+                ${input.owner.kind === "ATTEMPT" ? "gateway_connection_id,gateway_connection_version" : "NULL AS gateway_connection_id,NULL::INTEGER AS gateway_connection_version"}
            FROM ${ownerTable}
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4 AND id=$5
           FOR UPDATE`,
@@ -338,8 +372,13 @@ export function createPostgresContentPlanEvidenceRepository({
         || owner.job_id !== input.jobId || owner.item_id !== input.itemId
         || owner.source_snapshot_id !== input.sourceSnapshotId || owner.profile_id !== input.profileId
         || Number(owner.profile_version) !== input.profileVersion
+        || (owner.gateway_connection_id ?? null) !== input.gatewayConnectionId
+        || (owner.gateway_connection_version === null || owner.gateway_connection_version === undefined
+          ? null : Number(owner.gateway_connection_version)) !== input.gatewayConnectionVersion
         || owner.planning_contract !== input.planningContract || owner.input_hash !== input.inputHash
-        || (owner.skeleton_hash ?? null) !== input.skeletonHash) throw conflict();
+        || (owner.skeleton_hash ?? null) !== input.skeletonHash
+        || (owner.source_image_analysis_run_id ?? null) !== (input.sourceImageAnalysisRunId ?? null)
+        || (owner.source_image_intelligence_hash ?? null) !== (input.sourceImageIntelligenceHash ?? null)) throw conflict();
       const existing = await client.query(
         `SELECT * FROM auto_listing_content_plan_responses
           WHERE account_id=$1 AND ${ownerColumn}=$2`,
@@ -355,15 +394,17 @@ export function createPostgresContentPlanEvidenceRepository({
         `INSERT INTO auto_listing_content_plan_responses (
            id,account_id,job_id,item_id,source_snapshot_id,attempt_id,diagnostic_run_id,
            planning_contract,input_hash,skeleton_hash,profile_id,profile_version,model_name,
-           prompt_template_version,gateway_request_id,response,response_hash
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::JSONB,$17)
+           prompt_template_version,gateway_request_id,response,response_hash,
+           source_image_analysis_run_id,source_image_intelligence_hash
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::JSONB,$17,$18,$19)
          RETURNING *`,
         [nextId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
           input.owner.kind === "ATTEMPT" ? input.owner.id : null,
           input.owner.kind === "DIAGNOSTIC" ? input.owner.id : null,
           input.planningContract, input.inputHash, input.skeletonHash, input.profileId,
           input.profileVersion, input.modelName, input.promptTemplateVersion,
-          input.gatewayRequestId, canonicalText(input.response), sha256(input.response)],
+          input.gatewayRequestId, canonicalText(input.response), sha256(input.response),
+          input.sourceImageAnalysisRunId ?? null, input.sourceImageIntelligenceHash ?? null],
       );
       const mapped = mapResponse(inserted.rows?.[0]);
       if (inserted.rowCount !== 1 || !responseMatches(mapped, input)) throw conflict();
@@ -442,9 +483,26 @@ export function createPostgresContentPlanEvidenceRepository({
             AND response.source_snapshot_id=$4 AND response.${ownerColumn}=$5
             AND response.planning_contract=$6 AND response.input_hash=$7
             AND response.skeleton_hash IS NOT DISTINCT FROM $8
-            AND response.profile_id=$9 AND response.profile_version=$10`,
+            AND response.profile_id=$9 AND response.profile_version=$10
+            AND response.source_image_analysis_run_id IS NOT DISTINCT FROM $11
+            AND response.source_image_intelligence_hash IS NOT DISTINCT FROM $12
+            ${scope.owner.kind === "ATTEMPT" ? `AND EXISTS (
+              SELECT 1 FROM auto_listing_content_plan_attempts AS attempt
+               WHERE attempt.account_id=response.account_id AND attempt.id=response.attempt_id
+                 AND attempt.job_id=response.job_id AND attempt.item_id=response.item_id
+                 AND attempt.expected_status_version=(
+                   SELECT item.status_version FROM auto_listing_job_items AS item
+                    WHERE item.account_id=attempt.account_id AND item.job_id=attempt.job_id
+                      AND item.id=attempt.item_id
+                 )
+                 AND attempt.gateway_connection_id IS NOT DISTINCT FROM $13
+                 AND attempt.gateway_connection_version IS NOT DISTINCT FROM $14
+            )` : ""}`,
         [scope.accountId, scope.jobId, scope.itemId, scope.sourceSnapshotId, scope.owner.id,
-          scope.planningContract, scope.inputHash, scope.skeletonHash, scope.profileId, scope.profileVersion],
+          scope.planningContract, scope.inputHash, scope.skeletonHash, scope.profileId, scope.profileVersion,
+          scope.sourceImageAnalysisRunId ?? null, scope.sourceImageIntelligenceHash ?? null,
+          ...(scope.owner.kind === "ATTEMPT"
+            ? [scope.gatewayConnectionId, scope.gatewayConnectionVersion] : [])],
       );
       if (result.rowCount === 0) return null;
       if (result.rowCount !== 1) throw conflict();

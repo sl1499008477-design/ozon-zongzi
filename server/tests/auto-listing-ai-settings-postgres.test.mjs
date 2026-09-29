@@ -62,6 +62,7 @@ function scriptedPool(steps) {
 test("settings PostgreSQL repository factory is closed and exposes the exact stable contract", () => {
   const pool = { async connect() {}, async query() {} };
   assert.deepEqual(Object.keys(createAutoListingAiSettingsPostgres({ pool })).sort(), [
+    "addProfileChannel",
     "claimModelSync",
     "completeModelSync",
     "connectionIdForIntent",
@@ -69,6 +70,7 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
     "createProfileFromSelection",
     "enqueueModelSync",
     "failModelSync",
+    "listProfileChannels",
     "listRunnableSyncAccountIds",
     "loadCatalogSyncConnectionForSecretResolution",
     "loadConnectionForSecretResolution",
@@ -78,6 +80,7 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
     "loadSettingsOverview",
     "loadSettingsOverviewPage",
     "markConnectionValidated",
+    "setProfileChannelEnabled",
   ]);
   assert.throws(() => createAutoListingAiSettingsPostgres({ pool, secret: "raw" }), {
     code: "AUTO_LISTING_AI_SETTINGS_REPOSITORY_INVALID",
@@ -98,6 +101,125 @@ test("connection intent identity is deterministic and rejects cross-shape input 
   assert.throws(() => repository.connectionIdForIntent({ accountId: "account-a", idempotencyKey: "intent-a", extra: true }), {
     code: "AUTO_LISTING_AI_SETTINGS_REPOSITORY_INVALID",
   });
+});
+
+test("profile channel reads join the exact frozen connection version without the bounded overview directory", async () => {
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] },
+    { rows: [{ channel_id: "primary", display_name: "Primary", channel_order: 1, enabled: true,
+      status: "BUSY", connection_display_name: "Gateway A", connection_id: "connection-a", connection_version: 2,
+      assigned_item_id: "item-a", cooldown_until: null, requires_revalidation: false, last_error_code: null }] },
+    { rows: [{ connection_id: "connection-b", connection_version: 3, connection_display_name: "Gateway B" }] },
+    { rows: [] },
+  ]);
+  const result = await createAutoListingAiSettingsPostgres({ pool }).listProfileChannels({
+    accountId: "account-a", profileId: "profile-a", profileVersion: 4,
+  });
+  assert.equal(result.channels[0].connectionVersion, 2);
+  assert.deepEqual(result.channelCandidates, [{ connectionId: "connection-b", connectionVersion: 3,
+    connectionDisplayName: "Gateway B" }]);
+  assert.match(calls[1].sql, /connection\.version=channel\.connection_version/iu);
+  assert.match(calls[1].sql, /channel\.account_id=\$1 AND channel\.profile_id=\$2 AND channel\.profile_version=\$3/iu);
+  assert.doesNotMatch(calls[1].sql, /loadSettingsOverview|LIMIT 10/iu);
+  assert.match(calls[2].sql, /ai_gateway_capability_attempts/iu,
+    "candidates require authoritative paid text/image capability evidence, not only catalog names");
+  assert.match(calls[2].sql, /target_connection_id=connection\.id/iu);
+  assert.match(calls[2].sql, /STRUCTURED_TEXT/iu);
+  assert.match(calls[2].sql, /IMAGE_GENERATION/iu);
+  assert.match(calls[2].sql, /profile\.api_key_env_name='SUB2API_ENCRYPTED_KEY'/iu);
+  assert.match(calls[2].sql, /JOIN ai_gateway_profiles proof_profile/iu,
+    "candidate proof may come from an inactive profile bound to the exact candidate connection");
+  assert.match(calls[2].sql, /proof_profile\.text_model=profile\.text_model/iu);
+  assert.match(calls[2].sql, /proof_profile\.image_model=profile\.image_model/iu);
+  assert.match(calls[2].sql, /proof_profile\.text_protocol=profile\.text_protocol/iu);
+  assert.match(calls[2].sql, /proof_profile\.image_protocol=profile\.image_protocol/iu);
+  assert.match(calls[2].sql, /LIMIT 100/iu, "candidate discovery is bounded independently from exact channel membership");
+  assert.equal(remaining.length, 0);
+});
+
+test("disabling a busy channel leaves its frozen assignment and execution lease untouched", async () => {
+  const busy = { channel_id: "channel-b", display_name: "Gateway B", channel_order: 2, enabled: true,
+    connection_id: "connection-b", connection_version: 2, connection_status: "VALIDATED",
+    assigned_item_id: "item-a", assigned_status_version: 7, execution_lease_token: "lease-secret",
+    requires_revalidation: false, cooldown_until: null, last_error_code: null };
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [busy] },
+    { rows: [{ ...busy, enabled: false }] },
+    { rows: [{ ...busy, enabled: false, connection_display_name: "Gateway B", status: "DISABLED" }] },
+    { rowCount: 1, rows: [{ event_id: "audit-channel" }] }, { rows: [] },
+  ]);
+  const result = await createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: false,
+  });
+  assert.equal(result.status, "DISABLED");
+  const update = calls.find(({ sql }) => /UPDATE auto_listing_ai_profile_channels SET enabled=\$5/iu.test(sql));
+  assert.doesNotMatch(update.sql, /assigned_|execution_lease_/iu);
+  assert.equal(update.params.includes("lease-secret"), false);
+  assert.equal(remaining.length, 0);
+});
+
+test("enabling always enforces the channel-order connection eligibility fence", async () => {
+  const { pool } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] },
+    { rows: [{ channel_id: "channel-b", channel_order: 2, requires_revalidation: false,
+      profile_enabled: true, connection_status: "RETIRED", connection_id: "connection-b", connection_version: 2 }] },
+    { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: true,
+  }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_CONNECTION_INELIGIBLE", status: 409 });
+});
+
+test("enabling an inactive historical profile channel is rejected under the locked current-profile fence", async () => {
+  const { pool } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] },
+    { rows: [{ channel_id: "primary", channel_order: 1, enabled: false, requires_revalidation: false,
+      profile_enabled: false, connection_status: "ACTIVE", connection_id: "connection-a", connection_version: 1 }] },
+    { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-old", profileVersion: 1,
+    channelId: "primary", enabled: true,
+  }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_NOT_CURRENT", status: 409 });
+});
+
+test("revalidation compares fresh proof to the locked channel marker inside PostgreSQL without a JavaScript timestamp parameter", async () => {
+  const marker = new Date("2026-08-28T00:00:00.123Z");
+  const { pool, calls } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] },
+    { rows: [{ channel_id: "channel-b", channel_order: 2, enabled: false, requires_revalidation: true,
+      profile_enabled: true, connection_status: "VALIDATED", connection_id: "connection-b", connection_version: 2,
+      updated_at: marker }] },
+    { rows: [] }, { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: true,
+  }), { code: "AUTO_LISTING_AI_PROFILE_CHANNEL_REVALIDATION_REQUIRED", status: 409 });
+  const evidence = calls.find(({ sql }) => /ai_gateway_capability_attempts evidence/iu.test(sql));
+  assert.match(evidence.sql, /evidence\.completed_at > \(SELECT marker\.updated_at/iu);
+  assert.equal(evidence.params.includes(marker), false);
+});
+
+test("a repeated channel state request returns the locked safe DTO without another write or audit", async () => {
+  const disabled = { channel_id: "channel-b", display_name: "Gateway B", channel_order: 2, enabled: false,
+    connection_id: "connection-b", connection_version: 2, connection_status: "VALIDATED",
+    connection_display_name: "Gateway B", assigned_item_id: "item-a", cooldown_until: null,
+    requires_revalidation: false, last_error_code: null, status: "DISABLED" };
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [disabled] },
+    { rows: [] },
+  ]);
+  const result = await createAutoListingAiSettingsPostgres({ pool }).setProfileChannelEnabled({
+    accountId: "account-a", actorAccountId: "account-a", profileId: "profile-a", profileVersion: 1,
+    channelId: "channel-b", enabled: false,
+  });
+  assert.equal(result.status, "DISABLED");
+  assert.equal(calls.some(({ sql }) => /UPDATE auto_listing_ai_profile_channels SET enabled=\$5/iu.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO audit_events/iu.test(sql)), false);
+  assert.equal(remaining.length, 0);
 });
 
 test("service-derived connection identity accepts randomized ciphertext replay by stable fingerprint", async () => {

@@ -1,6 +1,11 @@
 import ExcelJS from "exceljs";
+import { createRequire } from "node:module";
 import { inflateRawSync } from "node:zlib";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
+
+const require = createRequire(import.meta.url);
+const excelRequire = createRequire(require.resolve("exceljs/package.json"));
+const JSZip = excelRequire("jszip");
 
 export const AUTO_LISTING_EXCEL_IMPORT_LIMITS = Object.freeze({
   maxRows: 1000,
@@ -27,6 +32,8 @@ const MAX_CONFIGURED_WORKSHEET_COLUMNS = 16_384;
 const MAX_CONFIGURED_PARSE_TIMEOUT_MS = 30_000;
 const MAX_WORKER_OLD_GENERATION_MB = 384;
 const XLSX_EXTENSION = ".xlsx";
+const MAIN_SPREADSHEET_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+const MAIN_NAMESPACE_PREFIX_DECLARATION = /xmlns:([A-Za-z_][\w.-]*)=["']http:\/\/schemas\.openxmlformats\.org\/spreadsheetml\/2006\/main["']/u;
 const SKU_HEADERS = new Set(["sku", "商品sku", "ozonsku"]);
 const SKU_MAX_BYTES = 160;
 const XML_TEXT_ESCAPE_EXPANSION = 5;
@@ -257,14 +264,14 @@ function worksheetColumnNumber(reference) {
 function validateWorksheetXml(data, limits) {
   const text = data.toString("utf8");
   let cellCount = 0;
-  for (const match of text.matchAll(/<c(?:\s[^>]*)?>/giu)) {
+  for (const match of text.matchAll(/<(?:[A-Za-z_][\w.-]*:)?c(?:\s[^>]*)?>/giu)) {
     cellCount += 1;
     if (cellCount > limits.maxWorksheetCells) throw archiveLimitError();
     const reference = /\sr=["']([^"']+)["']/iu.exec(match[0])?.[1];
     const column = reference ? worksheetColumnNumber(reference.replace(/\$/gu, "")) : null;
     if (column && column > limits.maxWorksheetColumns) throw archiveLimitError();
   }
-  for (const match of text.matchAll(/<dimension\s[^>]*ref=["']([^"']+)["']/giu)) {
+  for (const match of text.matchAll(/<(?:[A-Za-z_][\w.-]*:)?dimension\s[^>]*ref=["']([^"']+)["']/giu)) {
     const last = match[1].split(":").at(-1)?.replace(/\$/gu, "");
     const column = last ? worksheetColumnNumber(last) : null;
     const row = last ? Number(/[0-9]+$/u.exec(last)?.[0]) : null;
@@ -277,6 +284,7 @@ function preflightWorkbookArchive(buffer, limits) {
   const { entries, centralOffset } = readArchiveEntries(buffer, limits);
   const ranges = [];
   let actualTotal = 0;
+  let namespaceNormalizationRequired = false;
   for (const entry of entries) {
     const offset = entry.localOffset;
     if (offset + 30 > centralOffset || buffer.readUInt32LE(offset) !== LOCAL_SIGNATURE) throw archiveError();
@@ -315,12 +323,36 @@ function preflightWorkbookArchive(buffer, limits) {
     if (data.length !== entry.uncompressedSize || crc32(data) !== entry.expectedCrc) throw archiveError();
     actualTotal += data.length;
     if (actualTotal > limits.maxTotalUncompressedBytes) throw archiveLimitError();
+    if (/\.xml$/iu.test(entry.name) && MAIN_NAMESPACE_PREFIX_DECLARATION.test(data.toString("utf8"))) {
+      namespaceNormalizationRequired = true;
+    }
     if (/^xl\/worksheets\/[^/]+\.xml$/iu.test(entry.name)) validateWorksheetXml(data, limits);
   }
   ranges.sort((left, right) => left[0] - right[0]);
   for (let index = 1; index < ranges.length; index += 1) {
     if (ranges[index][0] < ranges[index - 1][1]) throw archiveError();
   }
+  return { normalizeSpreadsheetNamespaces: namespaceNormalizationRequired };
+}
+
+function normalizeSpreadsheetNamespaceXml(source) {
+  const declaration = MAIN_NAMESPACE_PREFIX_DECLARATION.exec(source);
+  if (!declaration || /\sxmlns=["']/u.test(source)) return source;
+  const prefix = declaration[1].replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return source
+    .replace(declaration[0], `xmlns="${MAIN_SPREADSHEET_NAMESPACE}"`)
+    .replace(new RegExp(`<(/?)${prefix}:`, "gu"), "<$1");
+}
+
+async function normalizeSpreadsheetNamespaces(buffer) {
+  const archive = await JSZip.loadAsync(buffer);
+  const files = Object.values(archive.files).filter((file) => !file.dir && /\.xml$/iu.test(file.name));
+  for (const file of files) {
+    const source = await file.async("string");
+    const normalized = normalizeSpreadsheetNamespaceXml(source);
+    if (normalized !== source) archive.file(file.name, normalized);
+  }
+  return Buffer.from(await archive.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
 }
 
 function numberText(value) {
@@ -450,10 +482,13 @@ function isVisibleSheet(sheet) {
  * Excel formulas are never evaluated: only an already cached primitive result
  * may be used. Hyperlinks contribute display text only and are never fetched.
  */
-async function parseWorkbookContent(buffer, limits) {
+async function parseWorkbookContent(buffer, limits, options = {}) {
   const workbook = new ExcelJS.Workbook();
   try {
-    await workbook.xlsx.load(buffer);
+    const compatibleBuffer = options.normalizeSpreadsheetNamespaces
+      ? await normalizeSpreadsheetNamespaces(buffer)
+      : buffer;
+    await workbook.xlsx.load(compatibleBuffer);
   } catch {
     throw importError(
       "AUTO_LISTING_EXCEL_WORKBOOK_INVALID",
@@ -549,7 +584,7 @@ async function parseWorkbookContent(buffer, limits) {
   };
 }
 
-function isolatedParse(buffer, limits) {
+function isolatedParse(buffer, limits, options = {}) {
   return new Promise((resolve, reject) => {
     const owned = Uint8Array.from(buffer);
     const worker = new Worker(new URL(import.meta.url), {
@@ -557,6 +592,7 @@ function isolatedParse(buffer, limits) {
         kind: "AUTO_LISTING_EXCEL_PARSE_V1",
         buffer: owned.buffer,
         limits,
+        normalizeSpreadsheetNamespaces: options.normalizeSpreadsheetNamespaces === true,
       },
       transferList: [owned.buffer],
       resourceLimits: { maxOldGenerationSizeMb: limits.workerOldGenerationSizeMb },
@@ -650,8 +686,8 @@ export async function parseAutoListingSkuWorkbook(input = {}) {
       { maxBytes: limits.maxBytes },
     );
   }
-  preflightWorkbookArchive(buffer, limits);
-  return isolatedParse(buffer, limits);
+  const preflight = preflightWorkbookArchive(buffer, limits);
+  return isolatedParse(buffer, limits, preflight);
 }
 
 function workerSafeError(error) {
@@ -678,7 +714,9 @@ function workerSafeError(error) {
 }
 
 if (!isMainThread && workerData?.kind === "AUTO_LISTING_EXCEL_PARSE_V1") {
-  parseWorkbookContent(Buffer.from(workerData.buffer), workerData.limits).then(
+  parseWorkbookContent(Buffer.from(workerData.buffer), workerData.limits, {
+    normalizeSpreadsheetNamespaces: workerData.normalizeSpreadsheetNamespaces === true,
+  }).then(
     (result) => parentPort?.postMessage({ ok: true, result }),
     (error) => parentPort?.postMessage({ ok: false, error: workerSafeError(error) }),
   );

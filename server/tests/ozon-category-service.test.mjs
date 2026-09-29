@@ -56,7 +56,7 @@ test("category reads forward an external abort signal to the Ozon transport", as
   const abortable = createOzonCategoryService({
     callOzonSellerApi: async (_store, _path, _body, _timeout, receivedOptions) => {
       options = receivedOptions;
-      return { result: [] };
+      return { result: [{ id: 30, name: "Brand" }] };
     },
   });
   await abortable.getCategoryAttributes({
@@ -64,6 +64,51 @@ test("category reads forward an external abort signal to the Ozon transport", as
     descriptionCategoryId: 10, typeId: 20, signal: controller.signal,
   });
   assert.equal(options.signal, controller.signal);
+});
+
+test("category attributes absorb transient Ozon failures inside the original request", async () => {
+  let attempts = 0;
+  const transient = createOzonCategoryService({
+    callOzonSellerApi: async () => {
+      attempts += 1;
+      if (attempts < 3) throw Object.assign(new Error("temporary"), { status: 429 });
+      return { result: [{ id: 30, name: "Brand" }] };
+    },
+  });
+  const request = {
+    accountId: "acct-a", store: { id: "retry-store", ownerAccountId: "acct-a" },
+    descriptionCategoryId: 10, typeId: 20,
+  };
+
+  const first = await transient.getCategoryAttributes(request);
+  const cached = await transient.getCategoryAttributes(request);
+
+  assert.deepEqual(first.items, [{ id: 30, name: "Brand" }]);
+  assert.equal(cached.meta.source, "OZON_CACHE");
+  assert.equal(attempts, 3);
+});
+
+test("category attributes retry empty and malformed successful responses before caching", async () => {
+  let attempts = 0;
+  const transient = createOzonCategoryService({
+    callOzonSellerApi: async () => {
+      attempts += 1;
+      if (attempts === 1) return { result: [] };
+      if (attempts === 2) return { result: {} };
+      return { result: [{ id: 30, name: "Brand" }] };
+    },
+  });
+  const request = {
+    accountId: "acct-a", store: { id: "retry-payload-store", ownerAccountId: "acct-a" },
+    descriptionCategoryId: 10, typeId: 20,
+  };
+
+  const first = await transient.getCategoryAttributes(request);
+  const cached = await transient.getCategoryAttributes(request);
+
+  assert.deepEqual(first.items, [{ id: 30, name: "Brand" }]);
+  assert.equal(cached.meta.source, "OZON_CACHE");
+  assert.equal(attempts, 3);
 });
 
 const treeInput = input();
@@ -97,6 +142,63 @@ const descriptionCategoryId = await service.resolveDescriptionCategoryId({ ...in
 assert.equal(descriptionCategoryId, 10);
 assert.equal(calls.length, 5);
 
+test("resolves a public PDP type label only when the official taxonomy match is exact and unique", async () => {
+  let treeCalls = 0;
+  const exactTypeService = createOzonCategoryService({
+    callOzonSellerApi: async () => {
+      treeCalls += 1;
+      return {
+        result: [{
+          description_category_id: 17028718,
+          children: [{ type_id: 96009, type_name: " Губка ", children: [] }],
+        }, {
+          description_category_id: 17028730,
+          children: [{ type_id: 92671, type_name: "Килт парео для бани", children: [] }],
+        }],
+      };
+    },
+  });
+  const storeInput = input({ storeId: "exact-public-type-store", language: "DEFAULT" });
+
+  assert.deepEqual(await exactTypeService.resolveExactTypeByName({
+    ...storeInput,
+    typeName: "  губка  ",
+  }), { descriptionCategoryId: 17028718, typeId: 96009, typeName: "Губка" });
+  assert.deepEqual(await exactTypeService.resolveExactTypeByName({
+    ...storeInput,
+    typeName: "Килт  парео для бани",
+  }), {
+    descriptionCategoryId: 17028730,
+    typeId: 92671,
+    typeName: "Килт парео для бани",
+  });
+  assert.equal(treeCalls, 1, "the existing taxonomy cache is shared across exact type resolution");
+});
+
+test("rejects missing or ambiguous public type labels instead of fuzzy category matching", async () => {
+  const ambiguousTypeService = createOzonCategoryService({
+    callOzonSellerApi: async () => ({
+      result: [{
+        description_category_id: 10,
+        children: [{ type_id: 20, type_name: "Губка", children: [] }],
+      }, {
+        description_category_id: 11,
+        children: [{ type_id: 21, type_name: " губка ", children: [] }],
+      }],
+    }),
+  });
+  const storeInput = input({ storeId: "ambiguous-public-type-store", language: "DEFAULT" });
+
+  await assert.rejects(
+    () => ambiguousTypeService.resolveExactTypeByName({ ...storeInput, typeName: "Губка" }),
+    { code: "ZONGZI_CATEGORY_TYPE_AMBIGUOUS", status: 422 },
+  );
+  await assert.rejects(
+    () => ambiguousTypeService.resolveExactTypeByName({ ...storeInput, typeName: "Губочка" }),
+    { code: "ZONGZI_CATEGORY_TYPE_NOT_FOUND", status: 422 },
+  );
+});
+
 nowMs += CACHE_TTL_MS;
 const expiredTree = await service.getCategoryTree(treeInput);
 assert.equal(expiredTree.meta.source, "OZON_API");
@@ -106,7 +208,7 @@ await assert.rejects(
   () => service.getCategoryTree({ accountId: "acct-a", store: { id: "store-a", ownerAccountId: "acct-b" } }),
   (error) => {
     assert.equal(error.status, 403);
-    assert.equal(error.code, "OZON_CATEGORY_STORE_FORBIDDEN");
+    assert.equal(error.code, "ZONGZI_CATEGORY_STORE_FORBIDDEN");
     assert.deepEqual(error.body, { operation: "SCOPE" });
     assert.equal(error.cause, null);
     return true;
@@ -123,7 +225,7 @@ await assert.rejects(
   () => unavailable.getCategoryTree(input()),
   (error) => {
     assert.equal(error.status, 503);
-    assert.equal(error.code, "OZON_CATEGORY_TREE_UNAVAILABLE");
+    assert.equal(error.code, "ZONGZI_CATEGORY_TREE_UNAVAILABLE");
     assert.equal(error.message, "未能从 Ozon 获取真实类目数据，请重试");
     assert.deepEqual(error.body, { operation: "TREE" });
     assert.equal(error.cause, null);
@@ -143,7 +245,7 @@ const invalid = createOzonCategoryService({ callOzonSellerApi: async () => ({ re
 await assert.rejects(
   () => invalid.getCategoryTree(input()),
   (error) => error.status === 502 &&
-    error.code === "OZON_CATEGORY_DATA_INVALID" &&
+    error.code === "ZONGZI_CATEGORY_DATA_INVALID" &&
     error.cause === null &&
     JSON.stringify(error.body) === JSON.stringify({ operation: "TREE" }),
 );
@@ -189,7 +291,7 @@ let staleRefreshFails = false;
 const staleService = createOzonCategoryService({
   now: () => staleNowMs,
   callOzonSellerApi: async () => {
-    if (staleRefreshFails) throw Object.assign(new Error("stale-upstream-secret"), { code: "OZON_TIMEOUT" });
+    if (staleRefreshFails) throw Object.assign(new Error("stale-upstream-secret"), { code: "ZONGZI_TIMEOUT" });
     return { result: [{ description_category_id: 60, children: [] }] };
   },
 });
@@ -202,7 +304,7 @@ await assert.rejects(
   () => staleService.getCategoryTree(staleInput),
   (error) => {
     assert.equal(error.status, 504);
-    assert.equal(error.code, "OZON_CATEGORY_TREE_UNAVAILABLE");
+    assert.equal(error.code, "ZONGZI_CATEGORY_TREE_UNAVAILABLE");
     assert.equal(error.message, "未能从 Ozon 获取真实类目数据，请重试");
     assert.deepEqual(error.body, { operation: "TREE" });
     assert.equal(error.cause, null);
@@ -373,7 +475,7 @@ const partialFailureService = createOzonCategoryService({
 });
 await assert.rejects(
   () => partialFailureService.getCategoryAttributeValues(valuesInput),
-  (error) => error.code === "OZON_CATEGORY_VALUES_UNAVAILABLE" && error.cause === null,
+  (error) => error.code === "ZONGZI_CATEGORY_VALUES_UNAVAILABLE" && error.cause === null,
 );
 const recoveredValues = await partialFailureService.getCategoryAttributeValues(valuesInput);
 assert.deepEqual(recoveredValues.items.map((item) => item.id), [1, 2]);
@@ -388,7 +490,7 @@ const repeatedCursorService = createOzonCategoryService({
 await assert.rejects(
   () => repeatedCursorService.getCategoryAttributeValues(valuesInput),
   (error) => {
-    assert.equal(error.code, "OZON_CATEGORY_DATA_INVALID");
+    assert.equal(error.code, "ZONGZI_CATEGORY_DATA_INVALID");
     assert.equal(error.cause, null);
     return true;
   },
@@ -409,7 +511,7 @@ valuesNowMs += CACHE_TTL_MS;
 valuesRefreshFails = true;
 await assert.rejects(
   () => expiredValuesService.getCategoryAttributeValues(expiredValuesInput),
-  (error) => error.code === "OZON_CATEGORY_VALUES_UNAVAILABLE" && error.cause === null && !("items" in error),
+  (error) => error.code === "ZONGZI_CATEGORY_VALUES_UNAVAILABLE" && error.cause === null && !("items" in error),
 );
 
 let invalidValuesCalls = 0;
@@ -422,7 +524,7 @@ const invalidValuesService = createOzonCategoryService({
 await assert.rejects(
   () => invalidValuesService.getCategoryAttributeValues(valuesInput),
   (error) => {
-    assert.equal(error.code, "OZON_CATEGORY_DATA_INVALID");
+    assert.equal(error.code, "ZONGZI_CATEGORY_DATA_INVALID");
     assert.equal(error.cause, null);
     return true;
   },
@@ -443,7 +545,7 @@ const invalidBoundaryCursorService = createOzonCategoryService({
 const invalidBoundaryCursorInput = { ...valuesInput, limit: 1 };
 await assert.rejects(
   () => invalidBoundaryCursorService.getCategoryAttributeValues(invalidBoundaryCursorInput),
-  (error) => error.code === "OZON_CATEGORY_DATA_INVALID" && error.cause === null,
+  (error) => error.code === "ZONGZI_CATEGORY_DATA_INVALID" && error.cause === null,
 );
 const recoveredAfterInvalidBoundaryCursor = await invalidBoundaryCursorService.getCategoryAttributeValues(invalidBoundaryCursorInput);
 assert.equal(recoveredAfterInvalidBoundaryCursor.meta.source, "OZON_API");
@@ -468,7 +570,7 @@ const duplicateBoundaryCursorService = createOzonCategoryService({
 const duplicateBoundaryCursorInput = { ...valuesInput, limit: 2 };
 await assert.rejects(
   () => duplicateBoundaryCursorService.getCategoryAttributeValues(duplicateBoundaryCursorInput),
-  (error) => error.code === "OZON_CATEGORY_DATA_INVALID" && error.cause === null,
+  (error) => error.code === "ZONGZI_CATEGORY_DATA_INVALID" && error.cause === null,
 );
 const recoveredAfterDuplicateBoundaryCursor = await duplicateBoundaryCursorService.getCategoryAttributeValues(duplicateBoundaryCursorInput);
 assert.equal(recoveredAfterDuplicateBoundaryCursor.meta.source, "OZON_API");
@@ -508,7 +610,7 @@ for (const invoke of invalidIdCases) {
     invoke,
     (error) => {
       assert.equal(error.status, 400);
-      assert.equal(error.code, "OZON_CATEGORY_DATA_INVALID");
+      assert.equal(error.code, "ZONGZI_CATEGORY_DATA_INVALID");
       assert.equal(error.message, "未能从 Ozon 获取真实类目数据，请重试");
       assert.equal(error.cause, null);
       assert.deepEqual(error.body, { operation: "INPUT" });
@@ -537,7 +639,7 @@ await assert.rejects(
   }),
   (error) => {
     assert.equal(error.status, 422);
-    assert.equal(error.code, "OZON_CATEGORY_TYPE_NOT_FOUND");
+    assert.equal(error.code, "ZONGZI_CATEGORY_TYPE_NOT_FOUND");
     assert.equal(error.message, "未能从 Ozon 获取真实类目数据，请重试");
     assert.equal(error.cause, null);
     assert.deepEqual(error.body, { operation: "TYPE" });
@@ -557,7 +659,7 @@ await assert.rejects(
   }),
   (error) => (
     error.status === 502
-    && error.code === "OZON_CATEGORY_DATA_INVALID"
+    && error.code === "ZONGZI_CATEGORY_DATA_INVALID"
     && error.cause === null
   ),
 );
@@ -615,7 +717,7 @@ test("category snapshot keeps the last non-empty tree when a refresh is empty", 
   assert.deepEqual(stale.items, first.items);
   assert.equal(stale.fetchedAt, first.fetchedAt);
   assert.equal(stale.taxonomyFingerprint, first.taxonomyFingerprint);
-  assert.equal(stale.staleReasonCode, "OZON_CATEGORY_DATA_INVALID");
+  assert.equal(stale.staleReasonCode, "ZONGZI_CATEGORY_DATA_INVALID");
 });
 
 test("category snapshot keeps the last non-empty tree when the refresh is unavailable", async () => {
@@ -624,7 +726,7 @@ test("category snapshot keeps the last non-empty tree when the refresh is unavai
   const snapshotService = createOzonCategoryService({
     now: () => snapshotNowMs,
     callOzonSellerApi: async () => {
-      if (refreshUnavailable) throw Object.assign(new Error("upstream secret"), { code: "OZON_TIMEOUT" });
+      if (refreshUnavailable) throw Object.assign(new Error("upstream secret"), { code: "ZONGZI_TIMEOUT" });
       return { result: [{ description_category_id: 17028702, children: [{ type_id: 94405, children: [] }] }] };
     },
   });
@@ -638,7 +740,7 @@ test("category snapshot keeps the last non-empty tree when the refresh is unavai
   assert.equal(stale.stale, true);
   assert.deepEqual(stale.items, first.items);
   assert.equal(stale.taxonomyFingerprint, first.taxonomyFingerprint);
-  assert.equal(stale.staleReasonCode, "OZON_CATEGORY_TREE_UNAVAILABLE");
+  assert.equal(stale.staleReasonCode, "ZONGZI_CATEGORY_TREE_UNAVAILABLE");
 });
 
 test("credential rotation invalidates only the matching account-store category cache", async () => {
@@ -810,7 +912,7 @@ test("target validation requires an enabled contained type and readable attribut
         };
       }
       if (!attributesReadable) throw Object.assign(new Error("transient upstream failure"), { status: 503 });
-      return { result: [] };
+      return { result: [{ id: 30, name: "Brand" }] };
     },
   });
   const store = input({ storeId: "target-validation-store" }).store;
@@ -855,4 +957,23 @@ test("target validation requires an enabled contained type and readable attribut
   assert.equal(attributesUnavailable.valid, false);
   assert.equal(attributesUnavailable.reasonCode, "ATTRIBUTES_UNAVAILABLE");
   assert.equal(attributesUnavailable.taxonomyFingerprint, valid.taxonomyFingerprint);
+});
+
+test('category failure diagnostics preserve the same retry decision as category reads',async()=>{
+  for(const [source,retryable] of [
+    [{code:'ZONGZI_NETWORK_ERROR'},true],
+    [{code:'ZONGZI_TIMEOUT'},true],
+    [{status:429,code:'ZONGZI_HTTP_429'},true],
+    [{status:503,code:'ZONGZI_HTTP_503'},true],
+    [{status:401,code:'ZONGZI_HTTP_401'},false],
+    [{status:403,code:'ZONGZI_HTTP_403'},false],
+    [{status:400,code:'ZONGZI_CREDENTIALS_MISSING'},false],
+  ]){
+    const categories=createOzonCategoryService({callOzonSellerApi:async()=>{throw Object.assign(Error('private response'),source);}});
+    await assert.rejects(categories.getCategoryTree(input()),error=>{
+      assert.equal(error.code,'ZONGZI_CATEGORY_TREE_UNAVAILABLE');assert.equal(error.diagnostic.retryable,retryable);
+      assert.equal(error.diagnostic.sourceCode,source.code);assert.equal(error.diagnostic.sourceStatus,source.status??null);
+      assert.doesNotMatch(error.message,/private response/);return true;
+    });
+  }
 });

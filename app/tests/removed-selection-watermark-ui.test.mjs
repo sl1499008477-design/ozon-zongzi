@@ -8,6 +8,9 @@ const runtimeState = await readFile(new URL("../src/local-runtime-state.js", imp
 
 test("Web source contains no retired selection or watermark surface", () => {
   for (const pattern of [
+    /\/ozon\/products\/reshelf/,
+    /function ReshelfPage\b/,
+    /下架重上/,
     /\/ozon\/selection\//,
     /\/ozon\/tools\/watermark/,
     /function CategoryPage\b/,
@@ -24,44 +27,25 @@ test("Web source contains no retired selection or watermark surface", () => {
   assert.doesNotMatch(runtimeState, /watermarkTemplates/);
 });
 
-test("AI and non-selection business routes remain without the recommendation tag", () => {
-  assert.match(app, /\/ozon\/tools\/ai-poster-records/);
-  assert.match(app, /\/ozon\/ai-image/);
-  assert.match(app, /\/ozon\/postings\/profit-trend/);
-  assert.match(app, /label:\s*"AI 工具"/);
-  assert.doesNotMatch(app, /AI 工具\s*<Tag[^>]*>\s*推荐\s*<\/Tag>/);
-  assert.match(app, /\/ozon\/products\/collect/);
-  assert.match(app, /\/ozon\/settings\/stores/);
-});
-
 test("every retained business route dispatches to a defined page component", () => {
   for (const [route, component, definition] of [
     ["/ozon/products/list", "ProductListPage", "function"],
     ["/ozon/products/collect", "CollectPage", "function"],
     ["/ozon/products/import-history", "ImportHistoryPage", "function"],
-    ["/ozon/products/stocks", "StocksPage", "function"],
-    ["/ozon/products/reshelf", "ReshelfPage", "function"],
-    ["/ozon/tools/ai-poster-records", "AiPosterPage", "function"],
-    ["/ozon/ai-image", "AiImagePage", "function"],
-    ["/ozon/promotions/prices", "PriceDiscountPage", "function"],
-    ["/ozon/promotions/campaigns", "CampaignsPage", "function"],
-    ["/ozon/promotions/auto-delete", "AutoDeletePromoPage", "function"],
-    ["/ozon/postings/list", "PostingsPage", "function"],
-    ["/ozon/postings/returns", "ReturnsPage", "function"],
-    ["/ozon/postings/profit-trend", "ProfitTrendPage", "import"],
-    ["/ozon/postings/review-request", "MessageTaskPage", "function"],
-    ["/ozon/postings/pickup-reminder", "MessageTaskPage", "function"],
-    ["/ozon/messaging/templates", "MessageTemplatesPage", "function"],
-    ["/ozon/messaging/history", "MessageHistoryPage", "function"],
     ["/ozon/templates", "ProductTemplatesPage", "function"],
     ["/ozon/settings/stores", "StoresSettingsPage", "import"],
     ["/ozon/settings/accounts", "AccountSettingsPage", "import"],
     ["/ozon/settings/pricing", "PricingSettingsPage", "import"],
-    ["/datascreen", "DataScreenPage", "import"],
   ]) {
     assert.match(app, new RegExp(`^${definition} ${component}\\b`, "m"));
     assert.match(app, new RegExp(`if \\(route === "${route}"\\) return <${component}\\b`));
   }
   assert.match(app, /if \(route\.startsWith\("\/ozon\/products\/collect\/edit"\)\) return <CollectEditPage\b/);
   assert.match(app, /^function CollectEditPage\b/m);
+});
+
+test("legacy inventory route opens the merged product management page", () => {
+  assert.match(app, /"\/ozon\/products\/stocks": "\/ozon\/products\/list"/);
+  assert.doesNotMatch(app, /^function StocksPage\b/m);
+  assert.doesNotMatch(app, /return <StocksPage\b/);
 });

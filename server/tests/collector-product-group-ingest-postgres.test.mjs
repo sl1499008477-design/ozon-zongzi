@@ -1,0 +1,70 @@
+import './support/dedicated-postgres-test-environment.mjs';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {getPostgresPool,closePostgresPool} from '../db/connection.mjs';
+import {runMigrations} from '../db/migrate.mjs';
+import {ingestCollectRequestV4} from '../collection-pipeline.mjs';
+import {createCollectorTask,queueCollectorTaskRun,claimCollectorRun,claimCollectorRunProductGroup,saveCollectorRunGroupVariant,upsertCollectorRunItem} from '../collector-desktop-service.mjs';
+import {addSelectedCollectorItemsToCollectBox,getCollectorRunProductGroups} from '../collector-selection-service.mjs';
+const enabled=process.env.SONLI_POSTGRES_TESTS==='1';
+test('changed entry, concurrent full-group uploads and added sibling reuse one canonical draft and preserve edits',{skip:!enabled,timeout:40000},async()=>{
+ const pool=await getPostgresPool();await runMigrations(pool);
+ const accountId='group-ingest-'+randomUUID();
+ await pool.query("INSERT INTO accounts(id,username,role) VALUES($1,$1,'user')",[accountId]);
+ const variant=sku=>({sku,title:'Светильник '+sku,name:'Светильник '+sku,images:[`https://cdn1.ozone.ru/s3/multimedia-test/${sku}-1.jpg`,`https://cdn1.ozone.ru/s3/multimedia-test/${sku}-2.jpg`],blackPrice:'35.05',greenPrice:'33.00',currencyCode:'CNY',attributes:[{key:'100',values:[{dictionary_value_id:41,value:'Чёрный'}]}]});
+ const upload=(anchor,skus,requestId)=>ingestCollectRequestV4({authenticatedAccount:{id:accountId},input:{source:'ozon',sourceSku:anchor,sourceUrl:`https://www.ozon.ru/product/${anchor}/`,requestId,payload:{...variant(anchor),description:'Светильник для освещения комнаты.',priceCurrency:'CNY',variantData:{variants:skus.map(variant)}}}});
+ try {
+  const original=await upload('61001',['61001'],'first');
+  const id=original.collectItemId;
+  await pool.query("UPDATE product_drafts SET data=jsonb_set(data,'{variants,0,title}','\"Ручная правка\"') WHERE collect_item_id=$1",[id]);
+  const [a,b]=await Promise.all([upload('61002',['61002','61001','61003'],'via-B'),upload('61003',['61003','61002','61001'],'via-C')]);
+  assert.equal(a.collectItemId,id);assert.equal(b.collectItemId,id);
+  assert.equal((await pool.query('SELECT COUNT(*)::int n FROM collect_items WHERE account_id=$1 AND deleted_at IS NULL',[accountId])).rows[0].n,1);
+  let draft=(await pool.query('SELECT data FROM product_drafts WHERE collect_item_id=$1',[id])).rows[0].data;
+  assert.equal(draft.variants.find(v=>v.sku==='61001').title,'Ручная правка');
+  assert.deepEqual(draft.variants.map(v=>v.sku).sort(),['61001','61002','61003']);
+  for(const row of draft.variants)assert.deepEqual(row.images,variant(row.sku).images);
+  const identity=(await pool.query('SELECT identity_key,source_sku FROM collect_items WHERE id=$1',[id])).rows[0];
+  assert.equal(identity.source_sku,'61001');
+  await pool.query("UPDATE product_drafts SET data=jsonb_set(data,'{variants}',$2::jsonb) WHERE collect_item_id=$1",[id,JSON.stringify(draft.variants.filter(v=>v.sku!=='61002'))]);
+  const added=await upload('61004',['61004','61003','61002','61001'],'via-new-D');assert.equal(added.collectItemId,id);
+  draft=(await pool.query('SELECT data FROM product_drafts WHERE collect_item_id=$1',[id])).rows[0].data;
+  assert.deepEqual(draft.variants.map(v=>v.sku).sort(),['61001','61003','61004']);
+  assert.equal((await pool.query('SELECT identity_key FROM collect_items WHERE id=$1',[id])).rows[0].identity_key,identity.identity_key);
+  // Legacy independent drafts remain independently editable. A whole-group
+  // handoff must resolve B to its original edited draft instead of raw new B.
+  const legacyA=await upload('71001',['71001'],'legacy-A');
+  const legacyB=await upload('71002',['71002'],'legacy-B');
+  await pool.query("UPDATE product_drafts SET data=jsonb_set(data,'{variants,0,title}','\"Ручная правка B\"') WHERE collect_item_id=$1",[legacyB.collectItemId]);
+  const combined=await upload('71001',['71001','71002','71003'],'legacy-plus-C');
+  assert.equal(combined.collectItemId,legacyA.collectItemId);
+  const aDraft=(await pool.query('SELECT data FROM product_drafts WHERE collect_item_id=$1',[legacyA.collectItemId])).rows[0].data;
+  assert.deepEqual(aDraft.variants.map(v=>v.sku).sort(),['71001','71003'],'B must not be duplicated into A');
+  assert.equal((await pool.query('SELECT data FROM product_drafts WHERE collect_item_id=$1',[legacyB.collectItemId])).rows[0].data.variants[0].title,'Ручная правка B');
+  const task=await createCollectorTask({accountId,name:'历史整组',taskType:'CATEGORY',configuration:{captureScope:'ALL'}});
+  const {run}=await queueCollectorTaskRun({accountId,taskId:task.id});
+  const claimed=await claimCollectorRun({accountId,runId:run.id,device:{deviceKey:'group-legacy-fixture'}});
+  const lease={accountId,runId:run.id,deviceId:claimed.device.id,leaseToken:claimed.leaseToken};
+  const skus=['71001','71002','71003'];
+  const group=await claimCollectorRunProductGroup({...lease,anchorSku:'71001',skus});
+  for(const sku of skus)await saveCollectorRunGroupVariant({...lease,groupId:group.groupId,anchorSku:'71001',variant:variant(sku)});
+  const rawPayload={...variant('71001'),collectorGroupId:group.groupId,captureScope:'ALL',variantData:{expectedSkus:skus,variants:skus.map(variant)}};
+  const savedGroup=await upsertCollectorRunItem({...lease,item:{source:'ozon',sourceKey:group.groupId,sourceSku:'71001',status:'QUALIFIED',rawPayload}});
+  const receipt=await addSelectedCollectorItemsToCollectBox({accountId,runId:run.id,itemIds:[savedGroup.item.id]});
+  assert.equal(receipt.errors.length,0,JSON.stringify(receipt));
+  const mapped=await getCollectorRunProductGroups({accountId,runId:run.id,collectItemIds:[receipt.results[0].collectItemId]});
+  assert.equal(mapped.length,1);
+  assert.deepEqual(mapped[0].sources.find(s=>s.collectItemId===legacyA.collectItemId).skus.sort(),['71001','71003']);
+  assert.deepEqual(mapped[0].sources.find(s=>s.collectItemId===legacyB.collectItemId).skus,['71002']);
+  const listedA=await upload('81001',['81001'],'listed-legacy-A');
+  const activeB=await upload('81002',['81002'],'active-legacy-B');
+  await pool.query("INSERT INTO ai_image_listing_tasks(id,account_id,dedupe_key,status,body,next_run_at,created_at) VALUES($1,$2,$1,'COMPLETED',$3::jsonb,0,0)",
+    ['legacy-listed-'+randomUUID(),accountId,JSON.stringify({source:{items:[{sku:'81001'}],sourceSnapshot:{source:'ozon'}}})]);
+  await pool.query('DELETE FROM collect_items WHERE id=$1',[listedA.collectItemId]);
+  const mixed=await upload('81001',['81001','81002'],'listed-A-active-B');
+  assert.equal(mixed.collectItemId,activeB.collectItemId,'listed-only anchor must not hide active sibling draft');
+  const onlyListed=await upload('81001',['81001'],'listed-A-only');
+  assert.equal(onlyListed.collectItemId,'listed:81001');
+ }finally{await closePostgresPool();}
+});

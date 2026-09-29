@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { types as utilTypes } from "node:util";
 import { callOzonSellerApi } from "./ozon-client.mjs";
+import { getPostgresPool } from "./db/connection.mjs";
+import { resolveSubmissionStockResponseV3, readResolvedStockResponseV3, reprepareResolvedStockWriteV3 } from "./listing-stock-response.mjs";
+import { reserveOzonWriteCapacity } from "./ozon-write-rate-limit.mjs";
 import { deriveOzonImportStatus } from "./ozon-import-status.mjs";
 import { resolveSubmissionFailureDisposition } from "./listing-submission-policy.mjs";
 import { authorizeListingRfbsWritePhase } from "./listing-rfbs-write-authorization-runtime.mjs";
@@ -14,7 +17,6 @@ import {
   beginSubmissionCategoryRecoveryV3,
   beginSubmissionStockWriteV3,
   claimSubmissionJobV3,
-  completeSubmissionStockWriteV3,
   completeSubmissionCategoryRecoveryV3,
   enqueueSubmissionActionV3,
   incrementSubmissionStatusCheckV3,
@@ -324,7 +326,7 @@ function collectPatch(status, job = {}, extra = {}) {
 
 async function failSubmission(work, error, status = "FAILED") {
   const row = await transitionSubmissionJobV3(work.id, status, {
-    errorCode: error?.code || (error?.status ? `OZON_HTTP_${error.status}` : "LISTING_WORKER_ERROR"),
+    errorCode: error?.code || (error?.status ? `ZONGZI_HTTP_${error.status}` : "LISTING_WORKER_ERROR"),
     errorMessage: error?.message || String(error),
   }, {
     type: status === "RECONCILING" ? "submission.reconciliation_required" : "submission.failed",
@@ -364,7 +366,7 @@ async function processSubmit(jobId) {
     });
     const response = await callOzonSellerApi(credential, "/v3/product/import", { items }, 120000);
     const ozonTaskId = String(response?.result?.task_id || response?.task_id || "");
-    if (!ozonTaskId) throw Object.assign(new Error("Ozon 已响应但未返回 task_id"), { code: "OZON_TASK_ID_MISSING" });
+    if (!ozonTaskId) throw Object.assign(new Error("Ozon 已响应但未返回 task_id"), { code: "ZONGZI_TASK_ID_MISSING" });
     let accepted;
     if (work.categoryRecovery?.status === "RETRY_PENDING") {
       await productionCategoryRecoveryController.acceptRetry({ work, retryOzonTaskId: ozonTaskId });
@@ -409,7 +411,7 @@ async function processSubmit(jobId) {
       await failSubmission(latest || work, error, "RECONCILING");
     } else if (disposition === "RETRY_PENDING" && Number(latest?.attempt_count || 0) < 3) {
       await transitionSubmissionJobV3(jobId, "RETRY_PENDING", {
-        errorCode: error?.code || `OZON_HTTP_${error.status}`,
+        errorCode: error?.code || `ZONGZI_HTTP_${error.status}`,
         errorMessage: error?.message || String(error),
         statusMessage: "Ozon 暂时不可用，任务将自动重试",
       }, { type: "submission.retry_scheduled", message: error?.message || String(error), actorId: workerId });
@@ -427,90 +429,224 @@ async function finishSuccessfulImport(work, statusInfo) {
   let statusMessage = statusInfo.statusMessage || "";
   let errorMessage = statusInfo.errorMessage || "";
   let completionErrorCode = "";
-  const stocks = Array.isArray(work.stocks) ? work.stocks : [];
-  if (finalStatus === "SUCCEEDED" && stocks.length) {
+  const successfulOffers = new Set((statusInfo.items || [])
+    .filter((item) => item.status === "SUCCEEDED").map((item) => item.offerId));
+  // Snapshot order is immutable and retains the identity of pre-upgrade journals.
+  const stocks = (Array.isArray(work.stocks) ? work.stocks : [])
+    .filter((stock) => successfulOffers.has(stock.offer_id));
+  const stockResults = new Map((work.result_summary?.stockResults || [])
+    .map((result) => [`${result.offerId}:${result.warehouseId}`, result]));
+  const recordStock = (stock, status, errors = [], updated = status === "SUCCEEDED" ? true : null) => stockResults.set(
+    `${stock.offer_id}:${stock.warehouse_id}`,
+    { offerId: stock.offer_id, warehouseId: String(stock.warehouse_id), status, errors, updated },
+  );
+  const summary = () => ({
+    success: statusInfo.success, failed: statusInfo.failed, skipped: statusInfo.skipped,
+    stockCount: stocks.length,
+    stockSuccessCount: [...stockResults.values()].filter((item) => item.status === "SUCCEEDED").length,
+    stockResults: [...stockResults.values()],
+  });
+  const waitForStock = async (message, delayMs) => {
+    await transitionSubmissionJobV3(work.id, "CHECKING", {
+      errorCode: "", errorMessage: "", statusMessage: message,
+      resultSummary: { ...summary(), stockWaiting: true },
+    }, { type: "submission.stock_waiting", message, actorId: workerId });
+    await enqueueSubmissionActionV3(work.id, "check", Math.max(1, Math.ceil(delayMs / 1000)));
+  };
+  const itemByOffer = new Map((work.submissionItems || []).map((item) => [item.offerId, item.submissionItemId]));
+  const commandFor = (batch) => {
+    const stockItems = batch.map((stock) => ({
+      submissionItemId: itemByOffer.get(stock.offer_id), offerId: stock.offer_id,
+      warehouseId: String(stock.warehouse_id), quantity: stock.stock,
+    }));
+    return {
+      accountId: work.account_id, jobId: work.id, snapshotId: work.snapshot_id,
+      storeId: work.store_id, importOzonTaskId: work.ozon_task_id,
+      recoveryAttemptId: work.categoryRecovery?.retryOzonTaskId === work.ozon_task_id
+        ? work.categoryRecovery.attemptId : null,
+      requestHash: submissionStockRequestHashV3(stockItems), correlationId: work.correlation_id,
+      actorId: workerId, stocks: stockItems,
+    };
+  };
+  const restoreJournal = async (prepared, command, batch) => {
+    if (prepared.status === "DONE") {
+      batch.forEach((stock) => recordStock(stock, "SUCCEEDED"));
+      return true;
+    }
+    if (prepared.status === "RESOLVED") {
+      const results = await readResolvedStockResponseV3(command);
+      for (const result of results) {
+        const key = `${result.offerId}:${result.warehouseId}`;
+        stockResults.set(key, result);
+      }
+      return true;
+    }
+    if (!["IN_FLIGHT", "AMBIGUOUS"].includes(prepared.status)) return false;
+    if (prepared.status === "IN_FLIGHT") await markSubmissionStockWriteAmbiguousV3(command);
+    for (const stock of batch) {
+      if (!stockResults.has(`${stock.offer_id}:${stock.warehouse_id}`)
+        || stockResults.get(`${stock.offer_id}:${stock.warehouse_id}`)?.status === "RETRYABLE") {
+        recordStock(stock, "UNKNOWN", ["ZONGZI_STOCK_RESULT_AMBIGUOUS"]);
+      }
+    }
+    return true;
+  };
+  const resumeStockBatch = async (batch) => {
+    let stockCommand = commandFor(batch);
+    let prepared = await prepareSubmissionStockWriteV3(stockCommand);
+    while (await restoreJournal(prepared, stockCommand, batch)) {
+      if (prepared.status !== "RESOLVED") { batch = []; break; }
+      const retry = batch.filter((stock) => stockResults.get(`${stock.offer_id}:${stock.warehouse_id}`)?.status === "RETRYABLE");
+      if (!retry.length) { batch = []; break; }
+      if (retry.length === batch.length) {
+        prepared = await reprepareResolvedStockWriteV3(stockCommand);
+        break;
+      }
+      batch = retry;
+      stockCommand = commandFor(batch);
+      prepared = await prepareSubmissionStockWriteV3(stockCommand);
+    }
+    return {batch, stockCommand};
+  };
+  if (["SUCCEEDED", "PARTIAL_SUCCESS"].includes(finalStatus) && stocks.length) {
     try {
-      const submissionItems = Array.isArray(work.submissionItems) ? work.submissionItems : [];
-      const itemByOffer = new Map(submissionItems.map((item) => [item?.offerId, item?.submissionItemId]));
-      const stockItems = stocks.map((stock) => ({
-        submissionItemId: itemByOffer.get(stock?.offer_id),
-        offerId: stock?.offer_id,
-        warehouseId: stock?.warehouse_id,
-        quantity: stock?.stock,
-      }));
-      const stockCommand = {
-        accountId: work.account_id,
-        jobId: work.id,
-        snapshotId: work.snapshot_id,
-        storeId: work.store_id,
-        importOzonTaskId: work.ozon_task_id,
-        recoveryAttemptId: work.categoryRecovery?.retryOzonTaskId === work.ozon_task_id
-          ? work.categoryRecovery.attemptId : null,
-        requestHash: submissionStockRequestHashV3(stockItems),
-        correlationId: work.correlation_id,
-        actorId: workerId,
-        stocks: stockItems,
-      };
-      const prepared = await prepareSubmissionStockWriteV3(stockCommand);
-      if (prepared.status === "DONE") {
-        statusMessage = `商品已上架，${stocks.length} 条库存已同步`;
-      } else if (["IN_FLIGHT", "AMBIGUOUS"].includes(prepared.status)) {
-        if (prepared.status === "IN_FLIGHT") {
-          await markSubmissionStockWriteAmbiguousV3(stockCommand);
+      let legacyHandled = false;
+      // Old workers submitted the whole immutable snapshot in one request. Check
+      // that journal before creating smaller intents, so an upgrade cannot resend it.
+      if (stocks.length > 100 && finalStatus === "SUCCEEDED") {
+        const legacyCommand = commandFor(stocks);
+        const legacy = await (await getPostgresPool()).query(
+          `SELECT status FROM submission_stock_write_intents
+           WHERE account_id=$1 AND submission_job_id=$2 AND submission_snapshot_id=$3
+             AND store_id=$4 AND import_ozon_task_id=$5
+             AND recovery_attempt_id IS NOT DISTINCT FROM $6::text
+             AND request_hash=$7 AND stock_items=$8::jsonb`,
+          [legacyCommand.accountId, legacyCommand.jobId, legacyCommand.snapshotId,
+            legacyCommand.storeId, legacyCommand.importOzonTaskId, legacyCommand.recoveryAttemptId,
+            legacyCommand.requestHash, JSON.stringify(legacyCommand.stocks)],
+        );
+        if (legacy.rows[0]) legacyHandled = await restoreJournal(legacy.rows[0], legacyCommand, stocks);
+      }
+      for (let offset = 0; !legacyHandled && offset < stocks.length; offset += 100) {
+        let {batch, stockCommand} = await resumeStockBatch(stocks.slice(offset, offset + 100));
+        if (!batch.length) continue;
+        try { await authorizeListingRfbsWritePhase(work, "PRE_STOCK", {stocks: batch}); }
+        catch (error) {
+          if (error?.code === "LISTING_RFBS_PHASE_VALIDATION_REQUIRED" && error.retryable === true) {
+            await waitForStock("RFBS 仓库官方核验暂不可用，稍后继续库存同步", 60000);
+            return;
+          }
+          throw error;
         }
-        finalStatus = "PARTIAL_SUCCESS";
-        completionErrorCode = "OZON_STOCK_RESULT_AMBIGUOUS";
-        errorMessage = "商品已上架，但库存写入结果无法确认；系统未自动重发，请人工核对库存后执行库存恢复";
-      } else {
-        await authorizeListingRfbsWritePhase(work, "PRE_STOCK");
         const credential = await readStoreCredentialV3(work.store_id, work.account_id);
+        let response;
+        try {
+          response = await callOzonSellerApi(credential, "/v3/product/info/list", {
+            offer_id: batch.map((stock) => stock.offer_id),
+          }, 60000);
+        } catch (error) {
+          const status = Number(error?.status);
+          if (status === 429 || (status >= 500 && status < 600)
+            || ["ZONGZI_TIMEOUT", "ZONGZI_NETWORK_ERROR"].includes(error?.code)) {
+            await waitForStock("Ozon 商品就绪查询暂不可用，稍后继续同步库存", 60000);
+            return;
+          }
+          throw error;
+        }
+        const products = Array.isArray(response?.items) ? response.items
+          : Array.isArray(response?.result?.items) ? response.result.items : [];
+        const declined = batch.filter((stock) => products.some((item) => item.offer_id === stock.offer_id
+          && item.statuses?.is_created === false
+          && [item.statuses?.moderate_status, item.statuses?.status_failed].includes("declined")));
+        for (const stock of declined) {
+          const product = products.find(item => item.offer_id === stock.offer_id);
+          recordStock(stock, "FAILED", ["ZONGZI_PRODUCT_MODERATION_DECLINED", ...(Array.isArray(product.errors) ? product.errors : [])
+            .map(error => String(error?.code || "ZONGZI_PRODUCT_ERROR").slice(0, 120))]);
+        }
+        if (declined.length) {
+          const rejectedOffers = new Set(declined.map(stock => stock.offer_id));
+          batch = batch.filter(stock => !rejectedOffers.has(stock.offer_id));
+          if (!batch.length) continue;
+          ({batch, stockCommand} = await resumeStockBatch(batch));
+          if (!batch.length) continue;
+        }
+        if (!batch.every((stock) => products.some((item) => item.offer_id === stock.offer_id
+          && item.statuses?.status === "price_sent"))) {
+          await waitForStock("商品价格仍在 Ozon 处理中，稍后继续同步库存", 60000);
+          return;
+        }
+        const capacity = await reserveOzonWriteCapacity({
+          pool: await getPostgresPool(), sellerId: credential.clientId, operation: "stock",
+          requestKey: crypto.randomUUID(), units: 1,
+          pairKeys: batch.map((stock) => `${stock.offer_id}:${stock.warehouse_id}`),
+          limit: 80, clock: Date.now,
+        });
+        if (!capacity.allowed) {
+          await waitForStock("等待 Ozon 库存写入额度，稍后继续", capacity.retryAfterMs);
+          return;
+        }
         const begun = await beginSubmissionStockWriteV3(stockCommand);
         if (begun.status !== "IN_FLIGHT") {
-          throw Object.assign(new Error("库存写入状态无法安全开始"), {
-            code: "LISTING_STOCK_WRITE_IDENTITY_CONFLICT",
-          });
+          throw Object.assign(new Error("库存写入状态无法安全开始"), { code: "LISTING_STOCK_WRITE_IDENTITY_CONFLICT" });
         }
         try {
-          await callOzonSellerApi(credential, "/v2/products/stocks", { stocks }, 60000);
-          await completeSubmissionStockWriteV3(stockCommand);
-          statusMessage = `商品已上架，${stocks.length} 条库存已同步`;
+          const written = await callOzonSellerApi(credential, "/v2/products/stocks", { stocks: batch }, 60000);
+          for (const stock of batch) {
+            const matches = Array.isArray(written?.result) ? written.result.filter((item) =>
+              item.offer_id === stock.offer_id && String(item.warehouse_id) === String(stock.warehouse_id)) : [];
+            const item = matches.length === 1 ? matches[0] : null;
+            const errors = (Array.isArray(item?.errors) ? item.errors : []).map((error) =>
+              String(error?.code || "ZONGZI_STOCK_ITEM_ERROR").slice(0, 120));
+            if (item?.updated === true && !errors.length) recordStock(stock, "SUCCEEDED");
+            else if (item?.updated === false) {
+              const retryable = errors.length > 0 && errors.every((code) =>
+                ["PRODUCT_HAS_NOT_BEEN_TAGGED_YET", "TOO_MANY_REQUESTS"].includes(code));
+              recordStock(stock, retryable ? "RETRYABLE" : "FAILED",
+                errors.length ? errors : ["ZONGZI_STOCK_NOT_UPDATED"], false);
+            } else recordStock(stock, "UNKNOWN", errors.length ? errors : ["ZONGZI_STOCK_RESULT_AMBIGUOUS"]);
+          }
+          // Receipt and per-item summary are atomic; the append-only event retains
+          // each attempt even when a fully retryable request reuses its identity.
+          await resolveSubmissionStockResponseV3(stockCommand, summary());
         } catch (error) {
+          for (const stock of batch) {
+            if (!stockResults.has(`${stock.offer_id}:${stock.warehouse_id}`)
+              || stockResults.get(`${stock.offer_id}:${stock.warehouse_id}`)?.status === "RETRYABLE") recordStock(stock, "UNKNOWN", ["ZONGZI_STOCK_RESULT_AMBIGUOUS"]);
+          }
           await markSubmissionStockWriteAmbiguousV3(stockCommand,
             Number.isSafeInteger(error?.status) && error.status > 0
-              ? "OZON_STOCK_WRITE_REJECTED" : "OZON_STOCK_WRITE_AMBIGUOUS");
+              ? "ZONGZI_STOCK_WRITE_REJECTED" : "ZONGZI_STOCK_WRITE_AMBIGUOUS");
           throw error;
         }
       }
     } catch (error) {
-      if (finalStatus !== "PARTIAL_SUCCESS") {
-        finalStatus = "PARTIAL_SUCCESS";
-        completionErrorCode = error?.code === "LISTING_STOCK_WRITE_IDENTITY_CONFLICT"
-          ? "OZON_STOCK_WRITE_BLOCKED" : "OZON_STOCK_WRITE_FAILED";
-        errorMessage = error?.code === "LISTING_STOCK_WRITE_IDENTITY_CONFLICT"
-          ? "商品已上架，但库存写入身份无法安全确认；请人工核对库存"
-          : `商品已上架，但库存同步失败：${error?.message || error}`;
-      }
+      finalStatus = "PARTIAL_SUCCESS";
+      completionErrorCode = error?.code === "LISTING_STOCK_WRITE_IDENTITY_CONFLICT"
+        ? "ZONGZI_STOCK_WRITE_BLOCKED" : "ZONGZI_STOCK_WRITE_FAILED";
+      errorMessage = `${errorMessage ? `${errorMessage}；` : ""}已导入商品的库存同步未完成：${error?.message || error}`;
     }
+    if (!completionErrorCode && [...stockResults.values()].some((item) => item.status === "RETRYABLE")) {
+      await waitForStock("Ozon 暂未受理部分库存，稍后仅重试这些库存项", 60000);
+      return;
+    }
+    const pendingResults = [...stockResults.values()].filter((item) => item.status !== "SUCCEEDED");
+    if (pendingResults.length) {
+      finalStatus = "PARTIAL_SUCCESS";
+      completionErrorCode ||= pendingResults.some((item) => item.status === "UNKNOWN")
+        ? "ZONGZI_STOCK_RESULT_AMBIGUOUS" : "ZONGZI_STOCK_ITEM_FAILED";
+      const detail = pendingResults.map((item) => `${item.offerId}: ${item.errors.join(", ")}`).join("；");
+      errorMessage = `${errorMessage ? `${errorMessage}；` : ""}库存待处理：${detail}`;
+    }
+    statusMessage = `已导入 ${statusInfo.success} 个商品，${summary().stockSuccessCount}/${stocks.length} 条库存已同步`;
   }
   if (finalStatus === "SKIPPED") finalStatus = "FAILED";
   const completed = await transitionSubmissionJobV3(work.id, finalStatus, {
-    successCount: statusInfo.success,
-    failedCount: statusInfo.failed,
-    skippedCount: statusInfo.skipped,
+    successCount: statusInfo.success, failedCount: statusInfo.failed, skippedCount: statusInfo.skipped,
     errorCode: completionErrorCode
-      || (finalStatus === "FAILED" || finalStatus === "PARTIAL_SUCCESS" ? "OZON_ITEM_RESULT" : ""),
-    errorMessage,
-    statusMessage,
-    resultSummary: {
-      success: statusInfo.success,
-      failed: statusInfo.failed,
-      skipped: statusInfo.skipped,
-      stockCount: stocks.length,
-    },
+      || (finalStatus === "FAILED" || finalStatus === "PARTIAL_SUCCESS" ? "ZONGZI_ITEM_RESULT" : ""),
+    errorMessage, statusMessage, resultSummary: summary(),
   }, {
-    type: "submission.completed",
-    message: statusMessage || errorMessage || "Ozon 已返回最终结果",
-    actorId: workerId,
+    type: "submission.completed", message: statusMessage || errorMessage || "Ozon 已返回最终结果", actorId: workerId,
   });
   if (work.collect_item_id) await patchLegacyCollectStatusV3(work.account_id, work.collect_item_id, collectPatch(finalStatus, completed, { errorMessage, statusMessage }));
 }
@@ -523,7 +659,7 @@ async function processCheck(jobId) {
   work = await loadSubmissionWorkV3(jobId);
   try {
     if (!work.ozon_task_id) {
-      throw Object.assign(new Error("任务处于待对账状态，但没有 Ozon task_id；为避免重复创建，已停止自动重提"), { code: "OZON_TASK_ID_UNKNOWN" });
+      throw Object.assign(new Error("任务处于待对账状态，但没有 Ozon task_id；为避免重复创建，已停止自动重提"), { code: "ZONGZI_TASK_ID_UNKNOWN" });
     }
     if (work.status !== "CHECKING") {
       await transitionSubmissionJobV3(jobId, "CHECKING", {}, {
@@ -574,7 +710,7 @@ async function processCheck(jobId) {
       }
       await finishSuccessfulImport(work, statusInfo);
     } else if (checkCount >= maxStatusChecks) {
-      await failSubmission(work, Object.assign(new Error(`超过 ${maxStatusChecks} 次状态查询仍未完成`), { code: "OZON_STATUS_TIMEOUT" }), "FAILED");
+      await failSubmission(work, Object.assign(new Error(`超过 ${maxStatusChecks} 次状态查询仍未完成`), { code: "ZONGZI_STATUS_TIMEOUT" }), "FAILED");
     } else {
       await transitionSubmissionJobV3(jobId, "CHECKING", {
         statusMessage: `Ozon 处理中，第 ${checkCount} 次查询`,
@@ -584,16 +720,16 @@ async function processCheck(jobId) {
     }
   } catch (error) {
     const latest = await loadSubmissionWorkV3(jobId);
-    if (["OZON_TASK_ID_UNKNOWN", "OZON_IMPORT_RESULT_CONFLICT",
-      "OZON_IMPORT_RESULT_SCOPE_MISMATCH", "OZON_IMPORT_OFFER_IDENTITY_MISMATCH",
-      "OZON_IMPORT_RESULT_CONTRACT_INVALID"].includes(error?.code)) {
+    if (["ZONGZI_TASK_ID_UNKNOWN", "ZONGZI_IMPORT_RESULT_CONFLICT",
+      "ZONGZI_IMPORT_RESULT_SCOPE_MISMATCH", "ZONGZI_IMPORT_OFFER_IDENTITY_MISMATCH",
+      "ZONGZI_IMPORT_RESULT_CONTRACT_INVALID"].includes(error?.code)) {
       await failSubmission(latest || work, error, "RECONCILING");
     } else {
       const count = await incrementSubmissionStatusCheckV3(jobId);
       if (count >= maxStatusChecks) await failSubmission(latest || work, error, "FAILED");
       else {
         await transitionSubmissionJobV3(jobId, "CHECKING", {
-          errorCode: error?.code || "OZON_STATUS_CHECK_FAILED",
+          errorCode: error?.code || "ZONGZI_STATUS_CHECK_FAILED",
           errorMessage: error?.message || String(error),
           statusMessage: "状态查询暂时失败，稍后自动重试",
         }, { type: "submission.status_check_retry", message: error?.message || String(error), actorId: workerId });

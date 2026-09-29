@@ -3,10 +3,15 @@ import test from "node:test";
 import {
   AUTO_LISTING_AI_QUEUE,
   AUTO_LISTING_AI_QUEUE_OPTIONS,
-  createAutoListingAiQueueAdapter,
+  AUTO_LISTING_AI_WORK_QUEUE,
+  AUTO_LISTING_AI_WORK_QUEUE_OPTIONS,
   createAutoListingAiOutboxPublisher,
+  createAutoListingAiQueueAdapter,
+  createLegacyAutoListingAiOutboxPublisher,
+  createLegacyAutoListingAiQueueAdapter,
 } from "../auto-listing-ai-queue.mjs";
 import { createMemoryAutoListingAiOutboxRepository } from "../auto-listing-ai-outbox-repository.mjs";
+import { autoListingAiWorkSingletonKey } from "../auto-listing-ai-work-message.mjs";
 
 const message = Object.freeze({
   contractVersion: "V1",
@@ -15,6 +20,20 @@ const message = Object.freeze({
   phase: "PLAN_CONTENT",
   expectedStatusVersion: 3,
   correlationId: "correlation-a",
+});
+const workMessage = Object.freeze({
+  workContractVersion: "CHANNEL_WORK_V1",
+  message,
+  execution: Object.freeze({
+    outboxId: "ai-outbox-a",
+    dispatchGeneration: 1,
+    channelId: "channel-a",
+    connectionId: "connection-a",
+    connectionVersion: 2,
+    leaseOwner: "publisher-work",
+    leaseToken: "lease-work",
+    leaseExpiresAt: "2099-08-28T00:05:00.000Z",
+  }),
 });
 
 test("AI queue starts only its dedicated queue and publishes one closed V1 message with deterministic identities", async () => {
@@ -26,18 +45,17 @@ test("AI queue starts only its dedicated queue and publishes one closed V1 messa
     async stop(options) { calls.push(["stop", options]); },
   };
   let factories = 0;
-  const queue = createAutoListingAiQueueAdapter({ enabled: true, bossFactory: () => { factories += 1; return boss; } });
+  const queue = createLegacyAutoListingAiQueueAdapter({ enabled: true, bossFactory: () => { factories += 1; return boss; } });
 
   const result = await queue.publish(message);
   await queue.stop();
 
-  assert.equal(AUTO_LISTING_AI_QUEUE, "auto-listing-ai-v1");
+  assert.equal(AUTO_LISTING_AI_QUEUE, "auto-listing-ai-v2");
   assert.equal(Object.isFrozen(AUTO_LISTING_AI_QUEUE_OPTIONS), true);
   assert.deepEqual(AUTO_LISTING_AI_QUEUE_OPTIONS, {
     retryLimit: 5,
     retryDelay: 30,
     retryBackoff: true,
-    expireInSeconds: 86_399,
     retentionSeconds: 1_209_600,
     deleteAfterSeconds: 604_800,
     heartbeatSeconds: 30,
@@ -46,14 +64,14 @@ test("AI queue starts only its dedicated queue and publishes one closed V1 messa
   assert.equal(factories, 1);
   assert.deepEqual(calls[0], ["start"]);
   assert.equal(calls[1][0], "createQueue");
-  assert.equal(calls[1][1], "auto-listing-ai-v1");
+  assert.equal(calls[1][1], "auto-listing-ai-v2");
   assert.deepEqual(calls[1][2], AUTO_LISTING_AI_QUEUE_OPTIONS);
-  assert.deepEqual(calls[2], ["send", "auto-listing-ai-v1", message, {
-    id: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+  assert.deepEqual(calls[2], ["send", "auto-listing-ai-v2", message, {
+    id: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
     singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
   }]);
   assert.deepEqual(result, {
-    publicationId: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+    publicationId: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
     singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
     duplicate: false,
   });
@@ -61,16 +79,288 @@ test("AI queue starts only its dedicated queue and publishes one closed V1 messa
   assert.doesNotMatch(JSON.stringify(calls), /listing-v3|submission|sourceRef|apiKey|secret/iu);
 });
 
+test("v3 queue publishes the fenced envelope with generation singleton identity and no total runtime expiry", async () => {
+  const calls = [];
+  const queue = createAutoListingAiQueueAdapter({
+    enabled: true,
+    bossFactory: () => ({
+      async start() {},
+      async createQueue(name, options) { calls.push(["create", name, options]); },
+      async send(name, payload, options) { calls.push(["send", name, payload, options]); return options.id; },
+      async stop() {},
+    }),
+  });
+
+  const first = await queue.publish(workMessage);
+  const next = await queue.publish({
+    ...workMessage,
+    execution: { ...workMessage.execution, dispatchGeneration: 2 },
+  });
+
+  assert.equal(AUTO_LISTING_AI_WORK_QUEUE, "auto-listing-ai-v3");
+  assert.equal(Object.hasOwn(AUTO_LISTING_AI_WORK_QUEUE_OPTIONS, "expireInSeconds"), false);
+  assert.equal(Object.hasOwn(AUTO_LISTING_AI_QUEUE_OPTIONS, "expireInSeconds"), false);
+  assert.deepEqual(calls[0], ["create", "auto-listing-ai-v3", AUTO_LISTING_AI_WORK_QUEUE_OPTIONS]);
+  assert.equal(calls[1][1], "auto-listing-ai-v3");
+  assert.equal(calls[1][3].singletonKey, "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8:1");
+  assert.equal(calls[2][3].singletonKey, "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8:2");
+  assert.equal(first.singletonKey.endsWith(":1"), true);
+  assert.equal(next.singletonKey.endsWith(":2"), true);
+  assert.notEqual(first.publicationId, next.publicationId);
+  await queue.stop();
+});
+
+test("current V2 work publishes only to queues that pre-V2 workers do not consume", async () => {
+  const queueModule = await import("../auto-listing-ai-queue.mjs");
+  assert.equal(queueModule.AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE, "auto-listing-ai-v4-legacy");
+  assert.equal(queueModule.AUTO_LISTING_AI_CURRENT_WORK_QUEUE, "auto-listing-ai-v4-work");
+  assert.equal(typeof queueModule.createCurrentAutoListingAiWorkQueueAdapter, "function");
+  const calls = [];
+  const queue = queueModule.createCurrentAutoListingAiWorkQueueAdapter({
+    enabled: true,
+    bossFactory: () => ({
+      async start() {},
+      async createQueue(name) { calls.push(["create", name]); },
+      async send(name, payload, options) {
+        calls.push(["send", name, payload, options]);
+        return options.id;
+      },
+      async stop() {},
+    }),
+  });
+  const currentWork = {
+    ...workMessage,
+    message: { ...workMessage.message, contractVersion: "V2" },
+  };
+
+  await queue.publish(currentWork);
+
+  assert.deepEqual(calls.map((entry) => entry[1]), [
+    "auto-listing-ai-v4-work",
+    "auto-listing-ai-v4-work",
+  ]);
+  assert.deepEqual(calls[1][2], currentWork);
+  await queue.stop();
+});
+
+test("v3 queue reports startup failure as definitely not sent before any send attempt", async () => {
+  const queue = createAutoListingAiQueueAdapter({
+    enabled: true,
+    bossFactory: () => { throw new Error("postgres password=raw"); },
+  });
+
+  await assert.rejects(
+    queue.publish(workMessage),
+    (error) => error?.code === "AUTO_LISTING_AI_QUEUE_UNAVAILABLE"
+      && error.deliveryState === "NOT_SENT"
+      && !/postgres|password|raw/iu.test(error.message),
+  );
+});
+
+function workPublisherRepository(events) {
+  return {
+    async claimAutoListingAiWork(input) {
+      events.push(["claim", input]);
+      return [{
+        accountId: "account-a",
+        itemId: "item-a",
+        id: "ai-outbox-a",
+        leaseOwner: "publisher-work",
+        leaseToken: "lease-work",
+        publicationId: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8:1",
+        workMessage,
+      }];
+    },
+    async markAutoListingAiWorkPublished(input) { events.push(["mark", input]); },
+    async releaseUnpublishedAutoListingAiWork(input) { events.push(["release", input]); },
+    async completeAutoListingAiMessage() { throw new Error("v3 publication must not complete business work"); },
+  };
+}
+
+test("v3 publisher marks only exact fenced publication metadata and never completes the business outbox", async () => {
+  const events = [];
+  const publisher = createAutoListingAiOutboxPublisher({
+    enabled: true,
+    outboxRepository: workPublisherRepository(events),
+    queueAdapter: {
+      async publish(payload) {
+        events.push(["publish", payload]);
+        return {
+          publicationId: "3c5513a4-1e09-5b44-ac13-2f38e8a2c69a",
+          singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8:1",
+          duplicate: false,
+        };
+      },
+      async stop() {},
+    },
+    accountIds: async () => ["account-a"],
+    timers: { setTimeout, clearTimeout, setInterval, clearInterval },
+    workerId: "publisher-work",
+    batchSize: 1,
+    leaseMs: 30_000,
+    publishTimeoutMs: 1_000,
+    intervalMs: 10_000,
+  });
+
+  assert.deepEqual(await publisher.publishOnce({ accountId: "account-a" }), {
+    claimed: 1, published: 1, duplicates: 0, failed: 0,
+  });
+  assert.deepEqual(events, [
+    ["claim", { accountId: "account-a", workerId: "publisher-work", limit: 1, leaseMs: 30_000 }],
+    ["publish", workMessage],
+    ["mark", {
+      accountId: "account-a", itemId: "item-a", id: "ai-outbox-a",
+      workerId: "publisher-work", leaseToken: "lease-work",
+      publicationId: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8:1",
+    }],
+  ]);
+});
+
+test("v3 publisher rejects a claimed row whose nested message belongs to another account before queue publication", async () => {
+  const forgedWorkMessage = {
+    ...workMessage,
+    message: { ...workMessage.message, accountId: "account-b" },
+  };
+  const singletonKey = autoListingAiWorkSingletonKey(forgedWorkMessage);
+  const calls = [];
+  const queueAdapter = createAutoListingAiQueueAdapter({
+    enabled: true,
+    bossFactory: () => ({
+      async start() {},
+      async createQueue() {},
+      async send() { calls.push("send"); return "must-not-publish"; },
+      async stop() {},
+    }),
+  });
+  const publisher = createAutoListingAiOutboxPublisher({
+    enabled: true,
+    outboxRepository: {
+      async claimAutoListingAiWork() {
+        calls.push("claim");
+        return [{
+          accountId: "account-a",
+          itemId: "item-a",
+          id: "ai-outbox-a",
+          leaseOwner: "publisher-work",
+          leaseToken: "lease-work",
+          publicationId: singletonKey,
+          workMessage: forgedWorkMessage,
+        }];
+      },
+      async markAutoListingAiWorkPublished() { calls.push("mark"); },
+      async releaseUnpublishedAutoListingAiWork() { calls.push("release"); },
+      async completeAutoListingAiMessage() { calls.push("complete"); },
+    },
+    queueAdapter,
+    accountIds: async () => ["account-a"],
+    timers: { setTimeout, clearTimeout, setInterval, clearInterval },
+    workerId: "publisher-work",
+    batchSize: 1,
+    leaseMs: 30_000,
+    publishTimeoutMs: 1_000,
+    intervalMs: 10_000,
+  });
+
+  await assert.rejects(
+    publisher.publishOnce({ accountId: "account-a" }),
+    (error) => error?.code === "AUTO_LISTING_AI_PUBLISHER_FAILED"
+      && error.retryable === true && !/account-b|forged/iu.test(error.message),
+  );
+  assert.deepEqual(calls, ["claim"]);
+});
+
+test("v3 publisher rejects forged queue publication evidence without marking or releasing the lease", async () => {
+  const events = [];
+  const publisher = createAutoListingAiOutboxPublisher({
+    enabled: true,
+    outboxRepository: workPublisherRepository(events),
+    queueAdapter: {
+      async publish() {
+        return {
+          publicationId: "forged-queue-job",
+          singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8:1",
+          duplicate: false,
+        };
+      },
+      async stop() {},
+    },
+    accountIds: async () => ["account-a"],
+    timers: { setTimeout, clearTimeout, setInterval, clearInterval },
+    workerId: "publisher-work",
+    batchSize: 1,
+    leaseMs: 30_000,
+    publishTimeoutMs: 1_000,
+    intervalMs: 10_000,
+  });
+
+  await assert.rejects(publisher.publishOnce({ accountId: "account-a" }), {
+    code: "AUTO_LISTING_AI_PUBLISHER_FAILED",
+  });
+  assert.equal(events.some(([name]) => name === "mark" || name === "release"), false);
+});
+
+test("v3 publisher releases only a definite NOT_SENT execution lease", async () => {
+  const events = [];
+  const publisher = createAutoListingAiOutboxPublisher({
+    enabled: true,
+    outboxRepository: workPublisherRepository(events),
+    queueAdapter: {
+      async publish() { throw Object.assign(new Error("raw password"), { deliveryState: "NOT_SENT" }); },
+      async stop() {},
+    },
+    accountIds: async () => ["account-a"],
+    timers: { setTimeout, clearTimeout, setInterval, clearInterval },
+    workerId: "publisher-work",
+    batchSize: 1,
+    leaseMs: 30_000,
+    publishTimeoutMs: 1_000,
+    intervalMs: 10_000,
+  });
+
+  assert.deepEqual(await publisher.publishOnce({ accountId: "account-a" }), {
+    claimed: 1, published: 0, duplicates: 0, failed: 1,
+  });
+  assert.deepEqual(events.at(-1), ["release", {
+    accountId: "account-a", itemId: "item-a", id: "ai-outbox-a",
+    workerId: "publisher-work", leaseToken: "lease-work",
+    publicationId: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8:1",
+  }]);
+  assert.equal(events.some(([name]) => name === "mark"), false);
+});
+
+test("v3 publisher keeps an ambiguous timed-out publication fenced for lease expiry", async () => {
+  const events = [];
+  const publisher = createAutoListingAiOutboxPublisher({
+    enabled: true,
+    outboxRepository: workPublisherRepository(events),
+    queueAdapter: { async publish() { return new Promise(() => {}); }, async stop() {} },
+    accountIds: async () => ["account-a"],
+    timers: { setTimeout, clearTimeout, setInterval, clearInterval },
+    workerId: "publisher-work",
+    batchSize: 1,
+    leaseMs: 30_000,
+    publishTimeoutMs: 1,
+    intervalMs: 10_000,
+  });
+
+  await assert.rejects(
+    publisher.publishOnce({ accountId: "account-a" }),
+    (error) => error?.code === "AUTO_LISTING_AI_PUBLISHER_FAILED"
+      && error.retryable === true && !/password|timeout|queue/iu.test(error.message),
+  );
+  assert.equal(events.some(([name]) => name === "release" || name === "mark"), false);
+});
+
 test("pg-boss singleton conflicts are idempotent publish success and feature-disabled adapters never create a boss", async () => {
   let factories = 0;
-  const disabled = createAutoListingAiQueueAdapter({ enabled: false });
+  const disabled = createLegacyAutoListingAiQueueAdapter({ enabled: false });
   assert.equal(await disabled.start(), false);
   await assert.rejects(disabled.publish(message), { code: "AUTO_LISTING_AI_QUEUE_DISABLED" });
   await disabled.stop();
   assert.equal(factories, 0);
 
   for (const duplicate of [null, Object.assign(new Error("raw singleton constraint"), { code: "PGBOSS_SINGLETON_ALREADY_EXISTS" })]) {
-    const queue = createAutoListingAiQueueAdapter({
+    const queue = createLegacyAutoListingAiQueueAdapter({
       enabled: true,
       bossFactory: () => {
         factories += 1;
@@ -83,7 +373,7 @@ test("pg-boss singleton conflicts are idempotent publish success and feature-dis
       },
     });
     assert.deepEqual(await queue.publish(message), {
-      publicationId: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+      publicationId: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
       singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
       duplicate: true,
     });
@@ -97,7 +387,7 @@ test("publisher claims a bounded account batch, publishes the closed message and
   const outboxRepository = createMemoryAutoListingAiOutboxRepository({ now: () => now, token: () => "lease-a" });
   const pending = await outboxRepository.enqueueAutoListingAiMessage(message);
   const sent = [];
-  const queueAdapter = createAutoListingAiQueueAdapter({
+  const queueAdapter = createLegacyAutoListingAiQueueAdapter({
     enabled: true,
     bossFactory: () => ({
       async start() {},
@@ -106,7 +396,7 @@ test("publisher claims a bounded account batch, publishes the closed message and
       async stop() {},
     }),
   });
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository,
     queueAdapter,
@@ -128,10 +418,10 @@ test("publisher claims a bounded account batch, publishes the closed message and
   assert.equal(stored.status, "COMPLETED");
   assert.equal(stored.completedAt, 1_100);
   assert.deepEqual(sent, [{
-    name: "auto-listing-ai-v1",
+    name: "auto-listing-ai-v2",
     payload: message,
     options: {
-      id: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+      id: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
       singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
     },
   }]);
@@ -146,7 +436,7 @@ test("a queue publish failure fails only the exact outbox lease with a fixed saf
     maxRetryMs: 100,
   });
   await outboxRepository.enqueueAutoListingAiMessage(message);
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository,
     queueAdapter: {
@@ -194,7 +484,7 @@ test("a crash after queue publish leaves the outbox replayable and duplicate rep
     },
   };
   let sends = 0;
-  const queueAdapter = createAutoListingAiQueueAdapter({
+  const queueAdapter = createLegacyAutoListingAiQueueAdapter({
     enabled: true,
     bossFactory: () => ({
       async start() {},
@@ -203,7 +493,7 @@ test("a crash after queue publish leaves the outbox replayable and duplicate rep
       async stop() {},
     }),
   });
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository,
     queueAdapter,
@@ -231,7 +521,7 @@ test("a crash after queue publish leaves the outbox replayable and duplicate rep
 test("feature-disabled publisher starts no queue or timer and closed factories sanitize hidden or accessor inputs", async () => {
   let timerCalls = 0;
   let queueCalls = 0;
-  const disabled = createAutoListingAiOutboxPublisher({ enabled: false });
+  const disabled = createLegacyAutoListingAiOutboxPublisher({ enabled: false });
   assert.equal(await disabled.start(), false);
   assert.deepEqual(await disabled.publishOnce({ accountId: "ignored-while-disabled" }), { claimed: 0, published: 0, duplicates: 0, failed: 0 });
   await disabled.stop();
@@ -244,11 +534,11 @@ test("feature-disabled publisher starts no queue or timer and closed factories s
   Object.defineProperty(accessor, "outboxRepository", { enumerable: true, get() { throw new Error("password=raw-production-secret"); } });
   const proxy = new Proxy({ enabled: false }, { ownKeys() { throw new Error("password=raw-production-secret"); } });
   for (const create of [
-    () => createAutoListingAiQueueAdapter({ enabled: false, unexpected: true }),
-    () => createAutoListingAiOutboxPublisher({ enabled: false, unexpected: true }),
-    () => createAutoListingAiOutboxPublisher(hidden),
-    () => createAutoListingAiOutboxPublisher(accessor),
-    () => createAutoListingAiOutboxPublisher(proxy),
+    () => createLegacyAutoListingAiQueueAdapter({ enabled: false, unexpected: true }),
+    () => createLegacyAutoListingAiOutboxPublisher({ enabled: false, unexpected: true }),
+    () => createLegacyAutoListingAiOutboxPublisher(hidden),
+    () => createLegacyAutoListingAiOutboxPublisher(accessor),
+    () => createLegacyAutoListingAiOutboxPublisher(proxy),
   ]) {
     assert.throws(create, (error) => error?.code && /_INVALID$/u.test(error.code)
       && !/password|production|secret/iu.test(error.message));
@@ -261,7 +551,7 @@ test("enabled publisher replays immediately, bounds per-account concurrency and 
   const timer = { unref() { calls.push("unref"); } };
   let active = 0;
   let maximumActive = 0;
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository: {
       async claimAutoListingAiMessages(input) {
@@ -317,7 +607,7 @@ test("enabled publisher replays immediately, bounds per-account concurrency and 
 
 test("unknown pg-boss returns, malformed messages and raw adapter failures become fixed safe errors", async () => {
   let sends = 0;
-  const queue = createAutoListingAiQueueAdapter({
+  const queue = createLegacyAutoListingAiQueueAdapter({
     enabled: true,
     bossFactory: () => ({
       async start() {},
@@ -332,7 +622,7 @@ test("unknown pg-boss returns, malformed messages and raw adapter failures becom
     && !/apiKey|secret/iu.test(error.message));
   assert.equal(sends, 1, "invalid messages must fail before reaching pg-boss");
 
-  const unavailable = createAutoListingAiQueueAdapter({
+  const unavailable = createLegacyAutoListingAiQueueAdapter({
     enabled: true,
     bossFactory: () => { throw new Error("postgres://user:password@production.internal"); },
   });
@@ -341,7 +631,7 @@ test("unknown pg-boss returns, malformed messages and raw adapter failures becom
 
   const hostileError = new Error("raw queue error");
   Object.defineProperty(hostileError, "code", { get() { throw new Error("password=hidden-production-secret"); } });
-  const hostile = createAutoListingAiQueueAdapter({
+  const hostile = createLegacyAutoListingAiQueueAdapter({
     enabled: true,
     bossFactory: () => ({ async start() {}, async createQueue() {}, async send() { throw hostileError; }, async stop() {} }),
   });
@@ -351,7 +641,7 @@ test("unknown pg-boss returns, malformed messages and raw adapter failures becom
 
 test("queue startup cleans a started candidate when createQueue fails", async () => {
   const calls = [];
-  const queue = createAutoListingAiQueueAdapter({
+  const queue = createLegacyAutoListingAiQueueAdapter({
     enabled: true,
     bossFactory: () => ({
       async start() { calls.push("start"); },
@@ -369,7 +659,7 @@ test("scheduled publisher isolates one account failure and reports only safe per
   const claims = [];
   const records = [];
   let tick;
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository: {
       async claimAutoListingAiMessages({ accountId }) {
@@ -408,12 +698,45 @@ test("scheduled publisher isolates one account failure and reports only safe per
   await publisher.stop();
 });
 
+test("legacy publisher reconciles only legacy-fenced DEAD rows and never calls generic reconciliation", async () => {
+  const calls = [];
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
+    enabled: true,
+    outboxRepository: {
+      async claimLegacyAutoListingAiMessages() { calls.push("claim"); return []; },
+      async renewAutoListingAiMessageLease() { throw new Error("no rows"); },
+      async completeAutoListingAiMessage() { throw new Error("no rows"); },
+      async failAutoListingAiMessage() { throw new Error("no rows"); },
+      async reconcileDeadLegacyAutoListingAiMessages(input) { calls.push(["legacy-dead", input]); return { recovered: 0 }; },
+      async reconcileDeadAutoListingAiMessages() { calls.push("generic-dead"); throw new Error("must not reconcile generic rows"); },
+      async reconcileInterruptedAutoListingAiItems(input) { calls.push(["interrupted", input]); return { recovered: 0 }; },
+    },
+    queueAdapter: { async publish() { throw new Error("no rows"); }, async stop() {} },
+    accountIds: async () => ["account-a"],
+    timers: { setTimeout, clearTimeout, setInterval, clearInterval },
+    workerId: "publisher-legacy-reconcile",
+    batchSize: 2,
+    leaseMs: 5_000,
+    publishTimeoutMs: 1_000,
+    intervalMs: 10_000,
+  });
+
+  assert.deepEqual(await publisher.publishOnce({ accountId: "account-a" }), {
+    claimed: 0, published: 0, duplicates: 0, failed: 0,
+  });
+  assert.deepEqual(calls, [
+    "claim",
+    ["legacy-dead", { accountId: "account-a", limit: 2 }],
+    ["interrupted", { accountId: "account-a", limit: 2 }],
+  ]);
+});
+
 test("more than 101 accounts stay fair when the first four account claims are slow", async () => {
   const all = Array.from({ length: 102 }, (_, index) => `account-${String(index).padStart(3, "0")}`);
   let page = 0;
   let tick;
   const claimed = [];
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository: {
       async claimAutoListingAiMessages({ accountId }) {
@@ -452,7 +775,7 @@ test("more than 101 accounts stay fair when the first four account claims are sl
 test("publisher startup discovery failure cleans the queue and logs only a fixed safe code", async () => {
   const calls = [];
   const records = [];
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository: {
       async claimAutoListingAiMessages() { return []; },
@@ -491,7 +814,7 @@ test("publisher stop always closes the queue when an in-flight discovery cycle f
   let tick;
   let discoveryCalls = 0;
   let rejectDiscovery;
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository: {
       async claimAutoListingAiMessages() { return []; },
@@ -538,7 +861,7 @@ test("publisher stop waits for in-flight startup and removes a timer created dur
   let releaseQueueStart;
   const queueStarted = new Promise((resolve) => { releaseQueueStart = resolve; });
   const timer = { unref() {} };
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository: {
       async claimAutoListingAiMessages() { return []; },
@@ -600,7 +923,7 @@ test("publisher enforces the fixed batch and timeout ceilings and times out a st
     publishTimeoutMs: 1_000,
     intervalMs: 10_000,
   };
-  const publisher = createAutoListingAiOutboxPublisher(base);
+  const publisher = createLegacyAutoListingAiOutboxPublisher(base);
 
   const operation = publisher.publishOnce({ accountId: "account-a" });
   await new Promise((resolve) => setImmediate(resolve));
@@ -616,7 +939,7 @@ test("publisher enforces the fixed batch and timeout ceilings and times out a st
     { leaseMs: 300_001 },
     { publishTimeoutMs: 60_001 },
     { intervalMs: 60_001 },
-  ]) assert.throws(() => createAutoListingAiOutboxPublisher({ ...base, ...override }), { code: "AUTO_LISTING_AI_PUBLISHER_INVALID" });
+  ]) assert.throws(() => createLegacyAutoListingAiOutboxPublisher({ ...base, ...override }), { code: "AUTO_LISTING_AI_PUBLISHER_INVALID" });
 });
 
 test("publisher leaves the lease replayable when a queue adapter returns forged publication evidence", async () => {
@@ -624,7 +947,7 @@ test("publisher leaves the lease replayable when a queue adapter returns forged 
   await actualRepository.enqueueAutoListingAiMessage(message);
   let completionCalls = 0;
   let failureCalls = 0;
-  const publisher = createAutoListingAiOutboxPublisher({
+  const publisher = createLegacyAutoListingAiOutboxPublisher({
     enabled: true,
     outboxRepository: {
       ...actualRepository,
@@ -634,7 +957,7 @@ test("publisher leaves the lease replayable when a queue adapter returns forged 
     queueAdapter: {
       async publish() {
         const forged = {
-          publicationId: "39dc894b-0057-5e82-8907-e1cffbd25eb6",
+          publicationId: "ff68d56d-d469-5c7b-bf77-7ecdfdf711bc",
           singletonKey: "5e6f8a19b642d50cef84bb57627e8310fca0cfc9b43de27510796eee9c79bfb8",
           duplicate: false,
         };

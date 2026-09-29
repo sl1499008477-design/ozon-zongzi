@@ -15,7 +15,7 @@ function requestHash(value, action) {
   return crypto.createHash("sha256").update(JSON.stringify({ ...value, action }), "utf8").digest("hex");
 }
 
-function db({ status = "READY_FOR_REVIEW", failureCode = null, existing = null } = {}) {
+function db({ status = "READY_FOR_REVIEW", recoveryPoint = null, failureCode = null, existing = null } = {}) {
   const queries = [];
   const client = {
     async query(sql, values = []) {
@@ -26,7 +26,8 @@ function db({ status = "READY_FOR_REVIEW", failureCode = null, existing = null }
         return existing ? { rows: [existing], rowCount: 1 } : { rows: [], rowCount: 0 };
       }
       if (/FROM auto_listing_job_items AS i[\s\S]*FOR UPDATE OF i/i.test(sql)) {
-        return { rows: [{ status, status_version: 5, failure_code: failureCode }], rowCount: 1 };
+        return { rows: [{ status, status_version: 5, recovery_point: recoveryPoint,
+          failure_code: failureCode }], rowCount: 1 };
       }
       if (/UPDATE auto_listing_job_items/i.test(sql)) {
         const next = values[4];
@@ -58,6 +59,28 @@ test("regenerate atomically returns to PLANNING, records the command and enqueue
   assert.match(sql, /INSERT INTO auto_listing_events/i);
   assert.ok(harness.queries.findIndex(({ sql: value }) => /UPDATE auto_listing_job_items/i.test(value))
     < harness.queries.findIndex(({ sql: value }) => /INSERT INTO auto_listing_ai_outbox/i.test(value)));
+});
+
+test("regenerate replans only retryable planning or generation failures", async () => {
+  for (const recoveryPoint of ["PLANNING", "GENERATION"]) {
+    const harness = db({ status: "RETRYABLE_ERROR", recoveryPoint });
+    const repository = createPostgresAutoListingUserItemActionRepository({ pool: harness.pool });
+    assert.deepEqual(await repository.regenerateItem(command({
+      idempotencyKey: `regenerate-${recoveryPoint.toLowerCase()}`,
+    })), {
+      status: "PLANNING", statusVersion: 6, action: "REGENERATE", duplicate: false,
+    });
+    assert.equal(harness.queries.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/i.test(sql)), true);
+    assert.equal(harness.queries.some(({ sql }) => /INSERT INTO auto_listing_events/i.test(sql)), true);
+  }
+
+  const upload = db({ status: "RETRYABLE_ERROR", recoveryPoint: "UPLOAD" });
+  await assert.rejects(
+    createPostgresAutoListingUserItemActionRepository({ pool: upload.pool }).regenerateItem(command()),
+    { code: "AUTO_LISTING_USER_ACTION_NOT_ALLOWED" },
+  );
+  assert.equal(upload.queries.some(({ sql }) => /UPDATE auto_listing_job_items/i.test(sql)), false);
+  assert.equal(upload.queries.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/i.test(sql)), false);
 });
 
 test("cancel atomically closes only a cancellable exact version without queueing AI work", async () => {

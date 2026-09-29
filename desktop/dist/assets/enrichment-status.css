@@ -1,0 +1,62 @@
+#collector-enrichment-status { position:fixed; right:18px; bottom:14px; z-index:950; max-width:430px; padding:10px 14px; border:1px solid #cfe0ff; border-radius:12px; background:#f8fbff; color:#1e3156; font:13px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; box-shadow:0 4px 16px #15356812; -webkit-app-region:no-drag; }
+#collector-enrichment-status[hidden], #collector-enrichment-status [hidden] { display:none; }
+#collector-enrichment-status summary { cursor:pointer; color:#005bff; }
+#collector-enrichment-status p { margin:8px 0; overflow-wrap:anywhere; white-space:pre-line; }
+#collector-enrichment-status small { display:block; margin-top:8px; color:#687b98; }
+#collector-enrichment-status button { cursor:pointer; background:white; color:#005bff; border:1px solid #bfd4ff; padding:5px 10px; border-radius:8px; margin-right:8px; font:inherit; }
+#collector-enrichment-status button:disabled { opacity:.5; cursor:wait; }
+#collector-enrichment-status[data-phase="needs_login"], #collector-enrichment-status[data-phase="error"] { border-color:#f1c479; }
+.enrichment-entry { display:inline-block; margin-top:8px; color:#005bff; text-decoration:none; font-weight:600; }
+body:has(.enrichment-page) #collector-enrichment-status { display:none; }
+.enrichment-page { padding:16px 18px 32px; color:#071737; min-width:0; }
+.enrichment-heading { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:24px; }
+.enrichment-heading .eyebrow { font-size:11px; font-weight:600; letter-spacing:1.5px; color:#005bff; }
+.enrichment-heading h1 { margin:6px 0 10px; font-size:30px; line-height:1.2; font-weight:650; }
+.enrichment-heading p { margin:0; color:#65718a; font-size:13px; line-height:1.7; }
+.enrichment-page button { flex-shrink:0; border:1px solid #dce8f7; border-radius:10px; padding:8px 14px; background:#fff; color:#1e3156; font:inherit; font-size:13px; cursor:pointer; }
+.enrichment-page button:hover:not(:disabled) { color:#005bff; border-color:#8fb5ff; }
+.enrichment-page button:focus-visible, .enrichment-entry:focus-visible { outline:2px solid #005bff; outline-offset:3px; }
+.enrichment-page button:disabled { opacity:.55; cursor:wait; }
+.enrichment-page button.danger { color:#d93632; }
+.enrichment-overview { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:18px; }
+.enrichment-overview span { padding:10px 18px; background:#fff; border:1px solid #dce8f7; border-radius:10px; font-size:13px; }
+.enrichment-notice { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 16px; border-radius:10px; line-height:1.6; margin:0 0 14px; font-size:13px; }
+.enrichment-notice.error { background:#fff1f0; color:#a61d24; }
+.enrichment-notice.warning { background:#fff7e6; color:#874d00; }
+.enrichment-notice.success { background:#f0fff4; color:#247541; }
+.enrichment-table-wrap { overflow:auto; border:1px solid #dce8f7; border-radius:18px; background:#fff; }
+.enrichment-table { border-collapse:collapse; width:100%; min-width:790px; font-size:13px; line-height:1.7; }
+.enrichment-table th { background:#f0f5ff; color:#65718a; font-size:12px; font-weight:500; text-align:left; padding:15px 16px; white-space:nowrap; }
+.enrichment-table td { padding:18px 16px; border-top:1px solid #edf1f6; vertical-align:middle; }
+.enrichment-table td:first-child { width:25%; min-width:180px; }
+.enrichment-table td:nth-child(3) { min-width:170px; }
+.enrichment-table td:nth-child(4) { max-width:280px; overflow-wrap:anywhere; }
+.enrichment-table td:last-child { min-width:175px; }
+.enrichment-table strong { display:block; font-weight:600; overflow-wrap:anywhere; }
+.enrichment-table small { display:block; font-size:12px; color:#72809a; margin-top:5px; }
+.enrichment-table progress { display:block; width:100%; max-width:185px; height:7px; margin-top:8px; accent-color:#005bff; }
+.enrichment-table progress::-webkit-progress-bar { background:#eaf0fa; border-radius:8px; }
+.enrichment-table progress::-webkit-progress-value { background:#005bff; border-radius:8px; }
+.enrichment-badge { display:inline-block; padding:3px 9px; background:#e8f2ff; color:#005bff; border-radius:6px; white-space:nowrap; font-size:12px; }
+.enrichment-badge.paused { background:#fff3d6; color:#946400; }
+.enrichment-badge.cancelled { background:#edf0f5; color:#65718a; }
+.enrichment-task-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.enrichment-table small.enrichment-task-error, .enrichment-task-error { color:#b72c28; }
+.enrichment-table .enrichment-empty { height:180px; text-align:center; color:#72809a; }
+.enrichment-confirm::backdrop { background:#061c3d55; }
+.enrichment-confirm { background:#fff; border:1px solid #dce8f7; border-radius:20px; padding:26px; max-width:470px; width:100%; box-shadow:0 20px 90px #001c4640; font-size:14px; line-height:1.7; }
+.enrichment-confirm h2 { margin:0 0 18px; font-size:19px; }
+.enrichment-confirm strong { overflow-wrap:anywhere; }
+.enrichment-confirm .enrichment-batch-time { margin-top:4px; color:#72809a; font-size:12px; }
+.enrichment-confirm-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:24px; }
+.enrichment-confirm-actions button.danger { color:#fff; background:#d93632; border-color:#d93632; }
+@media (max-width:900px) { .enrichment-page { padding:8px; } .enrichment-heading { align-items:flex-start; gap:12px; } .enrichment-heading h1 { font-size:25px; } }
+
+#collector-seller-login { flex-shrink:0; padding:8px 12px 4px; color:#65718a; font:12px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-app-region:no-drag; overflow-wrap:anywhere; }
+#collector-seller-login [hidden] { display:none; }
+#collector-seller-login strong { display:block; color:#1e3156; font-size:12px; font-weight:600; }
+#collector-seller-login small { display:block; margin-top:6px; font-size:11px; line-height:1.5; }
+#collector-seller-login button { width:100%; margin-top:8px; padding:7px 10px; border:1px solid #bfd4ff; border-radius:9px; background:#f0f5ff; color:#005bff; font:inherit; font-weight:600; cursor:pointer; }
+#collector-seller-login button:focus-visible { outline:2px solid #005bff; outline-offset:2px; }
+#collector-seller-login button:disabled { opacity:.55; cursor:wait; }
+#collector-seller-login .collector-seller-route-link { width:auto; margin-top:4px; padding:0; border:0; border-radius:2px; background:transparent; font-weight:400; text-decoration:underline; text-underline-offset:2px; }

@@ -4,52 +4,142 @@ import {
 } from "./auto-listing-ai-message.mjs";
 
 const INPUT_KEYS = Object.freeze(["message", "context"]);
+const LEASED_INPUT_KEYS = Object.freeze(["message", "context", "assertLeaseActive"]);
 const CONTEXT_KEYS = Object.freeze([
   "accountId", "jobId", "itemId", "status", "statusVersion", "activeContentPlanId", "phaseInput",
 ]);
 const SERVICE_KEYS = Object.freeze([
-  "planContent", "materializeSourceAsset", "finalizeMaterializedPlan", "generateImageSlot", "generateRichContent",
+  "planContent", "materializeSourceAsset", "materializeSourceImageForAnalysis", "analyzeSourceImageBatch",
+  "cleanSourceImageOverlay", "checkSourceImageCleanup", "reconcileSourceImageAnalysis",
+  "finalizeMaterializedPlan", "generateImageSlot", "checkImageGroup",
+  "generateRichContent",
 ]);
 const PHASE_INPUT_KEYS = Object.freeze({
   PLAN_CONTENT: Object.freeze([
     "sourceSnapshotId", "gatewayProfile", "gateway", "repository", "evidenceRepository", "sourceCapture", "strategyCapture",
     "configCapture", "visualGroupsCapture", "promptTemplateVersion", "prohibitedClaims", "regeneration",
-    "planningContract",
+    "planningContract", "gatewayExecution",
+  ]),
+  PLAN_CONTENT_SOURCE_IMAGE: Object.freeze([
+    "sourceSnapshotId", "gatewayProfile", "gateway", "repository", "evidenceRepository", "sourceCapture", "strategyCapture",
+    "configCapture", "sourceImageAnalysisRun", "sourceImageIntelligenceSummary", "promptTemplateVersion",
+    "prohibitedClaims", "regeneration", "planningContract", "gatewayExecution",
   ]),
   MATERIALIZE_SOURCE_ASSET: Object.freeze([
     "parentPlan", "sourceSnapshot", "policy", "repository", "downloader", "storage", "logger",
   ]),
+  MATERIALIZE_SOURCE_IMAGE_ANALYSIS: Object.freeze([
+    "analysisRun", "sourceAsset", "sourceSnapshot", "execution", "policy", "repository",
+    "intelligenceRepository", "downloader", "storage", "logger",
+  ]),
+  ANALYZE_SOURCE_IMAGE_BATCH: Object.freeze([
+    "run", "batch", "profile", "repository", "sourceAssetLoader", "gateway", "gatewayExecution",
+  ]),
+  CLEAN_SOURCE_IMAGE_OVERLAY: Object.freeze([
+    "attempt", "cleanupInput", "original", "profile", "gateway", "repository", "storage",
+    "cleanupRecorder", "gatewayExecution",
+  ]),
+  CHECK_SOURCE_IMAGE_CLEANUP: Object.freeze([
+    "attempt", "original", "candidate", "profile", "gateway", "repository", "gatewayExecution",
+  ]),
+  RECONCILE_SOURCE_IMAGE_ANALYSIS: Object.freeze([
+    "run", "sourceCapture", "assessments", "decisions", "acceptedDerivativeBindings",
+    "repository", "summaryInputHash",
+  ]),
   FINALIZE_MATERIALIZED_PLAN: Object.freeze(["parentPlan", "repository"]),
+  FINALIZE_MATERIALIZED_PLAN_SOURCE_IMAGE: Object.freeze([
+    "parentPlan", "sourceMaterializationScope", "repository",
+  ]),
   GENERATE_IMAGE_SLOT: Object.freeze([
     "plan", "slot", "categoryStyle", "categoryStyleReferences", "sourceAssetLoader", "repository", "gateway", "profile", "imageModel", "ratio",
-    "resolution", "size", "quality", "templateVersion", "regeneration", "storage", "logger", "maxAttempts",
+    "resolution", "size", "quality", "templateVersion", "regeneration", "storage", "logger", "maxAttempts", "gatewayExecution",
+  ]),
+  GENERATE_IMAGE_SLOT_SOURCE_IMAGE: Object.freeze([
+    "plan", "slot", "categoryStyle", "categoryStyleReferences", "sourceAssetLoader", "repository", "gateway", "profile", "imageModel", "ratio",
+    "resolution", "size", "quality", "templateVersion", "regeneration", "storage", "logger", "maxAttempts", "gatewayExecution",
+    "sourceImageIntelligenceSummary",
   ]),
   GENERATE_RICH_CONTENT: Object.freeze([
     "plan", "profile", "gateway", "repository", "factRegistry", "acceptedAssets", "planHash", "sourceHash",
-    "promptTemplateVersion", "maxAttempts", "leaseOwner",
+    "promptTemplateVersion", "maxAttempts", "leaseOwner", "gatewayExecution",
+  ]),
+  CHECK_IMAGE_GROUP: Object.freeze([
+    "plan", "acceptedAssets", "frozenAcceptedSlotKeys", "sourceImageIntelligence", "gatewayProfile", "gateway",
+    "repository", "checker", "analysisRun", "gatewayExecution",
   ]),
 });
+const GATEWAY_EXECUTION_KEYS = Object.freeze([
+  "channelId", "connectionId", "connectionVersion", "idleTimeoutMs",
+]);
 const PHASE_STATUS = Object.freeze({
   PLAN_CONTENT: "PLANNING",
   MATERIALIZE_SOURCE_ASSET: "PLANNING",
+  ANALYZE_SOURCE_IMAGE_BATCH: "PLANNING",
+  CLEAN_SOURCE_IMAGE_OVERLAY: "PLANNING",
+  CHECK_SOURCE_IMAGE_CLEANUP: "PLANNING",
+  RECONCILE_SOURCE_IMAGE_ANALYSIS: "PLANNING",
   FINALIZE_MATERIALIZED_PLAN: "PLANNING",
   GENERATE_IMAGE_SLOT: "GENERATING",
+  CHECK_IMAGE_GROUP: "GENERATING",
   GENERATE_RICH_CONTENT: "GENERATING",
 });
 const SUCCESS_OUTCOME = Object.freeze({
   PLAN_CONTENT: "PLAN_READY",
   MATERIALIZE_SOURCE_ASSET: "SOURCE_ASSET_ACCEPTED",
+  ANALYZE_SOURCE_IMAGE_BATCH: "SOURCE_IMAGE_BATCH_ACCEPTED",
+  CLEAN_SOURCE_IMAGE_OVERLAY: "SOURCE_IMAGE_CLEANUP_GENERATED",
+  CHECK_SOURCE_IMAGE_CLEANUP: "SOURCE_IMAGE_CLEANUP_ACCEPTED",
+  RECONCILE_SOURCE_IMAGE_ANALYSIS: "SOURCE_IMAGE_ANALYSIS_READY",
   FINALIZE_MATERIALIZED_PLAN: "MATERIALIZED_PLAN_READY",
   GENERATE_IMAGE_SLOT: "IMAGE_SLOT_ACCEPTED",
+  CHECK_IMAGE_GROUP: "IMAGE_GROUP_ACCEPTED",
   GENERATE_RICH_CONTENT: "CONTENT_READY_FOR_REVIEW",
 });
 const FALLBACK_FAILURE = Object.freeze({
   PLAN_CONTENT: "AUTO_LISTING_CONTENT_PLAN_FAILED",
   MATERIALIZE_SOURCE_ASSET: "AUTO_LISTING_SOURCE_MATERIALIZATION_FAILED",
+  ANALYZE_SOURCE_IMAGE_BATCH: "AUTO_LISTING_SOURCE_IMAGE_ANALYSIS_FAILED",
+  CLEAN_SOURCE_IMAGE_OVERLAY: "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_FAILED",
+  CHECK_SOURCE_IMAGE_CLEANUP: "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_CHECK_FAILED",
+  RECONCILE_SOURCE_IMAGE_ANALYSIS: "AUTO_LISTING_SOURCE_IMAGE_RECONCILIATION_FAILED",
   FINALIZE_MATERIALIZED_PLAN: "AUTO_LISTING_MATERIALIZED_PLAN_FAILED",
   GENERATE_IMAGE_SLOT: "AUTO_LISTING_IMAGE_FAILED",
+  CHECK_IMAGE_GROUP: "AUTO_LISTING_IMAGE_GROUP_CHECK_FAILED",
   GENERATE_RICH_CONTENT: "AUTO_LISTING_RICH_CONTENT_FAILED",
 });
+const CHANNEL_TRANSIENT_CODES = new Set([
+  "AI_GATEWAY_NETWORK_FAILED",
+  "AI_GATEWAY_RATE_LIMITED",
+  "AI_GATEWAY_IDLE_TIMEOUT",
+  "AI_GATEWAY_UNEXPECTED_EOF",
+  "INVALID_GATEWAY_RESPONSE",
+  "RETRYABLE_GATEWAY",
+  "GATEWAY_TIMEOUT",
+  "AI_GATEWAY_NO_CAPACITY",
+]);
+const CHANNEL_REVALIDATION_CODES = new Set([
+  "AI_GATEWAY_UNAUTHORIZED",
+  "AI_GATEWAY_MODEL_NOT_FOUND",
+  "AI_GATEWAY_CAPABILITY_INVALID",
+  "NON_RETRYABLE_AUTH",
+  "AI_GATEWAY_QUOTA_EXHAUSTED",
+]);
+const RESERVATION_BUSY_CODES = new Set([
+  "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+  "AUTO_LISTING_SOURCE_IMAGE_ANALYSIS_IN_PROGRESS",
+  "AUTO_LISTING_IMAGE_IN_PROGRESS",
+  "AUTO_LISTING_IMAGE_GROUP_CHECK_IN_PROGRESS",
+  "AUTO_LISTING_RICH_CONTENT_IN_PROGRESS",
+]);
+const RESERVATION_BUSY_RETRY_MS = 30_000;
+const NOT_SENT_CHANNEL_CODES = new Set([
+  "AI_GATEWAY_RATE_LIMITED",
+  "AI_GATEWAY_QUOTA_EXHAUSTED",
+  "AI_GATEWAY_NO_CAPACITY",
+  ...CHANNEL_REVALIDATION_CODES,
+]);
+const DELIVERY_STATES = new Set(["NOT_SENT", "POSSIBLY_SENT"]);
+const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1_000;
 const HASH = /^[a-f0-9]{64}$/u;
 const SAFE_FAILURE_CODES = Object.freeze({
   PLAN_CONTENT: new Set([
@@ -70,6 +160,29 @@ const SAFE_FAILURE_CODES = Object.freeze({
     "AUTO_LISTING_SOURCE_MATERIALIZATION_INPUT_INVALID", "AUTO_LISTING_SOURCE_MATERIALIZATION_REPLAY_INVALID",
     "AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED",
     "AUTO_LISTING_SOURCE_MATERIALIZATION_RESERVATION_FAILED",
+  ]),
+  ANALYZE_SOURCE_IMAGE_BATCH: new Set([
+    "AUTO_LISTING_SOURCE_IMAGE_ANALYSIS_INPUT_INVALID", "AUTO_LISTING_SOURCE_IMAGE_ANALYSIS_RESULT_INVALID",
+    "AUTO_LISTING_SOURCE_IMAGE_ANALYSIS_REPOSITORY_FAILED",
+  ]),
+  CLEAN_SOURCE_IMAGE_OVERLAY: new Set([
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_GATEWAY_INVALID",
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_REPOSITORY_FAILED",
+    "AUTO_LISTING_SOURCE_IMAGE_DERIVATIVE_REPOSITORY_FAILED",
+    "AUTO_LISTING_SOURCE_IMAGE_DERIVATIVE_STORAGE_UNAVAILABLE",
+    "AUTO_LISTING_SOURCE_IMAGE_DERIVATIVE_STORAGE_UNVERIFIED",
+  ]),
+  CHECK_SOURCE_IMAGE_CLEANUP: new Set([
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_CHECK_GATEWAY_INVALID",
+    "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_CHECK_REPOSITORY_FAILED",
+    "AUTO_LISTING_SOURCE_IMAGE_DERIVATIVE_REPOSITORY_FAILED",
+    "AUTO_LISTING_SOURCE_IMAGE_DERIVATIVE_STORAGE_UNAVAILABLE",
+    "AUTO_LISTING_SOURCE_IMAGE_DERIVATIVE_STORAGE_UNVERIFIED",
+  ]),
+  RECONCILE_SOURCE_IMAGE_ANALYSIS: new Set([
+    "AUTO_LISTING_SOURCE_IMAGE_RECONCILIATION_INPUT_INVALID",
+    "AUTO_LISTING_SOURCE_IMAGE_EVIDENCE_INSUFFICIENT",
+    "AUTO_LISTING_SOURCE_IMAGE_REPOSITORY_FAILED",
   ]),
   FINALIZE_MATERIALIZED_PLAN: new Set([
     "AUTO_LISTING_MATERIALIZED_PLAN_EVIDENCE_INVALID", "AUTO_LISTING_MATERIALIZED_PLAN_INPUT_INVALID",
@@ -93,6 +206,10 @@ const SAFE_FAILURE_CODES = Object.freeze({
     "AUTO_LISTING_SOURCE_ASSET_INVALID", "AUTO_LISTING_SOURCE_ASSET_NOT_MATERIALIZED",
     "AUTO_LISTING_SOURCE_ASSET_UNAVAILABLE",
   ]),
+  CHECK_IMAGE_GROUP: new Set([
+    "AUTO_LISTING_IMAGE_GROUP_CHECK_UNAVAILABLE", "AUTO_LISTING_IMAGE_GROUP_CHECK_INPUT_INVALID",
+    "AUTO_LISTING_IMAGE_GROUP_CHECK_FAILED", "AI_GATEWAY_RATE_LIMITED",
+  ]),
   GENERATE_RICH_CONTENT: new Set([
     "AUTO_LISTING_RICH_CONTENT_ATTEMPTS_EXHAUSTED", "AUTO_LISTING_RICH_CONTENT_COMPLETE_FAILED",
     "AUTO_LISTING_RICH_CONTENT_EXISTING_CORRUPT", "AUTO_LISTING_RICH_CONTENT_GATEWAY_EVIDENCE_INVALID",
@@ -105,6 +222,13 @@ const SAFE_FAILURE_CODES = Object.freeze({
 function invalid() {
   const error = new Error("自动上架 AI 阶段编排输入无效");
   error.code = "AUTO_LISTING_AI_ORCHESTRATOR_INPUT_INVALID";
+  error.retryable = false;
+  return error;
+}
+
+function imageGroupResultInvalid() {
+  const error = new Error("自动上架整组图片检查结果无效");
+  error.code = "AUTO_LISTING_IMAGE_GROUP_CHECK_INPUT_INVALID";
   error.retryable = false;
   return error;
 }
@@ -147,7 +271,7 @@ function safeId(value) {
   return isSafeAutoListingAiIdentifier(value);
 }
 
-function outcome(message, disposition, value, failureCode = null, retryable = false) {
+function outcome(message, disposition, value, failureCode = null, retryable = false, metadata = {}) {
   return Object.freeze({
     contractVersion: "V1",
     disposition,
@@ -156,6 +280,39 @@ function outcome(message, disposition, value, failureCode = null, retryable = fa
     retryable,
     failureCode,
     correlationId: message.correlationId,
+    failureScope: metadata.failureScope ?? null,
+    deliveryState: metadata.deliveryState ?? null,
+    retryAfterMs: metadata.retryAfterMs ?? null,
+  });
+}
+
+function ownErrorValue(error, key) {
+  try {
+    const descriptor = error && (typeof error === "object" || typeof error === "function")
+      ? Object.getOwnPropertyDescriptor(error, key) : null;
+    return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function channelFailure(message, error) {
+  const code = ownErrorValue(error, "code");
+  const adapterModelNotFound = code === "AI_GATEWAY_MODEL_UNAVAILABLE" || (code === "NON_RETRYABLE_GATEWAY" && ownErrorValue(error, "status") === 404);
+  const failureScope = CHANNEL_TRANSIENT_CODES.has(code) ? "CHANNEL_TRANSIENT"
+    : CHANNEL_REVALIDATION_CODES.has(code) || adapterModelNotFound ? "CHANNEL_REVALIDATION" : null;
+  if (failureScope === null) return null;
+  const explicitDelivery = ownErrorValue(error, "deliveryState");
+  const deliveryState = DELIVERY_STATES.has(explicitDelivery)
+    ? explicitDelivery : NOT_SENT_CHANNEL_CODES.has(code) || adapterModelNotFound ? "NOT_SENT" : "POSSIBLY_SENT";
+  const explicitRetryAfter = ownErrorValue(error, "retryAfterMs");
+  const retryAfterMs = Number.isInteger(explicitRetryAfter)
+    && explicitRetryAfter >= 0 && explicitRetryAfter <= MAX_RETRY_AFTER_MS
+    ? explicitRetryAfter : null;
+  return outcome(message, "RETRY", "FAILED", code, true, {
+    failureScope,
+    deliveryState,
+    retryAfterMs,
   });
 }
 
@@ -220,8 +377,25 @@ function assertContext(rawContext, message) {
 function assertPhaseInput(rawContext, phase) {
   let phaseInput;
   try { phaseInput = rawContext.phaseInput; } catch { throw invalid(); }
-  if (!exactDataKeys(phaseInput, PHASE_INPUT_KEYS[phase])) throw invalid();
+  const keys = phase === "MATERIALIZE_SOURCE_ASSET" && plainObject(phaseInput)
+    && Object.hasOwn(phaseInput, "analysisRun")
+    ? PHASE_INPUT_KEYS.MATERIALIZE_SOURCE_IMAGE_ANALYSIS
+    : phase === "PLAN_CONTENT" && phaseInput?.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1"
+      ? PHASE_INPUT_KEYS.PLAN_CONTENT_SOURCE_IMAGE
+      : phase === "FINALIZE_MATERIALIZED_PLAN"
+        && phaseInput?.parentPlan?.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1"
+        ? PHASE_INPUT_KEYS.FINALIZE_MATERIALIZED_PLAN_SOURCE_IMAGE
+      : phase === "GENERATE_IMAGE_SLOT"
+        && phaseInput?.plan?.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1"
+        ? PHASE_INPUT_KEYS.GENERATE_IMAGE_SLOT_SOURCE_IMAGE : PHASE_INPUT_KEYS[phase];
+  if (!exactDataKeys(phaseInput, keys)) throw invalid();
   return phaseInput;
+}
+
+function validGatewayExecution(value) {
+  return value === null || (exactDataKeys(value, GATEWAY_EXECUTION_KEYS)
+    && safeId(value.channelId) && safeId(value.connectionId)
+    && validVersion(value.connectionVersion) && value.idleTimeoutMs === 300_000);
 }
 
 function validateParentPhaseInput(phaseInput, context) {
@@ -231,7 +405,11 @@ function validateParentPhaseInput(phaseInput, context) {
 
 function validateImagePhaseInput(phaseInput, context, message) {
   const selectedSlot = phaseInput.slot;
+  const sourceImagePlan = phaseInput.plan?.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1";
   return isFinalMaterializedPlan(phaseInput.plan, context)
+    && (!sourceImagePlan || (plainObject(phaseInput.sourceImageIntelligenceSummary)
+      && HASH.test(phaseInput.sourceImageIntelligenceSummary.summaryHash || "")
+      && phaseInput.plan.sourceImageIntelligenceHash === phaseInput.sourceImageIntelligenceSummary.summaryHash))
     && plainObject(selectedSlot)
     && selectedSlot.slotKey === message.slotKey
     && safeId(selectedSlot.visualGroupKey)
@@ -268,11 +446,79 @@ function validateAcceptedAssets(phaseInput, context) {
       && group.filter((asset) => asset.role === "MAIN").length === 1);
 }
 
+function validateTargetGroupAcceptedAssets(phaseInput, context, visualGroupKey) {
+  const assets = phaseInput.acceptedAssets;
+  const slots = new Map(phaseInput.plan.plan.slots.map((entry) => [entry?.slotKey, entry]));
+  if (!Array.isArray(assets) || assets.length < 6 || assets.length > 13
+    || slots.size !== phaseInput.plan.plan.slots.length) return false;
+  const assetIds = new Set();
+  const slotKeys = new Set();
+  for (const asset of assets) {
+    const planned = slots.get(asset?.slotKey);
+    if (!plainObject(asset) || !safeId(asset.id) || asset.status !== "ACCEPTED"
+      || asset.accountId !== context.accountId || asset.jobId !== context.jobId || asset.itemId !== context.itemId
+      || asset.planId !== context.activeContentPlanId || !planned
+      || asset.visualGroupKey !== visualGroupKey || planned.visualGroupKey !== visualGroupKey
+      || asset.role !== planned.role || assetIds.has(asset.id) || slotKeys.has(asset.slotKey)) return false;
+    assetIds.add(asset.id);
+    slotKeys.add(asset.slotKey);
+  }
+  return assets.filter((asset) => asset.role === "MAIN").length === 1;
+}
+
 function validateRichPhaseInput(phaseInput, context) {
   return isFinalMaterializedPlan(phaseInput.plan, context)
     && phaseInput.planHash === phaseInput.plan.planHash
     && phaseInput.sourceHash === phaseInput.plan.sourceHash
     && validateAcceptedAssets(phaseInput, context);
+}
+
+function validateAnalysisRun(run, context, message, { allowEarlierStatusVersion = false } = {}) {
+  return plainObject(run) && safeId(run.id) && run.id === (message.analysisRunId ?? run.id)
+    && run.accountId === context.accountId && run.jobId === context.jobId && run.itemId === context.itemId
+    && validVersion(run.expectedStatusVersion)
+    && (allowEarlierStatusVersion
+      ? run.expectedStatusVersion <= context.statusVersion
+      : run.expectedStatusVersion === context.statusVersion);
+}
+
+function validateAnalysisMaterializeInput(phaseInput, context, message) {
+  return validateAnalysisRun(phaseInput.analysisRun, context, message)
+    && plainObject(phaseInput.sourceAsset) && phaseInput.sourceAsset.sourceAssetId === message.sourceAssetId;
+}
+
+function validateAnalysisBatchInput(phaseInput, context, message) {
+  return validateAnalysisRun(phaseInput.run, context, message)
+    && plainObject(phaseInput.batch) && phaseInput.batch.analysisBatchId === message.analysisBatchId;
+}
+
+function validateCleanupAttemptInput(phaseInput, context, message, expectedStatuses) {
+  const attempt = phaseInput.attempt;
+  return plainObject(attempt)
+    && attempt.accountId === context.accountId && attempt.jobId === context.jobId
+    && attempt.itemId === context.itemId && attempt.analysisRunId === message.analysisRunId
+    && attempt.derivativeAttemptId === message.derivativeAttemptId
+    && safeId(attempt.sourceAssetId) && attempt.expectedStatusVersion === context.statusVersion
+    && expectedStatuses.includes(attempt.status);
+}
+
+function validateGroupInput(phaseInput, context, message) {
+  const acceptedSlotKeys = new Set(phaseInput.acceptedAssets?.map((asset) => asset?.slotKey));
+  return isFinalMaterializedPlan(phaseInput.plan, context)
+    && phaseInput.plan.visualGroups.groups.some((group) => group?.visualGroupKey === message.visualGroupKey)
+    && validateTargetGroupAcceptedAssets(phaseInput, context, message.visualGroupKey)
+    && Array.isArray(phaseInput.frozenAcceptedSlotKeys)
+    && new Set(phaseInput.frozenAcceptedSlotKeys).size === phaseInput.frozenAcceptedSlotKeys.length
+    && phaseInput.frozenAcceptedSlotKeys.every((slotKey) =>
+      safeId(slotKey) && acceptedSlotKeys.has(slotKey))
+    && validateAnalysisRun(phaseInput.analysisRun, context, message, { allowEarlierStatusVersion: true })
+    && plainObject(phaseInput.sourceImageIntelligence)
+    && HASH.test(phaseInput.sourceImageIntelligence.summaryHash || "")
+    && (phaseInput.plan.sourceImageIntelligenceHash === undefined
+      || phaseInput.plan.sourceImageIntelligenceHash === phaseInput.sourceImageIntelligence.summaryHash)
+    && plainObject(phaseInput.gatewayProfile) && plainObject(phaseInput.gateway)
+    && plainObject(phaseInput.repository)
+    && typeof phaseInput.checker === "function";
 }
 
 function assertSuccessfulResult(result, phase, context, message, phaseInput) {
@@ -284,9 +530,37 @@ function assertSuccessfulResult(result, phase, context, message, phaseInput) {
     return;
   }
   if (phase === "MATERIALIZE_SOURCE_ASSET") {
+    if (Object.hasOwn(phaseInput, "analysisRun")) {
+      if (!["ACCEPTED", "TERMINAL"].includes(result.status)
+        || result.sourceAssetId !== message.sourceAssetId) throw invalid();
+      return;
+    }
     if (result.status !== "ACCEPTED" || result.accountId !== context.accountId || result.jobId !== context.jobId
       || result.itemId !== context.itemId || result.parentPlanId !== context.activeContentPlanId
       || result.sourceAssetId !== message.sourceAssetId) throw invalid();
+    return;
+  }
+  if (phase === "ANALYZE_SOURCE_IMAGE_BATCH") {
+    if (!["ACCEPTED", "EXISTING_ACCEPTED"].includes(result.status)
+      || result.analysisBatchId !== message.analysisBatchId) throw invalid();
+    return;
+  }
+  if (phase === "CLEAN_SOURCE_IMAGE_OVERLAY") {
+    if (!["GENERATED", "ACCEPTED", "REJECTED"].includes(result.status)
+      || result.derivativeAttemptId !== message.derivativeAttemptId
+      || result.sourceAssetId !== phaseInput.attempt.sourceAssetId) throw invalid();
+    return;
+  }
+  if (phase === "CHECK_SOURCE_IMAGE_CLEANUP") {
+    if (!["ACCEPTED", "REJECTED"].includes(result.status)
+      || result.derivativeAttemptId !== message.derivativeAttemptId
+      || result.sourceAssetId !== phaseInput.attempt.sourceAssetId) throw invalid();
+    return;
+  }
+  if (phase === "RECONCILE_SOURCE_IMAGE_ANALYSIS") {
+    if (!["ACCEPTED", "CONFIRMATION_REQUIRED"].includes(result.status)
+      || result.id !== message.analysisRunId || result.accountId !== context.accountId
+      || result.jobId !== context.jobId || result.itemId !== context.itemId) throw invalid();
     return;
   }
   if (phase === "FINALIZE_MATERIALIZED_PLAN") {
@@ -299,6 +573,23 @@ function assertSuccessfulResult(result, phase, context, message, phaseInput) {
     if (result.status !== "ACCEPTED" || result.accountId !== context.accountId || result.jobId !== context.jobId
       || result.itemId !== context.itemId || result.planId !== context.activeContentPlanId
       || result.slotKey !== message.slotKey || result.role !== phaseInput.slot.role) throw invalid();
+    return;
+  }
+  if (phase === "CHECK_IMAGE_GROUP") {
+    if (!["ACCEPTED", "RETRY_QUEUED"].includes(result.status)
+      || result.accountId !== context.accountId || result.jobId !== context.jobId
+      || result.itemId !== context.itemId || result.planId !== context.activeContentPlanId
+      || result.visualGroupKey !== message.visualGroupKey) throw imageGroupResultInvalid();
+    if (result.status === "RETRY_QUEUED") {
+      const targetSlotKeys = new Set(phaseInput.acceptedAssets
+        .filter((asset) => asset.visualGroupKey === message.visualGroupKey)
+        .map((asset) => asset.slotKey));
+      if (!Array.isArray(result.retrySlotKeys) || result.retrySlotKeys.length < 1
+        || new Set(result.retrySlotKeys).size !== result.retrySlotKeys.length
+        || result.retrySlotKeys.some((slotKey) => !targetSlotKeys.has(slotKey))) {
+        throw imageGroupResultInvalid();
+      }
+    }
     return;
   }
   if (phase === "GENERATE_RICH_CONTENT" && Array.isArray(result.results)) {
@@ -316,23 +607,43 @@ function assertSuccessfulResult(result, phase, context, message, phaseInput) {
     || result.itemId !== context.itemId || result.planId !== context.activeContentPlanId) throw invalid();
 }
 
-function serviceFailure(message, error) {
+function serviceFailure(message, error, { allowReservationBusy = false } = {}) {
+  if (allowReservationBusy && RESERVATION_BUSY_CODES.has(error?.code)) {
+    return outcome(message, "RETRY", "IN_PROGRESS", error.code, true, {
+      failureScope: "RESERVATION_BUSY",
+      retryAfterMs: RESERVATION_BUSY_RETRY_MS,
+    });
+  }
+  const channel = channelFailure(message, error);
+  if (channel) return channel;
   if (message.phase === "GENERATE_IMAGE_SLOT" && error?.retryable !== true) {
     if (error?.itemOutcome === "BLOCKED") {
-      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MAIN_IMAGE_REQUIRED", true);
+      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MAIN_IMAGE_REQUIRED", true, { failureScope: "BUSINESS" });
     }
     if (error?.itemOutcome === "CONTINUE_WITHOUT_SLOT") {
       return outcome(message, "ACK", "IMAGE_SLOT_SKIPPED", "AUTO_LISTING_IMAGE_POLICY_REJECTED", false);
     }
     if (error?.itemOutcome === "ITEM_INCOMPLETE") {
-      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET", true);
+      return outcome(message, "FAIL", "FAILED", "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET", true, { failureScope: "BUSINESS" });
     }
   }
   const retryable = error?.retryable === true;
-  return outcome(message, retryable ? "RETRY" : "FAIL", "FAILED", stableFailureCode(error, message.phase), retryable);
+  return outcome(message, retryable ? "RETRY" : "FAIL", "FAILED", stableFailureCode(error, message.phase), retryable, {
+    failureScope: "BUSINESS",
+  });
 }
 
-async function invokePhase(message, context, phaseInput, services) {
+function assertLeaseActive(assertActive) {
+  try {
+    assertActive();
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_AI_EXECUTION_LEASE_LOST") throw error;
+    throw invalid();
+  }
+}
+
+async function invokePhase(message, context, phaseInput, services, assertActive) {
+  assertLeaseActive(assertActive);
   if (message.phase === "PLAN_CONTENT") return services.planContent({
     ...phaseInput,
     accountId: context.accountId,
@@ -340,7 +651,19 @@ async function invokePhase(message, context, phaseInput, services) {
     itemId: context.itemId,
     expectedStatusVersion: message.expectedStatusVersion,
     correlationId: message.correlationId,
+    assertLeaseActive: assertActive,
   });
+  if (message.phase === "MATERIALIZE_SOURCE_ASSET" && Object.hasOwn(phaseInput, "analysisRun")) {
+    return services.materializeSourceImageForAnalysis({
+      ...phaseInput,
+      scope: {
+        accountId: context.accountId,
+        jobId: context.jobId,
+        itemId: context.itemId,
+        expectedStatusVersion: message.expectedStatusVersion,
+      },
+    });
+  }
   if (message.phase === "MATERIALIZE_SOURCE_ASSET") return services.materializeSourceAsset({
     ...phaseInput,
     scope: {
@@ -349,6 +672,53 @@ async function invokePhase(message, context, phaseInput, services) {
       itemId: context.itemId,
       parentPlanId: context.activeContentPlanId,
       sourceAssetId: message.sourceAssetId,
+      expectedStatusVersion: message.expectedStatusVersion,
+    },
+  });
+  if (message.phase === "ANALYZE_SOURCE_IMAGE_BATCH") return services.analyzeSourceImageBatch({
+    ...phaseInput,
+    scope: {
+      accountId: context.accountId,
+      jobId: context.jobId,
+      itemId: context.itemId,
+      expectedStatusVersion: message.expectedStatusVersion,
+    },
+    assertLeaseActive: assertActive,
+  });
+  if (message.phase === "CLEAN_SOURCE_IMAGE_OVERLAY") return services.cleanSourceImageOverlay({
+    ...phaseInput,
+    scope: {
+      accountId: context.accountId,
+      jobId: context.jobId,
+      itemId: context.itemId,
+      analysisRunId: message.analysisRunId,
+      sourceAssetId: phaseInput.attempt.sourceAssetId,
+      expectedStatusVersion: message.expectedStatusVersion,
+      derivativeAttemptId: message.derivativeAttemptId,
+      inputHash: phaseInput.attempt.inputHash,
+      attemptNo: phaseInput.attempt.attemptNo,
+    },
+    assertLeaseActive: assertActive,
+  });
+  if (message.phase === "CHECK_SOURCE_IMAGE_CLEANUP") return services.checkSourceImageCleanup({
+    ...phaseInput,
+    scope: {
+      accountId: context.accountId,
+      jobId: context.jobId,
+      itemId: context.itemId,
+      analysisRunId: message.analysisRunId,
+      sourceAssetId: phaseInput.attempt.sourceAssetId,
+      expectedStatusVersion: message.expectedStatusVersion,
+      derivativeAttemptId: message.derivativeAttemptId,
+    },
+    assertLeaseActive: assertActive,
+  });
+  if (message.phase === "RECONCILE_SOURCE_IMAGE_ANALYSIS") return services.reconcileSourceImageAnalysis({
+    ...phaseInput,
+    scope: {
+      accountId: context.accountId,
+      jobId: context.jobId,
+      itemId: context.itemId,
       expectedStatusVersion: message.expectedStatusVersion,
     },
   });
@@ -374,6 +744,20 @@ async function invokePhase(message, context, phaseInput, services) {
       expectedStatusVersion: message.expectedStatusVersion,
     },
     correlationId: message.correlationId,
+    assertLeaseActive: assertActive,
+  });
+  if (message.phase === "CHECK_IMAGE_GROUP") return services.checkImageGroup({
+    ...phaseInput,
+    scope: {
+      accountId: context.accountId,
+      jobId: context.jobId,
+      itemId: context.itemId,
+      planId: context.activeContentPlanId,
+      visualGroupKey: message.visualGroupKey,
+      expectedStatusVersion: message.expectedStatusVersion,
+    },
+    correlationId: message.correlationId,
+    assertLeaseActive: assertActive,
   });
   const byGroup = new Map();
   for (const asset of phaseInput.acceptedAssets) {
@@ -383,6 +767,7 @@ async function invokePhase(message, context, phaseInput, services) {
   }
   const results = [];
   for (const visualGroupKey of [...byGroup.keys()].sort()) {
+    assertLeaseActive(assertActive);
     const result = await services.generateRichContent({
       ...phaseInput,
       acceptedAssets: byGroup.get(visualGroupKey),
@@ -391,8 +776,11 @@ async function invokePhase(message, context, phaseInput, services) {
       jobId: context.jobId,
       itemId: context.itemId,
       planId: context.activeContentPlanId,
+      expectedStatusVersion: message.expectedStatusVersion,
       correlationId: message.correlationId,
+      assertLeaseActive: assertActive,
     });
+    assertLeaseActive(assertActive);
     results.push({ ...result, visualGroupKey });
   }
   return {
@@ -407,7 +795,8 @@ async function invokePhase(message, context, phaseInput, services) {
  * state writes, logging or side effects beyond one injected phase service.
  */
 export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {}) {
-  if (!exactKeys(input, INPUT_KEYS)) throw invalid();
+  const leased = exactDataKeys(input, LEASED_INPUT_KEYS) && typeof input.assertLeaseActive === "function";
+  if (!exactKeys(input, INPUT_KEYS) && !leased) throw invalid();
   let message;
   try { message = normalizeAutoListingAiMessage(input.message); } catch { throw invalid(); }
   const context = assertContext(input.context, message);
@@ -421,23 +810,41 @@ export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {
   }
 
   const phaseInput = assertPhaseInput(input.context, message.phase);
+  if (["PLAN_CONTENT", "ANALYZE_SOURCE_IMAGE_BATCH", "CLEAN_SOURCE_IMAGE_OVERLAY",
+    "CHECK_SOURCE_IMAGE_CLEANUP", "GENERATE_IMAGE_SLOT", "CHECK_IMAGE_GROUP",
+    "GENERATE_RICH_CONTENT"].includes(message.phase)
+    && !validGatewayExecution(phaseInput.gatewayExecution)) throw invalid();
   assertServices(dependencies);
 
-  if (message.phase === "MATERIALIZE_SOURCE_ASSET" || message.phase === "FINALIZE_MATERIALIZED_PLAN") {
+  if (message.phase === "MATERIALIZE_SOURCE_ASSET" && Object.hasOwn(phaseInput, "analysisRun")) {
+    if (!validateAnalysisMaterializeInput(phaseInput, context, message)) throw invalid();
+  } else if (message.phase === "MATERIALIZE_SOURCE_ASSET" || message.phase === "FINALIZE_MATERIALIZED_PLAN") {
     if (isFinalMaterializedPlan(phaseInput.parentPlan, context)) {
       return message.phase === "FINALIZE_MATERIALIZED_PLAN"
         ? outcome(message, "ACK", "MATERIALIZED_PLAN_READY", null, false)
         : outcome(message, "ACK", "STALE", "AUTO_LISTING_AI_PHASE_ALREADY_COMPLETED", false);
     }
     if (!validateParentPhaseInput(phaseInput, context)) throw invalid();
+  } else if (message.phase === "ANALYZE_SOURCE_IMAGE_BATCH") {
+    if (!validateAnalysisBatchInput(phaseInput, context, message)) throw invalid();
+  } else if (message.phase === "CLEAN_SOURCE_IMAGE_OVERLAY") {
+    if (!validateCleanupAttemptInput(phaseInput, context, message,
+      ["RESERVED", "GENERATED", "ACCEPTED", "REJECTED"])) throw invalid();
+  } else if (message.phase === "CHECK_SOURCE_IMAGE_CLEANUP") {
+    if (!validateCleanupAttemptInput(phaseInput, context, message, ["GENERATED"])) throw invalid();
+  } else if (message.phase === "RECONCILE_SOURCE_IMAGE_ANALYSIS") {
+    if (!validateAnalysisRun(phaseInput.run, context, message)) throw invalid();
   } else if (message.phase === "GENERATE_IMAGE_SLOT") {
     if (!validateImagePhaseInput(phaseInput, context, message)) throw invalid();
+  } else if (message.phase === "CHECK_IMAGE_GROUP") {
+    if (!validateGroupInput(phaseInput, context, message)) throw invalid();
   } else if (message.phase === "GENERATE_RICH_CONTENT") {
     if (!validateRichPhaseInput(phaseInput, context)) throw invalid();
   }
 
   try {
-    const result = await invokePhase(message, context, phaseInput, dependencies);
+    const result = await invokePhase(message, context, phaseInput, dependencies,
+      leased ? input.assertLeaseActive : () => {});
     if (message.phase === "MATERIALIZE_SOURCE_ASSET" && result?.status === "SKIPPED") {
       if (result.reasonCode === "AUTO_LISTING_SOURCE_MATERIALIZATION_STALE") {
         return outcome(message, "ACK", "STALE", result.reasonCode, false);
@@ -446,13 +853,20 @@ export async function orchestrateAutoListingAiPhase(input = {}, dependencies = {
         return outcome(message, "ACK", "CANCELLED", result.reasonCode, false);
       }
       if (result.reasonCode === "AUTO_LISTING_SOURCE_MATERIALIZATION_IN_PROGRESS") {
-        return outcome(message, "RETRY", "IN_PROGRESS", result.reasonCode, true);
+        return outcome(message, "RETRY", "IN_PROGRESS", result.reasonCode, true, { failureScope: "BUSINESS" });
       }
       throw invalid();
     }
     assertSuccessfulResult(result, message.phase, context, message, phaseInput);
-    return outcome(message, "ACK", SUCCESS_OUTCOME[message.phase], null, false);
+    const successfulOutcome = message.phase === "MATERIALIZE_SOURCE_ASSET"
+      && Object.hasOwn(phaseInput, "analysisRun") ? "SOURCE_ASSET_TERMINAL"
+      : message.phase === "CHECK_IMAGE_GROUP" && result.status === "RETRY_QUEUED"
+        ? "IMAGE_GROUP_RETRY_QUEUED"
+        : message.phase === "CHECK_SOURCE_IMAGE_CLEANUP" && result.status === "REJECTED"
+          ? "SOURCE_IMAGE_CLEANUP_REJECTED" : SUCCESS_OUTCOME[message.phase];
+    return outcome(message, "ACK", successfulOutcome, null, false);
   } catch (error) {
-    return serviceFailure(message, error);
+    if (error?.code === "AUTO_LISTING_AI_EXECUTION_LEASE_LOST") throw error;
+    return serviceFailure(message, error, { allowReservationBusy: leased });
   }
 }

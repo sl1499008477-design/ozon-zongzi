@@ -357,7 +357,7 @@ export function createCollectorAuthService({
       outcome: "authenticated",
       requiredPermission,
     });
-    return publicSession(record);
+    return { ...publicSession(record), account: publicAccount(record.account, record.accountId) };
   }
 
   async function revoke({

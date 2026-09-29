@@ -69,6 +69,7 @@ async function input(value, overrides = {}) {
       async inspectImage(request) {
         assert.equal(request.sourceImages.length, 1);
         assert.equal(Object.hasOwn(request, "timeoutMs"), false);
+        assert.equal(request.idleTimeoutMs, 300_000);
         return {
           requestId: "check-1",
           modelEvidence: {
@@ -104,6 +105,141 @@ function evaluatorInput(checkerResult, overrides = {}) {
   };
 }
 
+const sourceSlot = Object.freeze({
+  slotKey: "main:main:01",
+  visualGroupKey: "main",
+  role: "MAIN",
+  targetView: "BACK",
+  evidenceMode: "ADJACENT",
+  prohibitedViews: ["LEFT", "RIGHT", "INTERIOR", "HIDDEN_PORTS"],
+  sourceFactIds: [fact.factId],
+  referenceAssetIds: ["asset-a"],
+  identityAssetId: "asset-a",
+});
+
+function sourceCheckerValue(evidenceOverrides = {}) {
+  return checkerValue({}, {
+    targetViewMatched: true,
+    prohibitedViewVisible: false,
+    intrinsicMarkingsPreserved: true,
+    externalOverlayDetected: false,
+    unsupportedFactIds: [],
+    ...evidenceOverrides,
+  });
+}
+
+function sourceGenerationEvidence(reference) {
+  const evidence = {
+    version: "AUTO_LISTING_IMAGE_SOURCE_EVIDENCE_V1",
+    sourceImageAnalysisRunId: "source-image-run-a",
+    sourceImageIntelligenceHash: "a".repeat(64),
+    targetView: sourceSlot.targetView,
+    evidenceMode: sourceSlot.evidenceMode,
+    prohibitedViews: [...sourceSlot.prohibitedViews],
+    prohibitedOverlayHashes: [],
+    identityAssetId: sourceSlot.identityAssetId,
+    selectedAssetHashes: [{ sourceAssetId: reference.assetId, contentHash: reference.contentHash }],
+    allowedFacts: [{
+      sourceFactId: fact.factId,
+      kind: fact.kind,
+      value: fact.value,
+      sourcePath: fact.sourcePath,
+    }],
+    styleStrategy: { strategyVersionId: "strategy-a", strategyHash: "b".repeat(64) },
+    imageConfig: { ratio: "3:4", resolution: "1K", size: "768x1024", quality: "high" },
+    intrinsicMarkings: [],
+  };
+  return { ...evidence, evidenceHash: sha256(evidence) };
+}
+
+test("single-image V3 evidence rejects wrong views, changed markings, external overlays, and unsupported facts", () => {
+  const cases = [
+    [sourceCheckerValue({ targetViewMatched: false }), "TARGET_VIEW_MISMATCH"],
+    [sourceCheckerValue({ prohibitedViewVisible: true }), "PROHIBITED_VIEW_VISIBLE"],
+    [sourceCheckerValue({ intrinsicMarkingsPreserved: false }), "INTRINSIC_MARKINGS_NOT_PRESERVED"],
+    [sourceCheckerValue({ externalOverlayDetected: true }), "EXTERNAL_OVERLAY_DETECTED"],
+    [sourceCheckerValue({ unsupportedFactIds: ["fact.fake"] }), "UNSUPPORTED_FACT"],
+  ];
+
+  for (const [checkerResult, code] of cases) {
+    const result = checkerModule.evaluateGeneratedCheckerEvidence(evaluatorInput(checkerResult, { slot: sourceSlot }));
+    assert.equal(result.accepted, false);
+    assert.equal(result.code, code);
+    assert.equal(result.severity, "HARD");
+  }
+});
+
+test("source checker ignores an impossible unsupported-fact report for a fact in the frozen allowed list", () => {
+  const request = evaluatorInput(sourceCheckerValue({ unsupportedFactIds: [fact.factId] }), {
+    slot: sourceSlot,
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    claimEvidenceFactIds: [fact.factId],
+  });
+  request.sourceImageGenerationEvidence = sourceGenerationEvidence(request.references[0]);
+
+  const result = checkerModule.evaluateGeneratedCheckerEvidence(request);
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(result.evidence.checkerResult.evidence.unsupportedFactIds, []);
+});
+
+test("single-image V3 checker evidence is closed and complete", () => {
+  assert.throws(
+    () => checkerModule.evaluateGeneratedCheckerEvidence(evaluatorInput(checkerValue(), { slot: sourceSlot })),
+    checkerUnavailable,
+  );
+  assert.throws(
+    () => checkerModule.evaluateGeneratedCheckerEvidence(evaluatorInput(sourceCheckerValue({ unexpected: true }), { slot: sourceSlot })),
+    checkerUnavailable,
+  );
+  assert.throws(
+    () => checkerModule.evaluateGeneratedCheckerEvidence(evaluatorInput(sourceCheckerValue({ unsupportedFactIds: ["fact.fake", "fact.fake"] }), { slot: sourceSlot })),
+    checkerUnavailable,
+  );
+});
+
+test("source-image checker emits a Sub2API-compatible structured-output schema", async () => {
+  const targetSlot = Object.freeze({
+    ...sourceSlot,
+    targetView: "FRONT_RIGHT_3_4",
+    evidenceMode: "SYNTHESIZED_SAFE",
+    prohibitedViews: ["BACK", "TOP", "BOTTOM", "INTERIOR", "HIDDEN_PORTS"],
+  });
+  const request = await input(sourceCheckerValue(), {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    slot: targetSlot,
+    claimEvidenceFactIds: [fact.factId],
+  });
+  const { evidenceHash: _oldEvidenceHash, ...sourceEvidence } = sourceGenerationEvidence(request.references[0]);
+  sourceEvidence.targetView = targetSlot.targetView;
+  sourceEvidence.evidenceMode = targetSlot.evidenceMode;
+  sourceEvidence.prohibitedViews = [...targetSlot.prohibitedViews];
+  request.sourceImageGenerationEvidence = {
+    ...sourceEvidence,
+    evidenceHash: sha256(sourceEvidence),
+  };
+  let checkerSchema = null;
+  let checkerPrompt = null;
+  request.gateway.inspectImage = async ({ jsonSchema, prompt }) => {
+    checkerSchema = jsonSchema;
+    checkerPrompt = prompt;
+    return {
+      requestId: "check-source-1",
+      modelEvidence: {
+        requestedTextModel: "checker-a",
+        gatewayReportedTextModel: "checker-a",
+        gatewayReportedTextModelPresent: true,
+      },
+      value: sourceCheckerValue(),
+    };
+  };
+
+  assert.equal((await checkGeneratedAsset(request)).accepted, true);
+  assert.doesNotMatch(JSON.stringify(checkerSchema), /"uniqueItems"|"oneOf"|"allOf"/u);
+  assert.match(checkerPrompt, /非 DETAIL、PACKAGE、SCENE.*完整外轮廓和全部主要部件.*局部裁切.*targetViewMatched=false/u);
+  assert.match(checkerPrompt, /商品自身正面为基准.*正面与右侧面.*30.*60.*否则 targetViewMatched=false/u);
+});
+
 const checkerUnavailable = (error) => error?.code === "CHECKER_UNAVAILABLE" && error?.retryable === true;
 
 function throwingOversizedArray(length) {
@@ -118,7 +254,11 @@ function throwingOversizedArray(length) {
 }
 
 test("deterministic gate and closed checker response accept complete source-bound evidence", async () => {
-  const result = await checkGeneratedAsset(await input(checkerValue()));
+  const result = await checkGeneratedAsset(await input(checkerValue(), {
+    gatewayExecution: {
+      channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9, idleTimeoutMs: 300_000,
+    },
+  }));
   assert.equal(result.accepted, true);
   assert.equal(result.evidence.generatedHash.length, 64);
   assert.equal(result.evidence.requestId, "check-1");
@@ -133,6 +273,19 @@ test("deterministic gate and closed checker response accept complete source-boun
   }]);
 });
 
+test("checker rejects an open leased execution before a paid inspection", async () => {
+  let calls = 0;
+  const candidate = await input(checkerValue(), {
+    gatewayExecution: {
+      channelId: "channel-b", connectionId: "connection-b", connectionVersion: 9,
+      idleTimeoutMs: 300_000, fallback: true,
+    },
+  });
+  candidate.gateway.inspectImage = async () => { calls += 1; };
+  await assert.rejects(checkGeneratedAsset(candidate), checkerUnavailable);
+  assert.equal(calls, 0);
+});
+
 test("legacy accepted checker evidence remains valid when no category style images existed", () => {
   const legacy = checkerValue();
   delete legacy.matchesCategoryStyle;
@@ -141,6 +294,30 @@ test("legacy accepted checker evidence remains valid when no category style imag
   const result = checkerModule.evaluateGeneratedCheckerEvidence(evaluatorInput(legacy));
 
   assert.equal(result.accepted, true);
+  assert.equal(Object.hasOwn(result.evidence, "categoryStyleAssets"), false);
+  assert.equal(Object.hasOwn(result.evidence, "categoryStyleGuidance"), false);
+});
+
+test("disabled category strategy ignores and normalizes irrelevant checker style evidence", async () => {
+  const request = await input(checkerValue({ matchesCategoryStyle: false }, {
+    categoryStyle: { matches: true, referenceEvidenceIds: ["hallucinated-style-reference"] },
+  }));
+  let calls = 0;
+  const inspect = request.gateway.inspectImage;
+  request.gateway.inspectImage = async (...args) => {
+    calls += 1;
+    return inspect(...args);
+  };
+
+  const result = await checkGeneratedAsset(request);
+
+  assert.equal(calls, 1);
+  assert.equal(result.accepted, true);
+  assert.equal(result.evidence.checkerResult.matchesCategoryStyle, true);
+  assert.deepEqual(result.evidence.checkerResult.evidence.categoryStyle, {
+    matches: true,
+    referenceEvidenceIds: [],
+  });
   assert.equal(Object.hasOwn(result.evidence, "categoryStyleAssets"), false);
   assert.equal(Object.hasOwn(result.evidence, "categoryStyleGuidance"), false);
 });
@@ -839,8 +1016,64 @@ test("each detected text segment allows only Russian or fact-proven brand model 
   }
 });
 
+test("Russian copy accepts every Latin token from one fact-proven technical phrase", async () => {
+  const technicalFact = {
+    factId: "fact.attribute.connection",
+    field: "attributes.connection",
+    kind: "ATTRIBUTE:connection",
+    value: "Подключение концентратора: USB Type-C",
+    numericValue: null,
+    unit: null,
+    sourcePath: "attributes.connection",
+  };
+  const technicalClaim = {
+    text: technicalFact.value,
+    sourceFactId: technicalFact.factId,
+    field: technicalFact.field,
+    value: technicalFact.value,
+    numericValue: null,
+    unit: null,
+  };
+  const request = await input(checkerValue({}, {
+    claims: [technicalClaim],
+    detectedTexts: [technicalFact.value],
+  }));
+  request.facts = [technicalFact];
+
+  assert.equal((await checkGeneratedAsset(request)).accepted, true);
+});
+
+test("Russian dimension copy accepts a Latin multiplication separator between proven numbers", async () => {
+  const dimensionFact = {
+    factId: "fact.attribute.dimensions",
+    field: "attributes.dimensions",
+    kind: "ATTRIBUTE:dimensions",
+    value: "Размеры, мм: 180х140",
+    numericValue: null,
+    unit: null,
+    sourcePath: "attributes.dimensions",
+  };
+  const dimensionClaim = {
+    text: dimensionFact.value,
+    sourceFactId: dimensionFact.factId,
+    field: dimensionFact.field,
+    value: dimensionFact.value,
+    numericValue: null,
+    unit: null,
+  };
+  const request = await input(checkerValue({}, {
+    claims: [dimensionClaim],
+    detectedTexts: ["Размеры, мм: 180x140"],
+  }));
+  request.facts = [dimensionFact];
+
+  const result = await checkGeneratedAsset(request);
+  assert.equal(result.code, undefined);
+  assert.equal(result.accepted, true);
+});
+
 test("empty detected text follows the explicit slot text requirement", async () => {
-  const required = await checkGeneratedAsset(await input(checkerValue({}, { detectedTexts: [] })));
+  const required = await checkGeneratedAsset(await input(checkerValue({}, { claims: [], detectedTexts: [] })));
   assert.equal(required.code, "LANGUAGE_MISMATCH");
   const none = checkerValue({}, { claims: [], detectedTexts: [] });
   const optional = await checkGeneratedAsset(await input(none, { textRequired: false }));
@@ -1057,6 +1290,50 @@ test("V6 classifies factual and safety failures as hard while presentation failu
   }
 });
 
+test("V6 sends a non-main language mismatch to manual review while MAIN and safety failures stay hard", () => {
+  const infographicSlot = Object.freeze({
+    ...sourceSlot,
+    slotKey: "main:infographic:01",
+    role: "INFOGRAPHIC",
+  });
+  const languageOnly = sourceCheckerValue();
+  languageOnly.russianText = false;
+  languageOnly.evidence.detectedTexts = ["Darvish"];
+  languageOnly.evidence.language = "other";
+
+  const evaluate = (slot, checkerResult = languageOnly) => {
+    const request = evaluatorInput(checkerResult, {
+      templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+      claimEvidenceFactIds: [fact.factId],
+      slot,
+    });
+    request.sourceImageGenerationEvidence = sourceGenerationEvidence(request.references[0]);
+    return checkerModule.evaluateGeneratedCheckerEvidence(request);
+  };
+
+  const nonMain = evaluate(infographicSlot);
+  assert.equal(nonMain.code, "LANGUAGE_MISMATCH");
+  assert.equal(nonMain.severity, "SOFT");
+
+  const main = evaluate(sourceSlot);
+  assert.equal(main.code, "LANGUAGE_MISMATCH");
+  assert.equal(main.severity, "HARD");
+
+  const prohibited = structuredClone(languageOnly);
+  prohibited.prohibitedContent = true;
+  prohibited.evidence.prohibitedFlags = ["EXTERNAL_PROMOTION"];
+  const unsafe = evaluate(infographicSlot, prohibited);
+  assert.equal(unsafe.code, "PROHIBITED_CONTENT");
+  assert.equal(unsafe.severity, "HARD");
+
+  const blurred = structuredClone(languageOnly);
+  blurred.quality = "FAIL";
+  blurred.evidence.qualityFlags = ["BLUR"];
+  const hardQuality = evaluate(infographicSlot, blurred);
+  assert.equal(hardQuality.code, "IMAGE_QUALITY_FAILED");
+  assert.equal(hardQuality.severity, "HARD");
+});
+
 test("V6 product documentary without trusted dimensions ignores a spurious missing-dimension flag", () => {
   const result = checkerModule.evaluateGeneratedCheckerEvidence(evaluatorInput(checkerValue({
     quality: "FAIL",
@@ -1092,36 +1369,37 @@ test("malformed checker output is an operationally distinguishable retryable fai
   await assert.rejects(checkGeneratedAsset(await input({ matchesProduct: true })), (error) => error?.code === "CHECKER_EVIDENCE_INVALID" && error?.retryable === true);
 });
 
-test("reuses the generated image for one structured-response repair without retrying image generation", async () => {
+test("propagates a malformed gateway response without an inline paid inspection retry", async () => {
   const request = await input(checkerValue());
-  const calls = [];
-  request.gateway.inspectImage = async (checkerRequest) => {
-    calls.push({ requestKey: checkerRequest.requestKey, prompt: checkerRequest.prompt });
-    if (calls.length === 1) {
-      throw Object.assign(new Error("malformed structured response"), {
-        code: "INVALID_GATEWAY_RESPONSE",
-        requestId: "checker-invalid-1",
-        failureField: "/evidence/claims/0/unit",
-      });
-    }
-    return {
-      requestId: "checker-repaired-2",
-      modelEvidence: {
-        requestedTextModel: "checker-a",
-        gatewayReportedTextModel: "checker-a",
-        gatewayReportedTextModelPresent: true,
-      },
-      value: checkerValue(),
-    };
+  let calls = 0;
+  const gatewayError = Object.assign(new Error("malformed structured response"), {
+    code: "INVALID_GATEWAY_RESPONSE",
+    requestId: "checker-invalid-1",
+    failureField: "/evidence/claims/0/unit",
+  });
+  request.gateway.inspectImage = async () => {
+    calls += 1;
+    throw gatewayError;
   };
 
-  const result = await checkGeneratedAsset(request);
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === gatewayError);
+  assert.equal(calls, 1);
+});
 
-  assert.equal(result.accepted, true);
-  assert.equal(result.evidence.requestId, "checker-repaired-2");
-  assert.equal(calls.length, 2);
-  assert.notEqual(calls[0].requestKey, calls[1].requestKey);
-  assert.match(calls[1].prompt, /\/evidence\/claims\/0\/unit/u);
+test("propagates quota and empty-pool signals for channel-level recovery", async () => {
+  for (const code of ["AI_GATEWAY_QUOTA_EXHAUSTED", "AI_GATEWAY_NO_CAPACITY"]) {
+    const request = await input(checkerValue());
+    const gatewayError = Object.assign(new Error("gateway capacity unavailable"), {
+      code,
+      status: 503,
+      retryable: true,
+      deliveryState: "NOT_SENT",
+      retryAfterMs: 300_000,
+    });
+    request.gateway.inspectImage = async () => { throw gatewayError; };
+
+    await assert.rejects(checkGeneratedAsset(request), (error) => error === gatewayError, code);
+  }
 });
 
 test("repairs one locally inconsistent evidence result and then accepts the corrected result", async () => {
@@ -1146,7 +1424,364 @@ test("repairs one locally inconsistent evidence result and then accepts the corr
   assert.equal(calls, 2);
 });
 
-test("two inconsistent evidence results retain the exact safe contract field", async () => {
+test("retries checker contract output on the same generated image up to the fifth response", async () => {
+  const request = await input(checkerValue());
+  let calls = 0;
+  request.gateway.inspectImage = async () => {
+    calls += 1;
+    return {
+      requestId: `checker-evidence-five-${calls}`,
+      modelEvidence: {
+        requestedTextModel: "checker-a",
+        gatewayReportedTextModel: "checker-a",
+        gatewayReportedTextModelPresent: true,
+      },
+      value: calls < 5
+        ? checkerValue({}, { identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: ["foreign"] } })
+        : checkerValue(),
+    };
+  };
+
+  assert.equal((await checkGeneratedAsset(request)).accepted, true);
+  assert.equal(calls, 5);
+});
+
+test("repairs a role-inapplicable DETAIL flag before trusting a source-marking rejection", async () => {
+  const infographicSlot = Object.freeze({
+    ...sourceSlot,
+    slotKey: "main:infographic:01",
+    role: "INFOGRAPHIC",
+  });
+  const inconsistent = sourceCheckerValue({
+    intrinsicMarkingsPreserved: false,
+    qualityFlags: ["DETAIL_NOT_CLOSEUP"],
+  });
+  inconsistent.quality = "FAIL";
+  inconsistent.reasons = ["DETAIL_NOT_CLOSEUP"];
+  const request = await input(inconsistent, {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    slot: infographicSlot,
+    visualBrief: { role: "INFOGRAPHIC" },
+    claimEvidenceFactIds: [fact.factId],
+  });
+  const { evidenceHash: _oldHash, ...sourceEvidence } = sourceGenerationEvidence(request.references[0]);
+  sourceEvidence.intrinsicMarkings = [{
+    sourceAssetId: "asset-a",
+    kind: "PRODUCT_MARKING",
+    regionHashes: ["c".repeat(64)],
+    decisionMethod: "OBSERVED_PRODUCT_MARKING",
+    reasonCodes: ["PRODUCT_MARKING_PROTECTED"],
+  }];
+  request.sourceImageGenerationEvidence = {
+    ...sourceEvidence,
+    evidenceHash: sha256(sourceEvidence),
+  };
+  let calls = 0;
+  request.gateway.inspectImage = async () => {
+    calls += 1;
+    return {
+      requestId: `checker-role-repair-${calls}`,
+      modelEvidence: {
+        requestedTextModel: "checker-a",
+        gatewayReportedTextModel: "checker-a",
+        gatewayReportedTextModelPresent: true,
+      },
+      value: calls === 1 ? inconsistent : sourceCheckerValue(),
+    };
+  };
+
+  const result = await checkGeneratedAsset(request);
+
+  assert.equal(result.accepted, true);
+  assert.equal(calls, 2);
+});
+
+test("accepts DETAIL_NOT_CLOSEUP evidence for a non-detail role whose target view is DETAIL", async () => {
+  const sellingPointSlot = Object.freeze({
+    ...sourceSlot,
+    slotKey: "main:selling-point:01",
+    role: "SELLING_POINT",
+    targetView: "DETAIL",
+  });
+  const notCloseup = sourceCheckerValue({ qualityFlags: ["DETAIL_NOT_CLOSEUP"] });
+  notCloseup.quality = "FAIL";
+  notCloseup.reasons = ["DETAIL_NOT_CLOSEUP"];
+  const request = await input(notCloseup, {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    slot: sellingPointSlot,
+    visualBrief: { role: "SELLING_POINT" },
+    claimEvidenceFactIds: [fact.factId],
+  });
+  const { evidenceHash: _oldHash, ...sourceEvidence } = sourceGenerationEvidence(request.references[0]);
+  sourceEvidence.targetView = "DETAIL";
+  request.sourceImageGenerationEvidence = {
+    ...sourceEvidence,
+    evidenceHash: sha256(sourceEvidence),
+  };
+
+  const result = await checkGeneratedAsset(request);
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.code, "DETAIL_NOT_CLOSEUP");
+  assert.equal(result.severity, "SOFT");
+});
+
+test("repairs an unexplained source-marking rejection before failing a main image", async () => {
+  const inconsistent = sourceCheckerValue({
+    intrinsicMarkingsPreserved: false,
+    qualityFlags: ["ROLE_MISMATCH"],
+  });
+  inconsistent.quality = "FAIL";
+  inconsistent.reasons = ["ROLE_MISMATCH"];
+  const request = await input(inconsistent, {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    slot: sourceSlot,
+    visualBrief: { role: "MAIN" },
+    claimEvidenceFactIds: [fact.factId],
+  });
+  const { evidenceHash: _oldHash, ...sourceEvidence } = sourceGenerationEvidence(request.references[0]);
+  sourceEvidence.intrinsicMarkings = [{
+    sourceAssetId: "asset-a",
+    kind: "PRODUCT_MARKING",
+    regionHashes: ["d".repeat(64)],
+    decisionMethod: "OBSERVED_PRODUCT_MARKING",
+    reasonCodes: ["PRODUCT_MARKING_PROTECTED"],
+  }];
+  request.sourceImageGenerationEvidence = {
+    ...sourceEvidence,
+    evidenceHash: sha256(sourceEvidence),
+  };
+  let calls = 0;
+  request.gateway.inspectImage = async () => {
+    calls += 1;
+    return {
+      requestId: `checker-marking-repair-${calls}`,
+      modelEvidence: {
+        requestedTextModel: "checker-a",
+        gatewayReportedTextModel: "checker-a",
+        gatewayReportedTextModelPresent: true,
+      },
+      value: calls === 1 ? inconsistent : sourceCheckerValue(),
+    };
+  };
+
+  const result = await checkGeneratedAsset(request);
+
+  assert.equal(result.accepted, true);
+  assert.equal(calls, 2);
+});
+
+test("independently rechecks a source-bound hard rejection before accepting or rejecting it", async () => {
+  async function run(secondValue) {
+    const firstValue = sourceCheckerValue({ targetViewMatched: false });
+    const request = await input(firstValue, {
+      templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+      slot: sourceSlot,
+      visualBrief: { role: "MAIN" },
+      claimEvidenceFactIds: [fact.factId],
+    });
+    request.sourceImageGenerationEvidence = sourceGenerationEvidence(request.references[0]);
+    let calls = 0;
+    request.gateway.inspectImage = async () => {
+      calls += 1;
+      return {
+        requestId: `checker-source-adjudication-${calls}`,
+        modelEvidence: {
+          requestedTextModel: "checker-a",
+          gatewayReportedTextModel: "checker-a",
+          gatewayReportedTextModelPresent: true,
+        },
+        value: calls === 1 ? firstValue : secondValue,
+      };
+    };
+    return { result: await checkGeneratedAsset(request), calls };
+  }
+
+  const corrected = await run(sourceCheckerValue());
+  assert.equal(corrected.result.accepted, true);
+  assert.equal(corrected.calls, 2);
+
+  const confirmed = await run(sourceCheckerValue({ targetViewMatched: false }));
+  assert.equal(confirmed.result.accepted, false);
+  assert.equal(confirmed.result.code, "TARGET_VIEW_MISMATCH");
+  assert.equal(confirmed.calls, 2);
+});
+
+test("independently rechecks an unlisted-accessory claim before rejecting a source-bound product", async () => {
+  const mistakenAccessory = sourceCheckerValue({
+    prohibitedFlags: ["UNLISTED_ACCESSORIES"],
+  });
+  mistakenAccessory.prohibitedContent = true;
+  mistakenAccessory.reasons = ["An attached cable was mistaken for a separate accessory."];
+  const request = await input(mistakenAccessory, {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    slot: sourceSlot,
+    visualBrief: { role: "MAIN" },
+    claimEvidenceFactIds: [fact.factId],
+  });
+  request.sourceImageGenerationEvidence = sourceGenerationEvidence(request.references[0]);
+  let calls = 0;
+  request.gateway.inspectImage = async () => {
+    calls += 1;
+    return {
+      requestId: `checker-accessory-adjudication-${calls}`,
+      modelEvidence: {
+        requestedTextModel: "checker-a",
+        gatewayReportedTextModel: "checker-a",
+        gatewayReportedTextModelPresent: true,
+      },
+      value: calls === 1 ? mistakenAccessory : sourceCheckerValue(),
+    };
+  };
+
+  const result = await checkGeneratedAsset(request);
+
+  assert.equal(result.accepted, true);
+  assert.equal(calls, 2);
+});
+
+test("independently rechecks source-bound text before treating an intrinsic marking as marketing copy", async () => {
+  const mistakenText = sourceCheckerValue({
+    claims: [],
+    detectedTexts: ["3M VHB"],
+  });
+  mistakenText.claimsVerified = false;
+  mistakenText.reasons = ["A source-matching product marking was mistaken for editable copy."];
+  const corrected = sourceCheckerValue({ claims: [], detectedTexts: [] });
+  corrected.claimsVerified = false;
+  const request = await input(mistakenText, {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    slot: { ...sourceSlot, role: "DETAIL", targetView: "DETAIL" },
+    visualBrief: { role: "DETAIL" },
+    textRequired: false,
+    textForbidden: true,
+    claimEvidenceFactIds: [],
+  });
+  const { evidenceHash: _oldHash, ...sourceEvidence } = sourceGenerationEvidence(request.references[0]);
+  sourceEvidence.targetView = "DETAIL";
+  sourceEvidence.intrinsicMarkings = [{
+    sourceAssetId: "asset-a",
+    kind: "PRODUCT_MARKING",
+    regionHashes: ["e".repeat(64)],
+    decisionMethod: "OBSERVED_PRODUCT_MARKING",
+    reasonCodes: ["PRODUCT_MARKING_PROTECTED"],
+  }];
+  request.sourceImageGenerationEvidence = {
+    ...sourceEvidence,
+    evidenceHash: sha256(sourceEvidence),
+  };
+  let calls = 0;
+  request.gateway.inspectImage = async () => {
+    calls += 1;
+    return {
+      requestId: `checker-copy-adjudication-${calls}`,
+      modelEvidence: {
+        requestedTextModel: "checker-a",
+        gatewayReportedTextModel: "checker-a",
+        gatewayReportedTextModelPresent: true,
+      },
+      value: calls === 1 ? mistakenText : corrected,
+    };
+  };
+
+  const result = await checkGeneratedAsset(request);
+
+  assert.equal(result.accepted, true);
+  assert.equal(calls, 2);
+});
+
+test("V6 DETAIL checker treats the first source reference as view authority and later identity references as identity-only", async () => {
+  const accepted = sourceCheckerValue();
+  accepted.evidence.identity.sourceAssetIds = ["asset-target", "asset-identity"];
+  const request = await input(accepted, {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    claimEvidenceFactIds: [fact.factId],
+  });
+  request.references = [
+    { ...request.references[0], assetId: "asset-target" },
+    { ...request.references[0], assetId: "asset-identity" },
+  ];
+  request.slot = {
+    ...sourceSlot,
+    role: "DETAIL",
+    targetView: "INTERIOR",
+    evidenceMode: "DIRECT",
+    prohibitedViews: ["FRONT", "BACK", "LEFT", "RIGHT", "TOP", "BOTTOM", "HIDDEN_PORTS"],
+    referenceAssetIds: ["asset-target", "asset-identity"],
+    identityAssetId: "asset-identity",
+  };
+  request.visualBrief = {
+    role: "DETAIL",
+    targetReferenceAssetId: "asset-target",
+    targetReferenceImagePosition: 1,
+  };
+  const sourceEvidence = sourceGenerationEvidence(request.references[0]);
+  const { evidenceHash: ignoredEvidenceHash, ...unhashedEvidence } = sourceEvidence;
+  Object.assign(unhashedEvidence, {
+    targetView: request.slot.targetView,
+    evidenceMode: request.slot.evidenceMode,
+    prohibitedViews: request.slot.prohibitedViews,
+    identityAssetId: request.slot.identityAssetId,
+    selectedAssetHashes: request.references.map(({ assetId, contentHash }) => ({
+      sourceAssetId: assetId,
+      contentHash,
+    })),
+  });
+  request.sourceImageGenerationEvidence = {
+    ...unhashedEvidence,
+    evidenceHash: sha256(unhashedEvidence),
+  };
+  let prompt;
+  request.gateway.inspectImage = async (value) => {
+    prompt = value.prompt;
+    assert.equal(value.sourceImages.length, 2);
+    return {
+      requestId: "checker-detail-reference-order",
+      modelEvidence: {
+        requestedTextModel: "checker-a",
+        gatewayReportedTextModel: "checker-a",
+        gatewayReportedTextModelPresent: true,
+      },
+      value: accepted,
+    };
+  };
+
+  const result = await checkGeneratedAsset(request);
+
+  assert.equal(result.accepted, true);
+  assert.match(prompt, /第 1 张来源参考.*targetView.*权威/u);
+  assert.match(prompt, /identityAssetId.*只用于核对身份和固有标识/u);
+  assert.match(prompt, /不得用.*身份参考图.*否定.*目标视角/u);
+  assert.match(prompt, /DETAIL.*局部裁切.*不能.*shape.*不一致/u);
+});
+
+test("repairs a V6 checker response that cites visible claims but returns no detected text", async () => {
+  const contradictory = checkerValue({}, { detectedTexts: [] });
+  const request = await input(contradictory, {
+    templateVersion: "AUTO_LISTING_CONTENT_PLAN_FILL_V6",
+    claimEvidenceFactIds: [fact.factId],
+  });
+  let calls = 0;
+  request.gateway.inspectImage = async () => {
+    calls += 1;
+    return {
+      requestId: `checker-text-evidence-repair-${calls}`,
+      modelEvidence: {
+        requestedTextModel: "checker-a",
+        gatewayReportedTextModel: "checker-a",
+        gatewayReportedTextModelPresent: true,
+      },
+      value: calls === 1 ? contradictory : checkerValue(),
+    };
+  };
+
+  const result = await checkGeneratedAsset(request);
+
+  assert.equal(result.accepted, true);
+  assert.equal(calls, 2);
+});
+
+test("five inconsistent evidence results retain the exact safe contract field", async () => {
   const request = await input(checkerValue());
   let calls = 0;
   request.gateway.inspectImage = async () => {
@@ -1166,65 +1801,102 @@ test("two inconsistent evidence results retain the exact safe contract field", a
 
   await assert.rejects(checkGeneratedAsset(request), (error) => {
     assert.equal(error?.code, "CHECKER_EVIDENCE_INVALID");
-    assert.equal(error?.requestId, "checker-evidence-2");
+    assert.equal(error?.requestId, "checker-evidence-5");
     assert.equal(error?.checkerEvidence?.detailCode, "SOURCE_ASSET_IDS_MISMATCH");
     assert.equal(error?.checkerEvidence?.failureField, "/evidence/identity/sourceAssetIds");
-    assert.deepEqual(error?.checkerEvidence?.requestIds, ["checker-evidence-1", "checker-evidence-2"]);
-    assert.equal(error?.checkerEvidence?.callCount, 2);
+    assert.deepEqual(error?.checkerEvidence?.requestIds, [
+      "checker-evidence-1", "checker-evidence-2", "checker-evidence-3",
+      "checker-evidence-4", "checker-evidence-5",
+    ]);
+    assert.equal(error?.checkerEvidence?.callCount, 5);
     return true;
   });
 });
 
-test("two malformed structured responses fail with an accurate safe diagnostic", async () => {
+test("preserves a safe non-retryable gateway rejection for worker classification", async () => {
   const request = await input(checkerValue());
   let calls = 0;
+  const gatewayError = Object.assign(new Error("gateway rejected request"), {
+    code: "NON_RETRYABLE_GATEWAY", status: 404, requestId: "checker-model-missing",
+  });
   request.gateway.inspectImage = async () => {
     calls += 1;
-    throw Object.assign(new Error("private malformed response"), {
-      code: "INVALID_GATEWAY_RESPONSE",
-      requestId: `checker-invalid-${calls}`,
-      failureField: "/evidence/claims/0/unit",
-    });
+    throw gatewayError;
   };
 
-  await assert.rejects(checkGeneratedAsset(request), (error) => {
-    assert.equal(error?.code, "CHECKER_RESPONSE_INVALID");
-    assert.equal(error?.retryable, true);
-    assert.equal(error?.requestId, "checker-invalid-2");
-    assert.deepEqual(error?.checkerEvidence, {
-      version: "CHECKER_FAILURE_V1",
-      failureCode: "CHECKER_RESPONSE_INVALID",
-      detailCode: "STRUCTURED_RESPONSE_INVALID",
-      failureField: "/evidence/claims/0/unit",
-      requestIds: ["checker-invalid-1", "checker-invalid-2"],
-      callCount: 2,
-    });
-    assert.doesNotMatch(JSON.stringify(error), /private malformed response/u);
-    return true;
-  });
-  assert.equal(calls, 2);
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === gatewayError);
+  assert.equal(calls, 1);
 });
 
-test("does not impose an application deadline or duplicate a failed inspection", async () => {
+test("does not impose an application deadline or rewrite a failed inspection", async () => {
   const request = await input(checkerValue());
   const timeouts = [];
+  const gatewayError = Object.assign(new Error("checker timed out"), { code: "GATEWAY_TIMEOUT", retryable: true });
   request.gateway.inspectImage = async (gatewayRequest) => {
     timeouts.push(Object.hasOwn(gatewayRequest, "timeoutMs"));
-    throw Object.assign(new Error("checker timed out"), { code: "GATEWAY_TIMEOUT", retryable: true });
+    throw gatewayError;
   };
 
-  await assert.rejects(checkGeneratedAsset(request), checkerUnavailable);
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === gatewayError);
   assert.deepEqual(timeouts, [false]);
 });
 
-test("does not automatically retry non-timeout checker failures", async () => {
+test("does not rewrite or automatically retry non-timeout checker failures", async () => {
   const request = await input(checkerValue());
   let calls = 0;
+  const gatewayError = Object.assign(new Error("gateway rejected request"), { code: "NON_RETRYABLE_GATEWAY" });
   request.gateway.inspectImage = async () => {
     calls += 1;
-    throw Object.assign(new Error("gateway rejected request"), { code: "NON_RETRYABLE_GATEWAY" });
+    throw gatewayError;
+  };
+
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === gatewayError);
+  assert.equal(calls, 1);
+});
+
+test("still bounds an unknown coded checker exception instead of persisting its private code", async () => {
+  const request = await input(checkerValue());
+  request.gateway.inspectImage = async () => {
+    throw Object.assign(new Error("private upstream detail"), { code: "PRIVATE_GATEWAY_SECRET" });
   };
 
   await assert.rejects(checkGeneratedAsset(request), checkerUnavailable);
+});
+
+test("checker lease loss after provider return prevents evidence handling and a repair call", async () => {
+  const request = await input(checkerValue());
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  let active = true;
+  let calls = 0;
+  request.assertLeaseActive = () => { if (!active) throw stale; };
+  const inspect = request.gateway.inspectImage;
+  request.gateway.inspectImage = async (gatewayRequest) => {
+    calls += 1;
+    const response = await inspect(gatewayRequest);
+    active = false;
+    return response;
+  };
+
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === stale);
   assert.equal(calls, 1);
+});
+
+test("checker provider rejection rechecks the lease before classifying the failure", async () => {
+  const request = await input(checkerValue());
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  const providerFailure = Object.assign(new Error("provider rejected"), {
+    code: "NON_RETRYABLE_AUTH", status: 403, retryable: false,
+  });
+  let active = true;
+  request.assertLeaseActive = () => { if (!active) throw stale; };
+  request.gateway.inspectImage = async () => {
+    active = false;
+    throw providerFailure;
+  };
+
+  await assert.rejects(checkGeneratedAsset(request), (error) => error === stale);
 });

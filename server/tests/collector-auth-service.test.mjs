@@ -504,6 +504,7 @@ test("successful authentication touches last use and returns no token or hash", 
   });
 
   assert.equal(authenticated.accountId, ACTIVE_ACCOUNT.id);
+  assert.deepEqual(authenticated.account, { id: ACTIVE_ACCOUNT.id, displayName: ACTIVE_ACCOUNT.displayName || ACTIVE_ACCOUNT.username || "" });
   assert.equal(authenticated.deviceFingerprint, "device-123");
   assert.equal(authenticated.extensionVersion, "3.4.5");
   assert.equal(harness.repository.touches.length, 1);

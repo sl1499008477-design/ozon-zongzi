@@ -1,11 +1,11 @@
 (() => {
   // dev 直接加载源码时 build.js 没跑,brand 占位符保持字面量 → 运行时兜底成平台默认。
   // 用 /__BRAND/ 探测而不写全占位符:build 的 textual replace 会把出现的全占位符全换掉,
-  // 若把探测串也写全,分销商 build 会被错误兜底成平台默认(store.jizhangerp.com / sonli)。
+  // 若把探测串也写全,分销商 build 会被错误兜底成平台默认(www.ozonzongzi.com / sonli)。
   const _brandFallback = (val, fb) => (/__BRAND/.test(val) ? fb : val);
-  const BRAND_WEB_HOST = _brandFallback("qh.jizhangerp.com", "store.jizhangerp.com");
+  const BRAND_WEB_HOST = _brandFallback("www.ozonzongzi.com", "www.ozonzongzi.com");
   const BRAND_DISPLAY_NAME = _brandFallback("ozon 粽子", "ozon 粽子");
-  const LOCAL_FRONTEND_BASE_URL = "http://127.0.0.1:3000";
+  const LOCAL_FRONTEND_BASE_URL = "https://www.ozonzongzi.com";
   const isLocalBackendUrl = (value) => /^http:\/\/127\.0\.0\.1:3000\/api\b/.test(String(value || ""));
 
   // popup.html 里的 brand 静态占位符(标题/logo/按钮文案)在 dev 源码
@@ -83,6 +83,32 @@
       chrome.runtime.sendMessage(payload, resolve);
     });
 
+  const sellerRouteStatus = document.getElementById("seller-route-status");
+  const sellerRouteFeedback = document.getElementById("seller-route-feedback");
+  const refreshSellerRoute = async (isCurrent) => {
+    if (!sellerRouteStatus || !isCurrent()) return;
+    sellerRouteStatus.textContent = "正在同步账号访问线路…";
+    sellerRouteFeedback.textContent = "";
+    let response = await sendMessage({ action: "getSellerRoute" });
+    if (!isCurrent()) return;
+    if (response?.error === "COLLECTOR_SESSION_CHANGED") {
+      // A previous account's in-flight sync may have owned the first read.
+      response = await sendMessage({ action: "getSellerRoute" });
+    }
+    if (!isCurrent()) return;
+    if (!response?.ok || !['CN','RU'].includes(response.data?.route)) {
+      sellerRouteStatus.textContent = "账号访问线路暂未同步";
+      sellerRouteFeedback.textContent = "请先连接粽子账号，再从网页顶部选择访问线路。";
+      return;
+    }
+    const label = value => value === 'CN' ? '中国线路' : '原线路';
+    sellerRouteStatus.textContent = `当前账号：${label(response.data.route)}`;
+    sellerRouteFeedback.textContent = response.data.pendingRoute
+      ? `${label(response.data.pendingRoute)}将在当前采集或补全结束后生效。`
+      : response.data.stale ? "暂时无法同步，沿用本账号上次线路；可在网页顶部查看设置。"
+      : "已与网页设置同步；两条线路分别登录 Seller。";
+  };
+
   // v3 (2026-05-27):跟 frontend/lib/device-fingerprint.ts 对齐。
   // v2 用 devicePixelRatio + navigator.languages.slice(0,3),同台机器不同
   // Edge profile / 不同 zoom 会算成两台,导致 4 台套餐被错占名额。
@@ -137,6 +163,10 @@
     } else {
       loginView.style.display = "flex";
       mainView.classList.remove("active");
+      if (sellerRouteStatus) {
+        sellerRouteStatus.textContent = "账号访问线路暂未同步";
+        sellerRouteFeedback.textContent = "请先连接粽子账号，再从网页顶部选择访问线路。";
+      }
     }
   };
 
@@ -274,21 +304,10 @@
   // ─── Counts (feed nav badges only) ───
   const loadCounts = async () => {
     const counts = { collect: 0, products: 0 };
-    const [c, p] = await Promise.all([
-      sendMessage({ action: "getCollectCount" }).catch(() => null),
-      sendMessage({ action: "getProductStatusCounts" }).catch(() => null),
-    ]);
-    if (c?.ok) counts.collect = c.data?.total ?? c.data?.data?.total ?? 0;
-    if (p?.ok && p.data) {
-      const v = p.data;
-      counts.products =
-        v.ALL ||
-        v.total ||
-        Object.values(v).reduce(
-          (a, b) => a + (typeof b === "number" ? b : 0),
-          0,
-        ) ||
-        0;
+    const summary = await sendMessage({ action: "getCollectorAccountSummary" }).catch(() => null);
+    if (summary?.ok && summary.data?.counts) {
+      counts.collect = summary.data.counts.collect ?? 0;
+      counts.products = summary.data.counts.products ?? 0;
     }
     return counts;
   };
@@ -308,40 +327,6 @@
     }
   };
 
-  // ─── Follow-sell tasks → signals ───
-  const loadFollowSellSignal = async () => {
-    try {
-      const resp = await sendMessage({
-        action: "listFollowSellTasks",
-        current: 1,
-        pageSize: 20,
-      });
-      const items = resp?.data?.items || [];
-      if (!Array.isArray(items) || items.length === 0) return null;
-      const now = Date.now();
-      const RECENT_MS = 60 * 60 * 1000;
-      const recentFailed = items.filter(
-        (t) =>
-          t.status === "FAILED" &&
-          t.createdAt &&
-          now - new Date(t.createdAt).getTime() < RECENT_MS,
-      );
-      const inflight = items.filter(
-        (t) => t.status === "QUEUED" || t.status === "PROCESSING",
-      );
-      if (recentFailed.length > 0)
-        return {
-          kind: "follow-failed",
-          count: recentFailed.length,
-          sample: recentFailed[0],
-        };
-      if (inflight.length > 0)
-        return { kind: "follow-inflight", count: inflight.length };
-      return null;
-    } catch {
-      return null;
-    }
-  };
 
   // ─── Active tab → context signal ───
   const detectOzonProductTab = async () => {
@@ -462,10 +447,7 @@
 
   // ─── Build signals (priority-ordered) ───
   const buildSignals = async (isCurrent = () => true) => {
-    const [ctxTab, followSig] = await Promise.all([
-      detectOzonProductTab(),
-      loadFollowSellSignal(),
-    ]);
+    const ctxTab = await detectOzonProductTab();
     if (!isCurrent()) return;
     const counts = await loadCounts();
     if (!isCurrent()) return;
@@ -507,42 +489,6 @@
           sendMessage({
             action: "openFrontend",
             path: "/ozon/products/collect",
-          }),
-      });
-    }
-
-    // 3. bad: 跟卖任务失败
-    if (followSig?.kind === "follow-failed") {
-      const errPreview = (followSig.sample?.errorMessage || "后台处理失败")
-        .toString()
-        .slice(0, 50);
-      signals.push({
-        variant: "bad",
-        icon: "alert",
-        title: `${followSig.count} 个跟卖任务失败`,
-        sub: errPreview,
-        btnLabel: "查看",
-        onAction: () =>
-          sendMessage({
-            action: "openFrontend",
-            path: "/ozon/products/import-history",
-          }),
-      });
-    }
-
-    // 4. warn: 跟卖任务进行中
-    if (followSig?.kind === "follow-inflight") {
-      signals.push({
-        variant: "warn",
-        icon: "clock",
-        title: `${followSig.count} 个跟卖任务排队中`,
-        sub: '点击"查看"进入上架记录',
-        btnLabel: "查看",
-        btnGhost: true,
-        onAction: () =>
-          sendMessage({
-            action: "openFrontend",
-            path: "/ozon/products/import-history",
           }),
       });
     }
@@ -651,7 +597,7 @@
     if (!isCurrent()) return;
     FRONTEND_BASE_URL = frontendBaseUrl;
     setConnectionState("ok", "采集会话已连接");
-    await Promise.all([buildSignals(isCurrent), checkUpdateBanner(isCurrent)]);
+    await Promise.all([buildSignals(isCurrent), checkUpdateBanner(isCurrent), refreshSellerRoute(isCurrent)]);
     if (isCurrent()) sellerStatusController.start();
   };
 
@@ -683,13 +629,9 @@
   const ACTION_PATHS = {
     dashboard: "/ozon/dashboard",
     products: "/ozon/products/list",
-    orders: "/ozon/postings/list",
-    profit: "/ozon/postings/profit-trend",
-    messages: "/ozon/messaging/templates",
     "collect-box": "/ozon/products/collect",
     favorites: "/ozon/products/favorites",
     "import-history": "/ozon/products/import-history",
-    reshelf: "/ozon/products/reshelf",
     // 'pricing' 不走通用 openFrontend，单独处理（见 openJzcCalc）
     stores: "/ozon/settings/stores",
   };
@@ -697,21 +639,6 @@
   document.querySelectorAll("[data-action]").forEach((button) => {
     button.addEventListener("click", async () => {
       const action = button.dataset.action;
-      // 批量上架走独立扩展页（chrome.windows.create），不走 openFrontend
-      if (action === "batch-upload") {
-        try {
-          await chrome.windows.create({
-            url: chrome.runtime.getURL("batch-upload/index.html"),
-            type: "popup",
-            width: 1100,
-            height: 760,
-          });
-          window.close();
-        } catch (e) {
-          console.error("[popup] open batch-upload failed:", e);
-        }
-        return;
-      }
       // 数据透视眼：toggle 而非跳转。首次启用弹 confirm 警告 TOS 风险。
       if (action === "premium-pivot") {
         await togglePremiumPivot();
@@ -1066,7 +993,8 @@
         initializedMainViewActivation
         && initializedMainViewActivation.identity === activation.identity
       ) {
-        initializedMainViewActivation = activation;
+        await refreshSellerRoute(() => mainViewActivationIsCurrent(activation));
+        if (mainViewActivationIsCurrent(activation)) initializedMainViewActivation = activation;
         return;
       }
       await initMainView(auth, () => mainViewActivationIsCurrent(activation));

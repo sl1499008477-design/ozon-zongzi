@@ -1,47 +1,78 @@
 import { MainWindowService } from './main-window.services.js';
-import { WindowService } from './1688-window.services.js';
+import { resolveCollectorCategoryIds } from './interface.services.js';
 import { ExcelService } from './excel.services.js';
 import { TaskQueueService } from './task-queue.services.js';
 import { DataProcessService } from './data-filter.services.js';
-import { ParseService } from './parse.services.js';
+import { ParseService, parseOzonMoney } from './parse.services.js';
 import log from '../../log/index.js';
 import dayjs from 'dayjs';
 import { randomUUID } from 'crypto';
+import {listCollectorMedia,prepareCollectorMedia,prepareCollectorMediaFile} from './media-preparer.services.js';
+import {getSonliApiBase} from '../sonli-api.services.js';
 import { memoryMonitor } from '../memory-monitor.services.js';
 import {
     appendCollectorRunEvent,
+    appendCollectorRunEvents,
+    getCollectorCapabilities,
+    issueCollectorMediaUpload,
+    confirmCollectorMediaUpload,
     appendCollectorRunItem,
     cancelCollectorRun,
     claimCollectorRun,
+    claimCollectorRunSkus,
     completeCollectorRun,
     createCollectorRun,
     failCollectorRun,
     heartbeatCollectorRun,
+    listCollectorRunItems,
+    listCollectorOutcomeItems,
+    listCollectorRunDuplicateEvents,
     requestCollectorRunCancellation,
+    releaseCollectorRunSkus,
     saveCollectorCategoryMapping,
     saveCollectorMarketSnapshot,
 } from '../collector-backend.services.js';
-import { fetchSellerLeaderboard, verifyCurrentSellerStore } from '../seller-ozon.services.js';
+import { fetchSellerLeaderboard, verifyCurrentSellerStore, acquireSellerRoute, rememberSellerRunRoute, getSellerRunRoute } from '../seller-ozon.services.js';
 import { assertSellerRunContext } from '../seller-analytics.core.js';
+import { claimCollectorProductGroup, saveCollectorGroupVariant, releaseCollectorProductGroup } from '../collector-product-groups.services.js';
 export class Collection {
     uuid = undefined;
     task; // 任务信息
     mainWindow = null; // 主窗口
     mainWindowService; // ozon窗口
-    windowService; // 1688窗口
-    taskQueueService; // 1688任务队列
+    taskQueueService; // 商品处理队列
     excelService;
     dataProcessService;
     parseService;
     targetData = 0; // 完成的任务
+    collectedSkuCount = 0; // 已成功保存的商品变体数
     reason = undefined;
+    detailFailure = null;
+    detailFailureStreak = 0;
+    outcomes = { skipped: 0, failed: 0 };
+    outcomeSkus = new Set();
+    keepDiagnosticWindow = false;
     isCleared = false;
     goodsData = new Map();
+    mediaRetryItems = new Map();
+    preparedMediaItems = new WeakMap();
+    pendingProductSaves = 0;
+    productSavePromises = new Set();
+    activeGroupIds = new Set();
+    duplicateSkus = new Map();
+    dedup = { collected: 0, listed: 0, collecting: 0 };
     process = 0; // 正在处理的任务
     goodsNum = 0; // 获取商品的数量
+    previousScanCount = 0;
     writeError = false; // 写入错误
     isWrite = false; // 是否写入
+    writePromise = null;
     writeQueue = [];
+    capabilities = {};
+    completedHandoff = null;
+    runEvents = [];
+    eventFlushPromise = null;
+    eventFlushTimer = null;
     expendShopCount = 0;
     total = 0;
     runId = '';
@@ -51,8 +82,16 @@ export class Collection {
     heartbeatFailures = 0;
     heartbeatTimer = null;
     sellerContext = null;
+    sellerRouteLease = null;
+    resumeRun = false;
+    retryingRunSkus = new Set();
+    categoriesResolved = false;
+    categoryExhausted = false;
     cancellationController = new AbortController();
     cancellationPromise = null;
+    runVideoWork = work => work();
+    runMediaWork = work => work();
+    prepareMediaFile = prepareCollectorMediaFile;
     query = {
         pageNo: 1,
         pageSize: 30,
@@ -61,17 +100,21 @@ export class Collection {
         categories: [],
         lastSortValues: [],
     };
-    constructor(task, mainWindow) {
+    constructor(task, mainWindow, { runVideoWork = work => work(), runMediaWork = work => work(), prepareMediaFile = prepareCollectorMediaFile } = {}) {
         this.task = task;
         this.mainWindow = mainWindow;
+        this.runVideoWork = runVideoWork;
+        this.runMediaWork = runMediaWork;
+        this.prepareMediaFile = prepareMediaFile;
         this.mainWindowService = new MainWindowService(this.closeHandle);
+        this.mainWindowService.cancellationSignal = this.cancellationController.signal;
         const itemConcurrency = Math.min(20, Math.max(2, Number(task.concurrency || task.maxConcurrent || 4)));
         this.taskQueueService = new TaskQueueService(this.taskHandle, itemConcurrency);
         this.excelService = new ExcelService(this.task._id, task.taskName);
         this.dataProcessService = new DataProcessService(task);
         this.dataProcessService.setCancellationSignal(this.cancellationController.signal);
+        this.dataProcessService.onSellerStatus = this.sellerStatus;
         this.parseService = new ParseService(this.mainWindowService);
-        this.windowService = new WindowService(this.parseService);
         const selectedCategories = [...new Set(task.categoryIds?.flat(2) || [])];
         this.query.categories = selectedCategories.includes('*') || selectedCategories.includes('__all__')
             ? []
@@ -79,11 +122,23 @@ export class Collection {
         this.initQueryParams(task);
     }
 
-    restoreRun(run = {}) {
+    restoreRun(run = {}, { resume = false, freeze = true } = {}) {
         const runId = String(run.id || run._id || run.runId || '');
         if (!runId)
             throw new Error('恢复任务缺少运行 ID');
         this.runId = runId;
+        const frozen = run.configurationSnapshot?.configuration;
+        if (freeze && frozen && typeof frozen === 'object') {
+            const { _id, taskName, createTime, version, progress, tableFilePath } = this.task;
+            this.task = { ...frozen, _id, taskName, createTime, version, progress, tableFilePath,
+                configuration: frozen, concurrency: run.configurationSnapshot.concurrency ?? frozen.concurrency };
+            this.dataProcessService.task = this.task;
+            this.taskQueueService.maxConcurrency = Math.min(20, Math.max(2, Number(this.task.concurrency || 4)));
+            const categories = [...new Set(this.task.categoryIds?.flat(2) || [])];
+            this.query.categories = categories.includes('*') || categories.includes('__all__') ? [] : categories;
+            this.initQueryParams(this.task);
+        }
+        this.resumeRun = resume;
         this.preparedRun = { ...run, id: runId };
         this.preparedClean = false;
         this.uuid = String(run.idempotencyKey || randomUUID());
@@ -103,21 +158,44 @@ export class Collection {
         this.sellerContext = current;
     }
 
+    async prepareCategories(verification) {
+        if (this.task.retryFromRunId || this.task.isUseCategorySelect !== 0 || this.categoriesResolved)
+            return;
+        const signal = this.cancellationController.signal;
+        signal.throwIfAborted();
+        const categories = await resolveCollectorCategoryIds(this.task.categoryIds || [], {
+            expectedContext: verification,
+            signal,
+        });
+        signal.throwIfAborted();
+        this.query.categories = categories;
+        this.categoriesResolved = true;
+    }
+
     async prepareRun() {
         if (this.runId)
             return this.preparedRun;
         await this.resetTask();
         this.uuid = randomUUID();
-        const verification = await verifyCurrentSellerStore();
-        this.applyVerifiedSellerScope(verification);
-        const run = await createCollectorRun(this.task._id, {
-            idempotencyKey: this.uuid,
-            pricingConfigVersionId: this.task.pricingConfigVersionId,
-        });
-        this.restoreRun(run);
-        this.preparedClean = true;
-        this.task.taskStatus = 'pending';
-        return this.preparedRun;
+        this.sellerRouteLease = await acquireSellerRoute({ signal: this.cancellationController.signal });
+        try {
+            const verification = await verifyCurrentSellerStore(this.sellerContext || {}, {
+                signal: this.cancellationController.signal, onStatus: this.sellerStatus,
+            });
+            this.applyVerifiedSellerScope(verification);
+            await this.prepareCategories(verification);
+            const run = await createCollectorRun(this.task._id, {
+                idempotencyKey: this.uuid,
+            });
+            this.restoreRun(run, { freeze: false });
+            rememberSellerRunRoute(this.runId, this.sellerRouteLease.origin);
+            this.preparedClean = true;
+            this.task.taskStatus = 'pending';
+            return this.preparedRun;
+        } catch (error) {
+            this.sellerRouteLease.release(); this.sellerRouteLease = null;
+            throw error;
+        }
     }
 
     run() {
@@ -127,7 +205,15 @@ export class Collection {
                 return;
             settled = true;
             resolve({
+                runId: this.task.currentRunId,
+                ...(this.task.startError ? { startError: { ...this.task.startError } } : {}),
+                ...(this.task.resumeError ? { resumeError: { ...this.task.resumeError } } : {}),
+                autoSendToAiListing: this.preparedRun?.configurationSnapshot?.configuration?.autoSendToAiListing === true,
+                serverManagedHandoff: this.capabilities.durableHandoff === true
+                    && this.preparedRun?.configurationSnapshot?.configuration?.autoStartAiGeneration === true,
+                handoff: this.completedHandoff,
                 filePath: this.task.tableFilePath || '',
+                ...(this.task.exportError ? { exportError: this.task.exportError } : {}),
                 progress: { ...this.task.progress, current: 0 },
             });
         };
@@ -154,33 +240,77 @@ export class Collection {
                     await this.resetTask({ preserveRun: true });
                     this.preparedClean = true;
                 }
-                const verification = await verifyCurrentSellerStore();
-                this.applyVerifiedSellerScope(verification);
                 if (!this.runId)
                     throw new Error('sonli 未返回采集运行 ID');
+                if (!this.sellerRouteLease) {
+                    this.sellerRouteLease = await acquireSellerRoute({ origin: getSellerRunRoute(this.preparedRun),
+                        signal: this.cancellationController.signal });
+                    rememberSellerRunRoute(this.runId, this.sellerRouteLease.origin);
+                }
                 const claim = await claimCollectorRun(this.runId);
+                this.capabilities = await getCollectorCapabilities();
+                if (claim.run?.startedAt) {
+                    this.task.lastStartedAt = claim.run.startedAt;
+                    this.task.lastRunningTime = claim.run.startedAt;
+                }
                 this.leaseToken = claim.leaseToken;
                 if (!this.leaseToken)
                     throw new Error('sonli 未返回采集运行租约');
+                this.startHeartbeat();
+                const verification = await verifyCurrentSellerStore(this.sellerContext || {}, {
+                    signal: this.cancellationController.signal, onStatus: this.sellerStatus,
+                });
+                this.applyVerifiedSellerScope(verification);
+                await this.prepareCategories(verification);
+                await this.restoreSavedResults(claim.run || {});
                 this.dataProcessService.setSellerContext({
                     ...this.sellerContext,
                     taskId: this.task._id,
                     runId: this.runId,
                 });
-                this.startHeartbeat();
                 this.updateStatus('running');
-                this.outputLog('窗口创建成功，任务开始执行');
-                await this.mainWindowService.createCollectionWindow(this.task.targetUrl || 'https://www.ozon.ru');
-                if (this.task.isUseCategorySelect === 0) {
-                    this.outputLog(`分类选品模式`);
-                    await this.categoryMode(this.task.targetCount || Infinity);
+                this.outputLog('任务开始，正在检查数据来源');
+                const signal = this.cancellationController.signal;
+                signal.throwIfAborted();
+                let onAbort;
+                const interrupted = new Promise((resolve, reject) => {
+                    onAbort = () => reject(signal.reason);
+                    signal.addEventListener('abort', onAbort, { once: true });
+                });
+                try {
+                    await Promise.race([(async () => {
+                        if (this.targetData >= (this.task.targetCount || Infinity)) {
+                            this.reason = 'success';
+                            return;
+                        }
+                        // Confirm Seller analysis works before creating the storefront window. Reuse this first page.
+                        const firstCategoryPage = this.task.isUseCategorySelect === 0 && !this.task.retryFromRunId
+                            ? await this.getCategoryGoodsList() : null;
+                        signal.throwIfAborted();
+                        await this.mainWindowService.createCollectionWindow(this.task.targetUrl || 'https://www.ozon.ru');
+                        this.outputLog('商城窗口已就绪，开始读取商品');
+                        signal.throwIfAborted();
+                        if (this.resumeRun) await this.retryFailedProducts(this.runId);
+                        if (this.task.retryFromRunId) {
+                            await this.retryFailedProducts();
+                        }
+                        else if (this.task.isUseCategorySelect === 0) {
+                            this.outputLog(`分类选品模式`);
+                            await this.categoryMode(this.task.targetCount || Infinity, firstCategoryPage);
+                        }
+                        else {
+                            this.outputLog('页面解析成功，开始获取商品列表');
+                            await this.getHtmlData(this.task.targetCount || Infinity);
+                        }
+                        signal.throwIfAborted();
+                        await this.waitForAllTasks();
+                        signal.throwIfAborted();
+                        if (!this.task.retryFromRunId) await this.expendShop();
+                    })(), interrupted]);
                 }
-                else {
-                    this.outputLog('页面解析成功，开始获取商品列表');
-                    await this.getHtmlData(this.task.targetCount || Infinity);
+                finally {
+                    signal.removeEventListener('abort', onAbort);
                 }
-                await this.waitForAllTasks();
-                await this.expendShop();
                 memoryMonitor.trackBusinessMetrics({
                     taskId: this.task._id,
                     phase: 'collected',
@@ -189,6 +319,7 @@ export class Collection {
                 });
                 if (this.reason !== 'success') {
                     if (this.runId && this.leaseToken) {
+                        await this.flushRunProgress();
                         if (this.reason === 'cancel') {
                             await cancelCollectorRun(this.runId, this.leaseToken, {
                                 reason: 'USER_CANCELLED',
@@ -206,29 +337,61 @@ export class Collection {
                     safeReject('任务已被终止', reject);
                     return;
                 }
+                if (!this.targetData && this.outcomes.failed)
+                    throw Object.assign(new Error(`本次没有成功采集商品，${this.outcomes.failed} 件失败；请查看采集结果后重试`), { code: 'COLLECTION_NO_VALID_PRODUCTS' });
                 await this.reWriteTable();
-                await completeCollectorRun(this.runId, this.leaseToken, {
+                const targetCount = Number(this.task.targetCount) > 0 ? Number(this.task.targetCount) : null;
+                const targetReached = targetCount !== null && this.targetData >= targetCount;
+                const completionReason = targetReached ? 'TARGET_REACHED'
+                    : this.task.retryFromRunId ? 'RETRY_FINISHED'
+                    : this.task.isUseCategorySelect === 0 && this.categoryExhausted ? 'CANDIDATES_EXHAUSTED'
+                    : 'SOURCE_SCAN_FINISHED';
+                const completionMessage = `${targetReached ? '已达到目标'
+                    : completionReason === 'CANDIDATES_EXHAUSTED' ? '候选结果已用尽'
+                    : completionReason === 'RETRY_FINISHED' ? '失败商品重试已结束' : '来源扫描已结束'}${targetCount !== null && !targetReached ? '，未达到目标' : ''}；目标 ${targetCount ?? '不限'} 件，实际采集 ${this.targetData} 件`;
+                this.outputLog(`${completionMessage}${this.task.exportError ? `；${this.task.exportError}` : ''}`);
+                await this.flushRunProgress();
+                const completed = await completeCollectorRun(this.runId, this.leaseToken, {
                     collectedCount: this.goodsData.size,
+                    targetCount, targetReached, completionReason, completionMessage,
+                    ...(this.outcomes.failed || this.outcomes.skipped ? { outcomes: { ...this.outcomes } } : {}),
                     exportedFilePath: this.task.tableFilePath || '',
+                    ...(this.task.exportError ? { exportError: this.task.exportError } : {}),
+                    dedup: { ...this.dedup },
                 });
+                this.completedHandoff = completed?.run?.handoff || completed?.handoff || null;
                 this.runId = '';
                 this.leaseToken = '';
                 this.task.taskStatus = 'completed';
-                this.outputLog('任务完成');
+                this.outputLog(`${completionMessage}；已采集跳过 ${this.dedup.collected} 件，已上架跳过 ${this.dedup.listed} 件，正在采集跳过 ${this.dedup.collecting} 件；筛选/售罄/下架跳过 ${this.outcomes.skipped} 件，采集失败 ${this.outcomes.failed} 件`);
             }
             catch (error) {
-                if (this.reason === 'cancel' || error?.code === 'COLLECTION_CANCELLED') {
+                if (this.reason === 'cancel' || (this.reason !== 'failed' && error?.code === 'COLLECTION_CANCELLED')) {
                     this.reason = 'cancel';
+                    this.cancellationController.abort(error);
+                    await this.settleProductSaves();
                     await this.cancellationPromise?.catch((cancelError) => {
                         log.error('等待采集任务取消收尾失败', cancelError);
                     });
                     return;
                 }
+                this.reason = 'failed';
+                this.cancellationController.abort(error);
+                await this.settleProductSaves();
+                this.task.lastErrorCode = String(error?.code || 'COLLECTION_FAILED');
+                this.task.lastErrorMessage = String(error?.message || error).slice(0, 500);
+                if (this.runId && !this.leaseToken) this.task.resumeError = { runId: this.runId, code: this.task.lastErrorCode, message: this.task.lastErrorMessage };
+                if (!this.preparedRun) this.task.startError = { code: this.task.lastErrorCode, message: this.task.lastErrorMessage, previousRunId: this.task.currentRunId || '' };
+                this.keepDiagnosticWindow = /^(?:ZONGZI_(?:ACCESS_BLOCKED|HTTP_ERROR|NETWORK_ERROR|REQUEST_TIMEOUT|PAGE_UNAVAILABLE|RESPONSE_INVALID)|COLLECTION_NO_VALID_PRODUCTS)$/.test(this.task.lastErrorCode);
                 log.error('采集任务执行失败', error);
+                await this.reWriteTable();
+                this.outputLog(`采集失败：${error?.message || error}`);
                 if (this.runId && this.leaseToken) {
-                    await failCollectorRun(this.runId, this.leaseToken, error).catch((runError) => {
-                        log.error('同步采集失败状态失败', runError);
-                    });
+                    await this.flushRunProgress()
+                        .then(() => failCollectorRun(this.runId, this.leaseToken, error))
+                        .catch((runError) => {
+                            log.error('同步采集失败状态失败', runError);
+                        });
                     this.runId = '';
                     this.leaseToken = '';
                 }
@@ -236,6 +399,7 @@ export class Collection {
                 this.outputLog(`采集失败：${error}`);
             }
             finally {
+                await this.settleProductSaves();
                 if (this.task.taskStatus === 'running') {
                     switch (this.reason) {
                         case 'cancel':
@@ -254,7 +418,9 @@ export class Collection {
                 }
                 log.info(`ID：${this.task._id} 名称：${this.task.taskName}任务结束，最终状态：${this.task.taskStatus}，开始清理工作`);
                 this.stopHeartbeat();
-                this.mainWindowService.destroy();
+                clearTimeout(this.eventFlushTimer);
+                this.eventFlushTimer = null;
+                this.mainWindowService.destroy({ keepOpen: this.keepDiagnosticWindow && this.reason !== 'cancel' });
                 // this.clearStatus(true)
                 // 清理后手动触发 GC
                 memoryMonitor.forceGC();
@@ -271,64 +437,55 @@ export class Collection {
     /**
      * 分类选品模式
     */
-    async categoryMode(targetCount) {
-        const dataList = await this.getCategoryGoodsList();
-        const targetList = await this.parseService.ozonDetailListParser(dataList);
-        this.outputLog('获取商品成功');
-        await this.categoryProcess(targetList);
+    async categoryMode(targetCount, firstPage = null) {
+        let dataList = firstPage || await this.getCategoryGoodsList();
         try {
             while (this.targetData < targetCount) {
                 if (this.reason && this.reason !== 'success')
                     throw new Error('任务终止');
-                if (this.reason === 'success')
-                    break;
-                if (this.taskQueueService.getTaskCount() > 20) {
-                    this.outputLog(`任务队列数据源充足，等待处理中。分类总数量${this.total}`);
-                    await new Promise((resolve) => setTimeout(resolve, 2000));
-                    continue;
-                }
-                const dataList = await this.getCategoryGoodsList();
+                if (!await this.waitForProductSaveCapacity()) break;
+                // Fetch at most one page ahead. No new SKU claims or detail filtering until this page drains.
+                const nextPage = !this.categoryExhausted && this.reason !== 'success'
+                    ? this.getCategoryGoodsList().then(items => ({ items }), error => ({ error })) : null;
                 const targetList = await this.parseService.ozonDetailListParser(dataList);
-                this.outputLog(`获取商品成功。分类总数量${this.total}`);
+                this.outputLog(`获取商品成功。分类总数量${this.total ?? '未知'}`);
                 await this.categoryProcess(targetList);
+                if (this.targetData >= targetCount || !nextPage) break;
+                this.cancellationController.signal.throwIfAborted();
+                const next = await nextPage;
+                if (next.error) throw next.error;
+                dataList = next.items;
             }
+            await this.waitForAllTasks();
             if (!this.reason)
                 this.reason = 'success';
         }
         catch (error) {
-            return error;
+            if (this.reason !== 'cancel') this.reason = 'failed';
+            throw error;
         }
     }
     /**
      * 分类模式处理
       */
     async categoryProcess(list) {
-        const filterData = await this.dataProcessService.filterData(list, this.task, 'base');
+        const filterData = Number(this.task.aiSelectType) === 0
+            ? await this.dataProcessService.aiFilterData(list, 'base')
+            : await this.dataProcessService.filterData(list, this.task, 'base');
+        if (this.dataProcessService.missingFields?.size)
+            this.outputLog(`筛选跳过缺少指标的商品：${[...this.dataProcessService.missingFields].join('、')}`);
         if (!filterData.length)
             return;
-        const baseData = [];
-        const apiList = [];
-        for (const goods of filterData) {
-            if (this.targetData >= (this.task.targetCount || Infinity))
-                return;
-            apiList.push(this.getHtmlDetailData(goods));
-        }
-        const res = await Promise.all(apiList);
-        res.forEach(item => {
-            if (item.price) {
-                const url = `https://www.ozon.ru/product/${item.id}`;
-                baseData.push({ href: url, ...item });
-            }
-        });
-        const targetData = await this.dataProcessService.filterData(baseData, this.task, 'detail');
-        this.process += targetData.length;
-        if (targetData.length &&
-            this.reason !== 'cancel' &&
-            this.reason !== 'failed' &&
-            this.targetData < (this.task.targetCount || Infinity)) {
-            this.taskQueueService.addTask(targetData);
-            this.taskQueueService.startProcessing();
-            this.outputLog('处理符合筛选条件的商品中');
+        const candidates = await this.selectNewCandidates(filterData);
+        if (!candidates.length) return;
+        // Both collection modes use the same per-SKU queue, filters and persistence.
+        this.process += candidates.length;
+        this.taskQueueService.addTask(candidates.map(({ storefrontPrice, ...item }) => item));
+        this.outputLog('处理符合筛选条件的商品中');
+        await this.taskQueueService.startProcessing();
+        if (this.detailFailure) {
+            await this.settleProductSaves();
+            throw this.detailFailure;
         }
     }
     /**
@@ -342,22 +499,17 @@ export class Collection {
             sortKey: this.task.sortKey || 'sum_gmv_desc',
             limit: this.query.pageSize,
             offset: (this.query.pageNo - 1) * this.query.pageSize,
+            onStatus: this.sellerStatus,
             expectedContext: this.sellerContext,
+            signal: this.cancellationController.signal,
         });
         const list = data.items || [];
-        if (!data.total || list.length < this.query.pageSize)
-            this.reason = 'success';
+        const hasTotal = data.total !== null && data.total !== undefined;
+        this.categoryExhausted = list.length === 0 || (hasTotal
+            && (this.query.pageNo - 1) * this.query.pageSize + list.length >= data.total);
         this.query.pageNo += 1;
-        this.query.maxPage = Math.max(1, Math.ceil(data.total / this.query.pageSize));
+        this.query.maxPage = hasTotal ? Math.max(1, Math.ceil(data.total / this.query.pageSize)) : null;
         this.total = data.total;
-        list.forEach((item) => {
-                if (item.brand === 'без бренда')
-                    item.brand = '';
-                if (item.nullableCreateDate) {
-                    item.nullableCreateDate = dayjs(item.nullableCreateDate).format('YYYY-MM-DD');
-                    item.releaseDate = dayjs().diff(dayjs(item.nullableCreateDate), 'day');
-                }
-        });
         await Promise.allSettled(list.map((item) => saveCollectorMarketSnapshot({
             taskId: this.task._id,
             runId: this.runId,
@@ -394,11 +546,94 @@ export class Collection {
         }));
         return list;
     }
+    async retryFailedProducts(runId = this.task.retryFromRunId) {
+        const rows = await listCollectorOutcomeItems(runId, 'FAILED');
+        const items = rows.map(row => {
+            const id = String(row.sourceSku || row.sourceKey);
+            if (runId === this.runId) this.retryingRunSkus.add(id);
+            if (row.id) {
+                this.mediaRetryItems.set(id, { runId, itemId: row.id, sourceKey: String(row.sourceKey || id),
+                    mediaObjects: row.rawPayload?.mediaObjects || [], mediaIntents: row.rawPayload?.mediaIntents || [] });
+            }
+            this.parseService.ozonGoodsData.add(id);
+            return { id, href: `https://www.ozon.ru/product/${id}/` };
+        }).filter(item => !this.goodsData.has(item.id) && !this.outcomeSkus.has(item.id));
+        this.outputLog(`仅重试原运行失败的 ${items.length} 件商品`);
+        // Refresh Seller metrics for these exact SKUs; do not reuse stale failure snapshots or scan new categories.
+        for (let offset = 0; offset < items.length; offset += 30) {
+            this.cancellationController.signal.throwIfAborted();
+            if (!await this.waitForProductSaveCapacity()) break;
+            await this.processData(await this.selectNewCandidates(items.slice(offset, offset + 30)));
+        }
+        await this.waitForAllTasks();
+        if (!this.reason && runId !== this.runId) this.reason = 'success';
+    }
+
+    sellerStatus = ({ message }) => {
+        if (message && !this.cancellationController.signal.aborted) this.outputLog(message);
+    };
+
+    async recordDetailOutcome(item, error, attempts = 1) {
+        const sku = item.collectorGroupAnchorSku || this.skuOf(item);
+        if (this.outcomeSkus.has(sku)) return;
+        const filtered = error?.code === 'COLLECTION_DETAIL_FILTERED';
+        const skipped = (filtered || error?.code === 'ZONGZI_PRODUCT_UNAVAILABLE') && !item.collectorGroupAnchorSku;
+        const message = `${item.collectorGroupAnchorSku ? `整组中的 SKU ${this.skuOf(item)} 未完成：` : ''}${String(error?.message || '商品详情读取失败')}`.slice(0, 500);
+        try {
+            await appendCollectorRunItem(this.runId, this.leaseToken, {
+                source: 'OZON', sourceKey: sku, sourceSku: sku,
+                status: skipped ? 'FILTERED_OUT' : 'FAILED',
+                ...(this.retryingRunSkus.has(sku) ? { retry: true } : {}),
+                errorCode: error?.code || 'ZONGZI_DETAIL_FAILED', errorMessage: message,
+                attemptCount: Math.max(1, attempts),
+                rawPayload: { id: sku, nameLabel: String(item.nameLabel || item.name || ''), href: `https://www.ozon.ru/product/${sku}/`,
+                    ...(item.collectorGroupId ? { collectorGroupId: item.collectorGroupId, failedSku: this.skuOf(item) } : {}) },
+                filterResult: { accepted: false, reason: filtered ? 'DETAIL_FILTERED' : skipped ? 'PRODUCT_UNAVAILABLE' : 'DETAIL_FAILED' },
+            });
+        }
+        catch (saveError) {
+            this.detailFailure ||= saveError;
+            throw saveError;
+        }
+        this.outcomeSkus.add(sku);
+        if (skipped && this.retryingRunSkus.delete(sku)) this.outcomes.failed = Math.max(0, this.outcomes.failed - 1);
+        if (skipped || !this.retryingRunSkus.has(sku)) this.outcomes[skipped ? 'skipped' : 'failed']++;
+        this.outputLog(`商品 ${sku} ${skipped ? '跳过' : '未采集'}：${message}`);
+    }
+
+    async readProductDetail(item, initialPage = null) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            this.cancellationController.signal.throwIfAborted();
+            try {
+                const detail = await this.getHtmlDetailData(item, attempt === 1 ? initialPage : null);
+                this.detailFailureStreak = 0;
+                return detail;
+            }
+            catch (error) {
+                if (this.cancellationController.signal.aborted || /(?:ACCOUNT|CONTEXT|CANCELLED|WINDOW_CLOSED)/.test(error?.code || '')) throw error;
+                const unavailable = error?.code === 'ZONGZI_PRODUCT_UNAVAILABLE';
+                const accessFailure = error?.code === 'ZONGZI_ACCESS_BLOCKED' || [401, 403, 429].includes(Number(error?.status));
+                const retryable = !accessFailure && /^(?:ZONGZI_(?:NETWORK_ERROR|REQUEST_TIMEOUT|DETAIL_INCOMPLETE|RESPONSE_INVALID)|TIMEOUT)$/.test(error?.code || '')
+                    || !accessFailure && error?.code === 'ZONGZI_HTTP_ERROR' && Number(error.status) >= 500;
+                if (retryable && attempt < 2 && !this.detailFailure) {
+                    this.outputLog(`商品 ${this.skuOf(item)} 暂未读取完整，重试一次`);
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    this.cancellationController.signal.throwIfAborted();
+                    if (!this.detailFailure) continue;
+                }
+                if (unavailable || item.collectorGroupAnchorSku && error?.code === 'ZONGZI_DETAIL_INCOMPLETE') this.detailFailureStreak = 0;
+                else if (accessFailure || ++this.detailFailureStreak >= 3) this.detailFailure ||= error;
+                await this.recordDetailOutcome(item, error, attempt);
+                return null;
+            }
+        }
+    }
+
     /**
      * 获取详情页数据
      */
-    async getHtmlDetailData(obj) {
-        const res = await this.mainWindowService.getDataByApi(obj._id);
+    async getHtmlDetailData(obj, initialPage = null) {
+        const res = await this.mainWindowService.getDataByApi(obj._id || obj.id || obj.sku, initialPage);
         const domain = await this.mainWindowService.getDomain();
         this.outputLog(`获取商品详情页数据`);
         return this.parseService.ozonDetailParse(res, domain, obj);
@@ -416,9 +651,13 @@ export class Collection {
                     return true;
                 const data = item?.sellers?.sellers?.filter((item) => {
                     item.ratingCount = item?.rating?.totalScore;
-                    item.priceNumber = item?.price?.cardPrice?.price?.replace(/[^\d.]/g, '');
+                    const price = parseOzonMoney(item?.price?.cardPrice?.price);
+                    item.priceNumber = price ? Number(price.amount) : undefined;
+                    item.priceCurrency = price?.currencyCode;
                     return item.ratingCount > 4;
-                }).toSorted((a, b) => b.ratingCount - a.ratingCount).toSorted((a, b) => b.priceNumber - a.priceNumber).slice(0, targetShopCount) || [];
+                }).toSorted((a, b) => b.ratingCount - a.ratingCount).toSorted((a, b) =>
+                    a.priceCurrency && a.priceCurrency === b.priceCurrency ? b.priceNumber - a.priceNumber : 0
+                ).slice(0, targetShopCount) || [];
                 for (const sellers of data) {
                     this.reason = undefined;
                     if (this.targetData >= (this.task.targetCount || Infinity) || this.expendShopCount >= this.task.expendShopCount || (this.reason === 'cancel' || this.reason === 'failed'))
@@ -460,7 +699,7 @@ export class Collection {
         if (this.parseService.getDataCount())
             return;
         const error = new Error('Ozon 商品列表为空，未把本次任务误记为成功');
-        error.code = 'OZON_PRODUCT_LIST_EMPTY';
+        error.code = 'ZONGZI_PRODUCT_LIST_EMPTY';
         throw error;
     }
 
@@ -471,17 +710,18 @@ export class Collection {
             let bottomOutCount = 0;
             const firstPage = await this.mainWindowService.getHTML();
             if (firstPage.diagnostics?.blocked) {
-                const error = new Error('Ozon 返回访问拦截页，请关闭 VPN、切换网络或稍后重试');
-                error.code = 'OZON_ACCESS_BLOCKED';
+                const error = new Error('Ozon 返回访问受限或验证页面，请在采集助手窗口确认页面状态后重试');
+                error.code = 'ZONGZI_ACCESS_BLOCKED';
                 throw error;
             }
             const { html, domain } = firstPage;
-            const goodsList = await this.parseService.ozonListParser(html, domain);
+            const goodsList = await this.parseService.ozonListParser(html, domain, items => this.selectNewCandidates(items), { deferOffers: true });
             if (goodsList.length)
                 await this.processData(goodsList);
             while (this.targetData < targetCount) {
                 if (this.reason && this.reason !== 'success')
                     throw new Error('任务终止');
+                if (!await this.waitForProductSaveCapacity()) break;
                 if (this.taskQueueService.getTaskCount() > 20) {
                     this.outputLog('任务队列数据源充足，等待处理中');
                     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -489,19 +729,15 @@ export class Collection {
                 }
                 if (scrollAttempts >= maxScrollAttempts) {
                     this.assertProductsCollected();
-                    if (!this.reason)
-                        this.reason = 'success';
                     this.outputLog('尝试获取商品达到最大次数');
                     log.info(`${this.task.taskName}-10次无法获取到商品数据，结束任务`);
-                    return;
+                    break;
                 }
                 if (bottomOutCount >= 3) {
                     this.assertProductsCollected();
-                    if (!this.reason)
-                        this.reason = 'success';
                     this.outputLog('已滚动至页面底部');
                     log.info(`${this.task.taskName}-滚动至底部3次，结束任务`);
-                    return;
+                    break;
                 }
                 await new Promise((resolve) => setTimeout(resolve, 2000));
                 this.outputLog(`滚动页面加载数据中，(${scrollAttempts}/${maxScrollAttempts})，已收集${this.parseService.getDataCount()}`);
@@ -514,20 +750,24 @@ export class Collection {
                 }
                 const page = await this.mainWindowService.getHTML();
                 if (page.diagnostics?.blocked) {
-                    const error = new Error('Ozon 在采集过程中返回访问拦截页，请关闭 VPN、切换网络或稍后重试');
-                    error.code = 'OZON_ACCESS_BLOCKED';
+                    const error = new Error('Ozon 在采集过程中返回访问受限或验证页面，请确认页面状态后重试');
+                    error.code = 'ZONGZI_ACCESS_BLOCKED';
                     throw error;
                 }
                 const { html, domain } = page;
                 if (!html)
                     continue;
-                const goodsList = await this.parseService.ozonListParser(html, domain);
-                if (goodsList.length) {
+                const seenBefore = this.parseService.getDataCount();
+                const goodsList = await this.parseService.ozonListParser(html, domain, items => this.selectNewCandidates(items), { deferOffers: true });
+                if (this.parseService.getDataCount() > seenBefore) {
                     scrollAttempts = 0;
                     bottomOutCount = 0;
+                }
+                if (goodsList.length) {
                     await this.processData(goodsList);
                 }
             }
+            await this.waitForAllTasks();
             this.assertProductsCollected();
             if (!this.reason)
                 this.reason = 'success';
@@ -549,9 +789,13 @@ export class Collection {
             this.outputLog(`获取商品数据中`);
             if (this.reason === undefined)
                 this.process += baseDataList.length;
-            const filterDataList = !this.task.aiSelectType
-                ? await this.dataProcessService.aiFilterData(baseDataList)
-                : await this.dataProcessService.filterData(baseDataList, this.task);
+            const filterDataList = Number(this.task.aiSelectType) === 0
+                ? await this.dataProcessService.aiFilterData(baseDataList, 'base')
+                : await this.dataProcessService.filterData(baseDataList, this.task, 'base');
+            if (this.dataProcessService.missingFields?.size)
+                this.outputLog(`筛选跳过缺少指标的商品：${[...this.dataProcessService.missingFields].join('、')}`);
+            const accepted = new Set(filterDataList.map(item => this.skuOf(item)));
+            await this.releaseCandidates(goodsList.filter(item => !accepted.has(this.skuOf(item))));
             this.outputLog(`筛选商品条件中`);
             const data = baseDataList.filter((item) => !filterDataList.map((item) => item.id).includes(item.id));
             for (const item of data) {
@@ -570,11 +814,20 @@ export class Collection {
                 this.reason !== 'failed' &&
                 this.targetData < (this.task.targetCount || Infinity)) {
                 this.taskQueueService.addTask(filterDataList);
-                this.taskQueueService.startProcessing();
                 this.outputLog('处理符合筛选条件的商品中');
+                await this.taskQueueService.startProcessing();
+                if (this.detailFailure) {
+                    await this.settleProductSaves();
+                    throw this.detailFailure;
+                }
             }
         }
         catch (error) {
+            if (this.reason !== 'cancel' && error?.code !== 'COLLECTION_CANCELLED') {
+                this.reason = 'failed';
+                if (this.detailFailure)
+                    this.outputLog(`商品处理未全部完成：${this.taskQueueService.getFailedTasksCount()} 件处理失败，已成功保存 ${this.targetData} 件`);
+            }
             log.error('商品基础数据处理失败', error);
             throw error;
         }
@@ -582,6 +835,113 @@ export class Collection {
     /**
      * 更改任务状态
      */
+    skuOf(item) {
+        return String(item.sku || item._id || item.id || '').trim();
+    }
+
+    savedSkuCount(item) {
+        const variants = item.variantData?.variants ?? item.variants;
+        return Array.isArray(variants) && variants.length ? variants.length : 1;
+    }
+    async restoreSavedResults(run) {
+        this.previousScanCount = Number(run.progress?.totalCount || 0);
+        this.outcomes = { skipped: Number(run.progress?.filteredCount || 0), failed: Number(run.progress?.failedCount || 0) };
+        for (const [status, count] of [['FAILED', this.outcomes.failed], ['FILTERED_OUT', this.outcomes.skipped]]) {
+            if (status === 'FAILED' && this.resumeRun) continue;
+            if (!count) continue;
+            const rows = await listCollectorOutcomeItems(this.runId, status);
+            for (const row of rows) {
+                const sku = String(row.sourceSku || row.sourceKey);
+                this.outcomeSkus.add(sku);
+                this.parseService.ozonGoodsData.add(sku);
+            }
+        }
+        if (Number(run.progress?.qualifiedCount || 0) > 0) {
+            const saved = [];
+            for (let offset = 0; ; offset += 500) {
+                const page = await listCollectorRunItems(this.runId, { status: 'QUALIFIED', limit: 500, offset });
+                saved.push(...page);
+                if (page.length < 500) break;
+            }
+            for (const row of saved) {
+                const item = { ...row.rawPayload, ...row.exportData };
+                const sku = String(row.sourceSku || row.sourceKey);
+                this.goodsData.set(item.collectorGroupId || sku, item);
+                this.parseService.ozonGoodsData.add(sku);
+                if (row.sourceKey && row.rawPayload?.mediaPreparation?.status === 'ready') {
+                    // A save response may have been lost before the app closed.
+                    // This account-scoped QUALIFIED read is its durable receipt.
+                    try { await this.prepareMediaFile.acknowledge?.({ ...this.mediaCacheOwnership(item),
+                        cacheOwner: { runId: this.runId, sourceKey: String(row.sourceKey) } }); }
+                    catch (error) { log.warn('已保存采集结果的本机暂存清理未完成', error?.code || error?.message); }
+                }
+            }
+            this.targetData = this.goodsData.size;
+            this.collectedSkuCount = [...this.goodsData.values()].reduce((sum, item) => sum + this.savedSkuCount(item), 0);
+            await this.excelService.DeleteFilled();
+            if (this.targetData) {
+                this.writeError = !(await this.excelService.saveExcel([...this.goodsData.values()].flatMap(item => this.exportRows(item))));
+                this.task.tableFilePath = await this.excelService.getFilePath();
+            }
+        }
+        if (Object.values(run.resultSummary?.dedup || {}).some(Number)) {
+            for (let afterId = 0; ;) {
+                const events = await listCollectorRunDuplicateEvents(this.runId, afterId);
+                for (const event of events) for (const item of event.payload?.items || []) this.duplicateSkus.set(item.sku, item);
+                if (events.length < 500) break;
+                afterId = events.at(-1).id;
+            }
+            const keys = { COLLECTED: 'collected', LISTED: 'listed', COLLECTING: 'collecting' };
+            for (const item of this.duplicateSkus.values()) this.dedup[keys[item.state]]++;
+        }
+        if (this.targetData) this.outputLog(`已恢复本轮成功保存的 ${this.targetData} 件商品，继续采集剩余数量`);
+    }
+
+    getScannedCount() {
+        return Math.max(this.previousScanCount, this.isCleared ? this.goodsNum : this.parseService.getDataCount());
+    }
+
+    async selectNewCandidates(items) {
+        if (!items.length) return [];
+        const unique = new Map(items.map(item => [this.skuOf(item), item]));
+        const skus = [...unique.keys()], selected = [];
+        for (let offset = 0; offset < skus.length; offset += 500) {
+            const batch = skus.slice(offset, offset + 500);
+            const response = await claimCollectorRunSkus(this.runId, this.leaseToken, batch);
+            if (!Array.isArray(response?.items) || response.items.length !== batch.length) {
+                throw new Error('服务端未返回完整查重结果，请更新后端后重试');
+            }
+            await this.recordDuplicateSkus(response.items.filter(item => item.state !== 'CLAIMED'));
+            selected.push(...response.items.filter(item => item.state === 'CLAIMED').map(item => unique.get(item.sku)));
+        }
+        return selected;
+    }
+
+    async recordDuplicateSkus(items) {
+        if (!items.length) return;
+        const keys = { COLLECTED: 'collected', LISTED: 'listed', COLLECTING: 'collecting' };
+        const changed = [];
+        for (const item of items) {
+            const previous = this.duplicateSkus.get(item.sku);
+            if (previous?.state === item.state) continue;
+            if (previous) this.dedup[keys[previous.state]]--;
+            this.duplicateSkus.set(item.sku, item);
+            this.dedup[keys[item.state]]++;
+            changed.push(item);
+        }
+        if (!changed.length) return;
+        this.outputLog(`去重：已采集跳过 ${this.dedup.collected} 件，已上架跳过 ${this.dedup.listed} 件，正在采集跳过 ${this.dedup.collecting} 件；可在“查看跳过商品”复用原记录`);
+        await this.queueRunEvent({ eventType: 'SKU_DUPLICATES', level: 'INFO',
+            message: `本批跳过 ${changed.length} 个重复商品`, payload: { items: changed } }, true);
+    }
+
+    async releaseCandidates(items) {
+        const skus = [...new Set(items.map(item => this.skuOf(item)))];
+        for (let offset = 0; offset < skus.length; offset += 500) {
+            await releaseCollectorRunSkus(this.runId, this.leaseToken, skus.slice(offset, offset + 500));
+        }
+    }
+
     async updateStatus(status) {
         let uuid = this.uuid;
         if (this.task.taskStatus === status || uuid !== this.uuid)
@@ -599,24 +959,29 @@ export class Collection {
     async syncStatusToServer(status) {
         if (!this.runId)
             return;
-        await appendCollectorRunEvent(this.runId, {
+        await this.queueRunEvent({
             eventType: 'STATUS_CHANGED',
             message: `任务状态：${status}`,
             payload: { status },
             actorType: 'DESKTOP',
-        }).catch((error) => log.error('同步任务状态到 sonli 失败', error));
+        }, true).catch((error) => log.error('同步任务状态到 sonli 失败', error));
     }
     /**
      * 日志输出
      */
-    outputLog(taskLog) {
+    outputLog(taskLog, { preserveProgress = false } = {}) {
         let uuid = this.uuid;
         if (this.uuid !== uuid)
             return;
-        this.task.progress = {
+        this.task.lastLog = taskLog;
+        if (!preserveProgress) this.task.progress = {
             current: this.process < 0 ? 0 : this.process,
-            total: this.isCleared ? this.goodsNum : this.parseService.getDataCount(),
+            total: this.getScannedCount(),
             totalCount: this.targetData,
+            skuCount: this.collectedSkuCount,
+            mediaPreparingCount: this.pendingProductSaves,
+            dedup: { ...this.dedup },
+            ...(this.outcomes.failed || this.outcomes.skipped ? { outcomes: { ...this.outcomes } } : {}),
         };
         if (this.mainWindow && !this.mainWindow.isDestroyed()) {
             this.mainWindow.webContents.send('task-progress', {
@@ -625,7 +990,7 @@ export class Collection {
             });
         }
         if (this.runId) {
-            appendCollectorRunEvent(this.runId, {
+            this.queueRunEvent({
                 eventType: 'DESKTOP_LOG',
                 level: 'INFO',
                 message: String(taskLog || '').slice(0, 2000),
@@ -633,159 +998,406 @@ export class Collection {
             }).catch((error) => log.warn('同步任务日志到 sonli 失败', error?.message || error));
         }
     }
+    queueRunEvent(event, critical = false) {
+        if (!this.runId) return Promise.resolve();
+        this.runEvents.push({ ...event, payload: event.payload ? structuredClone(event.payload) : undefined });
+        if (critical || this.runEvents.length >= 50) return this.flushRunEvents();
+        if (!this.eventFlushTimer) {
+            this.eventFlushTimer = setTimeout(() => {
+                this.eventFlushTimer = null;
+                this.flushRunEvents().catch(error => log.warn('批量采集日志同步失败', error?.message || error));
+            }, 1000);
+            this.eventFlushTimer.unref?.();
+        }
+        return Promise.resolve();
+    }
+
+    flushRunEvents() {
+        clearTimeout(this.eventFlushTimer);
+        this.eventFlushTimer = null;
+        if (this.eventFlushPromise) return this.eventFlushPromise;
+        const runId = this.runId;
+        this.eventFlushPromise = (async () => {
+            while (runId && this.runEvents.length) {
+                const batch = this.runEvents.slice(0, this.capabilities.eventBatch === true ? 50 : 1);
+                if (this.capabilities.eventBatch === true) await appendCollectorRunEvents(runId, batch);
+                else await appendCollectorRunEvent(runId, batch[0]);
+                this.runEvents.splice(0, batch.length);
+            }
+            delete this.task.logSyncError;
+        })().catch(error => {
+            this.task.logSyncError = String(error?.message || error);
+            throw error;
+        }).finally(() => { this.eventFlushPromise = null; });
+        return this.eventFlushPromise;
+    }
     /**
      * 处理单个任务
      */
     taskHandle = async (task) => {
+        if (this.reason === 'cancel' || this.reason === 'failed' || this.isCleared
+            || this.targetData >= (this.task.targetCount || Infinity))
+            return;
+        if (!await this.waitForProductSaveCapacity()) return;
+        if (this.detailFailure) {
+            await this.recordDetailOutcome(task, Object.assign(new Error('本轮访问异常已暂停，尚未读取此商品；可修复连接后重试'), { code: 'COLLECTION_DETAIL_DEFERRED' }), 0);
+            this.process = Math.max(0, this.process - 1);
+            return;
+        }
         log.info(`${this.task.taskName}-开始处理商品:${task.id}`);
-        let timer;
-        let maxTimer = 120;
-        let countDown = 0;
-        let settled = false;
-        let uuid = this.uuid;
-        const safeReject = (v, reject) => {
-            if (settled)
+        const hasDetail = Object.hasOwn(task, 'storefrontPrice');
+        let detail;
+        try {
+            detail = hasDetail ? task : await this.readProductDetail(task);
+            if (!detail) {
+                this.process = Math.max(0, this.process - 1);
                 return;
-            settled = true;
-            clearInterval(timer);
-            reject(v);
-        };
-        return new Promise(async (resolve, reject) => {
-            try {
-                timer = setInterval(() => {
-                    countDown++;
-                    if (this.reason === 'cancel' || this.reason === 'failed' || countDown >= maxTimer) {
-                        if (this.uuid === uuid)
-                            this.process--;
-                        safeReject(new Error('任务超时'), reject);
-                    }
-                }, 1000);
-                const safeResolve = (v) => {
-                    if (settled)
-                        return;
-                    settled = true;
-                    resolve(v);
-                    if (this.reason != 'cancel' && this.reason !== 'failed' && this.uuid === uuid) {
-                        clearInterval(timer);
-                    }
-                };
-                if (this.targetData >= (this.task.targetCount || Infinity) && this.uuid === uuid) {
-                    safeResolve('任务已完成');
-                    return;
-                }
-                const { link1688, sourcePrice, cover2 } = await this.windowService.createWindow(this.task.sourceType, task.cover);
-                if (this.reason === 'cancel' || this.reason === 'failed' || this.uuid !== uuid) {
-                    safeResolve(new Error('任务已被终止'));
-                    return;
-                }
-                task = {
-                    ...task,
-                    '1688link': link1688,
-                    sourcePrice,
-                    cover2,
-                    myProfitPercent: this.task.myProfitPercent,
-                    rubExpressPrice: this.task.rubExpressPrice,
-                    internalExpress: this.task.internalExpress,
-                };
-                let detailData = await this.dataProcessService.getDetailData({
-                    taskId: this.task._id,
-                    reqDatas: [task],
-                    upMode: this.task.upMode
-                });
-                this.writeQueue.push(detailData);
-                this.writeTable();
-                safeResolve('单个商品处理完成');
             }
-            catch (error) {
-                log.error(error, '单个商品任务失败');
-                safeReject(new Error('单个商品任务失败'), reject);
+        }
+        catch (error) {
+            this.detailFailure ||= error;
+            this.process = Math.max(0, this.process - 1);
+            this.outputLog(`商品 ${task.id} 详情未完成，未采集：${error?.message || error}`);
+            throw error;
+        }
+        if (this.reason === 'cancel' || this.reason === 'failed' || this.isCleared
+            || this.targetData >= (this.task.targetCount || Infinity))
+            return;
+        if (!hasDetail) {
+            const filtering = Number(this.task.aiSelectType) === 0
+                ? this.dataProcessService.aiFilterData([detail], 'detail')
+                : this.dataProcessService.filterData([detail], this.task, 'detail');
+            // Metric evaluation is synchronous; preserve this SKU's diagnostics before another task runs.
+            const missing = [...this.dataProcessService.missingFields];
+            const qualified = await filtering;
+            if (!qualified.length) {
+                await this.recordDetailOutcome(task, Object.assign(new Error(`未通过详情筛选${missing.length ? `：缺少${missing.join('、')}` : ''}`), { code: 'COLLECTION_DETAIL_FILTERED' }));
+                await this.releaseCandidates([task]);
+                this.process = Math.max(0, this.process - 1);
+                this.outputLog(`商品 ${task.id} 未通过详情筛选${missing.length ? `：缺少${missing.join('、')}` : ''}`);
+                return;
             }
-        });
+        }
+        if (this.capturesProductGroups()) {
+            await this.captureProductGroup(detail);
+            return;
+        }
+        const item = this.collectedItem(detail);
+        if (!await this.queueProductSave(item)) this.process = Math.max(0, this.process - 1);
     };
+
+    capturesProductGroups() {
+        const configuration = this.preparedRun ? this.preparedRun.configurationSnapshot?.configuration : this.task;
+        return configuration?.captureScope === 'ALL';
+    }
+
+    collectedItem(detail) {
+        // Filtering is complete. Keep public prices separate from Seller RUB statistics.
+        const price = detail.storefrontPrice?.amount ?? '';
+        const originalPrice = detail.storefrontPrice?.originalAmount ?? '';
+        const item = {
+            ...detail,
+            sellerAnalyticsPriceRub: detail.sellerAnalyticsPriceRub ?? detail.price,
+            analyticsCurrency: 'RUB',
+            price,
+            price1: price,
+            currencyCode: detail.storefrontPrice?.currencyCode || '',
+            oPrice: originalPrice,
+            oPrice1: originalPrice,
+        };
+        // amount may be card-only; only explicit own-SKU labels are black/green pricing evidence.
+        for (const [field, priceField] of [['blackPrice', 'ordinaryAmount'], ['greenPrice', 'bankAmount']]) {
+            const value = detail.storefrontPrice?.[priceField];
+            if (value === undefined || value === null || value === '') delete item[field];
+            else item[field] = value;
+        }
+        delete item.sourceAspects;
+        delete item.collectorGroupAnchorSku;
+        return item;
+    }
+
+    exportRows(item) {
+        return item.captureScope === 'ALL' ? item.variantData.variants : [item];
+    }
+
+    async captureProductGroup(detail) {
+        const anchorSku = this.skuOf(detail), signal = this.cancellationController.signal;
+        const runId = this.runId, leaseToken = this.leaseToken;
+        let group, ownsGroup = false, queued = false;
+        const initialPages = new Map();
+        try {
+            const discovered = await this.mainWindowService.getProductGroup(anchorSku, { initialAspects: detail.sourceAspects, signal, initialPages });
+            signal.throwIfAborted();
+            group = await claimCollectorProductGroup(runId, leaseToken, anchorSku, discovered.skus);
+            if (group?.status === 'COLLECTED' || group?.status === 'COLLECTING') {
+                await this.recordDuplicateSkus([{ sku: anchorSku, state: group.status, collectorGroupId: group.groupId }]);
+                return;
+            }
+            if (!group?.groupId || !Array.isArray(group.skus) || !group.skus.includes(anchorSku))
+                throw new Error('服务端未返回完整商品组，请更新后端后重试');
+            if (group.status !== 'CLAIMED') throw new Error('服务端未确认商品组归属，已停止本组采集');
+            if (this.activeGroupIds.has(group.groupId)) return;
+            this.activeGroupIds.add(group.groupId);
+            ownsGroup = true;
+            const variants = new Map((group.cachedVariants || []).map(({ sourceAspects, sellers, ...row }) => [String(row.sku), row]));
+            const discoveredRows = new Map(discovered.variants.map(row => [row.sku, row]));
+            this.outputLog(`SKU ${anchorSku} 命中条件，采集整组 ${group.skus.length} 个 SKU（已保存 ${variants.size} 个）`);
+            for (const sku of group.skus) {
+                signal.throwIfAborted();
+                if (variants.has(sku)) { initialPages.delete(sku); continue; }
+                const source = { id: sku, sku, href: `https://www.ozon.ru/product/${sku}/`,
+                    collectorGroupAnchorSku: anchorSku, collectorGroupId: group.groupId };
+                if (this.detailFailure) {
+                    await this.recordDetailOutcome(source, Object.assign(new Error('本轮访问异常已暂停，可稍后继续补全整组'), { code: 'COLLECTION_DETAIL_DEFERRED' }), 0);
+                    continue;
+                }
+                const initialPage = initialPages.get(sku);
+                initialPages.delete(sku);
+                const ownDetail = sku === anchorSku ? detail : await this.readProductDetail(source, initialPage);
+                if (!ownDetail) continue;
+                signal.throwIfAborted();
+                if (!ownDetail.storefrontPrice?.amount || !ownDetail.storefrontPrice.currencyCode) {
+                    await this.recordDetailOutcome(source, Object.assign(new Error('未读取到本 SKU 的价格和币种'), { code: 'ZONGZI_DETAIL_INCOMPLETE' }));
+                    continue;
+                }
+                const item = this.collectedItem(ownDetail);
+                const variant = { ...item, id: sku, sku, name: item.name || item.nameLabel,
+                    image: item.primaryImage || item.images?.[0], link: source.href,
+                    priceCurrency: item.currencyCode,
+                    ...(item.blackPrice != null ? { blackPriceCurrency: item.currencyCode } : {}),
+                    ...(item.greenPrice != null ? { greenPriceCurrency: item.currencyCode } : {}),
+                    aspectValues: discoveredRows.get(sku)?.aspectValues || {},
+                };
+                delete variant.sellers;
+                await saveCollectorGroupVariant(runId, leaseToken, group.groupId, anchorSku, variant);
+                variants.set(sku, variant);
+            }
+            if (group.skus.some(sku => !variants.has(sku))) return;
+            if (this.reason === 'cancel' || this.reason === 'failed' || this.isCleared
+                || this.targetData >= (this.task.targetCount || Infinity)) return;
+            const item = { ...variants.get(anchorSku), sellers: detail.sellers, collectorGroupId: group.groupId, captureScope: 'ALL',
+                variantData: { expectedSkus: group.skus, variants: group.skus.map(sku => variants.get(sku)) } };
+            queued = await this.queueProductSave(item, async completed => {
+                // Inline legacy saves can reject after this callback has finalized ownership.
+                queued = true;
+                this.activeGroupIds.delete(group.groupId);
+                if (!completed) await releaseCollectorProductGroup(runId, leaseToken, group.groupId, anchorSku).catch(error => {
+                    if (!signal.aborted) throw error;
+                });
+            });
+        }
+        catch (error) {
+            if (signal.aborted || /(?:ACCOUNT|CONTEXT|CANCELLED|WINDOW_CLOSED)/.test(error?.code || '') || !String(error?.code || '').startsWith('ZONGZI_')) {
+                this.detailFailure ||= error;
+                throw error;
+            }
+            if (error.code === 'ZONGZI_ACCESS_BLOCKED' || [401, 403, 429].includes(Number(error.status)) || ++this.detailFailureStreak >= 3)
+                this.detailFailure ||= error;
+            await this.recordDetailOutcome({ ...detail, collectorGroupAnchorSku: anchorSku, collectorGroupId: group?.groupId }, error);
+        }
+        finally {
+            if (!queued) this.process = Math.max(0, this.process - 1);
+            if (ownsGroup && !queued) {
+                this.activeGroupIds.delete(group.groupId);
+                await releaseCollectorProductGroup(runId, leaseToken, group.groupId, anchorSku).catch(error => {
+                    if (!signal.aborted) throw error;
+                });
+            }
+        }
+    }
     /**
      * 写入表格
      */
+    async waitForProductSaveCapacity() {
+        const signal = this.cancellationController.signal, target = this.task.targetCount || Infinity;
+        while (this.targetData < target && (this.pendingProductSaves >= this.taskQueueService.maxConcurrency
+            || this.targetData + this.pendingProductSaves >= target)) {
+            signal.throwIfAborted();
+            if (this.reason === 'failed' || this.isCleared) return false;
+            await Promise.race(this.productSavePromises);
+        }
+        signal.throwIfAborted();
+        return this.targetData < target && this.reason !== 'failed' && !this.isCleared;
+    }
+
+    async queueProductSave(item, onSettled) {
+        // Recheck after the await: several finished details may wake for one slot.
+        do {
+            if (!await this.waitForProductSaveCapacity()) return false;
+        } while (this.pendingProductSaves >= this.taskQueueService.maxConcurrency
+            || this.targetData + this.pendingProductSaves >= (this.task.targetCount || Infinity));
+        const signal = this.cancellationController.signal;
+        signal.throwIfAborted();
+        this.pendingProductSaves++;
+        let saveError;
+        const failed = error => {
+            saveError ||= error;
+            if (signal.aborted) return;
+            this.detailFailure ||= error;
+            this.reason = 'failed';
+            this.cancellationController.abort(error);
+        };
+        const saving = Promise.resolve().then(async () => {
+            let completed = false;
+            try { completed = await this.saveCollectedItem(item); }
+            catch (error) { failed(error); }
+            finally {
+                try { await onSettled?.(completed); }
+                catch (error) { failed(error); }
+                this.pendingProductSaves--;
+                this.productSavePromises.delete(saving);
+                this.process = Math.max(0, this.process - 1);
+                if (!signal.aborted) this.outputLog(`商品 ${this.skuOf(item)} ${completed ? '素材与资料已保存' : '素材待重试'}，还有 ${this.pendingProductSaves} 组素材处理中`);
+            }
+        });
+        this.productSavePromises.add(saving);
+        this.outputLog(`商品 ${this.skuOf(item)} 详情已采集，开始准备素材（${this.pendingProductSaves} 组处理中）`);
+        // URL-only backends retain their existing inline save behavior.
+        if (this.capabilities.mediaDirectUploadV1 !== true) {
+            await saving;
+            if (saveError) throw saveError;
+        }
+        return true;
+    }
+
+    async settleProductSaves() {
+        while (this.productSavePromises.size) await Promise.all([...this.productSavePromises]);
+    }
+
+    async saveCollectedItem(item) {
+        const signal = this.cancellationController.signal;
+        const uuid = this.uuid;
+        signal.throwIfAborted();
+        await this.prepareRunItemMedia(item);
+        signal.throwIfAborted();
+        if (this.uuid !== uuid || this.reason === 'cancel' || this.reason === 'failed' || this.isCleared) return false;
+        this.writeQueue.push([item]);
+        await this.writeTable();
+        return this.goodsData.has(item.collectorGroupId || item.id);
+    }
+
     async writeTable() {
         const uuid = this.uuid;
-        if (this.isWrite)
-            return;
+        if (this.writePromise)
+            return this.writePromise;
         this.isWrite = true;
-        while (this.writeQueue.length) {
-            if (this.targetData < (this.task.targetCount || Infinity) &&
-                (this.reason === 'success' || this.reason === undefined) &&
-                this.uuid === uuid) {
-                const data = this.writeQueue.shift();
-                const result = await this.excelService.saveExcel(data);
-                if (data.length) {
-                    this.targetData++;
-                    this.goodsData.set(data[0]?.id, data?.[0]);
-                    await this.persistRunItem(data[0]);
+        this.writePromise = Promise.resolve().then(async () => {
+        try {
+            while (this.writeQueue.length) {
+                if (this.targetData < (this.task.targetCount || Infinity) &&
+                    (this.reason === 'success' || this.reason === undefined) &&
+                    this.uuid === uuid) {
+                    const data = this.writeQueue.shift();
+                    let result = true;
+                    if (data.length && await this.persistRunItem(data[0])) {
+                        const key = data[0].collectorGroupId || data[0].id;
+                        const previous = this.goodsData.get(key);
+                        if (!previous) this.targetData++;
+                        this.collectedSkuCount += this.savedSkuCount(data[0]) - (previous ? this.savedSkuCount(previous) : 0);
+                        this.goodsData.set(key, data[0]);
+                        result = await this.excelService.saveExcel(this.exportRows(data[0]));
+                    }
+                    if (!result)
+                        this.writeError = true;
+                    if (!this.task.tableFilePath)
+                        this.task.tableFilePath = await this.excelService.getFilePath();
+                    this.outputLog('单个商品处理完成');
                 }
-                this.process--;
-                if (!result)
-                    this.writeError = true;
-                if (!this.task.tableFilePath)
-                    this.task.tableFilePath = await this.excelService.getFilePath();
-                this.outputLog('单个商品处理完成');
-            }
-            else {
-                break;
+                else {
+                    break;
+                }
             }
         }
-        this.isWrite = false;
+        finally {
+            this.isWrite = false;
+            this.writePromise = null;
+        }
+        });
+        return this.writePromise;
     }
     /**
      * 窗口被关闭回调
      */
-    closeHandle = async () => {
-        let uuid = this.uuid;
-        if (!this.reason && this.uuid === uuid) {
-            await this.reWriteTable();
-            this.reason = 'failed';
-            // await this.clearStatus()
-            this.process = 0;
-            this.updateStatus('failed');
-            this.outputLog('窗口异常关闭');
-            log.error('窗口异常关闭');
-        }
+    closeHandle = () => {
+        if (!this.leaseToken || this.reason === 'cancel' || this.cancellationController.signal.aborted)
+            return;
+        this.reason = 'failed';
+        this.stopHeartbeat();
+        this.process = 0;
+        this.cancellationController.abort(Object.assign(new Error('Ozon 采集窗口异常关闭'), { code: 'COLLECTION_WINDOW_CLOSED' }));
+        this.updateStatus('failed');
+        this.outputLog('窗口异常关闭');
+        log.error('窗口异常关闭');
     };
     /**
      * 等待任务结束
      */
     async waitForAllTasks() {
         while (this.taskQueueService.getTaskCount() > 0 || this.taskQueueService.getActiveCount() || this.isWrite) {
-            if (this.reason === 'cancel' ||
-                this.reason === 'failed' ||
-                this.targetData >= (this.task.targetCount || Infinity))
-                return;
+            if (this.reason === 'cancel' || this.reason === 'failed')
+                break;
             await new Promise((resolve) => setTimeout(resolve, 1000));
         }
+        await this.settleProductSaves();
+        if (this.detailFailure) throw this.detailFailure;
     }
     /**
      * 重置任务
      */
     async resetTask({ preserveRun = false } = {}) {
+        if (this.productSavePromises.size) this.cancellationController.abort();
+        await this.settleProductSaves();
+        await this.writePromise?.catch(() => {});
+        await this.flushRunEvents().catch(error => log.warn('上一运行日志未全部同步', error?.message || error));
         const preservedRunId = this.runId;
         const preservedRun = this.preparedRun;
         const preservedUuid = this.uuid;
         this.stopHeartbeat();
         if (!preserveRun) {
+            this.resumeRun = false;
             this.runId = '';
             this.preparedRun = null;
             this.preparedClean = false;
         }
         this.leaseToken = '';
+        this.runEvents = [];
+        this.writeQueue = [];
+        this.preparedMediaItems = new WeakMap();
+        this.capabilities = {};
+        this.completedHandoff = null;
+        delete this.task.exportError;
+        this.categoriesResolved = false;
+        this.categoryExhausted = false;
+        this.query.pageNo = 1;
         this.heartbeatFailures = 0;
         this.process = 0;
-        await this.excelService.DeleteFilled();
-        this.task.tableFilePath = undefined;
+        this.duplicateSkus.clear();
+        this.activeGroupIds.clear();
+        this.dedup = { collected: 0, listed: 0, collecting: 0 };
+        this.previousScanCount = 0;
+        if (!preserveRun) {
+            await this.excelService.DeleteFilled();
+            this.task.tableFilePath = undefined;
+        }
         this.isCleared = false;
         this.reason = undefined;
+        this.detailFailure = null;
+        this.detailFailureStreak = 0;
+        this.outcomes = { skipped: 0, failed: 0 };
+        this.outcomeSkus.clear();
+        this.retryingRunSkus.clear();
+        this.keepDiagnosticWindow = false;
+        this.task.lastErrorCode = '';
+        this.task.lastErrorMessage = '';
+        delete this.task.startError;
+        delete this.task.resumeError;
         await this.dataProcessService.destroy();
         await this.taskQueueService.destroy();
         this.cancellationController = new AbortController();
+        this.mainWindowService.cancellationSignal = this.cancellationController.signal;
         this.cancellationPromise = null;
         this.dataProcessService.setCancellationSignal(this.cancellationController.signal);
+        this.dataProcessService.onSellerStatus = this.sellerStatus;
         this.uuid = preserveRun ? (preservedUuid || randomUUID()) : undefined;
         if (preserveRun) {
             this.runId = preservedRunId;
@@ -828,15 +1440,19 @@ export class Collection {
             return this.cancellationPromise;
         this.reason = 'cancel';
         this.cancellationPromise = (async () => {
+            await this.settleProductSaves();
             await this.reWriteTable();
             this.process = 0;
             this.mainWindowService.destroy();
             await this.updateStatus('cancelled');
+            this.outputLog('任务已取消，已保存的采集结果保留');
             if (this.runId && this.leaseToken) {
-                await cancelCollectorRun(this.runId, this.leaseToken, {
-                    reason: 'USER_CANCELLED',
-                    message: '用户取消采集任务',
-                }).catch((error) => log.error('同步取消状态失败', error));
+                await this.flushRunProgress()
+                    .then(() => cancelCollectorRun(this.runId, this.leaseToken, {
+                        reason: 'USER_CANCELLED',
+                        message: '用户取消采集任务',
+                    }))
+                    .catch((error) => log.error('同步取消状态失败', error));
                 this.runId = '';
                 this.leaseToken = '';
             }
@@ -852,12 +1468,28 @@ export class Collection {
         return this.cancellationPromise;
     }
 
+    getRunProgress() {
+        // UI current is in-flight concurrency; persisted item results own processed/failed counts.
+        return {
+            totalCount: this.getScannedCount(),
+            qualifiedCount: this.targetData,
+            dedup: { ...this.dedup },
+        };
+    }
+
+    async flushRunProgress() {
+        this.stopHeartbeat();
+        await this.flushRunEvents().catch(error => log.warn('采集日志未全部同步，最终状态仍将保存', error?.message || error));
+        return heartbeatCollectorRun(this.runId, this.leaseToken, this.getRunProgress())
+            .catch((error) => log.warn('同步采集最终进度失败', error?.message || error));
+    }
+
     startHeartbeat() {
         this.stopHeartbeat();
         this.heartbeatTimer = setInterval(() => {
             if (!this.runId || !this.leaseToken)
                 return;
-            heartbeatCollectorRun(this.runId, this.leaseToken, this.task.progress || {})
+            heartbeatCollectorRun(this.runId, this.leaseToken, this.getRunProgress())
                 .then((payload) => {
                     this.heartbeatFailures = 0;
                     if (payload?.cancelRequested)
@@ -881,38 +1513,123 @@ export class Collection {
         this.heartbeatTimer = null;
     }
 
+    async prepareRunItemMedia(item) {
+        if (!this.runId || !item)
+            return false;
+        if (this.preparedMediaItems.has(item))
+            return this.preparedMediaItems.get(item);
+        let savedMediaIntent = false;
+        if (this.capabilities?.mediaDirectUploadV1 === true) {
+            const persistIntent = async pending => {
+                await appendCollectorRunItem(this.runId, this.leaseToken, {
+                    source: 'OZON', sourceKey: String(item.collectorGroupId || item.id || item.sku || ''),
+                    sourceSku: String(item.sku || item.id || ''), status: 'FAILED',
+                    errorCode: 'COLLECTOR_MEDIA_WAITING', errorMessage: '详情已采集，素材准备中；中断后重试将先核实已有上传。',
+                    rawPayload: pending, exportDataFromRaw: true,
+                });
+                savedMediaIntent = true;
+            };
+            if (item.mediaPreparation?.status !== 'ready' && item.mediaPreparation?.mode !== 'server' && listCollectorMedia(item).length)
+                await persistIntent(structuredClone({ ...item, mediaPreparation: { mode: 'desktop', status: 'preparing' } }));
+            await this.prepareMediaFile.retainItem?.(this.mediaCacheOwnership(item));
+            const prepared = await prepareCollectorMedia(item, {
+                capabilities: this.capabilities, runId: this.runId, leaseToken: this.leaseToken,
+                runMediaWork: this.runMediaWork, concurrency: 3,
+                recovery: this.mediaRetryItems.get(this.skuOf(item)),
+                signal: this.cancellationController.signal, issue: issueCollectorMediaUpload, confirm: confirmCollectorMediaUpload,
+                prepareFile: (source, options) => this.prepareMediaFile(source, { ...options, runVideoWork: this.runVideoWork,
+                    ...this.mediaCacheOwnership(item),
+                    onProgress: progress => {
+                        const total = progress.totalBytes ? ` / ${(progress.totalBytes / 1024).toFixed(0)} KB` : '';
+                        const phase = {downloading: '下载中', resuming: '断点续传', retrying: progress.reason === 'COLLECTOR_MEDIA_DOWNLOAD_SLOW' ? '低速重连' : '自动重试', downloaded: '下载完成',
+                            cached: '复用缓存', sharing: '共用下载'}[progress.phase];
+                        this.outputLog(`素材${phase}：${source.sourceSku}，${(progress.bytes / 1024).toFixed(0)} KB${total}，第 ${progress.attempt} 次尝试`);
+                    },
+                }),
+                persistIntent,
+                onStatus: message => this.outputLog(message),
+            });
+            Object.assign(item, prepared);
+        }
+        this.preparedMediaItems.set(item, savedMediaIntent);
+        return savedMediaIntent;
+    }
+
+    mediaCacheOwnership(item) {
+        const accountId = this.preparedRun?.accountId || this.sellerContext?.accountId;
+        const recovery = this.mediaRetryItems.get(this.skuOf(item));
+        return {
+            cacheScope: accountId ? JSON.stringify([getSonliApiBase(),accountId]) : '',
+            cacheOwner: { runId: this.runId, sourceKey: String(item.collectorGroupId || item.id || item.sku || '') },
+            ...(recovery?.itemId && recovery.sourceKey ? { previousOwner: { runId: recovery.runId, sourceKey: recovery.sourceKey } } : {}),
+        };
+    }
+
     async persistRunItem(item) {
         if (!this.runId || !item)
-            return;
+            return false;
+        const signal = this.cancellationController.signal;
+        signal.throwIfAborted();
+        const savedMediaIntent = await this.prepareRunItemMedia(item);
+        signal.throwIfAborted();
+        const mediaWaiting = ['waiting', 'preparing'].includes(item.mediaPreparation?.status);
         const payload = {
             source: 'OZON',
-            sourceKey: String(item.id || item.sku || ''),
+            sourceKey: String(item.collectorGroupId || item.id || item.sku || ''),
             sourceSku: String(item.sku || item.id || ''),
-            status: item.pricingError ? 'FAILED' : 'QUALIFIED',
+            status: mediaWaiting ? 'FAILED' : 'QUALIFIED',
+            ...((savedMediaIntent || this.retryingRunSkus.has(this.skuOf(item))) && !mediaWaiting ? { retry: true, errorCode: '', errorMessage: '' } : {}),
+            ...(mediaWaiting ? { errorCode: 'COLLECTOR_MEDIA_WAITING', errorMessage: '素材未准备完成；原始资料和已成功上传的素材已保留，本轮继续处理其他商品。' } : {}),
             rawPayload: item,
             analytics: {
+                sellerAnalyticsPriceRub: item.sellerAnalyticsPriceRub,
+                currencyCode: item.analyticsCurrency,
                 soldCount: item.soldCount,
                 gmvSum: item.gmvSum,
                 drr: item.drr,
                 salesDynamics: item.salesDynamics,
             },
-            sourcing: {
-                url: item['1688link'] || '',
-                price: item.sourcePrice,
-                image: item.cover2 || '',
-            },
-            pricing: item.pricing || item.pricingResult || {},
             filterResult: { accepted: true },
-            exportData: item,
-            sortOrder: this.targetData,
+            ...(this.capabilities.exportDataFromRaw === true ? { exportDataFromRaw: true } : { exportData: item }),
+            sortOrder: this.targetData + 1,
         };
         let lastError = null;
         for (let attempt = 1; attempt <= 3; attempt += 1) {
+            signal.throwIfAborted();
             try {
-                await appendCollectorRunItem(this.runId, this.leaseToken, payload);
-                return;
+                const response = await appendCollectorRunItem(this.runId, this.leaseToken, payload);
+                const result = response?.results?.[0] || response;
+                if (result?.duplicate) {
+                    await this.recordDuplicateSkus([result.existing]);
+                    return false;
+                }
+                if (mediaWaiting) {
+                    if (!this.retryingRunSkus.has(this.skuOf(item))) this.outcomes.failed++;
+                    this.outcomeSkus.add(String(item.sku || item.id));
+                    return false;
+                }
+                const previous = this.mediaRetryItems.get(this.skuOf(item));
+                if (this.retryingRunSkus.has(this.skuOf(item)) && previous?.runId === this.runId
+                    && previous.sourceKey !== payload.sourceKey) {
+                    await appendCollectorRunItem(this.runId, this.leaseToken, {
+                        source: 'OZON', sourceKey: previous.sourceKey, sourceSku: this.skuOf(item),
+                        status: 'FILTERED_OUT', retry: true, errorCode: 'COLLECTOR_GROUP_RECOVERED',
+                        errorMessage: '整组已恢复，合格结果见该商品组', filterResult: { accepted: false, reason: 'GROUP_RECOVERED' },
+                    });
+                    this.outcomes.skipped++;
+                }
+                if (this.retryingRunSkus.delete(this.skuOf(item))) this.outcomes.failed = Math.max(0, this.outcomes.failed - 1);
+                if (item.mediaPreparation?.status === 'ready') {
+                    try { await this.prepareMediaFile.acknowledge?.(this.mediaCacheOwnership(item)); }
+                    catch (error) { log.warn('采集结果已保存，本机素材暂存清理未完成', error?.code || error?.message); }
+                }
+                return true;
             }
             catch (error) {
+                signal.throwIfAborted();
+                if ([401, 403].includes(error?.status || error?.response?.status)
+                    || /^COLLECTOR_RUN_/.test(error?.code || '')
+                    || /(?:ACCOUNT|CONTEXT|CANCELLED|WINDOW_CLOSED)/.test(error?.code || '')) throw error;
                 lastError = error;
                 log.warn(`保存采集结果失败（${attempt}/3）`, error?.message || error);
                 if (attempt < 3)
@@ -926,27 +1643,40 @@ export class Collection {
      * 重新写入表格
      */
     async reWriteTable() {
-        if (this.writeError)
-            await this.excelService.flushToDisk();
-        this.writeError = false;
+        await this.writePromise?.catch(error => log.error('等待商品保存收尾失败', error));
+        if (!this.goodsData.size) return;
+        let saved = false;
+        try { saved = await this.excelService.flushToDisk(); }
+        catch (error) { log.error('Excel 最终保存失败', error); }
+        this.writeError = !saved;
+        if (saved) delete this.task.exportError;
+        else {
+            this.task.exportError = 'Excel 保存失败；采集结果已保存到服务器，可恢复导出';
+            this.outputLog(this.task.exportError);
+        }
     }
     /**
      * 清理工作
      */
     clearStatus(isRetainCompletedTasks = false, isDestroy = true) {
+        if (this.productSavePromises.size) {
+            this.cancellationController.abort();
+            return this.settleProductSaves().then(() => this.clearStatus(isRetainCompletedTasks, isDestroy));
+        }
         let uuid = this.uuid;
         if (this.isCleared || this.uuid !== uuid)
             return;
         this.isCleared = true;
+        this.sellerRouteLease?.release();
+        this.sellerRouteLease = null;
         this.process = 0;
         this.goodsNum = this.parseService.getDataCount();
-        this.windowService.destroy();
         this.excelService.destroy();
         this.dataProcessService.destroy();
         this.parseService.destroy();
         this.goodsData.clear();
         this.taskQueueService.destroy(isRetainCompletedTasks, isDestroy);
-        this.outputLog('清理完成');
+        this.outputLog(this.task.lastLog || '任务已结束');
     }
     /**
      * 初始化查询参数

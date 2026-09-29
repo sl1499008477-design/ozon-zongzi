@@ -20,7 +20,7 @@ test("deduplicates in first-seen order and safely encodes the navigation query",
   });
   assert.deepEqual(result, {
     ids: ["collect/a", "collect b"],
-    path: "/ozon/tools/auto-listing?source=collect&ids=collect%2Fa%2Ccollect%20b",
+    path: "/ozon/tools/ai-listing?source=collect&ids=collect%2Fa%2Ccollect%20b",
   });
 });
 
@@ -53,6 +53,20 @@ test("produces navigation data only and has no transport dependency", () => {
     accountId: "account-a",
     apiRequest: () => { calls += 1; },
   });
-  assert.equal(result.path, "/ozon/tools/auto-listing?source=collect&ids=collect-a");
+  assert.equal(result.path, "/ozon/tools/ai-listing?source=collect&ids=collect-a");
   assert.equal(calls, 0);
+});
+
+test("defaults to AI listing and rejects retired destinations", () => {
+  const input = {
+    selectedIds: ["collect-a"],
+    visibleItems: [{ id: "collect-a", accountId: "account-a" }],
+    accountId: "account-a",
+  };
+  assert.equal(buildAutoListingCollectPush(input).path, "/ozon/tools/ai-listing?source=collect&ids=collect-a");
+  assert.equal(buildAutoListingCollectPush({ ...input, destination: "ai-listing" }).path,
+    "/ozon/tools/ai-listing?source=collect&ids=collect-a");
+  assert.throws(() => buildAutoListingCollectPush({ ...input, destination: "auto-listing" }), {
+    code: "AUTO_LISTING_COLLECT_SELECTION_INVALID",
+  });
 });

@@ -1,7 +1,7 @@
 /**
  * Frontend ↔ Extension postMessage bridge (jizhangerp.com 域内)。
  *
- * 用途：让 my.jizhangerp.com / store.jizhangerp.com / localhost:3000 上的
+ * 用途：让 my.jizhangerp.com / www.ozonzongzi.com / localhost:3000 上的
  * 前端代码,通过 window.postMessage 委托 extension 调 seller.ozon.ru/api/v1/search
  * 拿 sourceVariant,塞进 import payload 再 POST /products/import,避免 backend
  * 跨境直接打 seller portal 触发 antibot 403 重试堆积(单 item 节省 4-5min)。

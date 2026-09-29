@@ -1,13 +1,18 @@
 export function createLatestRequestGate() {
   let latestGeneration = 0;
   return Object.freeze({
+    invalidate() { latestGeneration += 1; },
     async run({ request, apply } = {}) {
       if (typeof request !== "function" || typeof apply !== "function") {
         throw new TypeError("LATEST_REQUEST_GATE_DEPENDENCIES_REQUIRED");
       }
       const generation = latestGeneration + 1;
       latestGeneration = generation;
-      const value = await request();
+      let value;
+      try { value = await request(); } catch (error) {
+        if (generation !== latestGeneration) return { applied: false };
+        throw error;
+      }
       if (generation !== latestGeneration) return { applied: false, value };
       await apply(value);
       return { applied: true, value };

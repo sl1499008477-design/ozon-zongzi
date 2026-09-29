@@ -1,0 +1,21 @@
+.web-paged-table .ant-pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.web-paged-table .ant-pagination > .ant-pagination-options {
+  order: -1;
+  display: inline-block;
+  margin-inline-start: 0;
+  margin-inline-end: 12px;
+}
+.web-paged-table .ant-pagination-options::before {
+  content: '每页显示';
+  margin-inline-end: 8px;
+  color: #6b7c9e;
+}
+.empty-table-pager .ant-pagination {
+  justify-content: flex-end;
+  margin-block: 16px;
+}

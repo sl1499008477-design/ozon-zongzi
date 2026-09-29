@@ -33,9 +33,9 @@ export const createWindow = () => {
         minHeight: 680,
         show: false,
         autoHideMenuBar: true,
-        title: 'sonli 采集助手',
+        title: 'ozon 粽子',
         frame: false,
-        backgroundColor: '#f5f7fb',
+        backgroundColor: '#f6fafe',
         icon: path.join(__dirname, '../../build/icon.png'),
         webPreferences: {
             nodeIntegration: false, // 禁止网页使用nodejs的API

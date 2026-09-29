@@ -42,6 +42,8 @@ process.env.QH_LOCAL_DATA_DIR = dataDir;
 process.env.QH_LOCAL_NO_LISTEN = "1";
 process.env.QH_LOCAL_NO_DOTENV = "1";
 process.env.SONLI_ADMIN_PASSWORD = testAdminPassword;
+delete process.env.DATABASE_URL;
+delete process.env.POSTGRES_HOST;
 
 try {
   const { handle } = await import("../index.mjs");
@@ -294,6 +296,20 @@ try {
     `Collector ${secondCollectorToken}`,
   )).status, 401);
   await assertCollectorRevoked(secondCollectorToken, "SECURITY_RESET");
+
+  const oldPasswordLogin = await requestJson(handle, "POST", "/local/accounts/login", {
+    username: "admin",
+    password: testAdminPassword,
+  });
+  assert.equal(oldPasswordLogin.status, 401);
+  const newPasswordLogin = await requestJson(handle, "POST", "/local/accounts/login", {
+    username: "admin",
+    password: "updated-admin-password-2026!",
+  });
+  assert.equal(newPasswordLogin.status, 200);
+  assert.equal(newPasswordLogin.body.state.account.id, secondLogin.body.account.id);
+  assert.equal(newPasswordLogin.body.state.token, newPasswordLogin.body.token);
+  assert.deepEqual(newPasswordLogin.body.state.accounts, []);
 
   console.log("account multi-session smoke passed");
   process.exitCode = 0;

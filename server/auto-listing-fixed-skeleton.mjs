@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import { types } from "node:util";
+import { isAutoListingCreativeFact } from "./auto-listing-creative-facts.mjs";
+import { verifySourceImageIntelligenceSummary } from "./auto-listing-source-image-intelligence-contract.mjs";
 
-const ROLE_ORDER = Object.freeze(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
+const ROLE_ORDER = Object.freeze(["MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION"]);
 const ROLE_KEYS = new Set(ROLE_ORDER);
 const OUTPUT_KEYS = new Set(["plan", "skeletonHash", "allowedClaimsBySlot"]);
 const PLAN_KEYS = new Set(["version", "language", "slots"]);
@@ -13,7 +15,7 @@ const SLOT_KEYS_V2 = new Set([...SLOT_KEYS_V1, "requestedRole", "substitutionRea
 const SUBSTITUTION_KEYS = new Set(["requestedRole", "actualRole", "count", "reasonCode"]);
 const FILL_KEYS = new Set(["version", "language", "fills"]);
 const SLOT_FILL_KEYS = new Set(["claims"]);
-const CLAIM_KEYS = new Set(["text", "claimType", "sourceFactIds"]);
+const CLAIM_SELECTION_KEYS = new Set(["factId"]);
 const HASH = /^[a-f0-9]{64}$/u;
 const MAX_DEPTH = 64;
 const MAX_NODES = 200_000;
@@ -206,7 +208,8 @@ function prioritizedMainFacts(facts) {
 function detailFactExcluded(fact) {
   if (dimensionFact(fact)) return true;
   const evidence = `${String(fact?.kind || "")} ${String(fact?.claimText || fact?.value || "")}`;
-  return /(?:\sтип\s*:|модел|код продавца|артикул продавца|количеств[оа] заводских упаковок|комплектац|упаковк|срок годности|страна[- ]изготовитель|хештег|код маркировк|вес товара)/iu.test(evidence);
+  if (/партномер/iu.test(evidence)) return true;
+  return /(?:\sтип\s*:|модел|код продавца|артикул продавца|количеств[оа] заводских упаковок|единиц\s+в\s+(?:одном\s+)?товаре|комплектац|упаковк|срок годности|страна[- ]изготовитель|хештег|код маркировк|вес товара)/iu.test(evidence);
 }
 
 export function fixedClaimRange(slot, allowedCount) {
@@ -292,30 +295,235 @@ function fixedContext(rawContext) {
   if (groupKeys.some((key) => !requiredText(key, 240)) || new Set(groupKeys).size !== groupKeys.length) {
     throw skeletonInvalid();
   }
+  let intelligence = null;
+  if (Object.hasOwn(input, "sourceImageIntelligence")) {
+    try { intelligence = verifySourceImageIntelligenceSummary(input.sourceImageIntelligence); } catch { throw skeletonInvalid(); }
+  }
+  const eligibleAssetIds = intelligence ? new Set(intelligence.eligibleAssetIds) : null;
   const groups = input.visualGroups.map((group) => {
     if (!Array.isArray(group.referenceImages) || !group.referenceImages.length
       || !Array.isArray(group.requiredPreserve) || !group.requiredPreserve.length) throw skeletonInvalid();
     const referenceAssetIds = group.referenceImages.map((entry) => entry?.assetId);
     if (referenceAssetIds.some((entry) => !requiredText(entry, 240))
       || new Set(referenceAssetIds).size !== referenceAssetIds.length
+      || (eligibleAssetIds && referenceAssetIds.some((entry) => !eligibleAssetIds.has(entry)))
       || group.requiredPreserve.some((entry) => !requiredText(entry, 240))) throw skeletonInvalid();
     const groupFacts = facts.filter((fact) => !fact.visualGroupKeys.length
       || fact.visualGroupKeys.includes(group.visualGroupKey));
     if (!groupFacts.length) throw skeletonInvalid();
     return { group, facts: groupFacts, referenceAssetIds };
   });
-  return { input, groups, total, roleSubstitutions };
+  return { input, groups, total, roleSubstitutions, intelligence };
+}
+
+const SPECIAL_VIEWS_BY_ROLE = Object.freeze({
+  SCENE: Object.freeze(["SCENE"]),
+  DETAIL: Object.freeze(["DETAIL", "INTERIOR"]),
+  SPECIFICATION: Object.freeze(["PACKAGE"]),
+});
+const COMPLETE_PRODUCT_VIEWS = Object.freeze(["FRONT", "BACK", "LEFT", "RIGHT", "TOP", "BOTTOM", "INTERIOR"]);
+const PRECISE_COMPLETE_PRODUCT_VIEWS = new Set([
+  "FRONT", "BACK", "LEFT", "RIGHT", "FRONT_LEFT_3_4", "FRONT_RIGHT_3_4",
+  "BACK_LEFT_3_4", "BACK_RIGHT_3_4", "TOP", "BOTTOM", "INTERIOR",
+]);
+const SAFE_SYNTHETIC_VIEW_ORDER = Object.freeze([
+  "FRONT", "FRONT_LEFT_3_4", "FRONT_RIGHT_3_4", "LEFT", "RIGHT",
+]);
+const SAFE_SYNTHETIC_ANCHORS = new Set(SAFE_SYNTHETIC_VIEW_ORDER);
+const SYNTHETIC_PROHIBITED_VIEWS = Object.freeze([
+  "BACK", "BACK_LEFT_3_4", "BACK_RIGHT_3_4", "TOP", "BOTTOM", "INTERIOR", "HIDDEN_PORTS",
+]);
+const SHARED_STRUCTURE_VIEW_ORDER = Object.freeze([
+  "FRONT", "FRONT_LEFT_3_4", "FRONT_RIGHT_3_4", "LEFT", "RIGHT", "TOP", "BACK",
+]);
+const SUPPLEMENTAL_IDENTITY_FAMILIES = Object.freeze(["SCENE", "PACKAGE", "DETAIL"]);
+const SUPPLEMENTAL_TARGET_FAMILIES = Object.freeze(["SCENE", "PACKAGE", "DETAIL"]);
+
+function preciseViewFamilies(viewpoint) {
+  if (viewpoint === "FRONT_LEFT_3_4") return ["FRONT", "LEFT"];
+  if (viewpoint === "FRONT_RIGHT_3_4") return ["FRONT", "RIGHT"];
+  if (viewpoint === "BACK_LEFT_3_4") return ["BACK", "LEFT"];
+  if (viewpoint === "BACK_RIGHT_3_4") return ["BACK", "RIGHT"];
+  return COMPLETE_PRODUCT_VIEWS.includes(viewpoint) ? [viewpoint] : [];
+}
+
+function directViewCandidates(coverage, referenceAssetIds, symmetryClass) {
+  if (symmetryClass === "ROTATIONAL") {
+    const rotational = coverage.ROTATIONAL?.assetIds || [];
+    return rotational.length ? [{ targetView: "ROTATIONAL", assetId: rotational[0] }] : [];
+  }
+  const allowedAssets = new Set(referenceAssetIds);
+  const preciseViews = [...new Set(Object.entries(coverage)
+    .filter(([family]) => family !== "COMPLETE_PRODUCT")
+    .flatMap(([, entry]) => entry?.preciseViewpoints || []))]
+    .filter((viewpoint) => PRECISE_COMPLETE_PRODUCT_VIEWS.has(viewpoint));
+  const result = [];
+  for (const assetId of referenceAssetIds) {
+    if (!allowedAssets.has(assetId)) continue;
+    const supported = preciseViews.filter((viewpoint) => {
+      const families = preciseViewFamilies(viewpoint);
+      return families.length > 0 && families.every((family) => coverage[family]?.assetIds?.includes(assetId));
+    });
+    const diagonals = supported.filter((viewpoint) => viewpoint.includes("_3_4"));
+    const selected = diagonals.length ? diagonals : supported;
+    for (const targetView of selected) {
+      if (!result.some((entry) => entry.targetView === targetView)) result.push({ targetView, assetId });
+    }
+  }
+  return result;
+}
+
+function boundedAngleTargets(candidates) {
+  const direct = [...new Set(candidates.map(({ targetView }) => targetView))];
+  const safeAnchor = candidates.find(({ targetView }) => SAFE_SYNTHETIC_ANCHORS.has(targetView));
+  if (!safeAnchor) return { targets: direct, safeAnchor: null };
+  const targets = [...direct];
+  for (const targetView of SAFE_SYNTHETIC_VIEW_ORDER) {
+    if (targets.length >= 3) break;
+    if (!targets.includes(targetView)) targets.push(targetView);
+  }
+  return { targets, safeAnchor };
+}
+
+function sharedStructureAnchor(intelligence) {
+  const rank = new Map(SHARED_STRUCTURE_VIEW_ORDER.map((view, index) => [view, index]));
+  return directViewCandidates(
+    intelligence.coverageMap,
+    intelligence.eligibleAssetIds,
+    intelligence.symmetryClass,
+  ).filter(({ targetView }) => targetView === "ROTATIONAL" || rank.has(targetView))
+    .sort((left, right) => (rank.get(left.targetView) ?? -1) - (rank.get(right.targetView) ?? -1)
+      || compareText(left.assetId, right.assetId))[0] || null;
+}
+
+function groupIntelligence(intelligence, referenceAssetIds) {
+  const groupAssets = new Set(referenceAssetIds);
+  const coverage = Object.fromEntries(Object.entries(intelligence.coverageMap)
+    .filter(([family]) => family !== "COMPLETE_PRODUCT")
+    .map(([family, entry]) => [family, {
+      ...entry,
+      assetIds: entry.assetIds.filter((assetId) => groupAssets.has(assetId)),
+      tentativeAssetIds: entry.tentativeAssetIds.filter((assetId) => groupAssets.has(assetId)),
+    }])
+    .filter(([, entry]) => entry.assetIds.length));
+  const confirmedFamilies = intelligence.coverageMap.COMPLETE_PRODUCT.confirmedFamilies
+    .filter((family) => coverage[family]?.assetIds.length);
+  coverage.COMPLETE_PRODUCT = {
+    confirmedFamilyCount: confirmedFamilies.length,
+    confirmedFamilies,
+    requiredFamilyCount: Math.min(confirmedFamilies.length, 3),
+    prohibitedViews: COMPLETE_PRODUCT_VIEWS.filter((view) => !(coverage[view]?.assetIds.length
+      || (view === "FRONT" && coverage.ROTATIONAL?.assetIds.length))),
+  };
+  const completeProductAssetIds = new Set(confirmedFamilies
+    .flatMap((family) => coverage[family]?.assetIds || []));
+  const identityAssetIds = [...new Set(intelligence.markingDecisions
+    .filter((decision) => decision.kind === "PRODUCT_MARKING"
+      && groupAssets.has(decision.sourceAssetId)
+      && completeProductAssetIds.has(decision.sourceAssetId))
+    .map(({ sourceAssetId }) => sourceAssetId))].sort(compareText);
+  return { coverage, identityAssetIds };
+}
+
+function intelligentSlotEvidence({
+  intelligence, coverage, identityAssetIds, referenceAssetIds, role, slotOrder, completeProductOrder,
+  sharedStructure,
+}) {
+  const confirmedFamilies = coverage.COMPLETE_PRODUCT.confirmedFamilies;
+  const supplementalIdentityFamilies = SUPPLEMENTAL_IDENTITY_FAMILIES
+    .filter((family) => coverage[family]?.assetIds?.length);
+  const supplementalTargetFamilies = SUPPLEMENTAL_TARGET_FAMILIES
+    .filter((family) => coverage[family]?.assetIds?.length);
+  if (!confirmedFamilies.length && !supplementalIdentityFamilies.length) throw skeletonInvalid();
+  const mainTargetFamilies = supplementalTargetFamilies.filter((family) => family !== "DETAIL");
+  const borrowsStructure = role === "MAIN" && !confirmedFamilies.length
+    && !mainTargetFamilies.length && Boolean(sharedStructure);
+  const directCandidates = directViewCandidates(coverage, referenceAssetIds, intelligence.symmetryClass);
+  const anglePlan = boundedAngleTargets(directCandidates);
+  const targetFamilies = confirmedFamilies.length ? confirmedFamilies
+    : role === "MAIN" && mainTargetFamilies.length ? mainTargetFamilies : supplementalTargetFamilies;
+  const requiredCoverageIndex = confirmedFamilies.length
+    && slotOrder <= Math.min(confirmedFamilies.length, 3) ? slotOrder - 1 : -1;
+  const preferredViews = SPECIAL_VIEWS_BY_ROLE[role] || [];
+  const preferred = preferredViews.find((family) => coverage[family]);
+  const hasPreferred = Boolean(preferred);
+  const targetAngle = borrowsStructure ? sharedStructure.targetView
+    : anglePlan.targets.length && completeProductOrder > 0
+      ? anglePlan.targets[(completeProductOrder - 1) % Math.min(anglePlan.targets.length, 3)] : null;
+  const directAngle = borrowsStructure ? sharedStructure
+    : directCandidates.find((entry) => entry.targetView === targetAngle) || null;
+  const synthesizeAngle = borrowsStructure || Boolean(targetAngle && !directAngle && anglePlan.safeAnchor);
+  const usePreferred = hasPreferred && (role === "DETAIL" || !targetAngle);
+  const selectedFamily = borrowsStructure ? null
+    : requiredCoverageIndex >= 0 && !targetAngle
+    ? confirmedFamilies[requiredCoverageIndex]
+    : usePreferred ? preferred : targetFamilies[(slotOrder - 1) % targetFamilies.length];
+  const substituted = preferredViews.length > 0 && !hasPreferred;
+  const targetView = role === "DETAIL" && substituted ? "DETAIL"
+    : targetAngle || selectedFamily;
+  const targetAssets = coverage[selectedFamily]?.assetIds
+    ?.filter((assetId) => referenceAssetIds.includes(assetId)) || [];
+  const targetAssetId = borrowsStructure ? sharedStructure.assetId
+    : synthesizeAngle ? anglePlan.safeAnchor.assetId
+    : directAngle?.assetId || targetAssets[(slotOrder - 1) % targetAssets.length];
+  if (!targetAssetId) throw skeletonInvalid();
+  const identityFamily = confirmedFamilies.length
+    ? confirmedFamilies[(slotOrder - 1) % confirmedFamilies.length]
+    : supplementalIdentityFamilies[0];
+  const fallbackIdentityAssets = coverage[identityFamily]?.assetIds
+    ?.filter((assetId) => referenceAssetIds.includes(assetId)) || [];
+  const protectedIdentityAssets = identityAssetIds.length ? identityAssetIds : fallbackIdentityAssets;
+  if (!protectedIdentityAssets.length) throw skeletonInvalid();
+  const identityAssetId = protectedIdentityAssets[(slotOrder - 1) % protectedIdentityAssets.length];
+  const detailAssetId = role !== "DETAIL" && coverage.DETAIL?.assetIds
+    ?.find((assetId) => referenceAssetIds.includes(assetId)
+      && assetId !== targetAssetId && assetId !== identityAssetId);
+  const evidenceMode = synthesizeAngle ? "SYNTHESIZED_SAFE"
+    : substituted ? "SUBSTITUTED"
+    : (!confirmedFamilies.length && !hasPreferred) || (confirmedFamilies.length === 1 && slotOrder > 1)
+      ? "COMPOSITION_ONLY" : "DIRECT";
+  const prohibitedOverlayTexts = intelligence.factCandidates
+    .filter((fact) => fact.status === "REJECTED"
+      && (fact.confirmationMethod === "REJECTED_FORBIDDEN_TEXT"
+        || fact.reasonCodes.includes("SOURCE_FACT_FORBIDDEN_TEXT")))
+    .map(({ value }) => value)
+    .filter((value) => requiredText(value, 2_048));
+  return {
+    targetView,
+    referenceAssetIds: [...new Set([targetAssetId, identityAssetId, detailAssetId].filter(Boolean))].slice(0, 3),
+    evidenceMode,
+    prohibitedViews: synthesizeAngle
+      ? SYNTHETIC_PROHIBITED_VIEWS.filter((view) => view !== targetView)
+      : ["SCENE", "PACKAGE"].includes(targetView)
+      ? ["HIDDEN_PORTS"]
+      : [...new Set([...coverage.COMPLETE_PRODUCT.prohibitedViews, "HIDDEN_PORTS"])],
+    prohibitedOverlayTexts: [...new Set(prohibitedOverlayTexts)].sort(compareText),
+    identityAssetId,
+    selectionReasonCodes: [
+      borrowsStructure ? "CROSS_VARIANT_STRUCTURE_REFERENCE_SELECTED"
+        : synthesizeAngle ? "BOUNDED_SYNTHETIC_VIEW_SELECTED"
+        : substituted ? "ROLE_EVIDENCE_SUBSTITUTED" : "SOURCE_VIEW_EVIDENCE_SELECTED",
+      "IDENTITY_REFERENCE_SELECTED",
+      ...(!confirmedFamilies.length ? ["SUPPLEMENTAL_IDENTITY_EVIDENCE_SELECTED"] : []),
+      ...(identityAssetIds.length ? ["PRODUCT_MARKING_IDENTITY_SELECTED"] : []),
+      ...(intelligence.symmetryClass === "ROTATIONAL" ? ["ROTATIONAL_SYMMETRY_PRESERVED"] : []),
+    ],
+  };
 }
 
 export function buildFixedSkeleton({ plannerContext } = {}) {
-  const { input, groups, roleSubstitutions } = fixedContext(plannerContext);
+  const { input, groups, roleSubstitutions, intelligence } = fixedContext(plannerContext);
+  const sharedStructure = intelligence ? sharedStructureAnchor(intelligence) : null;
   const slots = [];
   const allowedClaimsBySlot = Object.create(null);
   for (const { group, facts, referenceAssetIds } of groups) {
-    const claimableFacts = facts.map((fact) => ({ ...fact, claimText: claimTextForFact(fact) }))
+    const localIntelligence = intelligence ? groupIntelligence(intelligence, referenceAssetIds) : null;
+    const claimableFacts = facts.filter(isAutoListingCreativeFact)
+      .map((fact) => ({ ...fact, claimText: claimTextForFact(fact) }))
       .filter((fact) => fact.claimText && !prohibitedClaimText(fact.claimText));
     const identityAnchor = claimableFacts.find((fact) => fact.kind === "IDENTITY_NAME") || claimableFacts[0];
     let order = 1;
+    let completeProductOrder = 0;
     for (const role of ROLE_ORDER) {
       const usedClaimFactIds = new Set();
       const substitutions = roleSubstitutions.filter((entry) => entry.actualRole === role);
@@ -328,6 +536,7 @@ export function buildFixedSkeleton({ plannerContext } = {}) {
         : roleFacts;
       for (let occurrence = 1; occurrence <= input.requestedRoleCounts[role]; occurrence += 1) {
         const slotOrder = order++;
+        if (role !== "DETAIL") completeProductOrder += 1;
         const slotKey = `${group.visualGroupKey}:${role.toLowerCase().replaceAll("_", "-")}:${String(occurrence).padStart(2, "0")}`;
         let substitution = null;
         let substitutedOccurrence = occurrence - originalCount;
@@ -348,11 +557,25 @@ export function buildFixedSkeleton({ plannerContext } = {}) {
         if (!(role === "MAIN" && input.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6")) {
           allowed.sort((left, right) => compareText(left.factId, right.factId));
         }
+        const allowedFactIds = allowed.map(({ factId }) => factId);
         const sourceFactIds = allowed.length
-          ? allowed.map(({ factId }) => factId)
+          ? role === "MAIN" && input.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6"
+            ? [...new Set([identityAnchor?.factId, ...allowedFactIds].filter(Boolean))]
+            : allowedFactIds
           : [identityAnchor?.factId].filter(Boolean);
         if (!sourceFactIds.length) throw skeletonInvalid();
         allowedClaimsBySlot[slotKey] = allowed;
+        const intelligentEvidence = intelligence
+          ? intelligentSlotEvidence({
+            intelligence,
+            coverage: localIntelligence.coverage,
+            identityAssetIds: localIntelligence.identityAssetIds,
+            referenceAssetIds,
+            role,
+            slotOrder,
+            completeProductOrder: role === "DETAIL" ? 0 : completeProductOrder,
+            sharedStructure,
+          }) : null;
         slots.push({
           slotKey,
           visualGroupKey: group.visualGroupKey,
@@ -363,16 +586,25 @@ export function buildFixedSkeleton({ plannerContext } = {}) {
           textDensity: allowed.length ? density : "NONE",
           claims: [],
           sourceFactIds,
-          referenceAssetIds: referenceAssetIds.length === 1 || slotOrder === 1
-            ? [referenceAssetIds[0]]
-            : [referenceAssetIds[1 + ((slotOrder - 2) % (referenceAssetIds.length - 1))], referenceAssetIds[0]],
+          referenceAssetIds: intelligentEvidence?.referenceAssetIds
+            || (referenceAssetIds.length === 1 || slotOrder === 1
+              ? [referenceAssetIds[0]]
+              : [referenceAssetIds[1 + ((slotOrder - 2) % (referenceAssetIds.length - 1))], referenceAssetIds[0]]),
           preserve: [...group.requiredPreserve],
           prohibitedClaims: [...input.prohibitedClaims],
+          ...(intelligentEvidence ? {
+            targetView: intelligentEvidence.targetView,
+            evidenceMode: intelligentEvidence.evidenceMode,
+            prohibitedViews: intelligentEvidence.prohibitedViews,
+            prohibitedOverlayTexts: intelligentEvidence.prohibitedOverlayTexts,
+            identityAssetId: intelligentEvidence.identityAssetId,
+            selectionReasonCodes: intelligentEvidence.selectionReasonCodes,
+          } : {}),
         });
       }
     }
   }
-  const plan = { version: 2, language: "ru", slots };
+  const plan = { version: intelligence ? 3 : 2, language: "ru", slots };
   const skeletonHash = sha256({
     contract: "FIXED_SKELETON_V1",
     generation: { language: input.language, ratio: input.ratio, resolution: input.resolution, quality: input.quality },
@@ -397,7 +629,6 @@ function claimSchema(slot, allowed) {
       required: ["claims"],
     };
   }
-  const kinds = [...new Set(allowed.map(({ kind }) => kind))].sort(compareText);
   const factIds = allowed.map(({ factId }) => factId).sort(compareText);
   return {
     type: "object",
@@ -408,11 +639,9 @@ function claimSchema(slot, allowed) {
         items: {
           type: "object", additionalProperties: false,
           properties: {
-            text: { type: "string", enum: [...new Set(allowed.map(({ value }) => value))].sort(compareText) },
-            claimType: { type: "string", enum: kinds },
-            sourceFactIds: { type: "array", minItems: 1, maxItems: factIds.length, items: { type: "string", enum: factIds } },
+            factId: { type: "string", enum: factIds },
           },
-          required: ["text", "claimType", "sourceFactIds"],
+          required: ["factId"],
         },
       },
     },
@@ -481,19 +710,22 @@ export function mergeContentPlanFill({ skeleton: rawSkeleton, fill: rawFill, pla
       throw fillInvalid("CLAIM_COUNT_MISMATCH", slot.slotKey, "claims");
     }
     const allowedById = new Map(allowed.map((fact) => [fact.factId, fact]));
+    const selectedFactIds = new Set();
     let claims = slotFill.claims.map((claim, claimIndex) => {
-      const citedFacts = Array.isArray(claim?.sourceFactIds)
-        ? claim.sourceFactIds.map((factId) => allowedById.get(factId)) : [];
-      if (!exact(claim, CLAIM_KEYS) || !requiredText(claim.text, 300) || !requiredText(claim.claimType, 120)
-        || !Array.isArray(claim.sourceFactIds) || !claim.sourceFactIds.length
-        || claim.sourceFactIds.length !== new Set(claim.sourceFactIds).size
-        || claim.sourceFactIds.some((factId) => !allowedById.has(factId))
-        || citedFacts.some((fact) => fact?.value !== claim.text)) {
+      if (!exact(claim, CLAIM_SELECTION_KEYS) || !requiredText(claim.factId, 240)
+        || !allowedById.has(claim.factId) || selectedFactIds.has(claim.factId)) {
         throw fillInvalid("FIXED_FILL_CLAIM_INVALID", slot.slotKey, `claims[${claimIndex}]`, claimIndex);
       }
-      const derivedKind = [...citedFacts].sort((left, right) => compareText(left.factId, right.factId))[0].kind;
-      return { text: claim.text, claimType: derivedKind, sourceFactIds: [...claim.sourceFactIds] };
+      selectedFactIds.add(claim.factId);
+      const selected = allowedById.get(claim.factId);
+      return { text: selected.value, claimType: selected.kind, sourceFactIds: [selected.factId] };
     });
+    if (slot.role === "MAIN"
+      && plannerContext?.plannerInput?.promptTemplateVersion === "AUTO_LISTING_CONTENT_PLAN_FILL_V6") {
+      const importance = new Map(allowed.map(({ factId }, index) => [factId, index]));
+      const claimRank = (claim) => Math.min(...claim.sourceFactIds.map((factId) => importance.get(factId)));
+      claims.sort((left, right) => claimRank(left) - claimRank(right));
+    }
     const requiredDocumentaryFact = slot.role === "SPECIFICATION" ? allowed.find(documentaryFact) : null;
     if (requiredDocumentaryFact
       && !claims.some((claim) => claim.sourceFactIds.some((factId) => documentaryFact(allowedById.get(factId))))) {

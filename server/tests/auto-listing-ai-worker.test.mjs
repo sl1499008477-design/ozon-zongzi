@@ -3,11 +3,17 @@ import test from "node:test";
 
 import {
   AUTO_LISTING_AI_PHASE_POLICIES,
-  createAutoListingAiWorker,
+  createAutoListingAiWorker as createWorkerFactory,
 } from "../auto-listing-ai-worker.mjs";
 import {
   AUTO_LISTING_AI_QUEUE,
   AUTO_LISTING_AI_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+  AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+  AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_WORK_QUEUE,
+  AUTO_LISTING_AI_WORK_QUEUE_OPTIONS,
 } from "../auto-listing-ai-queue.mjs";
 
 const baseMessage = Object.freeze({
@@ -19,9 +25,36 @@ const baseMessage = Object.freeze({
   correlationId: "correlation-a",
 });
 
+const legacyExecutionRepository = Object.freeze({
+  async adopt() { return null; },
+  async renew() { return null; },
+  async requeueChannelFailure() { return null; },
+});
+
+function createAutoListingAiWorker(config) {
+  return createWorkerFactory({ executionRepository: legacyExecutionRepository, ...config });
+}
+
 test("default paid phases keep concurrency and retry policy without application deadlines", () => {
+  assert.deepEqual(Object.keys(AUTO_LISTING_AI_PHASE_POLICIES), [
+    "PLAN_CONTENT", "MATERIALIZE_SOURCE_ASSET", "ANALYZE_SOURCE_IMAGE_BATCH",
+    "CLEAN_SOURCE_IMAGE_OVERLAY", "CHECK_SOURCE_IMAGE_CLEANUP",
+    "RECONCILE_SOURCE_IMAGE_ANALYSIS", "FINALIZE_MATERIALIZED_PLAN",
+    "GENERATE_IMAGE_SLOT", "CHECK_IMAGE_GROUP", "GENERATE_RICH_CONTENT",
+  ]);
+  assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.ANALYZE_SOURCE_IMAGE_BATCH.concurrency, 1);
+  assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.CLEAN_SOURCE_IMAGE_OVERLAY.concurrency, 16);
+  assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.CHECK_SOURCE_IMAGE_CLEANUP.concurrency, 16);
+  for (const phase of [
+    "PLAN_CONTENT", "ANALYZE_SOURCE_IMAGE_BATCH", "CLEAN_SOURCE_IMAGE_OVERLAY",
+    "CHECK_SOURCE_IMAGE_CLEANUP", "CHECK_IMAGE_GROUP", "GENERATE_RICH_CONTENT",
+  ]) {
+    assert.equal(AUTO_LISTING_AI_PHASE_POLICIES[phase].retryLimit, 4, phase);
+  }
+  assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.CHECK_IMAGE_GROUP.concurrency, 1);
+  assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.RECONCILE_SOURCE_IMAGE_ANALYSIS.retryLimit, 2);
   assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.GENERATE_IMAGE_SLOT.concurrency, 1);
-  assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.GENERATE_IMAGE_SLOT.retryLimit, 0);
+  assert.equal(AUTO_LISTING_AI_PHASE_POLICIES.GENERATE_IMAGE_SLOT.retryLimit, 2);
   assert.equal(Object.hasOwn(AUTO_LISTING_AI_PHASE_POLICIES.GENERATE_IMAGE_SLOT, "timeoutMs"), false);
   assert.equal(Object.hasOwn(AUTO_LISTING_AI_PHASE_POLICIES.PLAN_CONTENT, "timeoutMs"), false);
 });
@@ -31,6 +64,7 @@ function manualTimers() {
   let sequence = 0;
   const scheduled = [];
   const timers = {
+    now() { return now; },
     setTimeout(callback, delay) {
       const handle = { at: now + delay, callback, cancelled: false, sequence: sequence += 1 };
       scheduled.push(handle);
@@ -94,12 +128,13 @@ function phasePolicies(overrides = {}) {
 }
 
 function context(message, overrides = {}) {
+  const currentMessage = message?.message ?? message;
   return {
-    accountId: message.accountId,
+    accountId: currentMessage.accountId,
     jobId: "job-a",
-    itemId: message.itemId,
+    itemId: currentMessage.itemId,
     status: "PLANNING",
-    statusVersion: message.expectedStatusVersion,
+    statusVersion: currentMessage.expectedStatusVersion,
     activeContentPlanId: null,
     phaseInput: { requestId: "phase-input-a" },
     ...overrides,
@@ -115,29 +150,32 @@ function phaseOutcome(message, overrides = {}) {
     retryable: false,
     failureCode: null,
     correlationId: message.correlationId,
+    failureScope: null,
+    deliveryState: null,
+    retryAfterMs: null,
     ...overrides,
   });
 }
 
 const passthroughWorkflow = Object.freeze({
-  async applyOutcome(_message, outcome) { return outcome; },
+  async applyOutcome({ outcome }) { return outcome; },
 });
 
 function bossHarness() {
   const calls = [];
-  let handler;
+  const handlers = new Map();
   const boss = {
     on(event) { calls.push(["on", event]); },
     async start() { calls.push(["start"]); },
     async createQueue(name, options) { calls.push(["createQueue", name, options]); },
     async work(name, options, callback) {
       calls.push(["work", name, options]);
-      handler = callback;
+      handlers.set(name, callback);
       return "worker-a";
     },
     async stop(options) { calls.push(["stop", options]); },
   };
-  return { boss, calls, handler: () => handler };
+  return { boss, calls, handler: (name = AUTO_LISTING_AI_QUEUE) => handlers.get(name) };
 }
 
 test("either disabled feature flag yields a worker handle that creates no PgBoss, context loader, orchestrator, or timer", async () => {
@@ -215,10 +253,11 @@ test("worker persists a terminal orchestrator outcome before acknowledging its q
     loadContext: async (message) => { order.push("load"); return context(message); },
     orchestrate: async ({ message }) => { order.push("orchestrate"); return phaseOutcome(message); },
     workflow: Object.freeze({
-      async applyOutcome(message, outcome) {
+      async applyOutcome({ message, outcome, execution }) {
         order.push("apply");
         assert.deepEqual(message, baseMessage);
         assert.deepEqual(outcome, phaseOutcome(message));
+        assert.equal(execution, null);
       },
     }),
     logger: { log() {} },
@@ -288,8 +327,9 @@ test("a lost apply response returns failure, then the queue redelivery ACKs stal
   const worker = createAutoListingAiWorker({
     enabled: true,
     bossFactory: () => harness.boss,
-    loadContext: async (message) => {
+    loadContext: async (request) => {
       loads += 1;
+      const message = request.message;
       return context(message, advanced ? { statusVersion: message.expectedStatusVersion + 1 } : {});
     },
     orchestrate: async ({ message }) => { orchestrations += 1; return phaseOutcome(message); },
@@ -387,7 +427,7 @@ test("intermediate RETRY is not persisted, while exhausted RETRY and terminal FA
           failureCode: "AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED",
         });
       },
-      workflow: Object.freeze({ async applyOutcome(message, outcome) { applied.push([message, outcome]); } }),
+      workflow: Object.freeze({ async applyOutcome({ message, outcome }) { applied.push([message, outcome]); } }),
       logger: { log() {} },
       phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: scenario === "terminal-fail" ? 0 : 1 } }),
       timers: {
@@ -439,7 +479,7 @@ test("gateway rate limiting is persisted after one attempt without consuming aut
         failureCode: "AI_GATEWAY_RATE_LIMITED",
       });
     },
-    workflow: Object.freeze({ async applyOutcome(message, outcome) { applied.push([message, outcome]); } }),
+    workflow: Object.freeze({ async applyOutcome({ message, outcome }) { applied.push([message, outcome]); } }),
     logger: { log() {} },
     phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 2 } }),
     timers: {
@@ -480,7 +520,7 @@ test("a retryable context failure is closed through the workflow before the queu
       throw error;
     },
     orchestrate: async () => { throw new Error("must not orchestrate"); },
-    workflow: Object.freeze({ async applyOutcome(message, outcome) { applied.push([message, outcome]); } }),
+    workflow: Object.freeze({ async applyOutcome({ message, outcome }) { applied.push([message, outcome]); } }),
     logger: { log() {} },
     phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 0 } }),
     timers: { setTimeout, clearTimeout },
@@ -592,7 +632,7 @@ test("an acknowledged phase may retain a stable diagnostic failure code without 
   await worker.stop();
 });
 
-test("dedicated worker creates only the AI queue and reloads exact context before one phase orchestration", async () => {
+test("dedicated worker creates the v2 drain and v3 queue and reloads exact context before one legacy orchestration", async () => {
   const harness = bossHarness();
   const loaded = [];
   const orchestrated = [];
@@ -617,13 +657,16 @@ test("dedicated worker creates only the AI queue and reloads exact context befor
   assert.equal(await worker.start(), true);
   const result = await harness.handler()([{ id: "queue-job-a", data: { ...baseMessage } }]);
 
-  assert.deepEqual(harness.calls.find((entry) => entry[0] === "createQueue"), [
-    "createQueue", AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_QUEUE_OPTIONS,
+  assert.deepEqual(harness.calls.filter((entry) => entry[0] === "createQueue"), [
+    ["createQueue", AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_WORK_QUEUE, AUTO_LISTING_AI_WORK_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE, AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_CURRENT_WORK_QUEUE, AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS],
   ]);
   const work = harness.calls.find((entry) => entry[0] === "work");
   assert.equal(work[1], AUTO_LISTING_AI_QUEUE);
   assert.equal(work[2].perJobResults, true);
-  assert.deepEqual(loaded, [baseMessage]);
+  assert.deepEqual(loaded, [{ message: baseMessage, execution: null }]);
   assert.deepEqual(orchestrated, [{ message: baseMessage, context: context(baseMessage) }]);
   assert.deepEqual(result, [{
     id: "queue-job-a",
@@ -633,7 +676,7 @@ test("dedicated worker creates only the AI queue and reloads exact context befor
   assert.deepEqual(logs.at(-1), {
     correlationId: "correlation-a", phase: "PLAN_CONTENT", code: "PLAN_READY",
   });
-  assert.doesNotMatch(JSON.stringify({ calls: harness.calls, logs }), /listing-v3|submission|sourceRef|apiKey|secret/iu);
+  assert.doesNotMatch(JSON.stringify({ calls: harness.calls, logs }), /submission|sourceRef|apiKey|secret/iu);
   await worker.stop();
 });
 
@@ -769,6 +812,53 @@ test("phase policies independently bound concurrency and retry only stable retry
   for (const key of ["plan-b", "image-c"]) release.get(key)?.();
   const results = await processing;
   assert.equal(results.every((entry) => entry.status === "completed"), true);
+  await worker.stop();
+});
+
+test("source-image materialization exposes the exact worker attempt fence to its context loader", async () => {
+  const harness = bossHarness();
+  const loaded = [];
+  let attempts = 0;
+  const sourceMessage = {
+    ...baseMessage, contractVersion: "V3", phase: "MATERIALIZE_SOURCE_ASSET",
+    sourceAssetId: "source-a",
+  };
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    loadContext: async (request) => {
+      loaded.push(request);
+      return context(request, { status: "PLANNING" });
+    },
+    orchestrate: async ({ message }) => {
+      attempts += 1;
+      return attempts < 3
+        ? phaseOutcome(message, {
+          disposition: "RETRY", outcome: "PHASE_RETRY", retryable: true,
+          failureCode: "AUTO_LISTING_SOURCE_DOWNLOAD_FAILED",
+        })
+        : phaseOutcome(message, { outcome: "SOURCE_ASSET_TERMINAL" });
+    },
+    workflow: passthroughWorkflow,
+    logger: { log() {} },
+    phasePolicies: phasePolicies({
+      MATERIALIZE_SOURCE_ASSET: { retryLimit: 2, retryDelayMs: 1 },
+    }),
+    timers: {
+      setTimeout(callback) { queueMicrotask(callback); return { retryDelay: true }; },
+      clearTimeout() {},
+    },
+  });
+  await worker.start();
+
+  const result = await harness.handler()([{ id: "source-materialize", data: sourceMessage }]);
+
+  assert.deepEqual(loaded.map(({ phaseAttempt }) => phaseAttempt), [
+    { attemptNo: 1, maxAttempts: 3 },
+    { attemptNo: 2, maxAttempts: 3 },
+    { attemptNo: 3, maxAttempts: 3 },
+  ]);
+  assert.equal(result[0].status, "completed");
   await worker.stop();
 });
 
@@ -939,4 +1029,772 @@ test("invalid or exhausted work stores and logs only safe codes, and graceful st
   assert.deepEqual(harness.calls.filter((entry) => entry[0] === "stop"), [[
     "stop", { graceful: true, timeout: 300_000 },
   ]]);
+});
+
+test("graceful stop lets the active paid attempt settle but starts no retry attempt", async () => {
+  const harness = bossHarness();
+  let finishAttempt;
+  let attempts = 0;
+  let writes = 0;
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => {
+      attempts += 1;
+      await new Promise((resolve) => { finishAttempt = resolve; });
+      return phaseOutcome(message, {
+        disposition: "RETRY", outcome: "FAILED", retryable: true,
+        failureCode: "AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED",
+      });
+    },
+    workflow: Object.freeze({ async applyOutcome() { writes += 1; } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 1, retryDelayMs: 1 } }),
+    timers: { setTimeout, clearTimeout },
+  });
+  await worker.start();
+
+  const processing = harness.handler()([{ id: "stop-before-retry", data: baseMessage }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  const stopping = worker.stop();
+  finishAttempt();
+
+  assert.deepEqual(await processing, [{
+    id: "stop-before-retry", status: "failed",
+    output: { disposition: "FAILED", code: "AUTO_LISTING_AI_WORKER_STOPPED" },
+  }]);
+  await stopping;
+  assert.equal(attempts, 1);
+  assert.equal(writes, 0);
+});
+
+function workMessage(message = baseMessage) {
+  return {
+    workContractVersion: "CHANNEL_WORK_V1",
+    message,
+    execution: {
+      outboxId: "outbox-a",
+      dispatchGeneration: 2,
+      channelId: "channel-a",
+      connectionId: "connection-a",
+      connectionVersion: 3,
+      leaseOwner: "relay-a",
+      leaseToken: "relay-token-a",
+      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+  };
+}
+
+function dualBossHarness() {
+  const calls = [];
+  const handlers = new Map();
+  const boss = {
+    on(event) { calls.push(["on", event]); },
+    async start() { calls.push(["start"]); },
+    async createQueue(name, options) { calls.push(["createQueue", name, options]); },
+    async work(name, options, callback) {
+      calls.push(["work", name, options]);
+      handlers.set(name, callback);
+      return `worker-${name}`;
+    },
+    async stop(options) { calls.push(["stop", options]); },
+  };
+  return { boss, calls, handler: (name) => handlers.get(name) };
+}
+
+test("v3 adopts before business work while the same boss continues serving the v2 drain", async () => {
+  const harness = dualBossHarness();
+  const events = [];
+  const executionRepository = Object.freeze({
+    async adopt(input) { events.push(["adopt", input]); return null; },
+    async renew(input) { events.push(["renew", input]); },
+    async requeueChannelFailure(input) { events.push(["requeue", input]); },
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository,
+    loadContext: async () => { events.push(["load"]); throw new Error("must not load"); },
+    orchestrate: async () => { events.push(["model"]); throw new Error("must not call"); },
+    workflow: Object.freeze({ async applyOutcome(input) { events.push(["apply", input]); } }),
+    logger: { log() {} },
+  });
+  await worker.start();
+
+  assert.deepEqual(harness.calls.filter(([name]) => name === "createQueue"), [
+    ["createQueue", AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_WORK_QUEUE, AUTO_LISTING_AI_WORK_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE, AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS],
+    ["createQueue", AUTO_LISTING_AI_CURRENT_WORK_QUEUE, AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS],
+  ]);
+  assert.equal(typeof harness.handler(AUTO_LISTING_AI_QUEUE), "function");
+  assert.equal(typeof harness.handler(AUTO_LISTING_AI_WORK_QUEUE), "function");
+  assert.equal(typeof harness.handler(AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE), "function");
+  assert.equal(typeof harness.handler(AUTO_LISTING_AI_CURRENT_WORK_QUEUE), "function");
+  const wrongQueue = await harness.handler(AUTO_LISTING_AI_QUEUE)([{ id: "wrong-queue", data: workMessage() }]);
+  assert.equal(wrongQueue[0].output.code, "AUTO_LISTING_AI_MESSAGE_INVALID");
+  assert.deepEqual(events, []);
+  const result = await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-a", data: workMessage() }]);
+  assert.equal(result[0].output.code, "AUTO_LISTING_AI_MESSAGE_STALE");
+  assert.deepEqual(events.map(([name]) => name), ["adopt"]);
+  await worker.stop();
+});
+
+test("v3 acknowledges an expired work lease as stale without retrying or touching business dependencies", async () => {
+  const harness = dualBossHarness();
+  const events = [];
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { events.push("adopt"); return null; },
+      async renew() { events.push("renew"); return null; },
+      async requeueChannelFailure() { events.push("requeue"); return null; },
+    }),
+    loadContext: async () => { events.push("load"); return null; },
+    orchestrate: async () => { events.push("orchestrate"); return null; },
+    workflow: Object.freeze({ async applyOutcome() { events.push("apply"); } }),
+    logger: { log() {} },
+  });
+  await worker.start();
+
+  const expired = workMessage();
+  expired.execution.leaseExpiresAt = new Date(Date.now() - 1).toISOString();
+  const result = await harness.handler(AUTO_LISTING_AI_CURRENT_WORK_QUEUE)([{
+    id: "expired-work", data: expired,
+  }]);
+
+  assert.deepEqual(result, [{
+    id: "expired-work", status: "completed",
+    output: { disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" },
+  }]);
+  assert.deepEqual(events, []);
+  await worker.stop();
+});
+
+test("v3 image generation uses two independently leased channels in parallel", async () => {
+  const harness = dualBossHarness();
+  let active = 0;
+  let maximum = 0;
+  const connectedWork = (suffix) => {
+    const message = {
+      ...baseMessage,
+      itemId: `item-${suffix}`,
+      phase: "GENERATE_IMAGE_SLOT",
+      slotKey: `slot-${suffix}`,
+      correlationId: `correlation-${suffix}`,
+    };
+    return {
+      workContractVersion: "CHANNEL_WORK_V1",
+      message,
+      execution: {
+        outboxId: `outbox-${suffix}`,
+        dispatchGeneration: 1,
+        channelId: `channel-${suffix}`,
+        connectionId: `connection-${suffix}`,
+        connectionVersion: 1,
+        leaseOwner: `relay-${suffix}`,
+        leaseToken: `relay-token-${suffix}`,
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    };
+  };
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt({ execution }) {
+        return {
+          ...execution,
+          leaseOwner: `worker-${execution.channelId}`,
+          leaseToken: `worker-token-${execution.channelId}`,
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        };
+      },
+      async renew({ execution }) { return execution; },
+      async requeueChannelFailure() { throw new Error("unexpected channel failure"); },
+    }),
+    loadContext: async ({ message }) => context(message, {
+      status: "GENERATING",
+      activeContentPlanId: "plan-a",
+    }),
+    orchestrate: async ({ message }) => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      active -= 1;
+      return phaseOutcome(message);
+    },
+    workflow: passthroughWorkflow,
+    logger: { log() {} },
+  });
+  await worker.start();
+
+  const handler = harness.handler(AUTO_LISTING_AI_CURRENT_WORK_QUEUE);
+  const [first, second] = await Promise.all([
+    handler([{ id: "connected-a", data: connectedWork("a") }]),
+    handler([{ id: "connected-b", data: connectedWork("b") }]),
+  ]);
+
+  assert.equal(maximum, 2);
+  assert.equal(first[0].status, "completed");
+  assert.equal(second[0].status, "completed");
+  await worker.stop();
+});
+
+test("default v3 image policy rejection retries twice inside one adopted execution", async () => {
+  const harness = dualBossHarness();
+  const imageMessage = {
+    ...baseMessage,
+    phase: "GENERATE_IMAGE_SLOT",
+    slotKey: "slot-a",
+    correlationId: "image-policy-retry",
+  };
+  const adoptedExecution = Object.freeze({
+    ...workMessage(imageMessage).execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  let adopts = 0;
+  let attempts = 0;
+  let channelRequeues = 0;
+  const applied = [];
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { adopts += 1; return adoptedExecution; },
+      async renew() { return adoptedExecution; },
+      async requeueChannelFailure() { channelRequeues += 1; },
+    }),
+    loadContext: async (message) => context(message, {
+      status: "GENERATING",
+      activeContentPlanId: "plan-a",
+    }),
+    orchestrate: async ({ message }) => {
+      attempts += 1;
+      return attempts < 3 ? phaseOutcome(message, {
+        disposition: "RETRY",
+        outcome: "FAILED",
+        retryable: true,
+        failureCode: "EXTERNAL_OVERLAY_DETECTED",
+        failureScope: "BUSINESS",
+      }) : phaseOutcome(message);
+    },
+    workflow: Object.freeze({ async applyOutcome(input) { applied.push(input); return input.outcome; } }),
+    logger: { log() {} },
+    timers: {
+      setTimeout(callback, delay) {
+        if (delay === 2_000) { queueMicrotask(callback); return { retry: true }; }
+        return setTimeout(callback, delay);
+      },
+      clearTimeout(handle) { if (!handle?.retry) clearTimeout(handle); },
+    },
+  });
+  await worker.start();
+
+  const result = await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{
+    id: "v3-image-policy-retry",
+    data: workMessage(imageMessage),
+  }]);
+
+  assert.equal(result[0].status, "completed");
+  assert.equal(result[0].output.code, "IMAGE_SLOT_ACCEPTED");
+  assert.equal(adopts, 1);
+  assert.equal(attempts, 3);
+  assert.equal(channelRequeues, 0);
+  assert.equal(applied.length, 1);
+  assert.deepEqual(applied[0].execution, adoptedExecution);
+  await worker.stop();
+});
+
+test("v3 business retry keeps one adopted execution and never cools or switches its fixed channel", async () => {
+  const harness = dualBossHarness();
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  let adopts = 0;
+  let attempts = 0;
+  const applied = [];
+  const executionRepository = Object.freeze({
+    async adopt() { adopts += 1; return adoptedExecution; },
+    async renew() { return adoptedExecution; },
+    async requeueChannelFailure() { throw new Error("business retry must not switch channel"); },
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository,
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => {
+      attempts += 1;
+      return attempts === 1 ? phaseOutcome(message, {
+        disposition: "RETRY", outcome: "FAILED", retryable: true,
+        failureCode: "AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED", failureScope: "BUSINESS",
+      }) : phaseOutcome(message);
+    },
+    workflow: Object.freeze({ async applyOutcome(input) { applied.push(input); } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 1 } }),
+    timers: {
+      setTimeout(callback, delay) {
+        if (delay === 1) { queueMicrotask(callback); return { retry: true }; }
+        return setTimeout(callback, delay);
+      },
+      clearTimeout(handle) { if (!handle?.retry) clearTimeout(handle); },
+    },
+  });
+  await worker.start();
+  const result = await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-business", data: workMessage() }]);
+  assert.equal(result[0].status, "completed");
+  assert.equal(adopts, 1);
+  assert.equal(attempts, 2);
+  assert.equal(applied.length, 1);
+  assert.deepEqual(applied[0].execution, adoptedExecution);
+  await worker.stop();
+});
+
+test("context loading receives the current adopted v3 execution while legacy v2 receives null", async () => {
+  const harness = dualBossHarness();
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const loaded = [];
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() { return adoptedExecution; },
+      async requeueChannelFailure() { throw new Error("must not requeue"); },
+    }),
+    loadContext: async (input) => {
+      loaded.push(input);
+      return context(input.message);
+    },
+    orchestrate: async ({ message }) => phaseOutcome(message),
+    workflow: passthroughWorkflow,
+    logger: { log() {} },
+  });
+  await worker.start();
+
+  await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-context", data: workMessage() }]);
+  await harness.handler(AUTO_LISTING_AI_QUEUE)([{ id: "v2-context", data: baseMessage }]);
+
+  assert.deepEqual(loaded, [
+    { message: baseMessage, execution: adoptedExecution },
+    { message: baseMessage, execution: null },
+  ]);
+  await worker.stop();
+});
+
+test("v3 channel failure is requeued once without inline retry or item failure persistence", async () => {
+  const harness = dualBossHarness();
+  const events = [];
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const executionRepository = Object.freeze({
+    async adopt() { events.push("adopt"); return adoptedExecution; },
+    async renew() { events.push("renew"); return adoptedExecution; },
+    async requeueChannelFailure(input) { events.push(["requeue", input]); return { disposition: "REQUEUED" }; },
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository,
+    loadContext: async (message) => { events.push("load"); return context(message); },
+    orchestrate: async ({ message }) => {
+      events.push("model");
+      return phaseOutcome(message, {
+        disposition: "RETRY", outcome: "FAILED", retryable: true,
+        failureCode: "AI_GATEWAY_RATE_LIMITED",
+        failureScope: "CHANNEL_TRANSIENT", deliveryState: "NOT_SENT", retryAfterMs: 5_000,
+      });
+    },
+    workflow: Object.freeze({ async applyOutcome() { events.push("apply"); } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 2 } }),
+  });
+  await worker.start();
+  const result = await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-rate", data: workMessage() }]);
+
+  assert.equal(result[0].status, "completed");
+  assert.deepEqual(events.map((entry) => Array.isArray(entry) ? entry[0] : entry), ["adopt", "load", "model", "requeue"]);
+  const persisted = events.find((entry) => Array.isArray(entry) && entry[0] === "requeue")[1];
+  assert.deepEqual(persisted.execution, adoptedExecution);
+  assert.equal(persisted.outcome.deliveryState, "NOT_SENT");
+  await worker.stop();
+});
+
+test("v3 inner reservation busy is durably deferred once without inline retry or business outcome", async () => {
+  const harness = dualBossHarness();
+  const events = [];
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { events.push("adopt"); return adoptedExecution; },
+      async renew() { events.push("renew"); return adoptedExecution; },
+      async requeueChannelFailure() { throw new Error("reservation wait must not switch channel"); },
+    }),
+    loadContext: async (message) => { events.push("load"); return context(message); },
+    orchestrate: async ({ message }) => {
+      events.push("phase");
+      return phaseOutcome(message, {
+        disposition: "RETRY", outcome: "IN_PROGRESS", retryable: true,
+        failureCode: "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+        failureScope: "RESERVATION_BUSY", retryAfterMs: 30_000,
+      });
+    },
+    workflow: Object.freeze({ async applyOutcome(input) { events.push(["defer", input]); } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 2 } }),
+  });
+  await worker.start();
+
+  const result = await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{
+    id: "v3-reservation-busy", data: workMessage(),
+  }]);
+
+  assert.equal(result[0].status, "completed");
+  assert.deepEqual(events.map((entry) => Array.isArray(entry) ? entry[0] : entry), [
+    "adopt", "load", "phase", "defer",
+  ]);
+  assert.deepEqual(events.at(-1)[1].execution, adoptedExecution);
+  assert.equal(events.at(-1)[1].outcome.failureScope, "RESERVATION_BUSY");
+  await worker.stop();
+});
+
+test("v3 reservation busy rejects a failure code belonging to another phase", async () => {
+  const harness = dualBossHarness();
+  let persisted = null;
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() { return adoptedExecution; },
+      async requeueChannelFailure() { throw new Error("must not switch channel"); },
+    }),
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => phaseOutcome(message, {
+      disposition: "RETRY", outcome: "IN_PROGRESS", retryable: true,
+      failureCode: "AUTO_LISTING_IMAGE_IN_PROGRESS",
+      failureScope: "RESERVATION_BUSY", retryAfterMs: 30_000,
+    }),
+    workflow: Object.freeze({ async applyOutcome(input) { persisted = input; } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies(),
+  });
+  await worker.start();
+
+  const [result] = await harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{
+    id: "v3-invalid-reservation-busy", data: workMessage(),
+  }]);
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.output, {
+    disposition: "FAIL", code: "AUTO_LISTING_AI_ORCHESTRATOR_OUTCOME_INVALID",
+  });
+  assert.equal(persisted.outcome.failureScope, "BUSINESS");
+  assert.equal(persisted.outcome.failureCode, "AUTO_LISTING_AI_ORCHESTRATOR_OUTCOME_INVALID");
+  await worker.stop();
+});
+
+test("v3 renews within one third of its lease, stops heartbeat, and never saves after lease loss", async () => {
+  const harness = dualBossHarness();
+  const timers = manualTimers();
+  const events = [];
+  let finishModel;
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const executionRepository = Object.freeze({
+    async adopt(input) { events.push(["adopt", input]); return adoptedExecution; },
+    async renew(input) {
+      events.push(["renew", input]);
+      throw Object.assign(new Error("lost"), { code: "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED" });
+    },
+    async requeueChannelFailure(input) { events.push(["requeue", input]); },
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository,
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => new Promise((resolve) => {
+      finishModel = () => resolve(phaseOutcome(message, {
+        failureScope: null, deliveryState: null, retryAfterMs: null,
+      }));
+    }),
+    workflow: Object.freeze({ async applyOutcome(input) { events.push(["apply", input]); } }),
+    logger: { log() {} },
+    timers,
+  });
+  await worker.start();
+  const processing = harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-lost", data: workMessage() }]);
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  await timers.advanceBy(10_000);
+  assert.equal(events.filter(([name]) => name === "renew").length, 1);
+  assert.equal(events.find(([name]) => name === "renew")[1].leaseMs, 30_000);
+  finishModel();
+  const result = await processing;
+  assert.equal(result[0].output.code, "AUTO_LISTING_AI_MESSAGE_STALE");
+  assert.equal(events.some(([name]) => name === "apply" || name === "requeue"), false);
+  await timers.advanceBy(60_000);
+  assert.equal(events.filter(([name]) => name === "renew").length, 1, "heartbeat must be stopped");
+  await worker.stop();
+});
+
+test("v3 persists with the latest execution returned by repeated lease renewals", async () => {
+  const harness = dualBossHarness();
+  const timers = manualTimers();
+  let finishModel;
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const renewedExecutions = [120_000, 180_000].map((offset) => Object.freeze({
+    ...adoptedExecution,
+    leaseExpiresAt: new Date(Date.now() + offset).toISOString(),
+  }));
+  let renewals = 0;
+  const applied = [];
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() { return renewedExecutions[renewals++]; },
+      async requeueChannelFailure() { throw new Error("must not requeue"); },
+    }),
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => new Promise((resolve) => {
+      finishModel = () => resolve(phaseOutcome(message));
+    }),
+    workflow: Object.freeze({ async applyOutcome(input) { applied.push(input); } }),
+    logger: { log() {} },
+    timers,
+  });
+  await worker.start();
+  const processing = harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-renewed", data: workMessage() }]);
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  await timers.advanceBy(20_000);
+  finishModel();
+  const result = await processing;
+
+  assert.equal(result[0].status, "completed");
+  assert.equal(renewals, 2);
+  assert.deepEqual(applied[0].execution, renewedExecutions[1]);
+  await worker.stop();
+});
+
+test("v3 treats an invalid renewal result as lease loss and never persists", async () => {
+  const harness = dualBossHarness();
+  const timers = manualTimers();
+  let finishModel;
+  let writes = 0;
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() { return null; },
+      async requeueChannelFailure() { writes += 1; },
+    }),
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => new Promise((resolve) => {
+      finishModel = () => resolve(phaseOutcome(message));
+    }),
+    workflow: Object.freeze({ async applyOutcome() { writes += 1; } }),
+    logger: { log() {} },
+    timers,
+  });
+  await worker.start();
+  const processing = harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-invalid-renew", data: workMessage() }]);
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  await timers.advanceBy(10_000);
+  finishModel();
+  const result = await processing;
+
+  assert.equal(result[0].output.code, "AUTO_LISTING_AI_MESSAGE_STALE");
+  assert.equal(writes, 0);
+  await worker.stop();
+});
+
+test("v3 lease loss during retry delay prevents a second paid attempt and persistence", async () => {
+  const harness = dualBossHarness();
+  const timers = manualTimers();
+  let attempts = 0;
+  let writes = 0;
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() { throw Object.assign(new Error("lost"), { code: "AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED" }); },
+      async requeueChannelFailure() { writes += 1; },
+    }),
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => {
+      attempts += 1;
+      return phaseOutcome(message, {
+        disposition: "RETRY", outcome: "FAILED", retryable: true,
+        failureCode: "AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED", failureScope: "BUSINESS",
+      });
+    },
+    workflow: Object.freeze({ async applyOutcome() { writes += 1; } }),
+    logger: { log() {} },
+    phasePolicies: phasePolicies({ PLAN_CONTENT: { retryLimit: 1, retryDelayMs: 20_000 } }),
+    timers,
+  });
+  await worker.start();
+  const processing = harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-lost-before-retry", data: workMessage() }]);
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  await timers.advanceBy(10_000);
+  await timers.advanceBy(10_000);
+  const result = await processing;
+
+  assert.equal(result[0].output.code, "AUTO_LISTING_AI_MESSAGE_STALE");
+  assert.equal(attempts, 1);
+  assert.equal(writes, 0);
+  await worker.stop();
+});
+
+test("v3 heartbeat keeps planned start times despite consecutive slow renewals", async () => {
+  const harness = dualBossHarness();
+  const timers = manualTimers();
+  let finishModel;
+  const starts = [];
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() {
+        starts.push(timers.now());
+        return new Promise((resolve) => timers.setTimeout(() => resolve(Object.freeze({
+          ...adoptedExecution,
+          leaseExpiresAt: new Date(Date.now() + 180_000 + starts.length).toISOString(),
+        })), 4_000));
+      },
+      async requeueChannelFailure() { throw new Error("must not requeue"); },
+    }),
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => new Promise((resolve) => {
+      finishModel = () => resolve(phaseOutcome(message));
+    }),
+    workflow: Object.freeze({ async applyOutcome() {} }),
+    logger: { log() {} },
+    timers,
+  });
+  await worker.start();
+  const processing = harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-slow-renew", data: workMessage() }]);
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  await timers.advanceBy(28_000);
+  finishModel();
+  await processing;
+
+  assert.deepEqual(starts, [10_000, 20_000]);
+  await worker.stop();
+});
+
+test("v3 marks a renewal lost at the next heartbeat deadline without overlapping a 12-second renew", async () => {
+  const harness = dualBossHarness();
+  const timers = manualTimers();
+  let finishModel;
+  let writes = 0;
+  const starts = [];
+  const adoptedExecution = Object.freeze({
+    ...workMessage().execution,
+    leaseOwner: "worker-a",
+    leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const worker = createAutoListingAiWorker({
+    enabled: true,
+    bossFactory: () => harness.boss,
+    executionRepository: Object.freeze({
+      async adopt() { return adoptedExecution; },
+      async renew() {
+        starts.push(timers.now());
+        return new Promise((resolve) => timers.setTimeout(() => resolve(Object.freeze({
+          ...adoptedExecution,
+          leaseExpiresAt: new Date(Date.now() + 180_000).toISOString(),
+        })), 12_000));
+      },
+      async requeueChannelFailure() { writes += 1; },
+    }),
+    loadContext: async (message) => context(message),
+    orchestrate: async ({ message }) => new Promise((resolve) => {
+      finishModel = () => resolve(phaseOutcome(message));
+    }),
+    workflow: Object.freeze({ async applyOutcome() { writes += 1; } }),
+    logger: { log() {} },
+    timers,
+  });
+  await worker.start();
+  const processing = harness.handler(AUTO_LISTING_AI_WORK_QUEUE)([{ id: "v3-renew-deadline", data: workMessage() }]);
+  let settled = false;
+  processing.finally(() => { settled = true; });
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  await timers.advanceBy(20_000);
+  finishModel();
+  await new Promise((resolve) => setImmediate(resolve));
+  const settledAtDeadline = settled;
+  await timers.advanceBy(2_000);
+  const result = await processing;
+
+  assert.equal(settledAtDeadline, true, "stop must not wait for an overdue renewal promise");
+  assert.equal(result[0].output.code, "AUTO_LISTING_AI_MESSAGE_STALE");
+  assert.deepEqual(starts, [10_000], "an overdue renew must not overlap with another database renew");
+  assert.equal(writes, 0);
+  await worker.stop();
 });

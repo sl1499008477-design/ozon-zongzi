@@ -31,8 +31,8 @@
 
   // 主插件发布 >= 此版本时，算价停用
   const MAIN_EXT_STABLE_VERSION = '1.0.0';
-  const MAIN_EXT_UPDATE_URL = 'http://127.0.0.1:3000/api/extension/latest';
-  const MAIN_EXT_INSTALL_URL_FALLBACK = 'http://127.0.0.1:3000/extension';
+  const MAIN_EXT_UPDATE_URL = 'https://www.ozonzongzi.com/api/extension/latest';
+  const MAIN_EXT_INSTALL_URL_FALLBACK = 'https://www.ozonzongzi.com/extension';
   const MAIN_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
   const DEFAULT_BRAND_DISPLAY_NAME = /__BRAND/.test('ozon 粽子')
     ? 'ozon 粽子'
@@ -429,6 +429,7 @@
     const data = {};
     try {
       const priceTags = window.jzExtractOzonPriceTags?.(document) || null;
+      data.currency = priceTags?.blackPriceCurrency || null;
       if (priceTags?.blackPrice != null) data.blackPrice = priceTags.blackPrice;
       if (priceTags?.greenPrice != null) data.greenPrice = priceTags.greenPrice;
     } catch (_) {}
@@ -704,7 +705,6 @@
   let panelEl = null;
   let triggerEl = null;
   let channel = 'CEL';
-  let useOldFormula = false; // 平台涨价定价：勾选后黑标 ≤80 用旧公式
 
   // 6 档 × 3 运输方式（默认全部 economy 陆运经济）
   const TIER_KEYS = ['xs', 'budget', 'small', 'big', 'pSmall', 'pBig'];
@@ -998,13 +998,7 @@
         <button class="${P}-quick-btn warn" data-action="open-prohibited">${window.lucideIcon('ban', 13)} 禁运清单</button>
       </div>
 
-      <div class="${P}-section ${P}-old-formula-row">
-        <label class="${P}-checkbox-label">
-          <input type="checkbox" data-f="useOldFormula"/>
-          <span>平台涨价定价</span>
-          <span class="${P}-checkbox-hint">勾选后，黑标 ≤80 使用旧公式计算</span>
-        </label>
-      </div>
+      <div class="${P}-section"><div data-f="salePricingSelector"></div><small>算价器使用默认竞品真实售价计算配置（人民币），可在售价配置页修改默认配置。</small></div>
 
       <div class="${P}-footer">
         <button class="${P}-cta" data-action="export">${window.lucideIcon('copy', 13)} 复制结果</button>
@@ -1302,16 +1296,6 @@
       }
     });
 
-    // Checkbox: 平台涨价定价
-    const oldFormulaCb = q('[data-f="useOldFormula"]');
-    if (oldFormulaCb) {
-      oldFormulaCb.addEventListener('change', (e) => {
-        useOldFormula = !!e.target.checked;
-        saveState();
-        recalcAll();
-      });
-    }
-
     // 佣金档位：用户可编辑
     qa(`.${P}-tier-rate[data-tier-rate]`).forEach((inp) => {
       inp.addEventListener('input', (e) => {
@@ -1434,7 +1418,7 @@
       banner.classList.add('show', 'danger');
       banner.classList.remove('warn');
       q(`[data-f="bannerText"]`).innerHTML =
-        `<b>正在亏损</b>，建议调价至 <b>¥${fmt(price + Math.abs(profit) + SAFETY_RATE * price, 0)}</b>（达 15% 安全线）`;
+        `<b>当前预估每单亏损 ¥${fmt(Math.abs(profit))}</b>，请调整定价、采购成本或物流方案后重新核算`;
     } else if (hasCost && warn) {
       banner.classList.add('show', 'warn');
       banner.classList.remove('danger');
@@ -1518,29 +1502,27 @@
     });
   }
 
-  // 实际售价(真实上架售价)纯计算 —— 返回 number 或 null(没黑标算不出)。
-  // calcActual 展示用、autofill 默认定价用。**勿读 actualPrice 展示字段**:它经 fmt
-  // 带千分位逗号(如 "1,234.56"),parseFloat 会截成个位 → >=1000 的价被读成 ¥1。
   function computeActual(black, green) {
-    black = Number(black); green = Number(green);
-    if (!(black > 0)) return null;
-    // 默认新公式 (黑−绿)×2.25 + 黑;勾「平台涨价定价」且黑标 ≤80 用旧公式 黑 ÷ 1.0715
-    if (useOldFormula && black <= 80) return black / 1.0715;
-    return (black - green) * 2.25 + black;
+    try {
+      const result = window.JzSalePricing.calculate(black, green, 'CNY');
+      return Number(globalThis.SalePricing.saleMinorToAmount(result.realPriceKopecks));
+    } catch { return null; }
   }
 
   function calcActual() {
-    const black = val(`[data-f="blackPrice"]`);
-    const apEl = q(`[data-f="actualPrice"]`);
-    const fmEl = q(`[data-f="formula"]`);
-    const actual = computeActual(black, val(`[data-f="greenPrice"]`));
-    if (actual == null) { apEl.value = ''; fmEl.textContent = '—'; return; }
-    apEl.value = fmt(actual, 2);
-    fmEl.textContent = (useOldFormula && black <= 80) ? '黑 ÷ 1.0715 (≤80 旧公式)' : '(黑−绿)×2.25 + 黑';
+    const apEl = q(`[data-f="actualPrice"]`), fmEl = q(`[data-f="formula"]`);
+    const selector = q('[data-f="salePricingSelector"]');
+    if (selector) window.JzSalePricing?.renderSelector(selector, 'CNY');
+    try {
+      const result = window.JzSalePricing.calculate(q('[data-f="blackPrice"]').value, q('[data-f="greenPrice"]').value, 'CNY');
+      apEl.value = globalThis.SalePricing.saleMinorToAmount(result.realPriceKopecks);
+      fmEl.textContent = window.JzSalePricing.current('CNY').realPriceFormula;
+    } catch (e) { apEl.value = ''; fmEl.textContent = e.message || '请设置默认竞品真实售价计算配置'; }
   }
 
   function autoFillFromPage(onlyEmpty = false) {
     const d = extractProductData();
+    if (d.currency !== 'CNY') { d.blackPrice = null; d.greenPrice = null; }
     // setIf 守则：
     //   ① 用户手输过的字段（jzcUserEdited=1）永不覆盖
     //   ② force=true 时绕过 onlyEmpty 限制（仅 seller portal 走这条）
@@ -1563,17 +1545,9 @@
     setIf('blackPrice', d.blackPrice);
     setIf('greenPrice', d.greenPrice);
     if (d.sku) q(`[data-f="sku"]`).textContent = 'SKU ' + d.sku;
-    // 定价默认 = 实际售价(真实上架售价 =(黑−绿)×2.25+黑;页面价已是人民币不做汇率换算)。
-    // Ozon 按上架售价扣佣 + 卖家实收按上架售价算,故定价默认取实际售价而非绿标(优惠价)。
-    // 算不出(没黑标)时退绿标 → 黑标。用 number 字面回填(不带千分位逗号)。
+    // 只使用选中配置的最终售价；未选配置或币种不同不推测定价。
     const actualDefault = computeActual(d.blackPrice, d.greenPrice);
-    if (actualDefault != null && actualDefault > 0) {
-      setIf('price', String(Number(actualDefault.toFixed(2))));
-    } else if (d.greenPrice != null) {
-      setIf('price', d.greenPrice);
-    } else if (d.blackPrice != null) {
-      setIf('price', d.blackPrice);
-    }
+    if (actualDefault != null && actualDefault > 0) setIf('price', String(actualDefault));
 
     // ── 重量/尺寸：DOM 先填占位（最低优先级），seller portal 回来会强制覆盖
     setIf('weight', d.weight);
@@ -1739,7 +1713,6 @@
   function saveState() {
     const state = {
       channel,
-      useOldFormula,
       celConfig,
       guooConfig,
       xyConfig,
@@ -1853,11 +1826,6 @@
         if (state.ztoConfig && typeof state.ztoConfig === 'object') {
           ztoConfig = normalizeChannelCfg('ZTO', { ...defaultChannelCfg(), ...state.ztoConfig });
         }
-        if (state.useOldFormula) {
-          useOldFormula = true;
-          const cb = q('[data-f="useOldFormula"]');
-          if (cb) cb.checked = true;
-        }
         if (state.tierRate && typeof state.tierRate === 'object') {
           [1, 2, 3].forEach((k) => {
             const v = parseFloat(state.tierRate[k]);
@@ -1956,6 +1924,31 @@
   window.__jzcIsMounted = () => !!(panelEl && document.contains(panelEl));
   window.__jzcInit = init; // 留给 lite standalone 入口手动调用
 
-  // 默认不自动启动 — 由主插件控制 mount/unmount。
-  // 如需 standalone 启动,调 window.__jzcInit() 即可。
+  // 竞品真实售价计算只使用账号默认公式，与上架售价配置独立。
+  function renderRealPrice() {
+    const widget = location.pathname.includes('/product/') ? document.querySelector('[data-widget="webPrice"]') : null;
+    let summary = document.getElementById('jzc-real-price');
+    if (!widget) { summary?.remove(); return; }
+    const prices = window.jzExtractOzonPriceTags?.(widget) || {};
+    const currency = prices.blackPriceCurrency;
+    if (!['CNY','RUB'].includes(currency)) { summary?.remove(); return; }
+    if (!summary) {
+      summary = document.createElement('div');summary.id = 'jzc-real-price';
+      summary.style.cssText = 'box-sizing:border-box;display:flex;align-items:center;gap:12px;margin:8px 0;padding:12px;border-radius:10px;background:#005af8;color:white;font:12px/1.5 "Microsoft YaHei",sans-serif;white-space:nowrap';
+      const label = document.createElement('span');label.textContent = '竞品真实售价估算：';
+      const value = document.createElement('strong');value.dataset.saleResult = '';value.style.cssText = 'margin-left:auto;font-size:20px;color:white';
+      value.setAttribute('aria-live','polite');
+      summary.append(label,value);
+    }
+    let display='—';
+    try {
+      const result=window.JzSalePricing.calculate(prices.blackPrice,prices.greenPrice,currency);
+      display=globalThis.SalePricing.saleMinorToAmount(result.realPriceKopecks)+' '+currency;
+    } catch(e) { /* The compact estimate remains unavailable until its configuration loads. */ }
+    const value=summary.querySelector('[data-sale-result]');
+    if(value.textContent!==display)value.textContent=display;
+    if(widget.nextElementSibling!==summary)widget.after(summary);
+  }
+  window.JzSalePricing?.onChange(()=>{renderRealPrice();if(panelEl){calcActual();autoFillFromPage();}});
+  if(location.pathname.includes('/product/')){renderRealPrice();setInterval(renderRealPrice,1500);}
 })();

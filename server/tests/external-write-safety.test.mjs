@@ -150,7 +150,7 @@ try {
     stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
   });
   assert.equal(stockResponse.status, 409, "standalone inventory writes must remain disabled without reconciliation");
-  assert.equal(stockResponse.body.code, "LOCAL_OZON_WRITE_DISABLED");
+  assert.equal(stockResponse.body.code, "LOCAL_ZONGZI_WRITE_DISABLED");
   assert.equal(externalWriteCalls, 0, "a rejected request must never call a real Ozon write endpoint");
 
   console.log("external write safety test passed");

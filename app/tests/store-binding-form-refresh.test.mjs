@@ -21,11 +21,6 @@ function browserExecutable() {
   return executable;
 }
 
-function localDateOnly(date = new Date()) {
-  const pad = (value) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
 function localState(store) {
   return {
     account: {
@@ -141,7 +136,7 @@ test("local state loads once and does not poll over an open store form", async (
     assert.equal(await clientId.inputValue(), "");
     assert.equal(await apiKey.inputValue(), "");
     assert.equal(await label.inputValue(), "");
-    assert.equal(await createdAt.inputValue(), localDateOnly());
+    assert.equal(await createdAt.inputValue(), "");
 
     await clientId.fill("999999999");
     await apiKey.fill("temporary-not-submitted-key");
@@ -163,7 +158,7 @@ test("local state loads once and does not poll over an open store form", async (
     assert.equal(await clientId.inputValue(), "");
     assert.equal(await apiKey.inputValue(), "");
     assert.equal(await label.inputValue(), "");
-    assert.equal(await createdAt.inputValue(), localDateOnly());
+    assert.equal(await createdAt.inputValue(), "");
     await page.getByRole("button", { name: /取\s*消/ }).click();
 
     await page.getByRole("button", { name: "修改", exact: true }).click();

@@ -16,7 +16,7 @@
   function getBrand() {
     const runtime = globalThis.__JZ_BRAND__ || {};
     const displayName = runtime.displayName || (/__BRAND/.test("ozon 粽子") ? "ozon 粽子" : "ozon 粽子");
-    const webHost = runtime.webHost || (/__BRAND/.test("qh.jizhangerp.com") ? "store.jizhangerp.com" : "qh.jizhangerp.com");
+    const webHost = runtime.webHost || (/__BRAND/.test("www.ozonzongzi.com") ? "www.ozonzongzi.com" : "www.ozonzongzi.com");
     return {
       displayName,
       webHost,
@@ -444,7 +444,7 @@
     const openResp = await sendRuntimeMessage({ action: "openFrontend", path });
     if (openResp?.ok) return;
 
-    const frontendUrl = "http://127.0.0.1:3000";
+    const frontendUrl = "https://www.ozonzongzi.com";
     window.open(`${frontendUrl}${path}`, "_blank");
   }
 

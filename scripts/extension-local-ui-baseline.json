@@ -1,0 +1,17 @@
+{
+  "id": "2026-09-05-current-local-ui-v1",
+  "versionAtCapture": "0.13.46.27",
+  "gitHeadAtCapture": "f8be54e7441f6feaadd333ad3f4ebd3f7f2d2491",
+  "workingTreeHadUncommittedChanges": true,
+  "upstreamCompared": false,
+  "scope": "用户批准以当前本地版本建立的 7 个受保护 UI 文件基准；不是原版一致性或全部业务功能的验收证明。其他运行能力仍由权限、采集、审核和打包回归验证。",
+  "files": {
+    "batch-upload/index.css": "d2b9cea7bfab5b42a094b9ff84c4e900f5b6bb01bcf6ceb15e1b90a2cc9721de",
+    "content/jzc-calc.css": "99aa783a71cb8f90aead99ebd01594495598065809caf1a1ebd7a5fb8fc03ff9",
+    "lib/store-picker.css": "1dd6ee671346fd381656125b6ad0b5b7b7b278a97d4dd6992b80d8e41f131923",
+    "batch-upload/index.html": "f6b02cb769d42bd90f34dcf2e6411047998121cfb3e10c118b64f6d58fb572e5",
+    "batch-upload/index.js": "f45d3efaee577e8f188792a29f80d611eb06a7b503fef2d4c58dcaf701dc0d19",
+    "content/ozon-product.css": "4c3e4409378648383434e0beaa8e307b13154be3408bba97a637a6414635633e",
+    "content/ozon-search.css": "7c3de747978c9d72d0651d3bedac3c611ec640fcf2bbe92d4e9473a5ff63b015"
+  }
+}

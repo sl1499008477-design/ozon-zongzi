@@ -18,36 +18,36 @@ function serviceError(code, status = 400) {
 }
 function exactObject(input, keys) {
   if (!input || typeof input !== "object" || Array.isArray(input) || types.isProxy(input)
-    || Object.getPrototypeOf(input) !== Object.prototype) throw serviceError("OZON_CATEGORY_INPUT_INVALID");
+    || Object.getPrototypeOf(input) !== Object.prototype) throw serviceError("ZONGZI_CATEGORY_INPUT_INVALID");
   const descriptors = Object.getOwnPropertyDescriptors(input);
   if (Reflect.ownKeys(descriptors).length !== keys.length
     || keys.some((key) => !Object.hasOwn(descriptors, key)
       || descriptors[key].get || descriptors[key].set || !descriptors[key].enumerable)) {
-    throw serviceError("OZON_CATEGORY_INPUT_INVALID");
+    throw serviceError("ZONGZI_CATEGORY_INPUT_INVALID");
   }
   return Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
 }
 
 function text(value) {
   if (typeof value !== "string" || !value || value !== value.trim() || value.length > 240
-    || /[\u0000-\u001f\u007f]/u.test(value)) throw serviceError("OZON_CATEGORY_INPUT_INVALID");
+    || /[\u0000-\u001f\u007f]/u.test(value)) throw serviceError("ZONGZI_CATEGORY_INPUT_INVALID");
   return value;
 }
 
 function idList(value) {
   if (!Array.isArray(value) || types.isProxy(value) || value.length > 500) {
-    throw serviceError("OZON_CATEGORY_INPUT_INVALID");
+    throw serviceError("ZONGZI_CATEGORY_INPUT_INVALID");
   }
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const result = [];
   for (let index = 0; index < value.length; index += 1) {
     const descriptor = descriptors[String(index)];
     if (!descriptor || descriptor.get || descriptor.set || !descriptor.enumerable) {
-      throw serviceError("OZON_CATEGORY_INPUT_INVALID");
+      throw serviceError("ZONGZI_CATEGORY_INPUT_INVALID");
     }
     result.push(text(descriptor.value));
   }
-  if (new Set(result).size !== result.length) throw serviceError("OZON_CATEGORY_INPUT_INVALID");
+  if (new Set(result).size !== result.length) throw serviceError("ZONGZI_CATEGORY_INPUT_INVALID");
   return result;
 }
 

@@ -26,15 +26,16 @@ export class ExcelService {
                 { header: '商品名称', key: 'nameLabel', width: 30 },
                 { header: '商品名称（中文）', key: 'chineseName', width: 30 },
                 { header: '商品类目', key: 'category3', width: 20 },
-                { header: '类目佣金（RFBS）', key: 'commissionRfbs', width: 15 },
-                { header: '类目佣金（FBP）', key: 'commissionFbp', width: 15 },
                 { header: '品牌', key: 'brand', width: 20 },
-                { header: '销售价格（₽）', key: 'price', width: 15 },
-                { header: '原价（₽）', key: 'oPrice', width: 15 },
+                { header: '前台参考价', key: 'price', width: 15 },
+                { header: '前台币种', key: 'currencyCode', width: 12 },
+                { header: '前台参考原价', key: 'oPrice', width: 15 },
+                { header: '银行卡参考价', key: 'storefrontBankPrice', width: 15 },
                 { header: '商品评分', key: 'rating', width: 10 },
                 { header: '评价次数', key: 'reviewCountLabel', width: 10 },
                 { header: '跟卖人数', key: 'sellerNumber', width: 10 },
                 { header: '跟卖最低价', key: 'followMinPrice', width: 15 },
+                { header: '跟卖价格币种', key: 'followPriceCurrency', width: 12 },
                 { header: '商品创建日期', key: 'nullableCreateDate', width: 15 },
                 { header: '上架时间（天）', key: 'releaseDate', width: 15 },
                 { header: '发货模式', key: 'salesSchema', width: 15 },
@@ -53,7 +54,7 @@ export class ExcelService {
                 { header: '参与促销折扣(%)', key: 'discount', width: 15 },
                 { header: '促销活动的转化率(%)', key: 'promoRevenueShare', width: 15 },
                 { header: '付费推广天数', key: 'daysWithTrafarets', width: 12 },
-                { header: '平均价格(₽)', key: 'avgPrice', width: 15 },
+                { header: 'Seller统计均价（₽）', key: 'sellerAnalyticsPriceRub', width: 20 },
                 { header: '已错过销售(₽)', key: 'sumMissedGmv', width: 15 },
                 { header: '商品可用性(%)', key: 'accessibility', width: 15 },
                 // 物流信息
@@ -63,37 +64,6 @@ export class ExcelService {
                 { header: '包装宽(mm)', key: 'width', width: 12 },
                 { header: '包装高(mm)', key: 'height', width: 12 },
                 { header: '包装重量(g)', key: 'weight', width: 12 },
-                // 成本和利润
-                { header: 'RFBS佣金(元)', key: 'fbsPrice', width: 15 },
-                { header: '国际物流', key: 'internalExpress', width: 15 },
-                { header: '国际物流费用（元）', key: 'logisticsMoney', width: 15 },
-                { header: '尾程派送费', key: 'endDeliveryFee', width: 15 },
-                { header: '国内运费（元）', key: 'rubExpressPrice', width: 15 },
-                { header: '其他费用（提现、货损）（元）', key: 'elsePrice', width: 20 },
-                { header: '货源地址', key: '1688link', width: 30 },
-                { header: '货源图片', key: 'cover2', width: 20 },
-                { header: '商品主图', key: 'cover3', width: 20 },
-                { header: '货源价格（元）', key: 'sourcePrice', width: 15 },
-                { header: '货源备注', key: 'sourceRemark', width: 20 },
-                { header: '我的售价（元）', key: 'resMoney', width: 15 },
-                { header: '预期售价（元）', key: 'estimateMoney', width: 15 },
-                { header: '预期售价（卢布）', key: 'estimateMoneyRub', width: 15 },
-                { header: '我的利润率（%）', key: 'myActualProfitPercent', width: 15 },
-                { header: '我的利润（元）', key: 'myProfit', width: 15 },
-                { header: '对方销售价格（₽）', key: 'price1', width: 15 },
-                { header: '对方原价（₽）', key: 'oPrice1', width: 15 },
-                { header: '跟卖最低价', key: 'followMinPrice1', width: 15 },
-                { header: '跟卖人数', key: 'sellerNumber1', width: 10 },
-                { header: '对方利润率（%）', key: 'otherProfitPercent', width: 15 },
-                { header: '对方利润（元）', key: 'otherProfit', width: 15 },
-                // 对方信息
-                /*         { header: '对方佣金（元）', key: 'otherFbsPrice', width: 15 },
-                        { header: '对方其他费用（元）', key: 'otherElsePrice', width: 15 },
-                        { header: '对方尾程派送费（元）', key: 'otherEndDeliveryPrice', width: 15 },
-                        { header: '对方总成本（元）', key: 'otherCost', width: 15 },
-                        { header: '对方人民币售价（元）', key: 'ozonPriceCny', width: 15 },
-                        { header: '汇率（卢布 => 人民币）', key: 'rmbToRub', width: 15 },
-                        { header: '对方物流费用（元）', key: 'otherLogisticsMoney', width: 15 } */
             ];
             // 首先设置列定义
             await this.excel.init();
@@ -108,14 +78,12 @@ export class ExcelService {
                 worksheet.spliceRows(1, 0, mainCategoryRowValues);
                 // 设置主类别标题
                 worksheet.getCell('A1').value = '基础信息';
-                worksheet.getCell('R1').value = '销售数据';
-                worksheet.getCell('AJ1').value = '尺寸重量';
-                worksheet.getCell('AO1').value = '我的定价';
+                worksheet.getCell('T1').value = '销售数据';
+                worksheet.getCell('AK1').value = '包装与配送';
                 // 合并单元格
-                this.excel.mergeCells('A1:Q1');
-                this.excel.mergeCells('R1:AI1');
-                this.excel.mergeCells('AJ1:AN1');
-                this.excel.mergeCells('AO1:BK1');
+                this.excel.mergeCells('A1:S1');
+                this.excel.mergeCells('T1:AJ1');
+                this.excel.mergeCells('AK1:AP1');
                 // 设置表头样式 - 只设置第1行（主类别标题）
                 this.excel.setRowStyle(1, {
                     font: { bold: true, size: 12 },
@@ -157,6 +125,8 @@ export class ExcelService {
             }
             else {
                 log.info('Excel 表头已存在，跳过初始化');
+                worksheet.columns = columns.map(({ header, ...column }) => column);
+                this.isInit = true;
             }
         }
         catch (error) {
@@ -167,7 +137,11 @@ export class ExcelService {
         try {
             if (!this.isInit)
                 await this.initTable();
-            return await this.excel?.appendAndSave(data);
+            return await this.excel?.enqueueRows(data.map((item) => ({
+                ...item,
+                link: item.link || item.href || '',
+                storefrontBankPrice: item.storefrontPrice?.bankAmount ?? '',
+            })));
         }
         catch (error) {
             log.error('写入Excel 失败！');
@@ -175,17 +149,24 @@ export class ExcelService {
         }
     }
     async flushToDisk() {
-        this.excel?.flushToDisk();
+        return await this.excel?.flushToDisk() ?? false;
     }
     async getFilePath() {
         return this.excel?.getFilePath() || '';
     }
+    async startFreshTable() {
+        await this.excel?.memoryQueue;
+        this.excel?.reset();
+        this.isInit = false;
+    }
     async DeleteFilled() {
+        await this.excel?.memoryQueue;
         const filePath = assertManagedExcelPath(
             SysTemUtils.getAppInfo().userDataPath,
             await this.getFilePath(),
         );
         await SysTemUtils.fileOperations.deleteFile(filePath);
+        await this.startFreshTable();
     }
     destroy() {
         this.excel = null;

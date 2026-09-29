@@ -2,7 +2,6 @@
   'use strict';
 
   const READ_PERMISSION = 'collector.ozon.read';
-  const DEADLINE_MS = 20_000;
   const SINGLE_PATH = '/collector/ozon/enrich';
   const BATCH_PATH = '/collector/ozon/enrich/batch';
   const REQUIRED_MISSING_FIELDS = new Set([
@@ -16,16 +15,18 @@
     'COLLECTOR_AUTH_REQUIRED',
     'COLLECTOR_PERMISSION_DENIED',
     'COLLECTOR_SESSION_CHANGED',
-    'OZON_ENRICH_REQUEST_INVALID',
-    'OZON_ENRICH_REQUEST_ID_REQUIRED',
-    'OZON_ENRICH_SKU_REQUIRED',
-    'OZON_ENRICH_BATCH_SKUS_REQUIRED',
-    'OZON_ENRICH_BATCH_LIMIT',
-    'OZON_ENRICH_NOT_FOUND',
-    'OZON_ENRICH_INCOMPLETE',
-    'OZON_ENRICH_BUSY',
-    'OZON_ENRICH_REQUEST_EXPIRED',
-    'OZON_ENRICH_UPSTREAM_FAILED',
+    'ZONGZI_ENRICH_REQUEST_INVALID',
+    'ZONGZI_ENRICH_REQUEST_ID_REQUIRED',
+    'ZONGZI_ENRICH_SKU_REQUIRED',
+    'ZONGZI_ENRICH_BATCH_SKUS_REQUIRED',
+    'ZONGZI_ENRICH_BATCH_LIMIT',
+    'ZONGZI_ENRICH_NOT_FOUND',
+    'ZONGZI_ENRICH_INCOMPLETE',
+    'ZONGZI_ENRICH_DATA_CONFLICT',
+    'ZONGZI_ENRICH_BUNDLE_UNCERTAIN',
+    'ZONGZI_ENRICH_BUSY',
+    'ZONGZI_ENRICH_REQUEST_EXPIRED',
+    'ZONGZI_ENRICH_UPSTREAM_FAILED',
   ]);
 
   const isPlainObject = (value) => {
@@ -61,16 +62,18 @@
     message,
     missingFields = [],
     retryable,
+    diagnostic,
   ) => Object.assign(new Error(redact(message || 'Ozon 商品资料补全失败')), {
     status: Number.isInteger(Number(status)) ? Number(status) : 0,
     code: PUBLIC_CODES.has(String(code || ''))
       ? String(code)
-      : 'OZON_ENRICH_UPSTREAM_FAILED',
+      : 'ZONGZI_ENRICH_UPSTREAM_FAILED',
     missingFields: stableMissingFields(missingFields),
     retryable: Boolean(retryable),
+    ...(diagnostic === undefined ? {} : { diagnostic }),
   });
 
-  const invalidRequest = (code = 'OZON_ENRICH_REQUEST_INVALID') => clientError(
+  const invalidRequest = (code = 'ZONGZI_ENRICH_REQUEST_INVALID') => clientError(
     400,
     code,
     'Ozon 商品补全请求格式无效',
@@ -97,6 +100,7 @@
       body?.message || `Ozon 商品资料补全失败 (${status})`,
       body?.missingFields,
       body?.retryable ?? (status === 429 || status >= 500),
+      body?.diagnostic,
     );
   };
 
@@ -148,65 +152,39 @@
 
     const heldRequest = async ({ requestId, path, body, normalize }) => {
       const collectorOperation = await requireOperation();
-      const deadlineAt = now() + DEADLINE_MS;
       const abortController = new root.AbortController();
-      const timeoutError = clientError(
-        504,
-        'OZON_ENRICH_UPSTREAM_FAILED',
-        'Ozon 商品资料补全请求超时',
-        [],
-        true,
-      );
-      let deadlineTimer;
-      let responsePromise;
-      let drainPromise;
-      let releaseToken;
-      try {
-        responsePromise = Promise.resolve(sessionManager.collectorFetch(path, {
-          collectorOperation,
-          permission: READ_PERMISSION,
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: abortController.signal,
-        }));
-      } catch (error) {
-        responsePromise = Promise.reject(error);
-      }
-      try {
-        const drainHandle = agent.drainUntil({ requestId, deadlineAt });
-        releaseToken = drainHandle?.releaseToken;
-        drainPromise = Promise.resolve(drainHandle);
-      } catch (error) {
-        drainPromise = Promise.reject(error);
-      }
-      const settledDrainPromise = drainPromise.catch(() => undefined);
-      const deadlinePromise = new Promise((_, reject) => {
-        deadlineTimer = setTimer(() => {
-          abortController.abort();
-          reject(timeoutError);
-        }, Math.max(0, deadlineAt - now()));
+      const request = () => sessionManager.collectorFetch(path, {
+        collectorOperation, permission: READ_PERMISSION, method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body), signal: abortController.signal,
       });
+      let responsePromise = Promise.resolve().then(request);
+      const drainHandle = agent.drainUntil({ requestId });
+      const releaseToken = drainHandle?.releaseToken;
+      void Promise.resolve(drainHandle).catch(() => undefined);
       try {
-        const readResponse = async () => {
+        while (true) {
           const response = await responsePromise;
           if (!response?.ok) throw await responseError(response);
           const payload = await jsonBody(response);
+          if (response.status === 202 && payload?.ok === true && payload.status === 'PENDING') {
+            // Reuse the same request identity. Waiting for a response is not a failed capture.
+            await new Promise(resolve => setTimer(resolve, 1000));
+            responsePromise = Promise.resolve().then(request);
+            continue;
+          }
           return normalize(payload);
-        };
-        return await Promise.race([readResponse(), deadlinePromise]);
+        }
       } finally {
         agent.stop(requestId, releaseToken);
         abortController.abort();
-        void settledDrainPromise;
-        clearTimer(deadlineTimer);
       }
     };
 
     const enrich = async (input = {}) => {
       normalizeInput(input, ['requestId', 'sku']);
-      const requestId = requiredText(input.requestId, 'OZON_ENRICH_REQUEST_ID_REQUIRED');
-      const sku = requiredText(input.sku, 'OZON_ENRICH_SKU_REQUIRED');
+      const requestId = requiredText(input.requestId, 'ZONGZI_ENRICH_REQUEST_ID_REQUIRED');
+      const sku = requiredText(input.sku, 'ZONGZI_ENRICH_SKU_REQUIRED');
       return heldRequest({
         requestId,
         path: SINGLE_PATH,
@@ -215,7 +193,7 @@
           if (!exactKeys(payload, ['ok', 'data']) || payload.ok !== true) {
             throw clientError(
               502,
-              'OZON_ENRICH_UPSTREAM_FAILED',
+              'ZONGZI_ENRICH_UPSTREAM_FAILED',
               'Ozon 商品资料补全响应无效',
               [],
               true,
@@ -225,7 +203,7 @@
           if (result.sku !== sku) {
             throw clientError(
               502,
-              'OZON_ENRICH_UPSTREAM_FAILED',
+              'ZONGZI_ENRICH_UPSTREAM_FAILED',
               'Ozon 商品资料补全响应 SKU 不匹配',
               [],
               true,
@@ -237,10 +215,13 @@
     };
 
     const normalizeBatchError = (value) => {
-      if (!exactKeys(value, ['code', 'message', 'missingFields', 'retryable'])) {
+      if (
+        !exactKeys(value, ['code', 'message', 'missingFields', 'retryable'])
+        && !exactKeys(value, ['code', 'message', 'missingFields', 'retryable', 'diagnostic'])
+      ) {
         throw clientError(
           502,
-          'OZON_ENRICH_UPSTREAM_FAILED',
+          'ZONGZI_ENRICH_UPSTREAM_FAILED',
           'Ozon 商品资料补全响应无效',
           [],
           true,
@@ -252,31 +233,33 @@
         value.message,
         value.missingFields,
         value.retryable,
+        value.diagnostic,
       );
       return {
         code: error.code,
         message: error.message,
         missingFields: error.missingFields,
         retryable: error.retryable,
+        ...(error.diagnostic === undefined ? {} : { diagnostic: error.diagnostic }),
       };
     };
 
     const enrichBatch = async (input = {}) => {
       normalizeInput(input, ['requestId', 'skus']);
-      const requestId = requiredText(input.requestId, 'OZON_ENRICH_REQUEST_ID_REQUIRED');
+      const requestId = requiredText(input.requestId, 'ZONGZI_ENRICH_REQUEST_ID_REQUIRED');
       if (!Array.isArray(input.skus) || !input.skus.length) {
-        throw invalidRequest('OZON_ENRICH_BATCH_SKUS_REQUIRED');
+        throw invalidRequest('ZONGZI_ENRICH_BATCH_SKUS_REQUIRED');
       }
       const skus = [];
       const seen = new Set();
       for (const rawSku of input.skus) {
-        const sku = requiredText(rawSku, 'OZON_ENRICH_SKU_REQUIRED');
+        const sku = requiredText(rawSku, 'ZONGZI_ENRICH_SKU_REQUIRED');
         if (!seen.has(sku)) {
           seen.add(sku);
           skus.push(sku);
         }
       }
-      if (skus.length > 20) throw invalidRequest('OZON_ENRICH_BATCH_LIMIT');
+      if (skus.length > 20) throw invalidRequest('ZONGZI_ENRICH_BATCH_LIMIT');
       return heldRequest({
         requestId,
         path: BATCH_PATH,
@@ -285,7 +268,7 @@
           if (!exactKeys(payload, ['ok', 'data']) || payload.ok !== true || !Array.isArray(payload.data)) {
             throw clientError(
               502,
-              'OZON_ENRICH_UPSTREAM_FAILED',
+              'ZONGZI_ENRICH_UPSTREAM_FAILED',
               'Ozon 商品资料补全响应无效',
               [],
               true,
@@ -294,7 +277,7 @@
           if (payload.data.length !== skus.length) {
             throw clientError(
               502,
-              'OZON_ENRICH_UPSTREAM_FAILED',
+              'ZONGZI_ENRICH_UPSTREAM_FAILED',
               'Ozon 商品资料补全响应无效',
               [],
               true,
@@ -308,7 +291,7 @@
             ) {
               throw clientError(
                 502,
-                'OZON_ENRICH_UPSTREAM_FAILED',
+                'ZONGZI_ENRICH_UPSTREAM_FAILED',
                 'Ozon 商品资料补全响应无效',
                 [],
                 true,
@@ -319,7 +302,7 @@
               if (result.sku !== skus[index]) {
                 throw clientError(
                   502,
-                  'OZON_ENRICH_UPSTREAM_FAILED',
+                  'ZONGZI_ENRICH_UPSTREAM_FAILED',
                   'Ozon 商品资料补全响应 SKU 不匹配',
                   [],
                   true,
@@ -340,7 +323,7 @@
             }
             throw clientError(
               502,
-              'OZON_ENRICH_UPSTREAM_FAILED',
+              'ZONGZI_ENRICH_UPSTREAM_FAILED',
               'Ozon 商品资料补全响应无效',
               [],
               true,

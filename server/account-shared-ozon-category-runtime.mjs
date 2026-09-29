@@ -30,7 +30,7 @@ function runtimeError(code, status = 400) {
   return Object.assign(new Error("Account-shared Ozon category operation failed"), { code, status });
 }
 
-function exactObject(value, keys, code = "OZON_CATEGORY_CONFIRMATION_INVALID") {
+function exactObject(value, keys, code = "ZONGZI_CATEGORY_CONFIRMATION_INVALID") {
   if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)
     || Object.getPrototypeOf(value) !== Object.prototype) throw runtimeError(code);
   const descriptors = Object.getOwnPropertyDescriptors(value);
@@ -40,14 +40,14 @@ function exactObject(value, keys, code = "OZON_CATEGORY_CONFIRMATION_INVALID") {
   return Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
 }
 
-function text(value, maximum = 240, code = "OZON_CATEGORY_CONFIRMATION_INVALID") {
+function text(value, maximum = 240, code = "ZONGZI_CATEGORY_CONFIRMATION_INVALID") {
   if (typeof value !== "string" || !value || value !== value.trim() || value.length > maximum
     || /[\u0000-\u001f\u007f]/u.test(value)) throw runtimeError(code);
   return value;
 }
 
 function positiveInteger(value) {
-  if (!Number.isSafeInteger(value) || value <= 0) throw runtimeError("OZON_CATEGORY_CONFIRMATION_INVALID");
+  if (!Number.isSafeInteger(value) || value <= 0) throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_INVALID");
   return value;
 }
 
@@ -103,8 +103,17 @@ function productIdOf(item = {}) {
 }
 
 function itemSku(item = {}) {
-  const value = item.sourceSku ?? item.offerId ?? item.offer_id ?? item.sku ?? null;
-  return value === null ? null : String(value).trim().slice(0, 240) || null;
+  const ozonProductId = productIdOf(item);
+  for (const value of [item.sourceSku, item.offerId, item.offer_id, item.sku]) {
+    if (value === null || value === undefined) continue;
+    const normalized = String(value).trim().slice(0, 240);
+    if (!normalized) continue;
+    if (ozonProductId && /^\d+$/u.test(normalized) && Number(normalized) === ozonProductId) {
+      continue;
+    }
+    return normalized;
+  }
+  return null;
 }
 
 function findJsonItem(state, accountId, collectItemId) {
@@ -172,20 +181,20 @@ function recordInput(input) {
   const item = input.item && typeof input.item === "object" ? input.item : {};
   const category = categoryOf(item);
   const capturedAt = new Date(input.capturedAt ?? item.capturedAt ?? item.updatedAt ?? new Date());
-  if (Number.isNaN(capturedAt.getTime())) throw runtimeError("OZON_CATEGORY_SOURCE_INVALID");
+  if (Number.isNaN(capturedAt.getTime())) throw runtimeError("ZONGZI_CATEGORY_SOURCE_INVALID");
   return {
-    accountId: text(input.accountId, 240, "OZON_CATEGORY_SOURCE_INVALID"),
-    collectItemId: text(input.collectItemId, 240, "OZON_CATEGORY_SOURCE_INVALID"),
-    sourceVersion: text(input.sourceVersion, 240, "OZON_CATEGORY_SOURCE_INVALID"),
-    productDraftId: text(input.productDraftId, 240, "OZON_CATEGORY_SOURCE_INVALID"),
+    accountId: text(input.accountId, 240, "ZONGZI_CATEGORY_SOURCE_INVALID"),
+    collectItemId: text(input.collectItemId, 240, "ZONGZI_CATEGORY_SOURCE_INVALID"),
+    sourceVersion: text(input.sourceVersion, 240, "ZONGZI_CATEGORY_SOURCE_INVALID"),
+    productDraftId: text(input.productDraftId, 240, "ZONGZI_CATEGORY_SOURCE_INVALID"),
     productDraftVersion: positiveInteger(Number(input.productDraftVersion)),
     ozonProductId: productIdOf(item),
     sourceSku: itemSku(item),
     taxonomyScope: "OZON:DEFAULT",
     ...category,
     capturedAt: capturedAt.toISOString(),
-    rawResponseRef: text(input.rawResponseRef, 240, "OZON_CATEGORY_SOURCE_INVALID"),
-    rawResponseHash: text(input.rawResponseHash, 64, "OZON_CATEGORY_SOURCE_INVALID"),
+    rawResponseRef: text(input.rawResponseRef, 240, "ZONGZI_CATEGORY_SOURCE_INVALID"),
+    rawResponseHash: text(input.rawResponseHash, 64, "ZONGZI_CATEGORY_SOURCE_INVALID"),
   };
 }
 
@@ -205,7 +214,7 @@ function confirmationInput(input) {
     correlationId: text(value.correlationId),
   };
   if (normalized.taxonomyScope !== "OZON:DEFAULT") {
-    throw runtimeError("OZON_CATEGORY_CONFIRMATION_INVALID");
+    throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_INVALID");
   }
   return normalized;
 }
@@ -230,11 +239,11 @@ function confirmationEventId(input) {
 function replayConfirmation(metadata, input, requestHash) {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)
     || metadata.requestHash !== requestHash) {
-    throw runtimeError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
+    throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
   }
   const result = exactObject(metadata.result, ["collectItemId", "categoryResolution"]);
   if (result.collectItemId !== input.collectItemId) {
-    throw runtimeError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
+    throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
   }
   const resolution = exactObject(result.categoryResolution, [
     "status", "taxonomyScope", "sourceDescriptionCategoryId", "sourceTypeId",
@@ -247,7 +256,7 @@ function replayConfirmation(metadata, input, requestHash) {
     || resolution.currentTypeId !== input.typeId
     || !Number.isSafeInteger(resolution.version) || resolution.version <= 0
     || typeof resolution.validatedAt !== "string") {
-    throw runtimeError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
+    throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
   }
   return deepFreeze(structuredClone(result));
 }
@@ -303,11 +312,25 @@ export function createAccountSharedOzonCategoryRuntime({
     return { repository, service };
   }
 
+  async function recordAdmittedTarget(repository, prepared, item, result) {
+    const receipt=item?.listingDraft?.collectionAdmission||item?.collectionAdmission;
+    const target=receipt?.targets?.[0]?.target;
+    if(receipt?.status!=='PASSED'||!target||!receipt.taxonomyFingerprint)return result;
+    const evidence=(await repository.readCurrentEvidence({accountId:prepared.accountId,collectItemIds:[prepared.collectItemId]}))[0];
+    if(!evidence||evidence.productDraftId!==prepared.productDraftId||evidence.productDraftVersion!==prepared.productDraftVersion)return result;
+    const shared=(await repository.readSharedForEvidence({accountId:prepared.accountId,evidenceIds:[evidence.id]}))[0];
+    if(!shared)return result;
+    const accepted=await repository.activateRefreshedCategory({accountId:prepared.accountId,evidenceId:evidence.id,expectedVersion:shared.version,
+      currentDescriptionCategoryId:target.descriptionCategoryId,currentTypeId:target.typeId,
+      taxonomyFingerprint:receipt.taxonomyFingerprint,validatedAt:receipt.checkedAt});
+    return {...result,categoryResolution:publicAccountSharedCategorySelection(accepted)};
+  }
+
   async function recordCollectionResult(input = {}) {
     const execute = async (state, persist) => {
       const prepared = recordInput(input);
       establishJsonCanonicalDraftPointer(state, prepared);
-      const { service } = jsonPorts(state);
+      const { service, repository } = jsonPorts(state);
       const result = prepared.sourceDescriptionCategoryId && prepared.sourceTypeId
         ? await service.recordCollectionSource(prepared)
         : await service.resolveCollectionSource({
@@ -319,8 +342,9 @@ export function createAccountSharedOzonCategoryRuntime({
               sourceSku: prepared.sourceSku,
             },
           });
+      const accepted=await recordAdmittedTarget(repository,prepared,input.item,result);
       if (persist) await saveState(state);
-      return result;
+      return accepted;
     };
     if (input.state) return execute(input.state, false);
     if (persistenceMode() === "postgres" || input.postgresExecutor) {
@@ -335,7 +359,7 @@ export function createAccountSharedOzonCategoryRuntime({
             WHERE c.account_id=$1 AND c.id=$2 AND c.deleted_at IS NULL LIMIT 1`,
           [String(input.accountId || ""), String(input.collectItemId || "")],
         )).rows[0];
-        if (!row) throw runtimeError("OZON_CATEGORY_SOURCE_INVALID");
+        if (!row) throw runtimeError("ZONGZI_CATEGORY_SOURCE_INVALID");
         preparedInput = {
           ...input,
           productDraftId: row.product_draft_id,
@@ -360,7 +384,7 @@ export function createAccountSharedOzonCategoryRuntime({
       });
       let lookupContext = input.lookupContext;
       if (!lookupContext && (!prepared.sourceDescriptionCategoryId || !prepared.sourceTypeId)) {
-        const credentialState = input.state || await loadState();
+        const credentialState = input.state || await loadState({ hydrateCatalog: false });
         lookupContext = {
           accountId: prepared.accountId,
           store: input.store || lookupCredentialInState(credentialState, prepared.accountId),
@@ -368,9 +392,10 @@ export function createAccountSharedOzonCategoryRuntime({
           sourceSku: prepared.sourceSku,
         };
       }
-      return prepared.sourceDescriptionCategoryId && prepared.sourceTypeId
+      const result=await (prepared.sourceDescriptionCategoryId && prepared.sourceTypeId
         ? service.recordCollectionSource(prepared)
-        : service.resolveCollectionSource({ ...prepared, lookupContext });
+        : service.resolveCollectionSource({ ...prepared, lookupContext }));
+      return recordAdmittedTarget(repository,prepared,preparedInput.item,result);
     }
     return stateTransaction.run(async () => {
       const state = await loadState();
@@ -405,10 +430,10 @@ export function createAccountSharedOzonCategoryRuntime({
       }, input, requestHash);
     }
     const item = findJsonItem(state, input.actor.id, input.collectItemId);
-    if (!item) throw runtimeError("OZON_CATEGORY_CONFIRMATION_ITEM_NOT_FOUND", 404);
+    if (!item) throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_ITEM_NOT_FOUND", 404);
     const { repository } = jsonPorts(state);
     const confirmedAt = new Date(now());
-    if (Number.isNaN(confirmedAt.getTime())) throw runtimeError("OZON_CATEGORY_CONFIRMATION_FAILED", 500);
+    if (Number.isNaN(confirmedAt.getTime())) throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_FAILED", 500);
     const shared = await repository.confirmManualCategory({
       accountId: input.actor.id,
       collectItemId: input.collectItemId,
@@ -488,7 +513,7 @@ export function createAccountSharedOzonCategoryRuntime({
             });
         const confirmedAt = new Date(now());
         if (Number.isNaN(confirmedAt.getTime())) {
-          throw runtimeError("OZON_CATEGORY_CONFIRMATION_FAILED", 500);
+          throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_FAILED", 500);
         }
         const shared = await repository.confirmManualCategory({
           accountId: normalized.actor.id,
@@ -514,7 +539,7 @@ export function createAccountSharedOzonCategoryRuntime({
             WHERE account_id=$1 AND source_evidence_id=$2 AND collect_item_id=$3`,
           [normalized.actor.id, shared.evidenceId, normalized.collectItemId],
         )).rows[0];
-        if (!manualObservation) throw runtimeError("OZON_CATEGORY_CONFIRMATION_FAILED", 500);
+        if (!manualObservation) throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_FAILED", 500);
         const insertedConfirmation = await client.query(
           `INSERT INTO account_ozon_category_confirmation_audit (
              id,account_id,collect_item_id,source_evidence_id,expected_source_version,
@@ -529,7 +554,7 @@ export function createAccountSharedOzonCategoryRuntime({
             requestHash, JSON.stringify(result), confirmedAt.toISOString(), manualObservation.id],
         );
         if (insertedConfirmation.rowCount !== 1) {
-          throw runtimeError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
+          throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
         }
         const inserted = await client.query(
           `INSERT INTO audit_events (
@@ -542,16 +567,16 @@ export function createAccountSharedOzonCategoryRuntime({
             JSON.stringify({ requestHash, result }), confirmedAt.toISOString()],
         );
         if (inserted.rowCount !== 1) {
-          throw runtimeError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
+          throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
         }
         await client.query("COMMIT");
         committed = true;
         return result;
       } catch (error) {
         if (client && !committed) await client.query("ROLLBACK").catch(() => {});
-        if (typeof error?.code === "string" && (error.code.startsWith("OZON_CATEGORY_")
+        if (typeof error?.code === "string" && (error.code.startsWith("ZONGZI_CATEGORY_")
           || error.code === "PERMISSION_FORBIDDEN")) throw error;
-        throw runtimeError("OZON_CATEGORY_CONFIRMATION_FAILED", 503);
+        throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_FAILED", 503);
       } finally {
         try { client?.release(); } catch { /* best effort */ }
       }
@@ -572,26 +597,26 @@ export function createAccountSharedOzonCategoryRuntime({
     return async function handle(req, res, url) {
       if (url.pathname !== "/ozon/category-confirmations") return false;
       if (req.method !== "POST") {
-        sendJson(res, 405, { ok: false, code: "OZON_CATEGORY_CONFIRMATION_METHOD_NOT_ALLOWED", message: "不支持的类目确认请求方法" });
+        sendJson(res, 405, { ok: false, code: "ZONGZI_CATEGORY_CONFIRMATION_METHOD_NOT_ALLOWED", message: "不支持的类目确认请求方法" });
         return true;
       }
       try {
         const actor = await authenticate(req);
         if (actor?.role !== "admin") throw runtimeError("PERMISSION_FORBIDDEN", 403);
         let body;
-        try { body = exactObject(await readJson(req), BODY_KEYS); } catch { throw runtimeError("OZON_CATEGORY_CONFIRMATION_INVALID"); }
+        try { body = exactObject(await readJson(req), BODY_KEYS); } catch { throw runtimeError("ZONGZI_CATEGORY_CONFIRMATION_INVALID"); }
         const result = await confirmManualCategory({ actor: { id: actor.id, role: actor.role }, ...body });
         sendJson(res, 200, { ok: true, data: result });
       } catch (error) {
         const code = [
-          "PERMISSION_FORBIDDEN", "OZON_CATEGORY_CONFIRMATION_INVALID",
-          "OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT",
-          "OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT",
-          "OZON_CATEGORY_CONFIRMATION_ITEM_NOT_FOUND",
-          "OZON_CATEGORY_CONFIRMATION_STATE_CONFLICT",
-          "OZON_CATEGORY_CONFIRMATION_UNAVAILABLE",
-        ].includes(error?.code) ? error.code : "OZON_CATEGORY_CONFIRMATION_FAILED";
-        const status = code === "OZON_CATEGORY_CONFIRMATION_FAILED" ? 500
+          "PERMISSION_FORBIDDEN", "ZONGZI_CATEGORY_CONFIRMATION_INVALID",
+          "ZONGZI_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT",
+          "ZONGZI_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT",
+          "ZONGZI_CATEGORY_CONFIRMATION_ITEM_NOT_FOUND",
+          "ZONGZI_CATEGORY_CONFIRMATION_STATE_CONFLICT",
+          "ZONGZI_CATEGORY_CONFIRMATION_UNAVAILABLE",
+        ].includes(error?.code) ? error.code : "ZONGZI_CATEGORY_CONFIRMATION_FAILED";
+        const status = code === "ZONGZI_CATEGORY_CONFIRMATION_FAILED" ? 500
           : Number(error?.status) >= 400 && Number(error?.status) <= 599 ? Number(error.status) : 422;
         sendJson(res, status, {
           ok: false,

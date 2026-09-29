@@ -40,6 +40,14 @@ if (!enabled) {
           "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
           [accountId, `user-${accountId}`],
         );
+        await admin.query(
+          `INSERT INTO ai_gateway_profiles (
+             id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+             text_model,image_model,config_version,enabled
+           ) VALUES ($1,$2,'Legacy','https://gateway.invalid','LEGACY_AI_KEY',
+             'SUB2API_RESPONSES','SUB2API_OPENAI_IMAGES','text-model','image-model',1,FALSE)`,
+          [`profile-${accountId}`, accountId],
+        );
       }
       await admin.query(
         "INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,$2,$2,$3,'active',$4)",
@@ -58,15 +66,19 @@ if (!enabled) {
         [ids.snapshot, ids.account, `record-${suffix}`, "b".repeat(64)],
       );
       await admin.query(
-        "INSERT INTO auto_listing_jobs (id,account_id,source_type,idempotency_key,config_hash,strategy_version_id,correlation_id) VALUES ($1,$2,'COLLECT_BOX',$3,$4,$5,$6)",
-        [ids.job, ids.account, `job-${suffix}`, "c".repeat(64), ids.strategy, `correlation-${suffix}`],
+        `INSERT INTO auto_listing_jobs (
+           id,account_id,source_type,idempotency_key,config_hash,strategy_version_id,correlation_id,
+           ai_profile_id,ai_profile_version
+         ) VALUES ($1,$2,'COLLECT_BOX',$3,$4,$5,$6,$7,1)`,
+        [ids.job, ids.account, `job-${suffix}`, "c".repeat(64), ids.strategy, `correlation-${suffix}`,
+          `profile-${ids.account}`],
       );
-      for (const [itemId, status, version] of [[ids.item, "PLANNING", 2], [ids.interruptedItem, "GENERATING", 5]]) {
+      for (const [itemId, status, version, sourceOrder] of [[ids.item, "PLANNING", 2, 1], [ids.interruptedItem, "GENERATING", 5, 2]]) {
         await admin.query(
           `INSERT INTO auto_listing_job_items
-             (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW()-INTERVAL '4 hours')`,
-          [itemId, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouse, status, version],
+             (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order,updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()-INTERVAL '4 hours')`,
+          [itemId, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouse, status, version, sourceOrder],
         );
       }
 

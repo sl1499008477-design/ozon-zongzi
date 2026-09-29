@@ -62,10 +62,10 @@ test("uses the approved ordinary-user defaults and derives total image count", (
   assert.equal(config.image.total, 6);
   assert.deepEqual(config.image.roles, {
     main: 1,
-    sellingPoint: 2,
+    sellingPoint: 1,
     detail: 1,
     scene: 1,
-    specification: 0,
+    specification: 1,
     infographic: 1,
   });
   assert.equal(config.image.ratio, "3:4");
@@ -90,7 +90,25 @@ test("the brand toggle freezes only the two approved upload modes", () => {
   });
 });
 
-test("removes the product-size image when reliable product dimensions are unavailable", () => {
+test("the category-strategy switch defaults on and freezes only a boolean choice", () => {
+  const base = {
+    targetStoreId: "store-a",
+    targetWarehouseId: "warehouse-a",
+    stock: 5,
+  };
+  const enabled = deriveAutoListingConfig(base);
+  const disabled = deriveAutoListingConfig({ ...base, useCategoryStrategy: false });
+
+  assert.equal(enabled.useCategoryStrategy, true);
+  assert.equal(disabled.useCategoryStrategy, false);
+  assert.deepEqual(normalizeAutoListingConfig(enabled), enabled);
+  assert.deepEqual(normalizeAutoListingConfig(disabled), disabled);
+  assert.throws(() => deriveAutoListingConfig({ ...base, useCategoryStrategy: "false" }), {
+    code: "AUTO_LISTING_CONFIG_INVALID",
+  });
+});
+
+test("keeps the sixth documentary image and lets generation omit unverified dimensions", () => {
   const config = deriveAutoListingConfig({
     targetStoreId: "store-a",
     targetWarehouseId: "warehouse-a",
@@ -98,7 +116,7 @@ test("removes the product-size image when reliable product dimensions are unavai
     image: { roles: { specification: 1 } },
   }, { hasReliableProductDimensions: false });
 
-  assert.equal(config.image.roles.specification, 0);
+  assert.equal(config.image.roles.specification, 1);
   assert.equal(config.image.total, 6);
   assert.deepEqual(normalizeAutoListingConfig(config), config);
 });
@@ -124,7 +142,7 @@ test("accepts only the approved image ranges and a total from 6 through 13", () 
     { quality: "Best" },
     { language: "zh" },
     { roles: { main: 2 } },
-    { roles: { sellingPoint: 1 } },
+    { roles: { sellingPoint: 0 } },
     { roles: { detail: 3 } },
   ]) {
     assert.throws(() => deriveAutoListingConfig({
@@ -197,11 +215,11 @@ test("warehouse choices trust only the exact backend FBS or pending RFBS contrac
 
   assert.deepEqual(result.options, [
     {
-      value: "local-1", label: "Active（FBS）", fulfillmentType: "FBS", evidenceRequired: false,
+      value: "local-1", label: "Active", fulfillmentType: "FBS", evidenceRequired: false,
       statusLabel: "已验证",
     },
     {
-      value: "local-rfbs", label: "CEL-测试（RFBS · 创建任务时验证）", fulfillmentType: "RFBS", evidenceRequired: true,
+      value: "local-rfbs", label: "CEL-测试", fulfillmentType: "RFBS", evidenceRequired: true,
       statusLabel: "创建任务时验证",
     },
   ]);

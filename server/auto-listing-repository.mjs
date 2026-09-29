@@ -12,7 +12,7 @@ import {
 import { assertListingWarehouseEligible } from "./listing-warehouse-eligibility.mjs";
 import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
-import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
+import { calculateAutoListingPriceFromEvidence } from "./auto-listing-pricing.mjs";
 import {
   AUTO_LISTING_IMAGE_ROLES,
   normalizeAutoListingConfig,
@@ -34,7 +34,7 @@ const BLOCKED_SOURCE_FAILURE_CODES = new Set([
   "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED",
   "AUTO_LISTING_SOURCE_CURRENCY_MISMATCH",
 ]);
-const SOURCE_SNAPSHOT_CONTRACT_VERSION = "AUTO_LISTING_SOURCE_SNAPSHOT_V2";
+const SOURCE_SNAPSHOT_CONTRACT_VERSION = "AUTO_LISTING_SOURCE_SNAPSHOT_V3";
 const CATEGORY_STRATEGY_MODES = new Set(["LEGACY_FALLBACK", "REQUIRE_EXACT_STRATEGY"]);
 const EFFECTIVE_IMAGE_AUDIT_KEYS = new Set(["roles", "total", "reasonCodes"]);
 const EFFECTIVE_IMAGE_ROLE_KEYS = new Set(AUTO_LISTING_IMAGE_ROLES);
@@ -58,12 +58,13 @@ function requiredText(value, code = "AUTO_LISTING_REPOSITORY_INVALID") {
   return result;
 }
 
-function sourceSnapshotVersion(row = {}) {
+function sourceSnapshotVersion(row = {}, categoryAuthority) {
   const payloadIdentity = row.payload_hash || row.raw_response_ref || "missing";
   const businessVersion = row.draft_id
     ? `draft:${row.draft_version}:${payloadIdentity}`
     : `raw:${payloadIdentity}`;
-  return `${businessVersion}:${SOURCE_SNAPSHOT_CONTRACT_VERSION}`;
+  const sharedCategory = categoryAuthority.sharedCategory;
+  return `${businessVersion}:category:${sharedCategory.id}:${sharedCategory.version}:${SOURCE_SNAPSHOT_CONTRACT_VERSION}`;
 }
 
 function categoryAuthorityFromRow(scope, row = {}) {
@@ -431,13 +432,72 @@ function itemWorkflowProgress(item) {
   else if (["LEASED", "PROCESSING"].includes(item.progress_state)) state = "RUNNING";
   else if (["SUCCEEDED", "COMPLETED"].includes(item.progress_state)) state = "COMPLETED";
   if (!state) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  const completedUnits = Number(item.progress_completed_units);
+  const totalUnits = Number(item.progress_total_units);
+  const hasCounts = Number.isSafeInteger(completedUnits) && Number.isSafeInteger(totalUnits)
+    && totalUnits > 0 && completedUnits >= 0 && completedUnits <= totalUnits;
   return {
     phase,
     state,
     attemptCount: Number.isSafeInteger(attempts) && attempts >= 0 ? attempts : 0,
+    ...(hasCounts ? { completedUnits, totalUnits } : {}),
     updatedAt: item.progress_updated_at || null,
     nextRetryAt: state === "RETRY_WAIT" ? (item.progress_next_retry_at || null) : null,
   };
+}
+
+const EMPTY_AI_QUEUE_PROJECTION = Object.freeze({
+  aiQueueState: null,
+  aiChannelDisplayName: null,
+  aiChannelSwitching: false,
+  aiChannelWaitStartedAt: null,
+});
+
+function normalizedAiChannelDisplayName(value) {
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const normalized = value
+    .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return normalized && normalized.length <= 200 ? normalized : null;
+}
+
+function itemAiQueueProjection(item) {
+  if (!["PLANNING", "GENERATING"].includes(item.status)) return EMPTY_AI_QUEUE_PROJECTION;
+  const state = item.ai_queue_state;
+  if (state === undefined || state === null) return EMPTY_AI_QUEUE_PROJECTION;
+  if (!["WAITING_FOR_AI_CHANNEL", "CALLING_AI", "SWITCHING_AI_CHANNEL"].includes(state)) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  const displayName = normalizedAiChannelDisplayName(item.ai_channel_display_name);
+  const switching = item.ai_channel_switching === true;
+  const waitStartedAt = item.ai_channel_wait_started_at ?? null;
+  const validWaitStartedAt = waitStartedAt instanceof Date
+    ? Number.isFinite(waitStartedAt.getTime())
+    : typeof waitStartedAt === "string" && Number.isFinite(Date.parse(waitStartedAt));
+  if (displayName === undefined
+    || switching !== (state === "SWITCHING_AI_CHANNEL")
+    || (state === "CALLING_AI" && waitStartedAt !== null)
+    || (state !== "CALLING_AI" && !validWaitStartedAt)) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  if (state === "CALLING_AI" && displayName === null) return EMPTY_AI_QUEUE_PROJECTION;
+  return Object.freeze({
+    aiQueueState: state,
+    aiChannelDisplayName: displayName,
+    aiChannelSwitching: switching,
+    aiChannelWaitStartedAt: state === "CALLING_AI" ? null : waitStartedAt,
+  });
+}
+
+function itemUploadPreparation(item) {
+  if (!["UPLOAD_QUEUED", "UPLOADING"].includes(item.status)) return null;
+  const total = Number(item.upload_asset_total);
+  const published = Number(item.upload_asset_published);
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(published)
+    || total < 1 || published < 0 || published > total) return null;
+  return Object.freeze({ published, total });
 }
 
 function mapJob(row, items, events) {
@@ -465,6 +525,7 @@ function mapJob(row, items, events) {
     accountId: row.account_id,
     sourceType: row.source_type,
     status: row.status,
+    useCategoryStrategy: row.config_snapshot?.useCategoryStrategy !== false,
     correlationId: row.correlation_id,
     warehouseValidationEvidenceId: row.warehouse_validation_evidence_id || null,
     createdAt: row.created_at,
@@ -473,6 +534,8 @@ function mapJob(row, items, events) {
       const audit = (eventsByItem.get(item.id) || [])
         .find((event) => ["SOURCE_CAPTURED", "BLOCK"].includes(event.event_type))?.details || {};
       const workflowProgress = itemWorkflowProgress(item);
+      const aiQueueProjection = itemAiQueueProjection(item);
+      const uploadPreparation = itemUploadPreparation(item);
       return {
         id: item.id,
         status: item.status,
@@ -500,7 +563,17 @@ function mapJob(row, items, events) {
         categoryStrategyScope: audit.categoryStrategyScope || null,
         ...(audit.price ? { price: audit.price } : {}),
         ...(item.failure_code ? { failureCode: item.failure_code } : {}),
+        ...(typeof item.source_image_failure_reason_code === "string"
+          && Number.isSafeInteger(item.source_image_failure_source_ordinal)
+          && typeof item.source_image_failure_viewpoint === "string"
+          ? { sourceImageFailure: {
+            reasonCode: item.source_image_failure_reason_code,
+            sourceOrdinal: item.source_image_failure_source_ordinal,
+            viewpoint: item.source_image_failure_viewpoint,
+          } } : {}),
         ...(workflowProgress ? { workflowProgress } : {}),
+        ...(uploadPreparation ? { uploadPreparation } : {}),
+        ...aiQueueProjection,
       };
     }),
     events: validatedEvents.map((event) => ({
@@ -524,7 +597,7 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
   const jobResult = await client.query(
-    `SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id,
+    `SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id,config_snapshot,
             correlation_id,created_at,updated_at
        FROM auto_listing_jobs WHERE id=$1 AND account_id=$2`,
     [jobId, accountId],
@@ -541,7 +614,28 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
             COALESCE(s.snapshot#>>'{identity,primarySku}','') AS source_sku,
             progress.phase AS progress_phase,progress.state AS progress_state,
             progress.attempts AS progress_attempts,progress.updated_at AS progress_updated_at,
-            progress.next_retry_at AS progress_next_retry_at
+            progress.next_retry_at AS progress_next_retry_at,
+            CASE
+              WHEN progress.phase='MATERIALIZE_SOURCE_ASSET' THEN source_progress.materialized_units
+              WHEN progress.phase='ANALYZE_SOURCE_IMAGE_BATCH' THEN source_progress.analyzed_units
+              WHEN progress.phase='GENERATE_IMAGE_SLOT' THEN generation_progress.completed_units
+              ELSE NULL
+            END AS progress_completed_units,
+            CASE
+              WHEN progress.phase IN ('MATERIALIZE_SOURCE_ASSET','ANALYZE_SOURCE_IMAGE_BATCH')
+                THEN source_progress.total_units
+              WHEN progress.phase='GENERATE_IMAGE_SLOT' THEN generation_progress.total_units
+              ELSE NULL
+            END AS progress_total_units,
+            ai_projection.queue_state AS ai_queue_state,
+            ai_projection.channel_display_name AS ai_channel_display_name,
+            COALESCE(ai_projection.channel_switching,FALSE) AS ai_channel_switching,
+            ai_projection.wait_started_at AS ai_channel_wait_started_at,
+            upload_preparation.total_assets AS upload_asset_total,
+            upload_preparation.published_assets AS upload_asset_published,
+            source_failure.reason_code AS source_image_failure_reason_code,
+            source_failure.source_ordinal AS source_image_failure_source_ordinal,
+            source_failure.viewpoint AS source_image_failure_viewpoint
        FROM auto_listing_job_items i
        JOIN auto_listing_source_snapshots s ON s.id=i.snapshot_id AND s.account_id=$2
        LEFT JOIN LATERAL (
@@ -555,10 +649,393 @@ async function readJobWithClient(client, accountId, jobId, selectedItemIds = nul
                 progress.updated_at,progress.next_retry_at
            FROM auto_listing_ai_outbox progress
           WHERE progress.account_id=$2 AND progress.job_id=$1 AND progress.item_id=i.id
-            AND progress.contract_version='V1'
+            AND progress.expected_status_version=i.status_version
+            AND progress.contract_version IN ('V1','V2','V3')
           ORDER BY progress.created_at DESC,progress.id DESC
           LIMIT 1
        ) progress ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT analysis_run.expected_asset_count::INTEGER AS total_units,
+                COUNT(assessment.source_asset_id) FILTER (
+                  WHERE assessment.record_status='MATERIALIZED' OR assessment.record_status='ACCEPTED'
+                )::INTEGER AS materialized_units,
+                COUNT(assessment.source_asset_id) FILTER (
+                  WHERE assessment.record_status='ACCEPTED'
+                )::INTEGER AS analyzed_units
+           FROM auto_listing_source_image_analysis_runs AS analysis_run
+           LEFT JOIN auto_listing_source_image_assessments AS assessment
+             ON assessment.account_id=analysis_run.account_id
+            AND assessment.job_id=analysis_run.job_id
+            AND assessment.item_id=analysis_run.item_id
+            AND assessment.analysis_run_id=analysis_run.id
+            AND assessment.expected_status_version=analysis_run.expected_status_version
+          WHERE analysis_run.account_id=$2 AND analysis_run.job_id=$1
+            AND analysis_run.item_id=i.id
+            AND analysis_run.id=i.current_source_image_analysis_run_id
+            AND analysis_run.expected_status_version=i.status_version
+          GROUP BY analysis_run.expected_asset_count
+       ) source_progress ON progress.phase IN ('MATERIALIZE_SOURCE_ASSET','ANALYZE_SOURCE_IMAGE_BATCH')
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::INTEGER AS total_units,
+                COUNT(*) FILTER (WHERE
+                  EXISTS (
+                    SELECT 1
+                      FROM ai_generation_assets AS generation_asset
+                     WHERE generation_asset.account_id=content_plan.account_id
+                       AND generation_asset.job_id=content_plan.job_id
+                       AND generation_asset.item_id=content_plan.item_id
+                       AND generation_asset.plan_id=content_plan.id
+                       AND generation_asset.slot_key=planned_slot->>'slotKey'
+                       AND generation_asset.role=planned_slot->>'role'
+                       AND generation_asset.status='ACCEPTED'
+                       AND (generation_asset.expected_status_version IS NULL
+                         OR generation_asset.expected_status_version<=i.status_version)
+                       AND (content_plan.prompt_template_version NOT IN (
+                         'AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4',
+                         'AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6'
+                       ) OR jsonb_array_length(planned_slot->'claims')>0
+                         OR (content_plan.prompt_template_version='AUTO_LISTING_CONTENT_PLAN_FILL_V6'
+                           AND planned_slot->>'role'='MAIN')
+                         OR generation_asset.checker_result->>'textForbidden'='true')
+                  ) OR EXISTS (
+                    SELECT 1
+                      FROM auto_listing_events AS skipped_slot
+                     WHERE skipped_slot.account_id=content_plan.account_id
+                       AND skipped_slot.job_id=content_plan.job_id
+                       AND skipped_slot.item_id=content_plan.item_id
+                       AND skipped_slot.event_type='AI_IMAGE_SLOT_SKIPPED'
+                       AND skipped_slot.details->>'planId'=content_plan.id
+                       AND skipped_slot.details->>'statusVersion'=i.status_version::TEXT
+                       AND skipped_slot.details->>'slotKey'=planned_slot->>'slotKey'
+                  )
+                )::INTEGER AS completed_units
+           FROM ai_content_plans AS content_plan
+           CROSS JOIN LATERAL jsonb_array_elements(content_plan.plan->'slots') AS planned_slot
+          WHERE content_plan.account_id=$2 AND content_plan.job_id=$1
+            AND content_plan.item_id=i.id AND content_plan.id=i.active_content_plan_id
+       ) generation_progress ON progress.phase='GENERATE_IMAGE_SLOT'
+       LEFT JOIN LATERAL (
+         SELECT CASE
+                  WHEN live_execution.outbox_id IS NOT NULL THEN 'CALLING_AI'
+                  WHEN latest_failure.outbox_id IS NOT NULL THEN 'SWITCHING_AI_CHANNEL'
+                  WHEN runnable_queue.outbox_id IS NOT NULL
+                    AND runnable_queue.assignment_exact IS TRUE THEN 'WAITING_FOR_AI_CHANNEL'
+                  WHEN runnable_queue.outbox_id IS NOT NULL
+                    AND runnable_queue.available_channel_id IS NULL THEN 'WAITING_FOR_AI_CHANNEL'
+                  ELSE NULL
+                END AS queue_state,
+                CASE
+                  WHEN live_execution.outbox_id IS NOT NULL THEN live_execution.display_name
+                  WHEN latest_failure.outbox_id IS NOT NULL THEN latest_failure.display_name
+                  WHEN runnable_queue.assignment_exact IS TRUE THEN runnable_queue.assignment_display_name
+                  ELSE NULL
+                END AS channel_display_name,
+                (live_execution.outbox_id IS NULL
+                  AND latest_failure.outbox_id IS NOT NULL) AS channel_switching,
+                CASE
+                  WHEN live_execution.outbox_id IS NOT NULL THEN NULL
+                  WHEN latest_failure.outbox_id IS NOT NULL THEN latest_failure.wait_started_at
+                  WHEN runnable_queue.outbox_id IS NOT NULL
+                    AND (runnable_queue.assignment_exact IS TRUE
+                      OR runnable_queue.available_channel_id IS NULL)
+                    THEN runnable_queue.wait_started_at
+                  ELSE NULL
+                END AS wait_started_at
+           FROM auto_listing_jobs AS ai_job
+           JOIN ai_gateway_profiles AS ai_profile
+             ON ai_profile.account_id=ai_job.account_id AND ai_profile.id=ai_job.ai_profile_id
+            AND ai_profile.config_version=ai_job.ai_profile_version
+            AND ai_profile.connection_id IS NOT NULL AND ai_profile.connection_version IS NOT NULL
+           LEFT JOIN LATERAL (
+             SELECT live_queue.id AS outbox_id,live_channel.display_name
+               FROM auto_listing_ai_outbox AS live_queue
+               JOIN auto_listing_ai_profile_channels AS live_channel
+                 ON live_channel.account_id=live_queue.account_id
+                AND live_channel.profile_id=ai_job.ai_profile_id
+                AND live_channel.profile_version=ai_job.ai_profile_version
+                AND live_channel.assigned_job_id=live_queue.job_id
+                AND live_channel.assigned_item_id=live_queue.item_id
+                AND live_channel.assigned_status_version=live_queue.expected_status_version
+                AND live_channel.execution_lease_owner=live_queue.lease_owner
+                AND live_channel.execution_lease_token=live_queue.lease_token
+                AND live_channel.execution_lease_expires_at=live_queue.lease_expires_at
+                AND live_channel.execution_lease_expires_at>NOW()
+              WHERE live_queue.account_id=$2 AND live_queue.job_id=$1 AND live_queue.item_id=i.id
+                AND live_queue.expected_status_version=i.status_version
+                AND live_queue.contract_version IN ('V1','V2','V3')
+                AND live_queue.state='PROCESSING' AND live_queue.lease_expires_at>NOW()
+                AND ((live_queue.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','ANALYZE_SOURCE_IMAGE_BATCH','RECONCILE_SOURCE_IMAGE_ANALYSIS','FINALIZE_MATERIALIZED_PLAN')
+                      AND i.status='PLANNING')
+                  OR (live_queue.phase IN ('GENERATE_IMAGE_SLOT','CHECK_IMAGE_GROUP','GENERATE_RICH_CONTENT')
+                      AND i.status='GENERATING'))
+              ORDER BY live_queue.updated_at DESC,live_queue.created_at DESC,live_queue.id DESC
+              LIMIT 1
+           ) live_execution ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT failed_queue.id AS outbox_id,failed_channel.display_name,
+                    COALESCE(failed_queue.next_retry_at,failed_queue.available_at,
+                      failed_queue.updated_at) AS wait_started_at
+               FROM auto_listing_ai_outbox AS failed_queue
+               LEFT JOIN LATERAL (
+                 SELECT failed_channel.display_name
+                   FROM auto_listing_ai_profile_channels AS failed_channel
+                  WHERE failed_channel.account_id=failed_queue.account_id
+                    AND failed_channel.profile_id=ai_job.ai_profile_id
+                    AND failed_channel.profile_version=ai_job.ai_profile_version
+                    AND failed_channel.connection_id=i.last_ai_connection_id
+                    AND failed_channel.connection_version=i.last_ai_connection_version
+                  ORDER BY failed_channel.channel_order,failed_channel.channel_id
+                  LIMIT 1
+               ) failed_channel ON TRUE
+              WHERE failed_queue.account_id=$2 AND failed_queue.job_id=$1 AND failed_queue.item_id=i.id
+                AND failed_queue.expected_status_version=i.status_version
+                AND failed_queue.contract_version IN ('V1','V2','V3') AND failed_queue.state='PENDING'
+                AND failed_queue.last_error_code IN (
+                  'AI_GATEWAY_NETWORK_FAILED','AI_GATEWAY_RATE_LIMITED','AI_GATEWAY_IDLE_TIMEOUT',
+                  'AI_GATEWAY_UNEXPECTED_EOF','INVALID_GATEWAY_RESPONSE','RETRYABLE_GATEWAY',
+                  'GATEWAY_TIMEOUT','AI_GATEWAY_UNAUTHORIZED','AI_GATEWAY_MODEL_NOT_FOUND',
+                  'AI_GATEWAY_CAPABILITY_INVALID','NON_RETRYABLE_AUTH','NON_RETRYABLE_GATEWAY'
+                )
+                AND ((failed_queue.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','ANALYZE_SOURCE_IMAGE_BATCH','RECONCILE_SOURCE_IMAGE_ANALYSIS','FINALIZE_MATERIALIZED_PLAN')
+                      AND i.status='PLANNING')
+                  OR (failed_queue.phase IN ('GENERATE_IMAGE_SLOT','CHECK_IMAGE_GROUP','GENERATE_RICH_CONTENT')
+                      AND i.status='GENERATING'))
+                AND NOT EXISTS (
+                  SELECT 1 FROM auto_listing_ai_profile_channels AS failed_assignment
+                   WHERE failed_assignment.account_id=failed_queue.account_id
+                     AND failed_assignment.assigned_job_id=failed_queue.job_id
+                     AND failed_assignment.assigned_item_id=failed_queue.item_id
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM auto_listing_ai_outbox AS failed_live
+                   WHERE failed_live.account_id=failed_queue.account_id
+                     AND failed_live.job_id=failed_queue.job_id
+                     AND failed_live.item_id=failed_queue.item_id
+                     AND failed_live.id<>failed_queue.id
+                     AND failed_live.contract_version IN ('V1','V2','V3')
+                     AND failed_live.state='PROCESSING'
+                     AND failed_live.lease_expires_at>NOW()
+                )
+              ORDER BY failed_queue.updated_at DESC,failed_queue.created_at DESC,failed_queue.id DESC
+              LIMIT 1
+           ) latest_failure ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT ai_queue.id AS outbox_id,
+                    assigned_channel.exact AS assignment_exact,
+                    assigned_channel.display_name AS assignment_display_name,
+                    available_channel.channel_id AS available_channel_id,
+                    COALESCE(ai_queue.next_retry_at,ai_queue.available_at) AS wait_started_at
+               FROM auto_listing_ai_outbox AS ai_queue
+               LEFT JOIN LATERAL (
+                 SELECT assigned_channel.channel_id,assigned_channel.display_name,
+                        assigned_channel.execution_lease_expires_at,
+                        assigned_channel.assigned_status_version=ai_queue.expected_status_version AS exact,
+                        (assigned_channel.assigned_status_version<>ai_queue.expected_status_version
+                          AND (assigned_channel.execution_lease_expires_at IS NULL
+                            OR assigned_channel.execution_lease_expires_at<=NOW())
+                          AND (assigned_item.status NOT IN ('PLANNING','GENERATING')
+                            OR NOT EXISTS (
+                              SELECT 1 FROM auto_listing_ai_outbox AS recoverable
+                               WHERE recoverable.account_id=assigned_channel.account_id
+                                 AND recoverable.job_id=assigned_channel.assigned_job_id
+                                 AND recoverable.item_id=assigned_channel.assigned_item_id
+                                 AND recoverable.expected_status_version=assigned_channel.assigned_status_version
+                                 AND recoverable.contract_version IN ('V1','V2','V3')
+                                 AND recoverable.state IN ('PENDING','PROCESSING')
+                            ))) AS stale
+                   FROM auto_listing_ai_profile_channels AS assigned_channel
+                   JOIN auto_listing_job_items AS assigned_item
+                     ON assigned_item.account_id=assigned_channel.account_id
+                    AND assigned_item.job_id=assigned_channel.assigned_job_id
+                    AND assigned_item.id=assigned_channel.assigned_item_id
+                  WHERE assigned_channel.account_id=ai_queue.account_id
+                    AND assigned_channel.assigned_job_id=ai_queue.job_id
+                    AND assigned_channel.assigned_item_id=ai_queue.item_id
+                  ORDER BY assigned_channel.channel_order,assigned_channel.channel_id
+                  LIMIT 1
+               ) assigned_channel ON TRUE
+               LEFT JOIN LATERAL (
+                 SELECT available_channel.channel_id,
+                        (assigned_channel.exact IS TRUE
+                          AND available_channel.channel_id=assigned_channel.channel_id) AS fixed
+                   FROM auto_listing_ai_profile_channels AS available_channel
+                   JOIN ai_gateway_connection_versions AS available_connection
+                     ON available_connection.account_id=available_channel.account_id
+                    AND available_connection.id=available_channel.connection_id
+                    AND available_connection.version=available_channel.connection_version
+                   LEFT JOIN auto_listing_job_items AS available_assigned_item
+                     ON available_assigned_item.account_id=available_channel.account_id
+                    AND available_assigned_item.job_id=available_channel.assigned_job_id
+                    AND available_assigned_item.id=available_channel.assigned_item_id
+                  WHERE available_channel.account_id=ai_queue.account_id
+                    AND available_channel.profile_id=ai_job.ai_profile_id
+                    AND available_channel.profile_version=ai_job.ai_profile_version
+                    AND available_channel.enabled IS TRUE
+                    AND available_channel.requires_revalidation IS FALSE
+                    AND (available_channel.cooldown_until IS NULL OR available_channel.cooldown_until<=NOW())
+                    AND available_connection.status IN ('ACTIVE','VALIDATED','RETIRED')
+                    AND (available_channel.execution_lease_expires_at IS NULL
+                      OR available_channel.execution_lease_expires_at<=NOW())
+                    AND (
+                      (assigned_channel.exact IS TRUE
+                        AND available_channel.channel_id=assigned_channel.channel_id)
+                      OR (
+                        (assigned_channel.stale IS TRUE OR (assigned_channel.channel_id IS NULL
+                          AND NOT EXISTS (
+                            SELECT 1 FROM auto_listing_ai_profile_channels AS assigned_probe
+                             WHERE assigned_probe.account_id=ai_queue.account_id
+                               AND assigned_probe.assigned_job_id=ai_queue.job_id
+                               AND assigned_probe.assigned_item_id=ai_queue.item_id
+                          )))
+                        AND (
+                          available_channel.assigned_job_id IS NULL
+                          OR (assigned_channel.stale IS TRUE
+                            AND available_channel.channel_id=assigned_channel.channel_id)
+                          OR ((available_channel.execution_lease_expires_at IS NULL
+                            OR available_channel.execution_lease_expires_at<=NOW())
+                            AND (available_assigned_item.status NOT IN ('PLANNING','GENERATING')
+                              OR NOT EXISTS (
+                                SELECT 1 FROM auto_listing_ai_outbox AS recoverable
+                                 WHERE recoverable.account_id=available_channel.account_id
+                                   AND recoverable.job_id=available_channel.assigned_job_id
+                                   AND recoverable.item_id=available_channel.assigned_item_id
+                                   AND recoverable.expected_status_version=available_channel.assigned_status_version
+                                   AND recoverable.contract_version IN ('V1','V2','V3')
+                                   AND recoverable.state IN ('PENDING','PROCESSING')
+                              )))
+                        )
+                      )
+                    )
+                  ORDER BY CASE
+                             WHEN assigned_channel.exact IS TRUE
+                               AND available_channel.channel_id=assigned_channel.channel_id THEN 0
+                             WHEN available_channel.connection_id=i.last_ai_connection_id
+                               AND available_channel.connection_version=i.last_ai_connection_version THEN 1
+                             ELSE 2
+                           END,
+                           available_channel.channel_order,available_channel.channel_id
+                  LIMIT 1
+               ) available_channel ON TRUE
+              WHERE ai_queue.account_id=$2 AND ai_queue.job_id=$1 AND ai_queue.item_id=i.id
+                AND ai_queue.expected_status_version=i.status_version
+                AND ai_queue.contract_version IN ('V1','V2','V3')
+                AND ((ai_queue.phase IN ('PLAN_CONTENT','MATERIALIZE_SOURCE_ASSET','ANALYZE_SOURCE_IMAGE_BATCH','RECONCILE_SOURCE_IMAGE_ANALYSIS','FINALIZE_MATERIALIZED_PLAN')
+                      AND i.status='PLANNING')
+                  OR (ai_queue.phase IN ('GENERATE_IMAGE_SLOT','CHECK_IMAGE_GROUP','GENERATE_RICH_CONTENT')
+                      AND i.status='GENERATING'))
+                AND ((ai_queue.state='PENDING'
+                      AND COALESCE(ai_queue.next_retry_at,ai_queue.available_at)<=NOW())
+                  OR (ai_queue.state='PROCESSING' AND ai_queue.lease_expires_at<=NOW()))
+                AND (assigned_channel.exact IS NOT TRUE
+                  OR assigned_channel.execution_lease_expires_at IS NULL
+                  OR assigned_channel.execution_lease_expires_at<=NOW())
+                AND NOT EXISTS (
+                  SELECT 1 FROM auto_listing_ai_outbox AS live
+                   WHERE live.account_id=ai_queue.account_id AND live.job_id=ai_queue.job_id
+                     AND live.item_id=ai_queue.item_id AND live.id<>ai_queue.id
+                     AND live.contract_version IN ('V1','V2','V3') AND live.state='PROCESSING'
+                     AND live.lease_expires_at>NOW()
+                )
+              ORDER BY CASE WHEN available_channel.fixed THEN 0 ELSE 1 END,
+                       COALESCE(ai_queue.next_retry_at,ai_queue.available_at),
+                       ai_job.created_at,i.source_order,ai_queue.created_at,ai_queue.id
+              LIMIT 1
+           ) runnable_queue ON TRUE
+          WHERE ai_job.account_id=$2 AND ai_job.id=$1
+       ) ai_projection ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::INTEGER AS total_assets,
+                COUNT(publication.asset_id)::INTEGER AS published_assets
+           FROM (
+             SELECT DISTINCT ON (asset.visual_group_key,asset.slot_key)
+                    asset.id,asset.account_id,asset.item_id,asset.plan_id,asset.content_hash
+               FROM ai_generation_assets AS asset
+               JOIN ai_content_plans AS plan
+                 ON plan.account_id=asset.account_id AND plan.job_id=asset.job_id
+                AND plan.item_id=asset.item_id AND plan.id=asset.plan_id
+               CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'slots') AS planned_slot
+              WHERE i.status IN ('UPLOAD_QUEUED','UPLOADING')
+                AND asset.account_id=i.account_id AND asset.job_id=i.job_id
+                AND asset.item_id=i.id AND asset.plan_id=i.active_content_plan_id
+                AND asset.status='ACCEPTED' AND planned_slot->>'slotKey'=asset.slot_key
+                AND (plan.prompt_template_version NOT IN (
+                      'AUTO_LISTING_CONTENT_PLAN_FILL_V3','AUTO_LISTING_CONTENT_PLAN_FILL_V4',
+                      'AUTO_LISTING_CONTENT_PLAN_FILL_V5','AUTO_LISTING_CONTENT_PLAN_FILL_V6'
+                    ) OR jsonb_array_length(planned_slot->'claims')>0
+                    OR (plan.prompt_template_version='AUTO_LISTING_CONTENT_PLAN_FILL_V6'
+                      AND planned_slot->>'role'='MAIN')
+                    OR asset.checker_result->>'textForbidden'='true')
+              ORDER BY asset.visual_group_key,asset.slot_key,
+                       asset.expected_status_version DESC NULLS LAST,
+                       asset.created_at DESC,asset.id DESC
+           ) AS selected_asset
+           LEFT JOIN auto_listing_asset_publications AS publication
+             ON publication.account_id=selected_asset.account_id
+            AND publication.item_id=selected_asset.item_id
+            AND publication.plan_id=selected_asset.plan_id
+            AND publication.asset_id=selected_asset.id
+            AND publication.content_hash=selected_asset.content_hash
+            AND publication.publication_version='LISTING_MEDIA_V1'
+       ) upload_preparation ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT CASE
+                  WHEN source_assessment.terminal_status='DOWNLOAD_FAILED' THEN 'DOWNLOAD_FAILED'
+                  WHEN source_assessment.terminal_status='UNSUPPORTED_MEDIA' THEN 'UNSUPPORTED_MEDIA'
+                  WHEN i.failure_code='AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED'
+                    THEN 'UNIQUE_VIEW_MARKING_UNCERTAIN'
+                  ELSE NULL
+                END AS reason_code,
+                source_assessment.source_ordinal,
+                COALESCE((
+                  SELECT observed_viewpoint->>'kind'
+                    FROM jsonb_array_elements(COALESCE(
+                      source_assessment.assessment->'viewpoints','[]'::JSONB
+                    )) AS observed_viewpoint
+                   WHERE observed_viewpoint->>'confidence'='CONFIRMED'
+                     AND observed_viewpoint->>'kind' IN (
+                       'FRONT','BACK','LEFT','RIGHT','FRONT_LEFT_3_4','FRONT_RIGHT_3_4',
+                       'BACK_LEFT_3_4','BACK_RIGHT_3_4','TOP','BOTTOM','INTERIOR','DETAIL',
+                       'SCENE','PACKAGE','UNKNOWN'
+                     )
+                   ORDER BY observed_viewpoint->>'kind'
+                   LIMIT 1
+                ),'UNKNOWN') AS viewpoint
+           FROM auto_listing_source_image_analysis_runs AS run
+           JOIN auto_listing_source_image_assessments AS source_assessment
+             ON source_assessment.account_id=run.account_id
+            AND source_assessment.job_id=run.job_id
+            AND source_assessment.item_id=run.item_id
+            AND source_assessment.analysis_run_id=run.id
+            AND source_assessment.record_status='ACCEPTED'
+          WHERE run.id=i.current_source_image_analysis_run_id
+            AND run.account_id=i.account_id AND run.job_id=i.job_id AND run.item_id=i.id
+            AND source_assessment.source_ordinal IS NOT NULL
+            AND (
+              (i.failure_code='AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED'
+                AND run.status='CONFIRMATION_REQUIRED'
+                AND EXISTS (
+                  SELECT 1
+                    FROM jsonb_array_elements(COALESCE(
+                      run.summary->'requiredConfirmations','[]'::JSONB
+                    )) AS required_confirmation
+                   WHERE required_confirmation->>'sourceAssetId'=source_assessment.source_asset_id
+                     AND (required_confirmation->'reasonCodes')
+                       ? 'AUTO_LISTING_SOURCE_IMAGE_UNIQUE_VIEW_MARKING_UNCERTAIN'
+                ))
+              OR (i.failure_code IN (
+                  'AUTO_LISTING_SOURCE_IMAGE_EVIDENCE_INSUFFICIENT',
+                  'AUTO_LISTING_SOURCE_IMAGE_INPUT_TOO_LARGE',
+                  'AUTO_LISTING_SOURCE_IMAGE_ANALYSIS_RESULT_INVALID'
+                )
+                AND source_assessment.terminal_status IN ('DOWNLOAD_FAILED','UNSUPPORTED_MEDIA'))
+            )
+          ORDER BY CASE
+                     WHEN source_assessment.terminal_status IN ('DOWNLOAD_FAILED','UNSUPPORTED_MEDIA') THEN 0
+                     ELSE 1
+                   END,
+                   source_assessment.source_ordinal,source_assessment.source_asset_id
+          LIMIT 1
+       ) source_failure ON TRUE
       WHERE i.job_id=$1 AND i.account_id=$2
         ${selection ? "AND i.id=ANY($3::text[])" : ""}
       ORDER BY i.source_order ASC,i.id ASC`,
@@ -703,7 +1180,7 @@ function assertGraph(graph) {
       || !["SOURCE_READY", "BLOCKED"].includes(item.status)) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
-    if (!["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(item.planningContract)) {
+    if (!["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(item.planningContract)) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
     if (item.targetStoreId !== configSnapshot.targetStoreId || item.targetWarehouseId !== configSnapshot.targetWarehouseId) {
@@ -756,7 +1233,7 @@ function assertGraph(graph) {
       }
       let calculated;
       try {
-        calculated = calculateAutoListingPrice({ ...captured.snapshot.priceEvidence,
+        calculated = calculateAutoListingPriceFromEvidence({ ...captured.snapshot.priceEvidence,
           adjustmentKopecks: configSnapshot.priceAdjustmentKopecks,
           priceMultiplierMicros: configSnapshot.priceMultiplierMicros });
       } catch {
@@ -1175,7 +1652,7 @@ export function createAutoListingRepository({
         return {
           id: row.id,
           accountId: row.account_id,
-          sourceVersion: sourceSnapshotVersion(row),
+          sourceVersion: sourceSnapshotVersion(row, categoryAuthority),
           rawResponseRef: row.raw_response_ref || null,
           rawResponseHash: row.payload_hash || null,
           rawCollectedAt: row.collected_at ? new Date(row.collected_at).toISOString() : null,
@@ -1255,7 +1732,7 @@ export function createAutoListingRepository({
           id: row.row_id,
           collectItemId: row.collect_item_id,
           accountId: row.account_id,
-          sourceVersion: sourceSnapshotVersion(row),
+          sourceVersion: sourceSnapshotVersion(row, categoryAuthority),
           rawResponseRef: row.raw_response_ref || null,
           rawResponseHash: row.payload_hash || null,
           rawCollectedAt: row.collected_at ? new Date(row.collected_at).toISOString() : null,
@@ -1736,9 +2213,12 @@ export function createAutoListingRepository({
         let aiProfileVersion = null;
         if (stageInitialPlanWork) {
           const profiles = await client.query(
-            `SELECT id,config_version,connection_id,connection_version,text_model,image_model FROM ai_gateway_profiles
-              WHERE account_id=$1 AND enabled IS TRUE
-              FOR SHARE`,
+            `SELECT p.id,p.config_version,p.connection_id,p.connection_version,p.text_model,p.image_model
+               FROM ai_user_channels channel JOIN ai_gateway_profiles p
+                 ON p.account_id=channel.account_id AND p.id=channel.profile_id
+               WHERE channel.account_id=$1 AND channel.enabled IS TRUE
+                 AND channel.connection_check->>'status' IS DISTINCT FROM 'MODEL_MISSING'
+               ORDER BY channel.created_at,channel.id LIMIT 1 FOR SHARE OF channel,p`,
             [graph.accountId],
           );
           if (profiles.rows.length === 0) {
@@ -1795,13 +2275,12 @@ export function createAutoListingRepository({
             }
           }
         }
-        const rules = await client.query(
+        const currentRules = graph.configSnapshot.useCategoryStrategy === false ? [] : publishedRules((await client.query(
           `SELECT id,rule_order,rule_kind,category_id,ancestor_category_id,product_style,rule
              FROM ai_content_strategy_rules WHERE account_id=$1 AND strategy_version_id=$2
              ORDER BY rule_order ASC,id ASC`,
           [graph.accountId, graph.strategyVersionId],
-        );
-        const currentRules = publishedRules(rules.rows);
+        )).rows);
         assertCurrentCategoryStrategyGate(graph, categoryStrategySetting.rows[0], currentRules, strategy.rows[0]);
         for (const item of graph.items) {
           const source = graph.sourceType === "EXCEL_SKU" && item.status === "SOURCE_READY"
@@ -1926,7 +2405,7 @@ export function createAutoListingRepository({
               || item.ruleId !== resolved.ruleId || item.style !== resolved.style || item.matchedBy !== resolved.matchedBy) {
               throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
             }
-            const price = calculateAutoListingPrice({ ...item.snapshot.priceEvidence,
+            const price = calculateAutoListingPriceFromEvidence({ ...item.snapshot.priceEvidence,
               adjustmentKopecks: graph.configSnapshot.priceAdjustmentKopecks,
               priceMultiplierMicros: graph.configSnapshot.priceMultiplierMicros });
             if (!samePrice(item.price, price)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");

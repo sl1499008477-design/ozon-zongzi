@@ -10,6 +10,27 @@ const firstText = (...values) => {
   return "";
 };
 
+const currencyCode = (value) => {
+  const code = text(value).toUpperCase();
+  return /^[A-Z]{3}$/.test(code) ? code : "";
+};
+
+export const collectPriceCurrencyCode = (record = {}) => [
+  record?.currencyCode, record?.currency_code, record?.priceCurrency,
+  record?.price_currency, record?.currency,
+  record?.price?.currency_code, record?.price?.currencyCode, record?.price?.currency,
+].map(currencyCode).find(Boolean) || "";
+
+export function formatCollectSourcePrice(record = {}, fallback = {}) {
+  const amount = firstText(
+    record.price && typeof record.price === "object" ? record.price.price : record.price,
+    record.priceText, record.marketingPrice, record.marketing_price, record.sellPrice,
+  );
+  if (!amount) return "—";
+  const currency = collectPriceCurrencyCode(record) || collectPriceCurrencyCode(fallback);
+  return currency ? `${amount} ${currency}` : `${amount}（币种未知）`;
+}
+
 const moneyNumber = (value) => {
   const normalized = text(value)
     .replace(/[^\d,.-]/g, "")
@@ -34,6 +55,11 @@ export function normalizeCollectEditVariantRow({
   fallbackPrice = "",
   offerPrefix = "jz-",
   aspectName = "",
+  targetCurrencyCode,
+  sourceVariant = variant,
+  sourceCurrencyCode = "",
+  draftVariant = {},
+  draftCurrencyCode = "",
 } = {}) {
   const sku = firstText(
     variant.sku,
@@ -43,17 +69,22 @@ export function normalizeCollectEditVariantRow({
     fallbackSku,
   );
   const generatedOfferId = `${text(offerPrefix) || "jz-"}${sku}${rowCount > 1 ? `-${String(index + 1).padStart(2, "0")}` : ""}`;
-  const sourcePrice = variant.price && typeof variant.price === "object"
-    ? variant.price.price
-    : variant.price;
-  const sellPrice = firstText(
-    variant.sellPrice,
-    sourcePrice,
-    variant.priceText,
-    variant.marketingPrice,
-    variant.marketing_price,
-    fallbackPrice,
-  );
+  let quote = variant;
+  if (targetCurrencyCode !== undefined) {
+    const target = currencyCode(targetCurrencyCode);
+    const savedCurrency = collectPriceCurrencyCode(draftVariant) || currencyCode(draftCurrencyCode);
+    const sourceCurrency = collectPriceCurrencyCode(sourceVariant) || currencyCode(sourceCurrencyCode);
+    const hasSavedPrice = ["sellPrice", "price", "priceText", "marketingPrice", "marketing_price"]
+      .some((key) => Object.hasOwn(draftVariant, key));
+    quote = target && savedCurrency === target && hasSavedPrice ? draftVariant
+      : target && sourceCurrency === target ? sourceVariant : {};
+  }
+  const sourcePrice = quote.price && typeof quote.price === "object" ? quote.price.price : quote.price;
+  // A cleared target quote must stay empty, including when a legacy source price remains on the row.
+  const sellPrice = targetCurrencyCode !== undefined && Object.hasOwn(quote, "sellPrice")
+    ? text(quote.sellPrice)
+    : firstText(quote.sellPrice, sourcePrice, quote.priceText, quote.marketingPrice,
+      quote.marketing_price, targetCurrencyCode === undefined ? fallbackPrice : "");
   const baseName = firstText(
     variant.name,
     variant.title,
@@ -72,12 +103,12 @@ export function normalizeCollectEditVariantRow({
     offerId: firstText(variant.offerId, variant.offer_id, generatedOfferId),
     name,
     sellPrice,
-    oldPrice: firstText(
-      variant.oldPrice,
-      variant.old_price,
-      variant.price && typeof variant.price === "object" ? variant.price.old_price : "",
+    oldPrice: sellPrice || targetCurrencyCode === undefined ? firstText(
+      quote.oldPrice,
+      quote.old_price,
+      quote.price && typeof quote.price === "object" ? quote.price.old_price : "",
       derivedOldPrice(sellPrice),
-    ),
+    ) : "",
     stock: firstText(variant.stock, variant.quantity, variant.stocks?.present, "0"),
   };
 }

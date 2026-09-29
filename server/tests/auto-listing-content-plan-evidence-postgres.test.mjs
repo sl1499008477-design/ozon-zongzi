@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 
 import { createPostgresContentPlanEvidenceRepository } from "../auto-listing-content-plan-evidence-postgres.mjs";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
+const canonical = (value) => Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+const cryptoHash = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 
 function responseCommand(overrides = {}) {
   return {
@@ -21,6 +26,8 @@ function responseCommand(overrides = {}) {
     modelName: "vendor/planner-model",
     promptTemplateVersion: "AUTO_LISTING_CONTENT_PLAN_V3",
     gatewayRequestId: "gateway-request-a",
+    gatewayConnectionId: "connection-a",
+    gatewayConnectionVersion: 3,
     response: { version: 1, language: "ru", slots: [] },
     ...overrides,
   };
@@ -38,6 +45,8 @@ function responseRow(command = responseCommand()) {
     planning_contract: command.planningContract,
     input_hash: command.inputHash,
     skeleton_hash: command.skeletonHash,
+    source_image_analysis_run_id: command.sourceImageAnalysisRunId ?? null,
+    source_image_intelligence_hash: command.sourceImageIntelligenceHash ?? null,
     profile_id: command.profileId,
     profile_version: command.profileVersion,
     model_name: command.modelName,
@@ -48,6 +57,40 @@ function responseRow(command = responseCommand()) {
     received_at: new Date("2026-08-14T00:00:00.000Z"),
   };
 }
+
+test("intelligent response evidence is closed over the frozen analysis run and summary hash", async () => {
+  const command = responseCommand({
+    planningContract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    skeletonHash: HASH_B,
+    sourceImageAnalysisRunId: "analysis-run-a",
+    sourceImageIntelligenceHash: "d".repeat(64),
+    response: { version: 1, language: "ru", fills: {} },
+  });
+  const db = scriptedPool((sql) => {
+    if (["BEGIN", "COMMIT"].includes(sql)) return { rows: [], rowCount: 0 };
+    if (/FROM auto_listing_content_plan_attempts/i.test(sql)) return { rows: [{
+      id: "attempt-a", account_id: "account-a", job_id: "job-a", item_id: "item-a",
+      source_snapshot_id: "snapshot-a", profile_id: "profile-a", profile_version: 3,
+      planning_contract: command.planningContract, input_hash: HASH_A, skeleton_hash: HASH_B,
+      source_image_analysis_run_id: command.sourceImageAnalysisRunId,
+      source_image_intelligence_hash: command.sourceImageIntelligenceHash,
+      gateway_connection_id: "connection-a", gateway_connection_version: 3,
+    }], rowCount: 1 };
+    if (/FROM auto_listing_content_plan_responses/i.test(sql)) return { rows: [], rowCount: 0 };
+    if (/INSERT INTO auto_listing_content_plan_responses/i.test(sql)) {
+      const row = responseRow(command);
+      row.response_hash = cryptoHash(command.response);
+      return { rows: [row], rowCount: 1 };
+    }
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const evidence = createPostgresContentPlanEvidenceRepository({ pool: db.pool, responseId: () => "response-a" });
+  const stored = await evidence.recordResponse(command);
+  assert.equal(stored.sourceImageAnalysisRunId, "analysis-run-a");
+  assert.equal(stored.sourceImageIntelligenceHash, "d".repeat(64));
+  const inserted = db.queries.find(({ text }) => /INSERT INTO auto_listing_content_plan_responses/i.test(text));
+  assert.match(inserted.text, /source_image_analysis_run_id,source_image_intelligence_hash/i);
+});
 
 function scriptedPool(handler) {
   const queries = [];
@@ -76,6 +119,7 @@ test("records one bounded response before validation and exact replay returns th
         id: "attempt-a", account_id: "account-a", job_id: "job-a", item_id: "item-a",
         source_snapshot_id: "snapshot-a", profile_id: "profile-a", profile_version: 3,
         planning_contract: "LEGACY_FULL_PLAN_V3", input_hash: HASH_A, skeleton_hash: null,
+        gateway_connection_id: "connection-a", gateway_connection_version: 3,
       }], rowCount: 1 };
     }
     if (/FROM auto_listing_content_plan_responses/i.test(sql)) {
@@ -196,11 +240,33 @@ test("records one exact validation result and loads evidence only by the immutab
     accountId: "account-a", jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a",
     owner: { kind: "ATTEMPT", id: "attempt-a" }, planningContract: "LEGACY_FULL_PLAN_V3",
     inputHash: HASH_A, skeletonHash: null, profileId: "profile-a", profileVersion: 3,
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3,
   });
   assert.equal(outcome.response.id, "response-a");
   assert.equal(outcome.validation.status, "REJECTED");
   const loadSql = db.queries.find(({ text }) => /LEFT JOIN auto_listing_content_plan_validation_results/i.test(text)).text;
   assert.match(loadSql, /attempt_id=\$\d+/i);
+  assert.match(loadSql, /gateway_connection_id IS NOT DISTINCT FROM \$\d+/i);
+  assert.match(loadSql, /gateway_connection_version IS NOT DISTINCT FROM \$\d+/i);
   assert.doesNotMatch(loadSql, /ORDER BY|LIMIT 1|MAX\(/i);
   assert.equal(JSON.stringify(outcome).includes(HASH_B), false);
+});
+
+test("load rejects a hash-conflicting planner response instead of treating it as reusable", async () => {
+  const db = scriptedPool((sql) => {
+    if (/LEFT JOIN auto_listing_content_plan_validation_results/iu.test(sql)) return { rows: [{
+      ...responseRow(), response_hash: HASH_B,
+      validation_id: null, validation_status: null, validator_version: null,
+      issues: null, validated_at: null,
+    }], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const evidence = createPostgresContentPlanEvidenceRepository({ pool: db.pool });
+
+  await assert.rejects(evidence.loadOutcome({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", sourceSnapshotId: "snapshot-a",
+    owner: { kind: "ATTEMPT", id: "attempt-a" }, planningContract: "LEGACY_FULL_PLAN_V3",
+    inputHash: HASH_A, skeletonHash: null, profileId: "profile-a", profileVersion: 3,
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 3,
+  }), { code: "AUTO_LISTING_CONTENT_PLAN_EVIDENCE_CONFLICT" });
 });

@@ -7,14 +7,16 @@ import {
   assertCaptureOnlyPermissionPolicy,
   assertCaptureOnlyServiceWorker,
   assertPopupWebLoginGuidance,
+  assertReviewedCaptureOnlyPermissionPolicy,
 } from "./extension-capture-only-policy.mjs";
 import {
   assertCompatibleExtensionVersions,
   requireExtensionUpstreamDir,
 } from "./extension-upstream-config.mjs";
 
-const sourceDir = requireExtensionUpstreamDir("scripts/check-extension-source-parity.mjs");
-if (!sourceDir) process.exit(2);
+const localOnly = process.argv.includes("--local-only");
+const sourceDir = localOnly ? null : requireExtensionUpstreamDir("scripts/check-extension-source-parity.mjs");
+if (!localOnly && !sourceDir) process.exit(2);
 const localDir = process.env.QH_LOCAL_EXTENSION_DIR || "extension";
 
 const allowedDiffs = new Set([
@@ -202,6 +204,7 @@ assert.doesNotMatch(
   "retired bestsellers hook reference must not remain in the BFF protocol comment",
 );
 const localManifest = JSON.parse(readFileSync(path.join(localDir, "manifest.json"), "utf8"));
+assertReviewedCaptureOnlyPermissionPolicy(localManifest);
 assert.equal(localManifest.name, "ozon 粽子");
 assert.equal(localManifest.description, "ozon 粽子 · Ozon 选品采集与运营助手");
 assert.equal(localManifest.update_url, undefined);
@@ -241,10 +244,10 @@ assertPopupWebLoginGuidance(
   readFileSync(path.join(localDir, "background/service-worker.js"), "utf8"),
 );
 
-const upstreamAvailable = existsSync(sourceDir) && statSync(sourceDir).isDirectory();
-if (!upstreamAvailable) {
+const upstreamAvailable = sourceDir && existsSync(sourceDir) && statSync(sourceDir).isDirectory();
+if (!localOnly && !upstreamAvailable) {
   console.error(`upstream extension parity blocked: ${sourceDir} not found`);
-} else {
+} else if (upstreamAvailable) {
   const sourceFiles = new Set(walk(sourceDir));
   const problems = [];
 
@@ -285,7 +288,10 @@ assert.ok(
 
 const distributionFiles = new Set(walk(distributionDir));
 const distributionProblems = [];
+// Match the production ZIP boundary: test-only files are not shipped runtime.
+const isTestArtifact = (rel) => /^(?:tests\/|background\/__tests__\/|popup\/__tests__\/)/.test(rel);
 for (const rel of localFiles) {
+  if (isTestArtifact(rel)) continue;
   if (!distributionFiles.has(rel)) {
     distributionProblems.push(`missing distribution file: ${rel}`);
   } else if (hashFile(path.join(localDir, rel)) !== hashFile(path.join(distributionDir, rel))) {
@@ -293,6 +299,7 @@ for (const rel of localFiles) {
   }
 }
 for (const rel of distributionFiles) {
+  if (isTestArtifact(rel)) continue;
   if (!localFiles.has(rel)) distributionProblems.push(`unexpected distribution file: ${rel}`);
 }
 
@@ -301,4 +308,4 @@ if (distributionProblems.length) {
 }
 
 console.log(`extension distribution parity ok against ${distributionDir}`);
-if (!upstreamAvailable) process.exitCode = 2;
+if (!localOnly && !upstreamAvailable) process.exitCode = 2;

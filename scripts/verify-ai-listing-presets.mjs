@@ -1,0 +1,36 @@
+import '../server/env.mjs';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
+import {getPostgresPool} from '../server/db/connection.mjs';
+import {createAiListingPresets} from '../server/ai-listing-presets.mjs';
+import {createAiListingService} from '../server/ai-listing-service.mjs';
+import {createAiListingRepository} from '../server/ai-listing-repository.mjs';
+const pool=await getPostgresPool();const db=await pool.connect();await db.query('BEGIN');
+try {
+ await db.query(await readFile(new URL('../server/db/migrations/112_ai_listing_presets.sql',import.meta.url),'utf8'));
+ const owner=randomUUID(), other=randomUUID();
+ for(const id of [owner,other])await db.query('INSERT INTO accounts(id,username,role) VALUES($1,$1,\'admin\')',[id]);
+ const presets=createAiListingPresets(db);
+ const p=await presets.save(owner,'prompts',null,{name:'我的俄语版',content:'重新设计标签，保持规格'});
+ assert.equal((await presets.list(owner,'prompts'))[0].content,p.content);
+ assert.equal((await presets.list(other,'prompts')).length,0);
+ await assert.rejects(presets.get(other,'prompts',p.id),{statusCode:404});
+ await assert.rejects(presets.save(other,'prompts',p.id,{name:'越权',content:'禁止'}),{statusCode:404});
+ await assert.rejects(presets.remove(other,'prompts',p.id),{statusCode:404});
+ const c=await presets.save(owner,'configs',null,{name:'俄语高质量',config:{targetStoreId:'store',targetWarehouseId:'wh',priceMultiplier:'1.25',promptId:p.id,image:{ratio:'3:4',language:'ru',resolution:'2K',quality:'high'}}});
+ assert.equal(c.config.promptId,p.id);
+ const frozen=structuredClone(await presets.get(owner,'prompts',p.id));
+ const service=createAiListingService({repository:createAiListingRepository({pool:db})});
+ const [task]=await service.createFromSkus({accountId:owner,skus:['5489575013'],idempotencyKey:randomUUID(),config:{...c.config,prompt:frozen.content}});
+ await presets.save(owner,'prompts',p.id,{name:'新版',content:'重新设计文字和背景'});
+ assert.equal(frozen.content,'重新设计标签，保持规格');
+ await presets.remove(owner,'prompts',p.id);
+ await assert.rejects(presets.get(owner,'prompts',p.id),{statusCode:404});
+ assert.equal((await presets.get(owner,'configs',c.id)).config.promptId,p.id);
+ assert.equal((await service.getTask({accountId:owner,taskId:task.id})).config.prompt,frozen.content);
+ await presets.remove(owner,'configs',c.id);
+ assert.equal((await presets.list(owner,'configs')).length,0);
+ await assert.rejects(presets.save(owner,'prompts',null,{name:' ',content:'abc'}),{statusCode:400});
+ console.log('PASS: prompt/config CRUD, persistence, account isolation, frozen content and deleted references; transaction rolled back');
+} finally {await db.query('ROLLBACK');db.release();await pool.end();}

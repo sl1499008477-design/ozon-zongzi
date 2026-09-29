@@ -102,7 +102,7 @@ function normalizeItem(item, index, expectedOfferId, batchHasPartialOutcome) {
     offerId: itemOfferId(item),
     productId: status === "SUCCEEDED" ? safeProductId(item.product_id) : "",
     status,
-    errors: Object.freeze(status === "FAILED" ? ["OZON_ITEM_RESULT"] : []),
+    errors: Object.freeze(status === "FAILED" ? ["ZONGZI_ITEM_RESULT"] : []),
     classification: classified.classification,
     errorEvidence: classified.errorEvidence,
     response: item,

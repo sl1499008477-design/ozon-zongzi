@@ -7,6 +7,7 @@ const LIST_PATH = "/auto-listing/jobs";
 const JOB_PATTERN = /^\/auto-listing\/jobs\/([^/]+)$/;
 const CREATE_KEYS = new Set(["collectItemIds", "idempotencyKey", "config", "correlationId"]);
 const PUBLIC_ERRORS = Object.freeze({
+  AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED: 409,
   AUTO_LISTING_REQUEST_INVALID: 400,
   AUTO_LISTING_JOB_NOT_FOUND: 404,
   AUTO_LISTING_SOURCE_NOT_FOUND: 404,
@@ -146,7 +147,7 @@ function safePrice(price) {
   const currency = normalizeAutoListingCurrency(price?.currency);
   if (!price || typeof price !== "object" || Array.isArray(price) || !currency) return undefined;
   const output = {};
-  for (const key of ["currency", "branch", "blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "preMultiplierPriceKopecks", "priceMultiplierMicros", "finalPriceKopecks"]) {
+  for (const key of ["currency", "branch", "blackKopecks", "greenKopecks", "sourcePriceKopecks", "realPriceKopecks", "adjustmentKopecks", "preMultiplierPriceKopecks", "priceMultiplierMicros", "finalPriceKopecks"]) {
     if (typeof price[key] === "string" && price[key].length <= 80) output[key] = price[key];
   }
   return output.currency === currency ? output : undefined;
@@ -197,6 +198,8 @@ function safeJob(job = {}) {
     jobId: text(source.jobId || source.id) || "",
     sourceType: text(source.sourceType || source.source_type) || "COLLECT_BOX",
     status: text(source.status) || "CREATED",
+    ...(typeof source.useCategoryStrategy === "boolean"
+      ? { useCategoryStrategy: source.useCategoryStrategy } : {}),
     items: Array.isArray(source.items) ? source.items.map(safeItem) : [],
   };
   for (const key of ["correlationId", "createdAt", "updatedAt"]) {
@@ -225,6 +228,7 @@ function safeErrorItems(value) {
 }
 
 function messageFor(code) {
+  if (code === "AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED") return "请联系管理员分配并启用模型可用的用户 AI 通道";
   if (code === "AUTO_LISTING_DISABLED") return "自动上架功能暂未启用";
   if (code === "AUTO_LISTING_SOURCE_VERSION_CONFLICT") return "来源资料版本已变化，请刷新后重试";
   if (code === "AUTO_LISTING_JOB_NOT_FOUND") return "自动上架任务不存在";
@@ -257,10 +261,10 @@ function safeCategoryStrategyDetails(value) {
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const keys = Reflect.ownKeys(descriptors);
     if (!keys.every((key) => typeof key === "string"
-      && ["scope", "status", "canManage", "draftId"].includes(key)
+      && ["scope", "sourceCollectItemId", "status", "canManage", "draftId"].includes(key)
       && descriptors[key]?.enumerable === true && Object.hasOwn(descriptors[key], "value"))) return undefined;
-    if (![3, 4].includes(keys.length)) return undefined;
-    for (const key of ["scope", "status", "canManage"]) {
+    if (![4, 5].includes(keys.length)) return undefined;
+    for (const key of ["scope", "sourceCollectItemId", "status", "canManage"]) {
       if (!Object.hasOwn(descriptors, key)) return undefined;
     }
     const rawScope = descriptors.scope.value;
@@ -277,11 +281,14 @@ function safeCategoryStrategyDetails(value) {
       || !Number.isSafeInteger(scope.typeId) || scope.typeId < 1
       || !CATEGORY_STRATEGY_STATUSES.has(descriptors.status.value)
       || typeof descriptors.canManage.value !== "boolean") return undefined;
+    const sourceCollectItemId = text(descriptors.sourceCollectItemId.value);
+    if (!sourceCollectItemId) return undefined;
     const canManage = descriptors.canManage.value;
     const draftId = Object.hasOwn(descriptors, "draftId") ? text(descriptors.draftId.value) : "";
     if ((!canManage && Object.hasOwn(descriptors, "draftId"))
       || (Object.hasOwn(descriptors, "draftId") && !draftId)) return undefined;
-    return { scope, status: descriptors.status.value, canManage, ...(draftId ? { draftId } : {}) };
+    return { scope, sourceCollectItemId, status: descriptors.status.value,
+      canManage, ...(draftId ? { draftId } : {}) };
   } catch {
     return undefined;
   }

@@ -10,24 +10,33 @@ const MAX_SOURCE_PIXELS = 40_000_000;
 const MAX_PARENT_BYTES = 4 * 1024 * 1024;
 const SCOPE_KEYS = new Set(["accountId", "jobId", "itemId", "parentPlanId", "expectedStatusVersion"]);
 const BUILD_KEYS = new Set(["scope", "parentPlan", "acceptedMaterializations"]);
+const BUILD_REUSED_SOURCE_KEYS = new Set([...BUILD_KEYS, "sourceMaterializationScope"]);
 const FINALIZE_KEYS = new Set(["scope", "parentPlan", "repository"]);
+const FINALIZE_REUSED_SOURCE_KEYS = new Set([...FINALIZE_KEYS, "sourceMaterializationScope"]);
+const SOURCE_MATERIALIZATION_SCOPE_KEYS = new Set(["analysisRunId", "expectedStatusVersion"]);
 const PARENT_KEYS = new Set([
   "id", "sourceAccountId", "jobId", "itemId", "sourceSnapshotId", "strategyVersionId", "profileId",
   "strategyHash", "configHash", "sourceHash", "inputHash", "plannerModel", "profileVersion",
   "promptTemplateVersion", "plan", "planHash", "visualGroupsHash", "visualGroups", "factRegistry", "regeneration",
   "gatewayRequestId", "planningContract", "skeletonHash",
 ]);
+const INTELLIGENT_PARENT_KEYS = new Set([...PARENT_KEYS, "sourceImageAnalysisRunId", "sourceImageIntelligenceHash"]);
 const PERSISTED_PARENT_KEYS = new Set([
   ...[...PARENT_KEYS].filter((key) => key !== "sourceAccountId"),
   "accountId", "factRegistryHash", "parentPlanId", "derivationKind", "materializationSetHash", "createdAt",
 ]);
+const INTELLIGENT_PERSISTED_PARENT_KEYS = new Set([...PERSISTED_PARENT_KEYS, "sourceImageAnalysisRunId", "sourceImageIntelligenceHash"]);
 const MATERIALIZATION_KEYS = new Set([
   "accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId", "sourceRefHash", "inputHash",
   "expectedStatusVersion", "attemptId", "attemptNo", "status", "leaseOwner", "leaseToken",
   "leaseExpiresAt", "objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height",
   "sizeBytes", "acceptedAt", "errorCode", "errorRetryable", "createdAt", "updatedAt",
 ]);
+const ANALYSIS_MATERIALIZATION_KEYS = new Set([
+  ...[...MATERIALIZATION_KEYS].filter((key) => key !== "parentPlanId"), "owner",
+]);
 const DERIVED_KEYS = new Set([...PARENT_KEYS, "parentPlanId", "derivationKind", "materializationSetHash"]);
+const INTELLIGENT_DERIVED_KEYS = new Set([...INTELLIGENT_PARENT_KEYS, "parentPlanId", "derivationKind", "materializationSetHash"]);
 const REGENERATION_KEYS = new Set(["requestId", "reason"]);
 const PLAN_KEYS = new Set(["version", "language", "slots"]);
 const SLOT_KEYS_V1 = new Set([
@@ -35,6 +44,18 @@ const SLOT_KEYS_V1 = new Set([
   "referenceAssetIds", "preserve", "prohibitedClaims",
 ]);
 const SLOT_KEYS_V2 = new Set([...SLOT_KEYS_V1, "requestedRole", "substitutionReasonCode"]);
+const SLOT_KEYS_V3 = new Set([
+  ...SLOT_KEYS_V2,
+  "targetView", "evidenceMode", "prohibitedViews", "prohibitedOverlayTexts",
+  "identityAssetId", "selectionReasonCodes",
+]);
+const TARGET_VIEWS = new Set([
+  "FRONT", "BACK", "LEFT", "RIGHT", "FRONT_LEFT_3_4", "FRONT_RIGHT_3_4",
+  "BACK_LEFT_3_4", "BACK_RIGHT_3_4", "TOP", "BOTTOM", "INTERIOR", "DETAIL", "SCENE", "PACKAGE", "ROTATIONAL",
+]);
+const EVIDENCE_MODES = new Set([
+  "DIRECT", "ADJACENT", "COMPOSITION_ONLY", "SUBSTITUTED", "SYNTHESIZED_SAFE",
+]);
 const CLAIM_KEYS = new Set(["text", "claimType", "sourceFactIds"]);
 const FACT_KEYS = new Set([
   "factId", "field", "kind", "value", "numericValue", "unit", "sourcePath", "dictionaryValueId", "visualGroupKeys",
@@ -131,9 +152,28 @@ function validateScope(value) {
   return value;
 }
 
+function validateSourceMaterializationScope(value, scope, parentPlan) {
+  if (parentPlan.planningContract !== "FIXED_SKELETON_SOURCE_IMAGE_V1") {
+    if (value !== undefined && value !== null) throw materializedPlanError();
+    return null;
+  }
+  const candidate = value === undefined ? {
+    analysisRunId: parentPlan.sourceImageAnalysisRunId,
+    expectedStatusVersion: scope.expectedStatusVersion,
+  } : value;
+  if (!exactObject(candidate, SOURCE_MATERIALIZATION_SCOPE_KEYS)
+    || !safeIdentifier(candidate.analysisRunId)
+    || !Number.isInteger(candidate.expectedStatusVersion) || candidate.expectedStatusVersion < 1
+    || candidate.expectedStatusVersion > scope.expectedStatusVersion) throw materializedPlanError();
+  return candidate;
+}
+
 function projectParentPlan(value, scope) {
-  if (exactObject(value, PARENT_KEYS)) return value;
-  if (!exactObject(value, PERSISTED_PARENT_KEYS)
+  const intelligent = value?.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1";
+  const parentKeys = intelligent ? INTELLIGENT_PARENT_KEYS : PARENT_KEYS;
+  const persistedKeys = intelligent ? INTELLIGENT_PERSISTED_PARENT_KEYS : PERSISTED_PARENT_KEYS;
+  if (exactObject(value, parentKeys)) return value;
+  if (!exactObject(value, persistedKeys)
     || value.accountId !== scope.accountId
     || !HASH.test(value.factRegistryHash || "")
     || value.factRegistryHash !== sha256(value.factRegistry)
@@ -141,7 +181,7 @@ function projectParentPlan(value, scope) {
     || !(value.createdAt instanceof Date) || !Number.isFinite(value.createdAt.getTime())) {
     throw materializedPlanError();
   }
-  return Object.fromEntries([...PARENT_KEYS].map((key) => [
+  return Object.fromEntries([...parentKeys].map((key) => [
     key,
     key === "sourceAccountId" ? value.accountId : value[key],
   ]));
@@ -151,17 +191,22 @@ function validateParentPlan(value, scope) {
   try {
     value = projectParentPlan(value, scope);
     assertJsonSafe(value);
-    if (!exactObject(value, PARENT_KEYS)
+    const intelligent = value?.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1";
+    if (!exactObject(value, intelligent ? INTELLIGENT_PARENT_KEYS : PARENT_KEYS)
       || !["id", "sourceAccountId", "jobId", "itemId", "sourceSnapshotId", "strategyVersionId", "profileId", "plannerModel", "promptTemplateVersion"]
         .every((key) => safeIdentifier(value[key]))
       || value.id !== scope.parentPlanId || value.sourceAccountId !== scope.accountId
       || value.jobId !== scope.jobId || value.itemId !== scope.itemId
       || !["strategyHash", "configHash", "sourceHash", "inputHash", "planHash", "visualGroupsHash"].every((key) => HASH.test(value[key] || ""))
-      || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(value.planningContract)
+      || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(value.planningContract)
       || (value.planningContract === "LEGACY_FULL_PLAN_V3" && value.skeletonHash !== null)
-      || (value.planningContract === "FIXED_SKELETON_V1" && !HASH.test(value.skeletonHash || ""))
+      || (["FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(value.planningContract)
+        && !HASH.test(value.skeletonHash || ""))
+      || (intelligent && (!safeIdentifier(value.sourceImageAnalysisRunId)
+        || !HASH.test(value.sourceImageIntelligenceHash || "")))
       || !Number.isInteger(value.profileVersion) || value.profileVersion < 1
-      || !exactObject(value.plan, PLAN_KEYS) || ![1, 2].includes(value.plan.version) || value.plan.language !== "ru"
+      || !exactObject(value.plan, PLAN_KEYS) || ![1, 2, 3].includes(value.plan.version) || value.plan.language !== "ru"
+      || (intelligent !== (value.plan.version === 3))
       || sha256(value.plan) !== value.planHash
       || !Array.isArray(value.factRegistry) || value.factRegistry.length < 1 || value.factRegistry.length > 10_000
       || !safeOptionalText(value.gatewayRequestId)
@@ -200,7 +245,8 @@ function validateParentPlan(value, scope) {
     if (!Array.isArray(value.plan.slots)) throw materializedPlanError();
     for (const slot of value.plan.slots) {
       const group = groupByKey.get(slot?.visualGroupKey);
-      const slotKeys = value.plan.version === 2 ? SLOT_KEYS_V2 : SLOT_KEYS_V1;
+      const slotKeys = value.plan.version === 3 ? SLOT_KEYS_V3
+        : value.plan.version === 2 ? SLOT_KEYS_V2 : SLOT_KEYS_V1;
       if (!exactObject(slot, slotKeys) || !safeIdentifier(slot.slotKey) || !safeIdentifier(slot.visualGroupKey)
         || !group || !Array.isArray(slot.referenceAssetIds) || !slot.referenceAssetIds.length
         || !Array.isArray(slot.sourceFactIds) || !slot.sourceFactIds.length
@@ -209,13 +255,27 @@ function validateParentPlan(value, scope) {
         || !(slot.substitutionReasonCode === null || slot.substitutionReasonCode === "PRODUCT_DIMENSIONS_UNAVAILABLE"))) {
         throw materializedPlanError();
       }
+      if (value.plan.version === 3 && (!safeIdentifier(slot.requestedRole)
+        || !(slot.substitutionReasonCode === null || slot.substitutionReasonCode === "PRODUCT_DIMENSIONS_UNAVAILABLE")
+        || !TARGET_VIEWS.has(slot.targetView) || !EVIDENCE_MODES.has(slot.evidenceMode)
+        || !Array.isArray(slot.prohibitedViews) || !Array.isArray(slot.prohibitedOverlayTexts)
+        || !safeIdentifier(slot.identityAssetId) || !slot.referenceAssetIds.includes(slot.identityAssetId)
+        || !Array.isArray(slot.selectionReasonCodes) || !slot.selectionReasonCodes.length
+        || slot.referenceAssetIds.length > 3)) throw materializedPlanError();
       for (const claim of slot.claims) {
         if (!exactObject(claim, CLAIM_KEYS) || typeof claim.text !== "string" || !claim.text.trim()
           || typeof claim.claimType !== "string" || !claim.claimType.trim()
           || !Array.isArray(claim.sourceFactIds) || !claim.sourceFactIds.length
           || claim.sourceFactIds.some((factId) => !slot.sourceFactIds.includes(factId))) throw materializedPlanError();
       }
-      const available = new Set(group.referenceImages.map((entry) => entry.assetId));
+      const groupAvailable = new Set(group.referenceImages.map((entry) => entry.assetId));
+      const crossVariantStructure = intelligent
+        && slot.selectionReasonCodes.includes("CROSS_VARIANT_STRUCTURE_REFERENCE_SELECTED");
+      if (crossVariantStructure && (slot.evidenceMode !== "SYNTHESIZED_SAFE"
+        || !groupAvailable.has(slot.identityAssetId)
+        || slot.referenceAssetIds.length < 2
+        || !evidenceByAssetId.has(slot.referenceAssetIds[0]))) throw materializedPlanError();
+      const available = crossVariantStructure ? new Set(evidenceByAssetId.keys()) : groupAvailable;
       if (slot.referenceAssetIds.some((assetId) => !safeIdentifier(assetId) || !available.has(assetId))) throw materializedPlanError();
     }
     return value;
@@ -229,7 +289,8 @@ function sourceEvidence(parentPlan) {
   const byId = new Map();
   for (const group of parentPlan.visualGroups.groups) {
     for (const reference of group.referenceImages) {
-      if (reference.evidenceKind !== "SOURCE_REF_HASH") continue;
+      if (parentPlan.planningContract !== "FIXED_SKELETON_SOURCE_IMAGE_V1"
+        && reference.evidenceKind !== "SOURCE_REF_HASH") continue;
       const known = byId.get(reference.assetId);
       if (known && !sameJson(known, reference)) throw materializedPlanError();
       if (!safeIdentifier(reference.assetId) || !HASH.test(reference.sourceRefHash || "")
@@ -241,15 +302,22 @@ function sourceEvidence(parentPlan) {
   return byId;
 }
 
-function validateAcceptedRecord(record, scope, source) {
-  if (!exactObject(record, MATERIALIZATION_KEYS)
+function validateAcceptedRecord(record, scope, source, sourceMaterializationScope) {
+  const intelligent = source.analysisRunId !== undefined;
+  if (!exactObject(record, intelligent ? ANALYSIS_MATERIALIZATION_KEYS : MATERIALIZATION_KEYS)
     || record.accountId !== scope.accountId || record.jobId !== scope.jobId || record.itemId !== scope.itemId
-    || record.parentPlanId !== scope.parentPlanId || record.sourceAssetId !== source.assetId
+    || (intelligent
+      ? (!exactObject(record.owner, new Set(["kind", "id"])) || record.owner.kind !== "SOURCE_IMAGE_ANALYSIS"
+        || record.owner.id !== source.analysisRunId)
+      : record.parentPlanId !== scope.parentPlanId)
+    || record.sourceAssetId !== source.assetId
     || record.sourceRefHash !== source.sourceRefHash || !HASH.test(record.inputHash || "")
-    || record.expectedStatusVersion !== scope.expectedStatusVersion
+    || record.expectedStatusVersion !== (intelligent
+      ? sourceMaterializationScope.expectedStatusVersion : scope.expectedStatusVersion)
     || !safeIdentifier(record.attemptId) || !Number.isInteger(record.attemptNo) || record.attemptNo < 1 || record.attemptNo > 3
     || record.status !== "ACCEPTED" || record.leaseOwner !== null || record.leaseToken !== null || record.leaseExpiresAt !== null
-    || record.objectKeyVersion !== "SOURCE_V1" || !verifySourceMaterializationObjectKey(record)
+    || record.objectKeyVersion !== (intelligent ? "SOURCE_V2" : "SOURCE_V1")
+    || !verifySourceMaterializationObjectKey(record)
     || !HASH.test(record.contentHash || "") || !CONTENT_TYPES.has(record.contentType)
     || !Number.isInteger(record.width) || record.width < 1 || !Number.isInteger(record.height) || record.height < 1
     || record.width * record.height > MAX_SOURCE_PIXELS
@@ -280,11 +348,17 @@ function materializationIdentity(record) {
   };
 }
 
-function validateMaterializationSet(values, scope, parentPlan) {
+function validateMaterializationSet(values, scope, parentPlan, sourceMaterializationScope) {
   if (!Array.isArray(values) || values.length > 100) {
     throw materializedPlanError("AUTO_LISTING_MATERIALIZED_PLAN_EVIDENCE_INVALID");
   }
   const expected = sourceEvidence(parentPlan);
+  if (parentPlan.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1") {
+    for (const [assetId, source] of expected) expected.set(assetId, {
+      ...source,
+      analysisRunId: sourceMaterializationScope.analysisRunId,
+    });
+  }
   if (values.length !== expected.size) throw materializedPlanError("AUTO_LISTING_MATERIALIZED_PLAN_EVIDENCE_INVALID");
   const byAsset = new Map();
   for (const record of values) {
@@ -292,23 +366,28 @@ function validateMaterializationSet(values, scope, parentPlan) {
     if (!source || byAsset.has(record.sourceAssetId)) {
       throw materializedPlanError("AUTO_LISTING_MATERIALIZED_PLAN_EVIDENCE_INVALID");
     }
-    validateAcceptedRecord(record, scope, source);
-    let canonicalInput;
-    try {
-      canonicalInput = buildSourceMaterializationInput({
-        scope: { ...scope, sourceAssetId: source.assetId },
-        parentPlan,
-      });
-    } catch {
-      throw materializedPlanError("AUTO_LISTING_MATERIALIZED_PLAN_EVIDENCE_INVALID");
-    }
-    if (record.sourceRefHash !== canonicalInput.sourceRefHash || record.inputHash !== canonicalInput.inputHash) {
-      throw materializedPlanError("AUTO_LISTING_MATERIALIZED_PLAN_EVIDENCE_INVALID");
+    validateAcceptedRecord(record, scope, source, sourceMaterializationScope);
+    if (parentPlan.planningContract !== "FIXED_SKELETON_SOURCE_IMAGE_V1") {
+      let canonicalInput;
+      try {
+        canonicalInput = buildSourceMaterializationInput({
+          scope: { ...scope, sourceAssetId: source.assetId },
+          parentPlan,
+        });
+      } catch {
+        throw materializedPlanError("AUTO_LISTING_MATERIALIZED_PLAN_EVIDENCE_INVALID");
+      }
+      if (record.sourceRefHash !== canonicalInput.sourceRefHash || record.inputHash !== canonicalInput.inputHash) {
+        throw materializedPlanError("AUTO_LISTING_MATERIALIZED_PLAN_EVIDENCE_INVALID");
+      }
     }
     byAsset.set(record.sourceAssetId, record);
   }
   const ordered = [...byAsset.values()].sort((left, right) => compareText(left.sourceAssetId, right.sourceAssetId));
-  return { byAsset, ordered, materializationSetHash: sha256(ordered.map(materializationIdentity)) };
+  const identities = parentPlan.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1"
+    ? ordered.map((record) => ({ ...materializationIdentity(record), analysisRunId: record.owner.id }))
+    : ordered.map(materializationIdentity);
+  return { byAsset, ordered, materializationSetHash: sha256(identities) };
 }
 
 function deriveVisualGroups(parentPlan, byAsset) {
@@ -334,26 +413,38 @@ function deriveVisualGroups(parentPlan, byAsset) {
 }
 
 function verifyDerivedPlan(value, expected) {
-  if (!exactObject(value, DERIVED_KEYS) || !sameJson(value, expected)) {
+  const keys = expected.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1"
+    ? INTELLIGENT_DERIVED_KEYS : DERIVED_KEYS;
+  if (!exactObject(value, keys) || !sameJson(value, expected)) {
     throw materializedPlanError("AUTO_LISTING_MATERIALIZED_PLAN_REPOSITORY_CONFLICT");
   }
   return deepFreeze(structuredClone(value));
 }
 
 export function buildMaterializedPlan(input = {}) {
-  if (!exactObject(input, BUILD_KEYS)) throw materializedPlanError();
+  if (!exactObject(input, BUILD_KEYS) && !exactObject(input, BUILD_REUSED_SOURCE_KEYS)) throw materializedPlanError();
   const scope = validateScope(input.scope);
   const parentPlan = validateParentPlan(input.parentPlan, scope);
-  const materializations = validateMaterializationSet(input.acceptedMaterializations, scope, parentPlan);
+  const sourceMaterializationScope = validateSourceMaterializationScope(
+    input.sourceMaterializationScope, scope, parentPlan,
+  );
+  const materializations = validateMaterializationSet(
+    input.acceptedMaterializations, scope, parentPlan, sourceMaterializationScope,
+  );
   const visualGroups = deriveVisualGroups(parentPlan, materializations.byAsset);
+  const intelligent = parentPlan.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1";
   const inputHash = sha256({
-    contractVersion: "MATERIALIZED_PLAN_V1",
+    contractVersion: intelligent ? "MATERIALIZED_PLAN_V2" : "MATERIALIZED_PLAN_V1",
     parentPlanId: parentPlan.id,
     parentInputHash: parentPlan.inputHash,
     parentPlanHash: parentPlan.planHash,
     parentVisualGroupsHash: parentPlan.visualGroupsHash,
     visualGroupsHash: visualGroups.visualGroupsHash,
     materializationSetHash: materializations.materializationSetHash,
+    ...(intelligent ? {
+      sourceImageAnalysisRunId: parentPlan.sourceImageAnalysisRunId,
+      sourceImageIntelligenceHash: parentPlan.sourceImageIntelligenceHash,
+    } : {}),
   });
   const id = `auto-listing-materialized-${sha256({
     accountId: scope.accountId, jobId: scope.jobId, itemId: scope.itemId, parentPlanId: parentPlan.id, inputHash,
@@ -372,24 +463,34 @@ export function buildMaterializedPlan(input = {}) {
 }
 
 export async function finalizeMaterializedPlan(input = {}) {
-  if (!exactObject(input, FINALIZE_KEYS)
+  if ((!exactObject(input, FINALIZE_KEYS) && !exactObject(input, FINALIZE_REUSED_SOURCE_KEYS))
     || typeof input.repository?.listAcceptedSourceMaterializations !== "function"
     || typeof input.repository?.createDerivedMaterializedPlan !== "function") throw materializedPlanError();
   const scope = validateScope(input.scope);
-  validateParentPlan(input.parentPlan, scope);
+  const parentPlan = validateParentPlan(input.parentPlan, scope);
+  const sourceMaterializationScope = validateSourceMaterializationScope(
+    input.sourceMaterializationScope, scope, parentPlan,
+  );
   let accepted;
   try {
     accepted = await input.repository.listAcceptedSourceMaterializations({
       accountId: scope.accountId,
       jobId: scope.jobId,
       itemId: scope.itemId,
-      parentPlanId: scope.parentPlanId,
-      expectedStatusVersion: scope.expectedStatusVersion,
+      ...(parentPlan.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1"
+        ? { sourceImageAnalysisRunId: sourceMaterializationScope.analysisRunId }
+        : { parentPlanId: scope.parentPlanId }),
+      expectedStatusVersion: sourceMaterializationScope?.expectedStatusVersion ?? scope.expectedStatusVersion,
     });
   } catch {
     throw materializedPlanError("AUTO_LISTING_MATERIALIZED_PLAN_REPOSITORY_FAILED", true);
   }
-  const derived = buildMaterializedPlan({ scope, parentPlan: input.parentPlan, acceptedMaterializations: accepted });
+  const derived = buildMaterializedPlan({
+    scope,
+    parentPlan,
+    acceptedMaterializations: accepted,
+    ...(sourceMaterializationScope === null ? {} : { sourceMaterializationScope }),
+  });
   let stored;
   try {
     stored = await input.repository.createDerivedMaterializedPlan({

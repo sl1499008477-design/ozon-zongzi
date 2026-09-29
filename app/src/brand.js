@@ -1,4 +1,5 @@
 export const PRODUCT_BRAND = {
+  version: "1.0.0",
   displayName: "ozon 粽子",
   productName: "ozon 粽子",
   primaryColor: "#1268FF",

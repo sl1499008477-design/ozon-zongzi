@@ -16,11 +16,22 @@ export function collectAddReadiness({ value, token } = {}) {
       message: "登录已过期，请重新登录",
     };
   }
-  return {
-    ok: true,
-    input,
-    isUrl: /^https?:\/\//i.test(input),
-  };
+  const isUrl = /^https?:\/\//i.test(input);
+  let sku = input;
+  if (isUrl) {
+    try {
+      const url = new URL(input);
+      sku = /(^|\.)ozon\.(ru|kz|by)$/i.test(url.hostname)
+        ? url.pathname.match(/^\/product\/(?:[^/]*-)?([0-9]+)\/?$/)?.[1] || ""
+        : "";
+    } catch {
+      sku = "";
+    }
+  }
+  if (!/^[0-9]+$/.test(sku)) {
+    return { ok: false, reason: "INVALID_PRODUCT", message: "请输入有效的 Ozon 商品详情链接或数字 SKU" };
+  }
+  return { ok: true, input, isUrl, sku };
 }
 
 export function eligibleTargetStores(localData = {}) {
@@ -60,7 +71,11 @@ export function listingPreparationModel({
       const clientId = String(warehouse?.clientId || warehouse?.client_id || "").trim();
       return Boolean(targetClientId && clientId === targetClientId);
     })
-    .filter((warehouse) => warehouse?.listingEligibility?.eligible === true);
+    .filter((warehouse) => {
+      const eligibility = warehouse?.listingEligibility;
+      return eligibility?.eligible === true || (eligibility?.code === "RFBS_VALIDATION_REQUIRED"
+        && eligibility.fulfillmentType === "RFBS" && eligibility.evidenceRequired === true);
+    });
   const listingBlocked = collectEnrichmentView(collectItem?.enrichment).listingBlocked;
   return {
     itemReady: Boolean(collectItem?.id && targetStore && !listingBlocked),

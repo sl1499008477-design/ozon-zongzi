@@ -12,6 +12,7 @@ const vite = await createServer({
 });
 after(async () => { await vite.close(); });
 const appModule = await vite.ssrLoadModule("/src/App.jsx");
+const { categoryResolutionView } = await vite.ssrLoadModule("/src/collect-category-resolution-view.js");
 
 const shared = {
   status: "ACTIVE",
@@ -84,7 +85,7 @@ test("administrator category confirmation intent is exact, versioned, idempotent
       taxonomyScope: "OZON:DEFAULT",
       idempotencyKey: "confirm-a",
       correlationId: "corr-a",
-    }), { code: "OZON_CATEGORY_CONFIRMATION_INVALID" });
+    }), { code: "ZONGZI_CATEGORY_CONFIRMATION_INVALID" });
   }
 });
 
@@ -106,13 +107,19 @@ test("collection UI contains no store-category matching language and marks manua
     assert.doesNotMatch(appSource, new RegExp(forbidden, "u"));
   }
   assert.match(appSource, /管理员确认类目/u);
-  assert.match(appSource, /使用采集类目准备上架/u);
-  assert.match(appSource, /无法确认商品类目，请人工选择/u);
+  assert.match(appSource, /categoryResolutionView[\s\S]*?from "\.\/collect-category-resolution-view\.js"/u);
+  assert.equal(categoryResolutionView(shared).label, "使用采集类目准备上架");
+  assert.equal(categoryResolutionView({
+    status: "NEEDS_REVIEW", taxonomyScope: "OZON:DEFAULT",
+    sourceDescriptionCategoryId: null, sourceTypeId: null,
+    currentDescriptionCategoryId: null, currentTypeId: null,
+    source: null, version: null, validatedAt: null,
+    action: "REVIEW", message: "无法确认商品类目，请人工选择",
+  }).label, "无法确认商品类目，请人工选择");
 });
 
-test("history and export calendar dates use the shared executable local-day contract", () => {
-  assert.match(appSource, /import \{ localDayKey \} from "\.\/order-analytics\.js";/u);
+test("listing history keeps the shared local calendar date helper", () => {
+  assert.match(appSource, /localDayKey,[\s\S]*?from "\.\/store-date\.js"/u);
   assert.doesNotMatch(appSource, /localDayFormatter/u);
   assert.match(appSource, /const todayKey = localDayKey\(new Date\(\)\)/u);
-  assert.match(appSource, /qh-orders-\$\{localDayKey\(new Date\(\)\)\}/u);
 });

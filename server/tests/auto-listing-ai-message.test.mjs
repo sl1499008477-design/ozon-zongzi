@@ -5,29 +5,108 @@ import {
   AUTO_LISTING_AI_MESSAGE_MAX_UTF8_BYTES,
   AUTO_LISTING_AI_PHASES,
   autoListingAiMessageDedupeKey,
+  autoListingAiMessagePhaseTarget,
   canonicalizeAutoListingAiMessage,
   normalizeAutoListingAiMessage,
 } from "../auto-listing-ai-message.mjs";
 
 const message = (phase = "PLAN_CONTENT", overrides = {}) => ({
-  contractVersion: "V1",
+  contractVersion: "V3",
   accountId: "account-a",
   itemId: "item-a",
   phase,
   expectedStatusVersion: 2,
   correlationId: "correlation-a",
   ...(phase === "MATERIALIZE_SOURCE_ASSET" ? { sourceAssetId: "source-a" } : {}),
+  ...(phase === "ANALYZE_SOURCE_IMAGE_BATCH" ? { analysisBatchId: "batch-a" } : {}),
+  ...(["CLEAN_SOURCE_IMAGE_OVERLAY", "CHECK_SOURCE_IMAGE_CLEANUP"].includes(phase)
+    ? { analysisRunId: "run-a", derivativeAttemptId: "derivative-attempt-a" } : {}),
+  ...(phase === "RECONCILE_SOURCE_IMAGE_ANALYSIS" ? { analysisRunId: "run-a" } : {}),
   ...(phase === "GENERATE_IMAGE_SLOT" ? { slotKey: "main-1" } : {}),
+  ...(phase === "CHECK_IMAGE_GROUP" ? { visualGroupKey: "group-a" } : {}),
   ...overrides,
 });
 
-test("normalizes each closed V1 phase without adding mutable listing data", () => {
-  assert.equal(AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION, "V1");
+const v3Message = (phase, target = {}) => ({
+  contractVersion: "V3",
+  accountId: "account-a",
+  itemId: "item-a",
+  phase,
+  expectedStatusVersion: 2,
+  correlationId: "correlation-a",
+  ...target,
+});
+
+const legacyMessage = (contractVersion) => message("PLAN_CONTENT", { contractVersion });
+
+test("V3 phases accept only their exact target key", () => {
+  const batch = normalizeAutoListingAiMessage(v3Message("ANALYZE_SOURCE_IMAGE_BATCH", {
+    analysisBatchId: "batch-1",
+  }));
+  const reconcile = normalizeAutoListingAiMessage(v3Message("RECONCILE_SOURCE_IMAGE_ANALYSIS", {
+    analysisRunId: "run-1",
+  }));
+  const group = normalizeAutoListingAiMessage(v3Message("CHECK_IMAGE_GROUP", {
+    visualGroupKey: "group-1",
+  }));
+  assert.equal(batch.analysisBatchId, "batch-1");
+  assert.equal(reconcile.analysisRunId, "run-1");
+  assert.equal(group.visualGroupKey, "group-1");
+  assert.equal(autoListingAiMessagePhaseTarget(batch), "batch-1");
+  assert.equal(autoListingAiMessagePhaseTarget(reconcile), "run-1");
+  assert.equal(autoListingAiMessagePhaseTarget(group), "group-1");
+  assert.throws(
+    () => normalizeAutoListingAiMessage(v3Message("CHECK_IMAGE_GROUP", { slotKey: "main-1" })),
+    { code: "AUTO_LISTING_AI_MESSAGE_INVALID" },
+  );
+});
+
+test("cleanup phases require their run scope and share the derivative target without sharing dedupe", () => {
+  const clean = normalizeAutoListingAiMessage(v3Message("CLEAN_SOURCE_IMAGE_OVERLAY", {
+    analysisRunId: "run-1",
+    derivativeAttemptId: "attempt-1",
+  }));
+  const check = normalizeAutoListingAiMessage(v3Message("CHECK_SOURCE_IMAGE_CLEANUP", {
+    analysisRunId: "run-1",
+    derivativeAttemptId: "attempt-1",
+  }));
+
+  assert.equal(autoListingAiMessagePhaseTarget(clean), "attempt-1");
+  assert.equal(autoListingAiMessagePhaseTarget(check), "attempt-1");
+  assert.notEqual(autoListingAiMessageDedupeKey(clean), autoListingAiMessageDedupeKey(check));
+  assert.throws(
+    () => normalizeAutoListingAiMessage(v3Message("CLEAN_SOURCE_IMAGE_OVERLAY", {
+      derivativeAttemptId: "attempt-1",
+    })),
+    { code: "AUTO_LISTING_AI_MESSAGE_INVALID" },
+  );
+  assert.throws(
+    () => normalizeAutoListingAiMessage(v3Message("CHECK_SOURCE_IMAGE_CLEANUP", {
+      analysisRunId: "run-1",
+      derivativeAttemptId: "attempt-1",
+      sourceAssetId: "must-not-trust-queue-data",
+    })),
+    { code: "AUTO_LISTING_AI_MESSAGE_INVALID" },
+  );
+});
+
+test("historical V1 and V2 messages remain readable", () => {
+  assert.equal(normalizeAutoListingAiMessage(legacyMessage("V1")).contractVersion, "V1");
+  assert.equal(normalizeAutoListingAiMessage(legacyMessage("V2")).contractVersion, "V2");
+});
+
+test("normalizes current V3 work while keeping legacy V1 rows readable", () => {
+  assert.equal(AUTO_LISTING_AI_MESSAGE_CONTRACT_VERSION, "V3");
   assert.deepEqual(AUTO_LISTING_AI_PHASES, [
-    "PLAN_CONTENT",
     "MATERIALIZE_SOURCE_ASSET",
+    "ANALYZE_SOURCE_IMAGE_BATCH",
+    "CLEAN_SOURCE_IMAGE_OVERLAY",
+    "CHECK_SOURCE_IMAGE_CLEANUP",
+    "RECONCILE_SOURCE_IMAGE_ANALYSIS",
+    "PLAN_CONTENT",
     "FINALIZE_MATERIALIZED_PLAN",
     "GENERATE_IMAGE_SLOT",
+    "CHECK_IMAGE_GROUP",
     "GENERATE_RICH_CONTENT",
   ]);
   for (const phase of AUTO_LISTING_AI_PHASES) {
@@ -35,6 +114,10 @@ test("normalizes each closed V1 phase without adding mutable listing data", () =
     assert.deepEqual(normalized, message(phase));
     assert.ok(Object.isFrozen(normalized));
   }
+  assert.deepEqual(
+    normalizeAutoListingAiMessage(message("PLAN_CONTENT", { contractVersion: "V1" })),
+    message("PLAN_CONTENT", { contractVersion: "V1" }),
+  );
 });
 
 test("rejects missing, extra, and wrong phase-specific keys", () => {
@@ -66,7 +149,7 @@ test("rejects non-plain objects, inherited payloads, invalid versions and unsafe
   }
   for (const value of [
     message("PLAN_CONTENT", { contractVersion: 1 }),
-    message("PLAN_CONTENT", { contractVersion: "V2" }),
+    message("PLAN_CONTENT", { contractVersion: "V4" }),
     message("UNKNOWN"),
     message("PLAN_CONTENT", { expectedStatusVersion: 0 }),
     message("PLAN_CONTENT", { expectedStatusVersion: 2 ** 31 }),
@@ -183,7 +266,7 @@ test("canonical serialization and dedupe are deterministic and never include for
   assert.equal(canonicalizeAutoListingAiMessage(first), canonicalizeAutoListingAiMessage(reordered));
   assert.equal(autoListingAiMessageDedupeKey(first), autoListingAiMessageDedupeKey(reordered));
   assert.match(autoListingAiMessageDedupeKey(first), /^[a-f0-9]{64}$/);
-  assert.equal(canonicalizeAutoListingAiMessage(first), '{"accountId":"account-a","contractVersion":"V1","correlationId":"correlation-a","expectedStatusVersion":2,"itemId":"item-a","phase":"GENERATE_IMAGE_SLOT","slotKey":"main-1"}');
+  assert.equal(canonicalizeAutoListingAiMessage(first), '{"accountId":"account-a","contractVersion":"V3","correlationId":"correlation-a","expectedStatusVersion":2,"itemId":"item-a","phase":"GENERATE_IMAGE_SLOT","slotKey":"main-1"}');
 });
 
 test("dedupe follows stable business identity while the normalized message keeps correlation trace data", () => {

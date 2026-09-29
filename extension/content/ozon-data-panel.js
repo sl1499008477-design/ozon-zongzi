@@ -61,7 +61,7 @@
   // 此前本文件四路请求全塞 taskQueue(6 并发)裸并发,searchVariants(seller-portal
   // 注入,反爬指纹敏感)和 jzFetchPublicFollowSell(composer)会 6 路齐发 —— 首页/
   // 品牌页 tile 一样多,突发跟搜索页同量级,必须同样上纪律。
-  const variantsQueue = window.jzMakeStaggeredQueue({ concurrency: 2, staggerMs: 300 });
+  const variantsQueue = window.jzMakeStaggeredQueue({ concurrency: 2, staggerMs: 300, taskTimeoutMs: 0 });
   const followSellQueue = window.jzMakeStaggeredQueue({ concurrency: 1, staggerMs: 500 });
   // fleet 服务端取数灰度命中时放宽 variants(与 ozon-search.js 同款):请求走后端,
   // SW 侧 FLEET_MAX_INFLIGHT=6 并发闸兜底,这层 stagger 只剩拖慢;非灰度/查询失败
@@ -615,12 +615,6 @@
       return;
     }
 
-    if (action === "open-followsell" || action === "follow-sell") {
-      // 底部「一键跟卖」按钮:新 tab + URL hash 唤起主扩展上架面板(批采/AI 改图)
-      window.open(info.url + "#jz-follow-sell", "_blank");
-      return;
-    }
-
     if (action === "edit-list") {
       handleEditList(card, panel, btn);
       return;
@@ -667,6 +661,10 @@
 
 
   async function buildPanelCollectRaw(productId, info, data) {
+    const media = await window.jzReadOzonProductMedia(info.url, { expectedSku: String(productId) });
+    if (!media.images?.length) throw Object.assign(new Error(`SKU ${productId} 图册读取失败，请打开商品页后重试`), {
+      code: 'COLLECT_GALLERY_FAILED', retryable: true,
+    });
     const sellerEvidence = typeof window.jzReadOzonCollectEvidence === "function"
       ? await Promise.resolve(
           window.jzReadOzonCollectEvidence(productId, data?.preFetched?.variant),
@@ -681,8 +679,16 @@
       priceCurrency: info.priceCurrency || undefined,
       marketingPrice: info.marketingPrice != null ? String(info.marketingPrice) : undefined,
       marketingPriceCurrency: info.marketingPriceCurrency || undefined,
-      image: info.image || undefined,
-      images: info.image ? [info.image] : undefined,
+      image: media.images[0],
+      images: media.images,
+      description: media.description || undefined,
+      richContent: media.richContent || undefined,
+      videos: media.videos,
+      videoUrl: media.videos[0]?.url,
+      videoCover: media.videos[0]?.coverUrl,
+      color_image: media.color_image,
+      videoCoverUrl: media.videoCoverUrl,
+      contentDiagnostics: media.contentDiagnostics,
       hashtags: Array.isArray(info.hashtags) && info.hashtags.length ? [...info.hashtags] : undefined,
       soldCount: data?.soldCount ?? undefined,
       soldSum: data?.gmvSum != null ? String(data.gmvSum) : undefined,
@@ -707,6 +713,12 @@
     ) {
       return { text: "Seller 未就绪", title: message || "Seller 公司上下文尚未就绪" };
     }
+    if (code === "ZONGZI_PRODUCT_RUSSIAN_REQUIRED") {
+      return { text: "需要俄语商品资料", title: message || "请将 Ozon 网站语言切换为俄语，刷新后重新采集" };
+    }
+    if (code === "COLLECT_PRICE_FAILED") {
+      return { text: "售价读取失败", title: message };
+    }
     if (/COLLECT_CAPTURE_INCOMPLETE/.test(code + message)) {
       const rawMissing = Array.isArray(error?.missing)
         ? error.missing.join("、")
@@ -720,16 +732,16 @@
         title: message,
       };
     }
-    if (/OZON_ENRICH_INCOMPLETE|OZON_ENRICH_CONTRACT_MISMATCH/.test(code) || message.startsWith("缺少：")) {
+    if (/ZONGZI_ENRICH_INCOMPLETE|ZONGZI_ENRICH_CONTRACT_MISMATCH/.test(code) || message.startsWith("缺少：")) {
       return { text: message || "商品补全资料不完整", title: message };
     }
-    if (/OZON_ENRICH_BUSY/.test(code)) {
+    if (/ZONGZI_ENRICH_BUSY/.test(code)) {
       return { text: "商品资料正在排队，请稍后重试", title: message };
     }
-    if (/OZON_ENRICH_NOT_FOUND/.test(code)) {
+    if (/ZONGZI_ENRICH_NOT_FOUND/.test(code)) {
       return { text: "未找到该商品的完整资料", title: message };
     }
-    if (/OZON_ENRICH_UPSTREAM_FAILED/.test(code)) {
+    if (/ZONGZI_ENRICH_UPSTREAM_FAILED/.test(code)) {
       return { text: "Ozon 商品资料暂时无法读取", title: message };
     }
     if (/NETWORK_ERROR|超时|timeout|网络/i.test(code + message)) {
@@ -828,10 +840,10 @@
       const resp = await collectPromise;
       const itemId = resp?.result?.id;
       // 从 brand webHost 直接构造,不要从 backendUrl 反推 — 旧 `.replace('/api','')`
-      // 会把 `https://api.jizhangerp.com` 中 `://api` 后 4 字符 `/api` 误删,
+      // 会把 `https://www.ozonzongzi.com/api` 中 `://api` 后 4 字符 `/api` 误删,
       // 得到 `https:/.jizhangerp.com` 残缺 URL,浏览器按相对路径解析 →
       // 拼到 ozon.ru 下变成 `https://www.ozon.ru/.jizhangerp.com/...`。
-      const frontendUrl = "http://127.0.0.1:3000";
+      const frontendUrl = "https://www.ozonzongzi.com";
       if (itemId) {
         window.open(
           `${frontendUrl}/ozon/products/collect/edit?id=${itemId}`,

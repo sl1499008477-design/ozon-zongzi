@@ -1,0 +1,60 @@
+import sharp from 'sharp';
+import {createUserChannelGateway} from '../server/ai-user-channel-gateway.mjs';
+import '../server/env.mjs';
+import {getPostgresPool} from '../server/db/connection.mjs';
+import {createAiUserChannels} from '../server/ai-user-channels.mjs';
+import {createAutoListingCredentialCipher} from '../server/auto-listing-ai-credential-crypto.mjs';
+import assert from 'node:assert/strict';import {randomUUID,randomBytes} from 'node:crypto';
+const p=await getPostgresPool();const c=await p.connect();await c.query('BEGIN');
+try {
+ const admin=(await c.query("SELECT id,role FROM accounts WHERE role='admin' LIMIT 1")).rows[0];assert.ok(admin);
+ const owner=randomUUID();await c.query("INSERT INTO accounts(id,username,role) VALUES($1,$1,'user')",[owner]);
+ const other=randomUUID();await c.query("INSERT INTO accounts(id,username,role) VALUES($1,$1,'user')",[other]);
+ const fakeCipher=createAutoListingCredentialCipher({key:randomBytes(32),keyVersion:'test'});
+ let calls=0;let paidCalls=0;
+ const testImage=await sharp({create:{width:8,height:8,channels:3,background:"white"}}).png().toBuffer();
+ const service=createAiUserChannels({pool:c,cipher:fakeCipher,gatewayFactory:options=>({listModels:async request=>{
+   calls++;assert.equal(options.allowLocalGateway,['1','true'].includes(String(process.env.AUTO_LISTING_AI_ALLOW_LOCAL_GATEWAY).toLowerCase())&&process.env.NODE_ENV!=='production');assert.equal(request.connection.status,'ACTIVE');assert.ok(await options.resolveSecret({accountId:request.connection.accountId,connectionId:request.connection.id,connectionVersion:1}));
+   return {models:[{id:'text'},{id:'image'}]};
+ },createTextResponse:async()=>{paidCalls++;return {value:{ok:true},requestId:"test-text"};},generateImage:async()=>{paidCalls++;return {bytes:testImage,requestId:"test-image"};}})});
+ await assert.rejects(service.overview({id:other,role:'user'}),{statusCode:403});
+ const ids=[randomUUID(),randomUUID(),randomUUID()];
+ for(let i=0;i<3;i++)await service.create(admin,{id:ids[i],accountId:i===2?other:owner,name:`test-${i}`,baseUrl:'https://example.test/v1',textModel:'text',imageModel:'image',apiKey:`test-key-${i}-${ids[i]}`,billingAccount:`gateway-user-${i}`});
+ const invoke=accountId=>service.run({accountId,taskId:'test-task',requestKey:randomUUID()},async({profile})=>({generatedUrl:'https://example.test/image.jpg',generationConfig:{profileId:profile.id}}));
+ const first=await invoke(owner),second=await invoke(owner),third=await invoke(other);
+ assert.notEqual(first.generationConfig.channelId,second.generationConfig.channelId);
+ assert.equal(third.generationConfig.channelId,ids[2]);
+ await assert.rejects(service.run({accountId:owner,taskId:'failed',requestKey:randomUUID()},async()=>{throw Object.assign(new Error('test'),{code:'AI_GATEWAY_UNEXPECTED_EOF'});}));
+ const next=await invoke(owner);assert.equal(next.generationConfig.channelId,second.generationConfig.channelId);
+ for(const id of ids.slice(0,2))await service.setEnabled(admin,id,false);
+ assert.equal(await service.hasAssigned(owner),true);
+ await assert.rejects(service.assertAvailable(owner),{statusCode:409});
+ await assert.rejects(service.run({accountId:owner,taskId:'disabled',requestKey:randomUUID()},async()=>{throw new Error('must not call');}),{code:'AI_GATEWAY_NO_CAPACITY'});
+ const overview=await service.overview(admin);assert.ok(!JSON.stringify(overview).includes('test-key-'));
+ assert.equal(overview.requests.filter(r=>r.task_id==='failed').length,1);
+ assert.equal(calls,3);
+ // Old listing routes through the same account-bound service and model pair.
+ const routed=createUserChannelGateway(service);
+ const response=await routed.createTextResponse({profile:{accountId:other,textModel:'text',imageModel:'image'},model:'text',correlationId:'legacy-job',requestKey:'legacy-text'});
+ assert.equal(response.requestId,'test-text');
+ await assert.rejects(routed.createTextResponse({profile:{accountId:other,textModel:'missing-model',imageModel:'image'},model:'missing-model',correlationId:'legacy-job',requestKey:'wrong-model'}),{code:'AI_GATEWAY_NO_CAPACITY'});
+ const beforePaid=paidCalls;const intent=randomUUID();
+ await assert.rejects(service.testCapability(admin,ids[2],{id:intent,confirmed:false}));assert.equal(paidCalls,beforePaid);
+ assert.equal((await service.testCapability(admin,ids[2],{id:intent,confirmed:true})).status,'PASSED');
+ assert.equal(paidCalls,beforePaid+2);
+ assert.equal((await service.testCapability(admin,ids[2],{id:intent,confirmed:true})).status,'PASSED');assert.equal(paidCalls,beforePaid+2);
+ const oldSnapshot=(await c.query('SELECT profile_id FROM ai_user_channels WHERE id=$1',[ids[2]])).rows[0].profile_id;
+ await service.updateModels(admin,ids[2],{textModel:'text',imageModel:'image',billingAccount:'updated-account'});
+ const newSnapshot=(await c.query('SELECT profile_id FROM ai_user_channels WHERE id=$1',[ids[2]])).rows[0].profile_id;
+ assert.notEqual(oldSnapshot,newSnapshot);
+ assert.equal((await c.query('SELECT count(*) FROM ai_gateway_profiles WHERE id=ANY($1)',[[oldSnapshot,newSnapshot]])).rows[0].count,'2');
+ assert.equal((await service.check(admin,ids[2])).status,'AVAILABLE');
+ const progressId=randomUUID();
+ await c.query("INSERT INTO ai_user_channel_requests(id,account_id,channel_id,task_id,request_key,status) VALUES($1,$2,$3,'channel-test:progress','channel-capability:progress:image','STARTED')",[progressId,other,ids[2]]);
+ const progress=(await service.overview(admin)).channels.find(row=>row.id===ids[2]).active_test;
+ assert.equal(progress.stage,'image');assert.ok(progress.startedAt);
+ await c.query("UPDATE ai_user_channel_requests SET status='SUCCEEDED' WHERE id=$1",[progressId]);
+ assert.equal((await service.overview(admin)).channels.find(row=>row.id===ids[2]).active_test,null);
+
+ console.log('PASS: 注册用户读取、Key加密、目录验证、管理员权限、用户隔离、多通道轮换、失败冷却、停用与请求归属、旧流程路由、能力测试确认与去重、模型快照保留');
+}finally{await c.query('ROLLBACK');c.release();await p.end();console.log('验证数据全部回滚，未调用真实生成服务');}

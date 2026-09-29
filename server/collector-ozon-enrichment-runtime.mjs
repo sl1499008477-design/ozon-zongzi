@@ -1,3 +1,4 @@
+import {skuEnrichmentSummary} from "./collect-enrichment-recovery.mjs";
 import {
   appendAuditEvent,
   createAuditEvent,
@@ -9,8 +10,10 @@ import {
 } from "./collector-ozon-enrichment-repository.mjs";
 import { createCollectorOzonEnrichmentHttpHandler } from "./collector-ozon-enrichment-routes.mjs";
 import { createCollectorOzonEnrichmentService } from "./collector-ozon-enrichment-service.mjs";
+import {admitCollectedItem} from './collection-admission.mjs';
 import { buildOzonEnrichmentSummary } from "./collect-enrichment-policy.mjs";
 import { getPostgresPool } from "./db/connection.mjs";
+import { ensureFormalSchema } from "./formal-persistence.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import {
   completeCollectItemEnrichmentV4,
@@ -33,12 +36,14 @@ export function createCollectorOzonEnrichmentRuntime({
   readJson,
   sendJson,
   initializePostgresRepository,
+  postgresPool: suppliedPostgresPool,
   persistPostgresAuditEvent,
   now,
   randomUUID,
   sleep,
   logger = console,
   categoryEvidencePort = null,
+  checkAdmission,
 } = {}) {
   if (
     typeof loadState !== "function"
@@ -57,8 +62,9 @@ export function createCollectorOzonEnrichmentRuntime({
   const auditTransaction = createJsonStateTransactionBoundary({ enabled: () => true });
 
   const initializeRepository = initializePostgresRepository || (async () => {
-    await loadState();
-    return createPostgresCollectorOzonEnrichmentRepository({ pool: await getPostgresPool() });
+    const pool = await postgresPool();
+    await ensureFormalSchema(pool);
+    return createPostgresCollectorOzonEnrichmentRepository({ pool });
   });
 
   function postgresRepository() {
@@ -74,7 +80,11 @@ export function createCollectorOzonEnrichmentRuntime({
 
   function postgresPool() {
     if (!postgresPoolPromise) {
-      postgresPoolPromise = getPostgresPool().catch((error) => {
+      postgresPoolPromise = Promise.resolve().then(() => (
+        typeof suppliedPostgresPool === "function"
+          ? suppliedPostgresPool()
+          : suppliedPostgresPool || getPostgresPool()
+      )).catch((error) => {
         postgresPoolPromise = null;
         throw error;
       });
@@ -121,6 +131,8 @@ export function createCollectorOzonEnrichmentRuntime({
     advanceSellerContext: (input) => callRepository("advanceSellerContext", input),
     claimNextJob: (input) => callRepository("claimNextJob", input),
     hasClaimableJob: (input) => callRepository("hasClaimableJob", input),
+    listTasks: (input) => callRepository("listTasks", input),
+    controlTask: (input) => callRepository("controlTask", input),
     deferClaim: (input) => callRepository("deferClaim", input),
     completeJobAndCache: (input) => callRepository("completeJobAndCache", input),
     failJobAndCache: (input) => callRepository("failJobAndCache", input),
@@ -145,7 +157,7 @@ export function createCollectorOzonEnrichmentRuntime({
       && !Array.isArray(item.listingDraft)
       ? item.listingDraft
       : {};
-    return buildOzonEnrichmentSummary({
+    return skuEnrichmentSummary({
       ...item,
       ...draft,
       sourceCategory: draft.sourceCategory || item.sourceCategory,
@@ -306,7 +318,7 @@ export function createCollectorOzonEnrichmentRuntime({
       const repository = createJsonCollectorOzonEnrichmentRepository({ state });
       const deferredJob = await repository.deferClaim(deferClaim);
       const evidenceSummary = jsonCollectItemEvidenceSummary(item);
-      if (item.enrichment?.status === "COMPLETE" || evidenceSummary.status === "COMPLETE") {
+      if (!input.error?.collectionAdmissionFailure && (item.enrichment?.status === "COMPLETE" || evidenceSummary.status === "COMPLETE")) {
         await repository.completeLinkedJobsFromCollectEvidence({
           accountId: input.accountId,
           collectItemId: input.collectItemId,
@@ -406,7 +418,7 @@ export function createCollectorOzonEnrichmentRuntime({
       const job = scopedJobs.find((candidate) => {
         if (!["PENDING", "PROCESSING", "FAILED"].includes(candidate?.status)) return false;
         const code = String(candidate?.error?.code || candidate?.lastError?.code || "");
-        return code !== "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED";
+        return !["ZONGZI_ENRICHMENT_DUPLICATE_SUPERSEDED", "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED"].includes(code);
       });
       if (!job) return null;
       const retriedAt = input.now instanceof Date ? new Date(input.now) : new Date(input.now);
@@ -472,6 +484,9 @@ export function createCollectorOzonEnrichmentRuntime({
         cacheHit: event.cacheHit === true,
         durationMs: Math.max(0, Number(event.durationMs) || 0),
         code: String(event.code || ""),
+        // These fields were validated and redacted at the service report boundary.
+        ...(event.message !== undefined ? { message: event.message } : {}),
+        ...(event.diagnostic !== undefined ? { diagnostic: event.diagnostic } : {}),
         missingFields: Array.isArray(event.missingFields) ? event.missingFields : [],
         responseSha256: String(event.responseHash || ""),
         ...(event.captureContext && typeof event.captureContext === "object"
@@ -505,6 +520,8 @@ export function createCollectorOzonEnrichmentRuntime({
   }
 
   const service = createCollectorOzonEnrichmentService({
+    checkAdmission:checkAdmission || (async input=>admitCollectedItem(input,
+      persistenceMode()==='json' ? {state:await loadState({hydrateCatalog:false})} : {})),
     repository,
     collectItems,
     audit,

@@ -59,14 +59,14 @@ test("rejects a missing language tree without accepting a fallback shape", async
         return { items: structuredClone(validTree) };
       },
     }),
-    (error) => error.code === "OZON_CATEGORY_UI_UNAVAILABLE" && error.message === CATEGORY_DATA_ERROR_MESSAGE,
+    (error) => error.code === "ZONGZI_CATEGORY_UI_UNAVAILABLE" && error.message === CATEGORY_DATA_ERROR_MESSAGE,
   );
 
   await assert.rejects(
     () => loadRealCategoryTrees({
       readTree: async () => ({ items: [], fallback: structuredClone(validTree) }),
     }),
-    (error) => error.code === "OZON_CATEGORY_UI_UNAVAILABLE",
+    (error) => error.code === "ZONGZI_CATEGORY_UI_UNAVAILABLE",
   );
 });
 
@@ -88,7 +88,7 @@ test("requires a selected category and a non-empty authentic tree for preview an
   ]) {
     assert.throws(
       () => requireCategoryReadiness(input),
-      (error) => error.code === "OZON_CATEGORY_UI_UNAVAILABLE" && error.message === CATEGORY_DATA_ERROR_MESSAGE,
+      (error) => error.code === "ZONGZI_CATEGORY_UI_UNAVAILABLE" && error.message === CATEGORY_DATA_ERROR_MESSAGE,
     );
   }
 });
@@ -116,7 +116,7 @@ test("blocks preview and publish while dictionary values are loading or failed",
   ]) {
     assert.throws(
       () => requireCategoryReadiness(input),
-      (error) => error.code === "OZON_CATEGORY_UI_UNAVAILABLE"
+      (error) => error.code === "ZONGZI_CATEGORY_UI_UNAVAILABLE"
         && error.message === CATEGORY_DATA_ERROR_MESSAGE,
     );
   }
@@ -438,7 +438,7 @@ test("builds a closed administrator confirmation request with optimistic source 
     idempotencyKey: "key",
     correlationId: "correlation",
     ...invalid,
-  }), { code: "OZON_CATEGORY_CONFIRMATION_INVALID" });
+  }), { code: "ZONGZI_CATEGORY_CONFIRMATION_INVALID" });
 });
 
 test("accepts only a complete exact administrator confirmation response", () => {

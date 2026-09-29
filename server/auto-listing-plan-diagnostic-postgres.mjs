@@ -100,6 +100,11 @@ function mapRow(row, scope) {
       || row.account_id !== scope.accountId || row.job_id !== scope.jobId || row.item_id !== scope.itemId
       || !safeId(row.id) || !((safeId(row.attempt_id) && row.diagnostic_run_id == null)
         || (row.attempt_id == null && safeId(row.diagnostic_run_id)))) throw new UnsafeRow();
+    const intelligent = row.planning_contract === "FIXED_SKELETON_SOURCE_IMAGE_V1";
+    if ((intelligent && (!safeId(row.source_image_analysis_run_id)
+      || !/^[a-f0-9]{64}$/u.test(row.source_image_intelligence_hash || "")))
+      || (!intelligent && (row.source_image_analysis_run_id != null
+        || row.source_image_intelligence_hash != null))) throw new UnsafeRow();
     return {
       responseId: row.id,
       attemptId: row.attempt_id ?? null,
@@ -116,6 +121,10 @@ function mapRow(row, scope) {
         issues: jsonValue(row.issues),
         validatedAt: timestamp(row.validated_at),
       },
+      ...(intelligent ? {
+        sourceImageAnalysisRunId: row.source_image_analysis_run_id,
+        sourceImageIntelligenceHash: row.source_image_intelligence_hash,
+      } : {}),
     };
   } catch {
     throw failed();
@@ -133,6 +142,7 @@ export function createPostgresAutoListingPlanDiagnosticRepository({ pool } = {})
           `SELECT response.id,response.account_id,response.job_id,response.item_id,
                   response.attempt_id,response.diagnostic_run_id,response.planning_contract,
                   response.model_name,response.prompt_template_version,response.gateway_request_id,
+                  response.source_image_analysis_run_id,response.source_image_intelligence_hash,
                   response.received_at,response.response,
                   validation.status AS validation_status,validation.validator_version,
                   validation.issues,validation.validated_at
@@ -164,6 +174,7 @@ export function createPostgresAutoListingPlanDiagnosticRepository({ pool } = {})
           `SELECT response.id,response.account_id,response.job_id,response.item_id,
                   response.attempt_id,response.diagnostic_run_id,response.planning_contract,
                   response.model_name,response.prompt_template_version,response.gateway_request_id,
+                  response.source_image_analysis_run_id,response.source_image_intelligence_hash,
                   response.received_at,response.response,
                   validation.status AS validation_status,validation.validator_version,
                   validation.issues,validation.validated_at

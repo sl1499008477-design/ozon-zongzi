@@ -3,53 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
-const dataScreenSource = readFileSync(new URL("../src/DataScreenPage.jsx", import.meta.url), "utf8");
 const cssSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
-
-const cssLeafRules = (source) => {
-  const rules = [];
-  const stack = [];
-  let segmentStart = 0;
-
-  for (let index = 0; index < source.length; index += 1) {
-    if (source[index] === "{") {
-      if (stack.length) stack[stack.length - 1].hasNestedRule = true;
-      stack.push({
-        selectors: source.slice(segmentStart, index).trim(),
-        declarationStart: index + 1,
-        hasNestedRule: false,
-      });
-      segmentStart = index + 1;
-    }
-    if (source[index] === "}") {
-      const rule = stack.pop();
-      if (rule && !rule.hasNestedRule && !rule.selectors.startsWith("@")) {
-        rules.push({
-          selectors: rule.selectors,
-          declarations: source.slice(rule.declarationStart, index),
-        });
-      }
-      segmentStart = index + 1;
-    }
-  }
-
-  return rules;
-};
-
-const isScopedMetricValueSelector = (selector) => {
-  return selector.includes(".prototype-shell") &&
-    /\.metric-card\b[\s\S]*?(?:\s|>|\+|~)\s*strong\b/.test(selector);
-};
-
-const assertMetricValueSelectorsHaveNoMinHeight = (source) => {
-  for (const { selectors, declarations } of cssLeafRules(source)) {
-    for (const selector of selectors.split(",")) {
-      if (isScopedMetricValueSelector(selector)) {
-        assert.doesNotMatch(declarations, /\bmin-height\s*:/, `${selector.trim()} must not declare min-height`);
-      }
-    }
-  }
-};
 
 const jsxOpeningTags = (source, tagName) => {
   const tags = [];
@@ -118,8 +72,6 @@ test("maps Ant Design to the approved prototype palette", () => {
 
 test("scopes the visual refresh to the authenticated application shell", () => {
   assert.match(appSource, /className="qh-shell prototype-shell"/);
-  assert.match(appSource, /className="prototype-eyebrow"/);
-  assert.match(appSource, /OZON SELLER WORKSPACE/);
 });
 
 test("defines the prototype application shell selectors", () => {
@@ -154,10 +106,9 @@ test("keeps the scoped prototype shell usable at narrow breakpoints", () => {
   const tablet = mediaBlock(800);
   const mobile = mediaBlock(600);
   for (const [block, rule] of [
-    [desktopCompact, ".prototype-shell .qh-topbar {\n    inset: 24px 24px auto 112px;"],
-    [desktopCompact, ".prototype-shell .qh-content {\n    margin-left: 112px;"],
-    [tablet, ".prototype-shell .qh-content {\n    margin-left: 112px;\n    padding: 92px 12px 28px 0;"],
-    [tablet, ".prototype-shell .qh-page-head h1 {\n    font-size: 24px;"],
+    [desktopCompact, ".prototype-shell .qh-topbar {\n    inset: 24px 24px auto 24px;"],
+    [desktopCompact, ".prototype-shell .qh-content {\n    margin-left: 0;"],
+    [tablet, ".prototype-shell .qh-content {\n    margin-left: 0;\n    padding: 92px 12px 28px;"],
     [mobile, ".prototype-shell .qh-topbar {\n    inset: 12px 12px auto 12px;"],
     [mobile, ".prototype-shell .qh-content {\n    margin-left: 0;\n    padding: 92px 12px 32px;"],
   ]) {
@@ -193,14 +144,10 @@ test("styles portal popup surfaces through the prototype overlay scope", () => {
   }
 });
 
-test("scopes the binding modal and plugin drawer as prototype overlays", () => {
-  const bindingModalStart = appSource.indexOf('title={isEditingBindingStore ? "修改 API 授权门店"');
-  const bindingModal = appSource.slice(bindingModalStart, appSource.indexOf("</Modal>", bindingModalStart));
-  const pluginDrawerStart = appSource.indexOf('<Drawer\n        title="浏览器插件"');
-  const pluginDrawer = appSource.slice(pluginDrawerStart, appSource.indexOf("</Drawer>", pluginDrawerStart));
-
-  assert.match(bindingModal, /rootClassName="prototype-overlay"/);
-  assert.match(pluginDrawer, /rootClassName="prototype-overlay"/);
+test("scopes the binding modal as a prototype overlay", () => {
+  const start = appSource.indexOf('title={isEditingBindingStore ? "修改 API 授权门店"');
+  const modal = appSource.slice(start, appSource.indexOf("</Modal>", start));
+  assert.match(modal, /rootClassName="prototype-overlay"/);
 });
 
 test("scopes every application modal and drawer portal as a prototype overlay", () => {
@@ -224,33 +171,8 @@ test("marks application popup portals as prototype overlays", () => {
   assert.equal(prototypeTooltipCount, tooltipCount);
 });
 
-test("defines dashboard and data-screen visual contracts", () => {
-  assert.match(dataScreenSource, /className="datascreen-page prototype-datascreen"/);
-  for (const selector of [
-    ".prototype-shell .metric-grid",
-    ".prototype-shell .metric-card",
-    ".prototype-shell .dashboard-main-grid",
-    ".prototype-shell .panel-card",
-    ".prototype-shell .quick-actions",
-    ".prototype-datascreen",
-  ]) {
-    assert.ok(cssSource.includes(selector), selector);
-  }
-});
-
-test("rejects min-height in every scoped metric value selector", () => {
-  assertMetricValueSelectorsHaveNoMinHeight(cssSource);
-
-  for (const dangerousCss of [
-    ".prototype-shell .metric-card.compact strong { min-height: 112px; }",
-    ".prototype-shell .metric-card.compact strong, .prototype-shell .metric-card.compact { min-height: 112px; }",
-    "@media (max-width: 800px) { .prototype-shell .metric-card strong { min-height: 112px; } }",
-  ]) {
-    assert.throws(
-      () => assertMetricValueSelectorsHaveNoMinHeight(dangerousCss),
-      /min-height/,
-    );
-  }
+test("defines retained shared panel styles", () => {
+  assert.ok(cssSource.includes(".prototype-shell .panel-card"));
 });
 
 test("covers every shared operational page family", () => {
@@ -259,9 +181,7 @@ test("covers every shared operational page family", () => {
     ".prototype-shell .source-section-title",
     ".prototype-shell .source-card",
     ".prototype-shell .source-query-grid",
-    ".prototype-shell .source-status-tabs",
     ".prototype-shell .product-status-filters",
-    ".prototype-shell .profit-main-grid",
     ".prototype-shell .pricing-settings-layout",
     ".prototype-shell .stores-settings-page",
     ".prototype-shell .collect-edit-body",
@@ -271,10 +191,8 @@ test("covers every shared operational page family", () => {
   }
 });
 
-test("covers gated AI and category-analysis surfaces with accessible state colors", () => {
+test("covers category-analysis surfaces with accessible state colors", () => {
   for (const selector of [
-    ".prototype-shell .ai-image-gated-page",
-    ".prototype-shell .ai-image-gated-content",
     ".prototype-shell .category-tabs",
     ".prototype-shell .category-filter-grid",
     ".prototype-shell .stat-strip",
@@ -285,10 +203,6 @@ test("covers gated AI and category-analysis surfaces with accessible state color
   assert.ok(
     cssSource.includes("background: color-mix(in srgb, var(--prototype-success) 70%, var(--prototype-ink));"),
     "success state uses the contrast-safe derived background",
-  );
-  assert.ok(
-    cssSource.includes("color: color-mix(in srgb, var(--prototype-warning) 70%, var(--prototype-ink)) !important;"),
-    "warning action uses the contrast-safe derived foreground",
   );
   assert.ok(!cssSource.includes(".prototype-shell .collect-edit-attribute-row"));
   assert.ok(!cssSource.includes(".prototype-shell .stores-control-row"));
@@ -313,10 +227,10 @@ test("provides an accessible mobile navigation drawer with contained overflow", 
   assert.match(drawer, /rootClassName="prototype-overlay"/);
   assert.match(drawer, /selectedKeys=\{\[route\]\}/);
   assert.match(drawer, /openKeys=\{openKeys\}/);
-  assert.match(drawer, /onOpenChange=\{setOpenKeys\}/);
+  assert.match(drawer, /onOpenChange=\{handleMenuOpenChange\}/);
   assert.match(drawer, /items=\{menuItems\}/);
   assert.match(drawer, /setMobileNavOpen\(false\);\s*navigate\(key\);/);
-  assert.match(appSource, /window\.matchMedia\("\(max-width: 600px\)"\)/);
+  assert.match(appSource, /window\.matchMedia\("\(max-width: 1180px\)"\)/);
   assert.match(appSource, /if \(!event\.matches\) setMobileNavOpen\(false\)/);
   assert.match(appSource, /addEventListener\("change", handleMobileViewportChange\)/);
   assert.match(appSource, /removeEventListener\("change", handleMobileViewportChange\)/);
@@ -339,8 +253,9 @@ test("provides an accessible mobile navigation drawer with contained overflow", 
   const compactDesktop = breakpointBlock(1180);
   const tablet = breakpointBlock(800);
   const mobile = breakpointBlock(600);
-  assert.match(compactDesktop, /\.prototype-shell \.qh-sider\s*\{[\s\S]*width:\s*76px !important/);
-  assert.match(compactDesktop, /\.prototype-shell \.qh-content\s*\{[\s\S]*margin-left:\s*112px/);
+  assert.match(compactDesktop, /\.prototype-shell \.qh-sider\s*\{[\s\S]*display:\s*none/);
+  assert.match(compactDesktop, /\.prototype-mobile-menu-trigger\s*\{[\s\S]*display:\s*inline-flex/);
+  assert.match(compactDesktop, /\.prototype-shell \.qh-content\s*\{[\s\S]*margin-left:\s*0/);
   assert.match(tablet, /\.prototype-shell \.source-query-grid[\s\S]*grid-template-columns:\s*1fr/);
   assert.match(tablet, /\.prototype-shell \.pricing-default-grid[\s\S]*grid-template-columns:\s*1fr/);
   assert.match(tablet, /\.prototype-shell \.pricing-domestic-list > div[\s\S]*grid-template-columns:\s*1fr/);

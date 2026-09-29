@@ -11,7 +11,7 @@ import {
 import { apiRequest } from "./client-transport.js";
 import { storeSwitchActionState } from "./store-switch-gate.js";
 import { operatingStoreSettingsModel } from "./stores-settings-model.js";
-import SourceTable from "./SourceTable.jsx";
+import SourceTable, { SourceSectionTitle } from "./SourceTable.jsx";
 import { displayApiKeyDeadline } from "./store-date.js";
 import {
   adaptiveTextColumnWidth,
@@ -127,6 +127,7 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
 
   return (
     <div className="source-page hidden-route-page stores-settings-page">
+      <SourceSectionTitle title="店铺配置" subtitle="管理授权店铺、当前门店与仓库同步" />
       <Card className="panel-card source-card stores-settings-card">
         <div className="card-title-row stores-title-row">
           <span>经营店铺 <em>{storeRows.length}/999</em></span>
@@ -138,7 +139,7 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
         </div>
         <div className="store-current-line">
           <span>当前选择门店： {binding?.storeName || binding?.id || "—"}</span>
-          <em>商品 {summary.products || 0} · 订单 {summary.postingsTotal || summary.postings || 0} · 仓库 {currentWarehouseCount}</em>
+          <em>商品 {summary.products || 0} · 仓库 {currentWarehouseCount}</em>
           <Space>
             <Button danger disabled={!hasStore} onClick={onClear}>清除当前门店</Button>
             <Button onClick={syncAllStores}>同步本帐号所有门店</Button>

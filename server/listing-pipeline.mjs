@@ -1,3 +1,7 @@
+import {legacyCollectStatus,projectCollectItemEnrichment} from './collect-enrichment-summary.mjs';
+import {purgeCollectedItems} from './collection-purge.mjs';
+import {createPostgresCollectorOzonEnrichmentRepository} from './collector-ozon-enrichment-repository.mjs';
+import {skuEnrichmentSummary} from "./collect-enrichment-recovery.mjs";
 import crypto from "node:crypto";
 import { types as utilTypes } from "node:util";
 import {
@@ -63,6 +67,21 @@ function json(value) {
 function hash(value) {
   const serialized = typeof value === "string" ? value : json(value);
   return crypto.createHash("sha256").update(serialized).digest("hex");
+}
+
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === "object") {
+    if (typeof value.toJSON === "function") return canonicalJsonValue(value.toJSON());
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]),
+    );
+  }
+  return value;
+}
+
+function canonicalHash(value) {
+  return hash(canonicalJsonValue(value));
 }
 
 function stableId(prefix, ...parts) {
@@ -167,7 +186,7 @@ async function assertCollectItemAvailableForListing(client, collectItemId, accou
   const id = clean(collectItemId, 240);
   if (!id) return;
   const result = await client.query(
-    `SELECT c.id,c.current_draft_id
+    `SELECT c.id,c.current_draft_id,c.source
        FROM collect_items c
       WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
       FOR UPDATE OF c`,
@@ -191,6 +210,7 @@ async function assertCollectItemAvailableForListing(client, collectItemId, accou
     : null;
   return {
     id,
+    source: result.rows[0].source,
     productDraft: draft ? { id: currentDraftId, version: Number(draft.version),
       dataHash: draft.data_hash } : null,
     listingDraft: draft?.data && typeof draft.data === "object"
@@ -329,23 +349,6 @@ export function buildCollectItemMirrorSummary(item = {}, context = {}) {
   };
 }
 
-function legacyCollectStatus(status) {
-  return {
-    QUEUE_PENDING: "上架中",
-    QUEUED: "上架中",
-    VALIDATING: "上架中",
-    SUBMITTING: "上架中",
-    OZON_ACCEPTED: "上架中",
-    CHECKING: "上架中",
-    RECONCILING: "待核对",
-    RETRY_PENDING: "上架中",
-    SUCCEEDED: "已上架",
-    PARTIAL_SUCCESS: "部分成功",
-    FAILED: "失败",
-    CANCEL_REQUESTED: "取消中",
-    CANCELLED: "已取消",
-  }[status] || status;
-}
 
 async function transaction(callback) {
   const pool = await poolReady();
@@ -401,10 +404,18 @@ export function buildCollectItemDraftV4(item = {}) {
     normalized.typeId = target?.typeId || "";
     return normalized;
   };
+  const sourceCharacteristics = Array.isArray(item.sourceCharacteristics)
+    ? structuredClone(item.sourceCharacteristics)
+    : [];
   if (item.listingDraft && typeof item.listingDraft === "object") {
+    const mergedDraft = mergeOzonEnrichmentResult(item.listingDraft, item);
+    if (item.mediaObjects) mergedDraft.mediaObjects = structuredClone(item.mediaObjects);
+    if (sourceCharacteristics.length && !Array.isArray(mergedDraft.sourceCharacteristics)) {
+      mergedDraft.sourceCharacteristics = sourceCharacteristics;
+    }
     return applyExplicitTarget(preserveOzonSourceCategoryEvidence(
       item,
-      mergeOzonEnrichmentResult(item.listingDraft, item),
+      mergedDraft,
     ));
   }
   const logistics = item.logistics && typeof item.logistics === "object"
@@ -422,7 +433,15 @@ export function buildCollectItemDraftV4(item = {}) {
     modelName: item.modelName || item.model_name || item.offer_id || item.sku || "",
     description: item.description || item.desc || item.subtitle || "",
     tags: Array.isArray(item.tags) ? item.tags : [],
-    richContent: item.richContent || item.rich_content || "",
+    richContent: item.richContent ?? item.rich_content,
+    videos: item.videos === undefined ? undefined : structuredClone(item.videos),
+    videoUrl: item.videoUrl,
+    videoCover: item.videoCover,
+    color_image: item.color_image,
+    videoCoverUrl: item.videoCoverUrl,
+    ...(item.mediaObjects ? { mediaObjects: structuredClone(item.mediaObjects) } : {}),
+    contentDiagnostics: item.contentDiagnostics ? structuredClone(item.contentDiagnostics) : undefined,
+    ...(sourceCharacteristics.length ? { sourceCharacteristics } : {}),
     packageWeight: item.packageWeight || item.weight || logistics.weightG || "",
     packageLength: item.packageLength || item.depth || item.length || logistics.lengthMm || "",
     packageWidth: item.packageWidth || item.width || logistics.widthMm || "",
@@ -457,13 +476,25 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
         code: "COLLECT_ACCOUNT_REQUIRED",
       });
     }
+    // Draft edits already hold this row lock. Take it before the shared media
+    // fence so imports cannot revive a source frozen for permanent cleanup.
+    await client.query('SELECT id FROM collect_items WHERE account_id=$1 AND id=$2 FOR UPDATE',[accountId,collectId]);
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended('ai-listing-media-reference-admission',0))");
+    const mediaText=JSON.stringify([item,context.rawSource]).replaceAll('\\','');
+    const mediaKeys=[...new Set(mediaText.match(/(?:listing-media\/v1\/(?:ai-image-listing\/[a-f0-9]{64}\.(?:jpg|png|webp)|prepared\/[a-f0-9]{64}\.(?:jpg|png|webp|mp4|mov))|staging\/collector\/[a-f0-9]{24}\/[a-f0-9-]{36})/g)||[])];
+    const purging=await client.query(`SELECT 1 FROM ai_image_listing_tasks WHERE body->'purge' IS NOT NULL
+      AND body->>'permanentlyDeletedAt' IS NULL AND (
+        (account_id=$1 AND COALESCE(body#>'{purge,sources,remove}','[]'::jsonb) ? $2)
+        OR EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(body#>'{purge,objects}','[]'::jsonb)) object
+          WHERE object->>'key'=ANY($3::text[]) AND object->>'state'<>'RETAINED')) LIMIT 1`,[accountId,collectId,mediaKeys]);
+    if(purging.rowCount)throw Object.assign(new Error('商品或引用的素材正在永久清理，请刷新后重新选择素材'),{status:409,statusCode:409,code:'COLLECT_MEDIA_PURGING'});
     const sourceSku = clean(context.sourceSku || item.sourceSku || item.sku || item.sourceExternalId, 240);
     const sourceUrl = clean(context.sourceUrl || item.sourceUrl || item.productUrl || item.url, 2000);
     const rawPayload = collectRawPayload(item, context.rawSource);
     const rawHash = clean(context.contentHash, 128) || hash(rawPayload);
     const rawId = stableId("raw", collectId, rawHash);
     const draft = buildCollectItemDraftV4(item);
-    const draftHash = hash(draftHashValue(draft));
+    const draftHash = canonicalHash(draftHashValue(draft));
     const draftId = stableId("draft", collectId);
     const accountExists = await client.query("SELECT 1 FROM accounts WHERE id=$1", [accountId]);
     if (!accountExists.rowCount) {
@@ -512,7 +543,7 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
          source_sku = EXCLUDED.source_sku,
          source_url = EXCLUDED.source_url,
          source = EXCLUDED.source,
-         identity_key = EXCLUDED.identity_key,
+         identity_key = COALESCE(NULLIF(EXCLUDED.identity_key,''),collect_items.identity_key),
          status = EXCLUDED.status,
          updated_at = NOW(), deleted_at = NULL, summary = EXCLUDED.summary
        WHERE collect_items.account_id=EXCLUDED.account_id
@@ -535,7 +566,10 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
       });
     }
 
-    const current = await client.query("SELECT version, data_hash FROM product_drafts WHERE id = $1 FOR UPDATE", [draftId]);
+    const current = await client.query(
+      "SELECT version, data_hash, data FROM product_drafts WHERE id = $1 FOR UPDATE",
+      [draftId],
+    );
     let version = Number(current.rows[0]?.version || 0);
     const expectedVersion = context.expectedVersion === undefined || context.expectedVersion === null
       ? null
@@ -546,7 +580,10 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
       error.status = 409;
       throw error;
     }
-    const changed = !current.rows[0] || current.rows[0].data_hash !== draftHash;
+    const changed = !current.rows[0] || (
+      current.rows[0].data_hash !== draftHash
+      && canonicalHash(draftHashValue(current.rows[0].data)) !== draftHash
+    );
     if (!current.rows[0]) {
       version = 1;
       await client.query(
@@ -701,6 +738,7 @@ export async function assertListingStocksBelongToTarget({
   storeId,
   stocks = [],
   warehouseValidationEvidenceId = null,
+  directRfbsEvidence = null,
   warehouseFulfillmentType = null,
   submissionIdempotencyKey = null,
   client = null,
@@ -790,7 +828,7 @@ export async function assertListingStocksBelongToTarget({
       hasActiveProductAssociation: warehouse
         ? warehouse.has_active_product_association === true
         : false,
-      validationEvidence: warehouse?.evidence_id && warehouse?.evidence_link_id && warehouse?.evidence_attempt_id
+      validationEvidence: (Array.isArray(directRfbsEvidence) ? directRfbsEvidence.find(e => e.platformWarehouseId === warehouseId) : null) || (warehouse?.evidence_id && warehouse?.evidence_link_id && warehouse?.evidence_attempt_id
         && warehouse.evidence_link_idempotency_key === clean(submissionIdempotencyKey, 512) ? {
         accountId: warehouse.evidence_account_id,
         storeId: warehouse.evidence_store_id,
@@ -800,13 +838,13 @@ export async function assertListingStocksBelongToTarget({
         outcome: warehouse.evidence_outcome,
         expiresAt: warehouse.evidence_expires_at instanceof Date
           ? warehouse.evidence_expires_at.toISOString() : warehouse.evidence_expires_at,
-      } : null,
+      } : null),
     });
   }
   return true;
 }
 
-export async function listCollectItemsV3({ accountId = "", includeDeleted = false, limit = 5000 } = {}) {
+export async function listCollectItemsV3({ accountId = "", includeDeleted = false, limit = 5000, ids = null } = {}) {
   if (!listingPipelineEnabled()) return [];
   const scopedAccountId = clean(accountId, 240);
   if (!scopedAccountId) {
@@ -819,10 +857,17 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
   const params = [scopedAccountId];
   const where = ["c.account_id=$1"];
   if (!includeDeleted) where.push("c.deleted_at IS NULL");
+  if (ids !== null) {
+    if (!Array.isArray(ids) || ids.length > 10000 || ids.some(id => typeof id !== "string")) {
+      throw Object.assign(new Error("采集条目 ID 列表无效"), { status: 400, code: "COLLECT_IDS_INVALID" });
+    }
+    params.push(ids);
+    where.push(`c.id=ANY($${params.length}::text[])`);
+  }
   params.push(Math.max(1, Math.min(10000, Number(limit) || 5000)));
   const result = await pool.query(
     `SELECT c.*, d.data AS draft_data, d.version AS draft_version,
-            raw.payload AS raw_payload
+            raw.payload->'normalized' AS normalized_payload
      FROM collect_items c
      LEFT JOIN product_drafts d ON d.id=c.current_draft_id
      LEFT JOIN LATERAL (
@@ -834,11 +879,20 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
      ORDER BY c.updated_at DESC LIMIT $${params.length}`,
     params,
   );
+  const jobsByItem = new Map();
+  if (result.rows.length) {
+    const jobs = await pool.query(`SELECT DISTINCT ON (collect_item_id,sku)
+      collect_item_id,sku,status,attempt_count,next_attempt_at,claim_expires_at,last_error_json,error_json
+      FROM collector_ozon_enrichment_jobs WHERE account_id=$1 AND collect_item_id=ANY($2::text[])
+      ORDER BY collect_item_id,sku,created_at DESC`, [scopedAccountId,result.rows.map(row=>row.id)]);
+    for (const job of jobs.rows) {
+      const entries=jobsByItem.get(job.collect_item_id)||[]; entries.push(job); jobsByItem.set(job.collect_item_id,entries);
+    }
+  }
   return result.rows.map((row) => {
-    const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
-    const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
+    const normalized = row.normalized_payload && typeof row.normalized_payload === "object" ? row.normalized_payload : {};
     const enrichment = resolveCollectItemEnrichmentSummary(row.summary, normalized.enrichment);
-    return publicPersistedCollectionItem({
+    const publicItem = publicPersistedCollectionItem({
       ...withoutCollectionScope(normalized),
       ...(enrichment ? { enrichment } : {}),
       id: row.id,
@@ -855,6 +909,10 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
       accountId: row.account_id || "",
       pipelineVersion: "v3",
     });
+    if (!enrichment) return publicItem;
+    const jobs = jobsByItem.get(row.id) || [];
+    if (!jobs.length) return publicItem;
+    return {...publicItem,enrichment:projectCollectItemEnrichment(enrichment,jobs)};
   });
 }
 
@@ -1011,7 +1069,7 @@ function collectItemEvidenceSummary(item = {}) {
       ...(draft.logistics && typeof draft.logistics === "object" ? draft.logistics : {}),
     },
   };
-  return buildOzonEnrichmentSummary(evidence);
+  return skuEnrichmentSummary(evidence);
 }
 
 export async function deferCollectItemEnrichmentWithClientV4(client, {
@@ -1042,8 +1100,8 @@ export async function deferCollectItemEnrichmentWithClientV4(client, {
   const deferredJob = await deferJob(client);
   const currentItem = collectItemEnrichmentRow(row);
   const persistedSummary = row.summary?.enrichment;
-  const complete = persistedSummary?.status === "COMPLETE"
-    || collectItemEvidenceSummary(currentItem).status === "COMPLETE";
+  const complete = !error?.collectionAdmissionFailure && !persistedSummary?.missingSkus?.includes(String(deferredJob.sku)) && (
+    persistedSummary?.status === "COMPLETE" || collectItemEvidenceSummary(currentItem).status === "COMPLETE");
   if (complete) {
     const terminalJob = await completeLinkedJobs(client, deferredJob);
     return { item: currentItem, job: terminalJob || deferredJob };
@@ -1052,6 +1110,7 @@ export async function deferCollectItemEnrichmentWithClientV4(client, {
   const evidenceSummary = collectItemEvidenceSummary(currentItem);
   const enrichment = {
     status: clean(status || "RETRYING", 80),
+    missingSkus: persistedSummary?.missingSkus || evidenceSummary.missingSkus,
     missingFields: evidenceSummary.missingFields,
     attemptCount: Number(deferredJob?.attemptCount || 0),
     nextAttemptAt: String(deferredJob?.nextAttemptAt || ""),
@@ -1106,6 +1165,7 @@ export async function failCollectItemEnrichmentWithClientV4(client, {
   const persistedJob = await failJobAndCache(client);
   const currentSummary = row.summary && typeof row.summary === "object" ? row.summary : {};
   const nextEnrichment = {
+    missingSkus: currentSummary.enrichment?.missingSkus || [String(persistedJob.sku)],
     ...(enrichment && typeof enrichment === "object" ? structuredClone(enrichment) : {}),
     attemptCount: Number(persistedJob?.attemptCount || 0),
   };
@@ -1201,12 +1261,25 @@ export async function retryCollectItemEnrichmentWithClientV4(client, {
       WHERE account_id=$1 AND collect_item_id=$2
         AND status IN ('PENDING','PROCESSING','FAILED')
         AND COALESCE(error_json->>'code',last_error_json->>'code','')
-            <> 'OZON_ENRICHMENT_DUPLICATE_SUPERSEDED'
+            NOT IN ('ZONGZI_ENRICHMENT_DUPLICATE_SUPERSEDED','OZON_ENRICHMENT_DUPLICATE_SUPERSEDED')
       ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1
       FOR UPDATE`,
     [row.account_id, row.id],
   );
-  if (!jobResult.rows[0]) return null;
+  if (!jobResult.rows[0]) {
+    const missingSkus = collectItemEvidenceSummary(item).missingSkus.filter(Boolean);
+    const repository = createPostgresCollectorOzonEnrichmentRepository({pool:client,transactionOwner:'caller'});
+    for (const sku of missingSkus) {
+      await repository.enqueueForCollect({accountId:row.account_id,collectItemId:row.id,sku,
+        requestId:`enrichment-repair:${row.id}:${sku}`,refreshBundle:true,now:retriedAt});
+    }
+    const created = await client.query(
+      "SELECT * FROM collector_ozon_enrichment_jobs WHERE account_id=$1 AND collect_item_id=$2 AND status='PENDING' ORDER BY created_at ASC LIMIT 1 FOR UPDATE",
+      [row.account_id,row.id],
+    );
+    jobResult.rows = created.rows;
+    if (!jobResult.rows[0]) throw Object.assign(new Error('该商品没有可重试的缺失 SKU，请刷新资料后重试'), {status:409,code:'ZONGZI_ENRICH_RETRY_NOT_AVAILABLE'});
+  }
   const currentJob = jobResult.rows[0];
   if (
     currentJob.status === "PROCESSING"
@@ -1335,39 +1408,12 @@ export async function updateCollectItemDraftV4(input = {}) {
   return transaction((client) => updateCollectItemDraftWithClientV4(client, input));
 }
 
+// Compatibility name retained for callers; deletion now physically removes collection data.
 export async function softDeleteCollectItemsForAccountV4(accountId, ids = []) {
   if (!listingPipelineEnabled()) return 0;
-  const values = [...new Set(ids.map((id) => clean(id, 240)).filter(Boolean))];
-  if (!values.length) return 0;
-  return transaction(async (client) => {
-    const scopedAccountId = clean(accountId, 240);
-    const result = await client.query(
-      `UPDATE collect_items SET deleted_at=NOW(),status='DELETED',updated_at=NOW()
-       WHERE account_id=$1 AND id=ANY($2::text[]) AND deleted_at IS NULL
-       RETURNING id`,
-      [scopedAccountId, values],
-    );
-    const deletedIds = result.rows.map((row) => String(row.id));
-    if (deletedIds.length) {
-      await client.query(
-        `UPDATE collector_ozon_enrichment_jobs
-            SET status='FAILED', result_json=NULL,
-                error_json=jsonb_build_object(
-                  'code','OZON_ENRICHMENT_COLLECT_ITEM_DELETED','status',410
-                ),
-                last_error_json=jsonb_build_object(
-                  'code','OZON_ENRICHMENT_COLLECT_ITEM_DELETED','status',410
-                ),
-                preferred_session_id=NULL, claimed_session_id=NULL,
-                claim_expires_at=NULL, claim_fence=NULL,
-                capture_context_json=NULL, completed_at=NOW(), updated_at=NOW()
-          WHERE account_id=$1 AND collect_item_id=ANY($2::text[])
-            AND status IN ('PENDING','PROCESSING')`,
-        [scopedAccountId, deletedIds],
-      );
-    }
-    return result.rowCount;
-  });
+  const values=[...new Set(ids.map(id=>clean(id,240)).filter(Boolean))];
+  if(!values.length)return 0;
+  return transaction(client=>purgeCollectedItems(client,clean(accountId,240),values));
 }
 
 export function projectSubmissionItemPublicResultV3(raw = {}) {
@@ -1393,7 +1439,7 @@ export function projectSubmissionItemPublicResultV3(raw = {}) {
     status,
     product_id: typeof item.product_id === "string" ? item.product_id.slice(0, 240) : "",
     errors: Object.freeze(failed ? [Object.freeze({
-      code: "OZON_ITEM_RESULT",
+      code: "ZONGZI_ITEM_RESULT",
       message: "Ozon 返回商品导入失败",
     })] : []),
     errorEvidence,
@@ -1440,7 +1486,7 @@ function publicJob(row = {}) {
     skippedCount: Number(row.skipped_count || 0),
     sku: row.source_sku || itemRows[0]?.sku || itemRows[0]?.offer_id || "",
     errorMessage: row.error_message ? "商品上架失败，请重试或联系管理员" : "",
-    errorCode: row.error_code ? "OZON_ITEM_RESULT" : "",
+    errorCode: row.error_code ? "ZONGZI_ITEM_RESULT" : "",
     statusMessage: row.status_message ? publicSubmissionStatusMessage(row.status) : "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1513,12 +1559,14 @@ export async function createSubmissionV3({
   accountId,
   idempotencyKey = "",
   normalizedItems,
+  sourceSkus = [],
   stocks = [],
   type = "COLLECT_BOX_DRAFT",
   versions = {},
   retryFailed = false,
   frozenProductDraft = null,
   warehouseValidationEvidenceId = null,
+  directRfbsEvidence = null,
   warehouseFulfillmentType = null,
   rfbsHandoff = null,
 }) {
@@ -1556,6 +1604,9 @@ export async function createSubmissionV3({
     let latest = null;
     const currentCollectItem = isCollectedListing && collectItem
       ? await assertCollectItemAvailableForListing(client, collectItem.id, accountId) : null;
+    const collectSource = clean(currentCollectItem ? currentCollectItem.source : collectItem?.source, 240);
+    const source = ["ozon", "auto_listing_excel_sku"].includes(collectSource.toLowerCase())
+      ? "ozon" : collectSource.toLowerCase();
     const frozenAutoDraft = type === "AUTO_LISTING"
       ? assertFrozenAutoListingDraft(currentCollectItem, frozenProductDraft) : null;
     if (preparation) {
@@ -1567,6 +1618,7 @@ export async function createSubmissionV3({
           storeId: preparation.targetStoreId,
           stocks: Array.isArray(stocks) ? stocks : [],
           warehouseValidationEvidenceId,
+          directRfbsEvidence,
           warehouseFulfillmentType,
           submissionIdempotencyKey: preparation.idempotencyKey,
           client,
@@ -1588,7 +1640,7 @@ export async function createSubmissionV3({
       mirrored = type === "AUTO_LISTING"
         ? { draftId: frozenAutoDraft.id, version: frozenAutoDraft.version }
         : await mirrorCollectItemV3(collectItem, {
-          accountId, storeId: preparation.targetStoreId, client, ...versions,
+          accountId, storeId: preparation.targetStoreId, client, ...versions, source: collectSource,
         });
     } else {
       if (isCollectedListing && collectItem) {
@@ -1599,6 +1651,7 @@ export async function createSubmissionV3({
         storeId,
         client,
         ...versions,
+        source: collectSource,
       });
     }
     const frozenStoreId = targetStore?.id || storeId;
@@ -1635,6 +1688,7 @@ export async function createSubmissionV3({
         storeId: frozenStoreId,
         stocks: safeStocks,
         warehouseValidationEvidenceId,
+        directRfbsEvidence,
         warehouseFulfillmentType,
         submissionIdempotencyKey: preparation.idempotencyKey,
         client,
@@ -1657,15 +1711,15 @@ export async function createSubmissionV3({
          id, collect_item_id, draft_id, draft_version, account_id, store_id,
          idempotency_key, snapshot_hash, item_count, items, stocks,
          normalizer_version, category_rule_version, dictionary_version, rich_content_rule_version,
-         pricing_snapshot
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16::jsonb)`,
-      [snapshotId, collectItem.id, mirrored?.draftId || null, mirrored?.version || 1, accountId || null, frozenStoreId, snapshotIdempotencyKey, snapshotHash, items.length, json(items), json(safeStocks), "v3", clean(versions.categoryRuleVersion, 120), clean(versions.dictionaryVersion, 120), clean(versions.richContentRuleVersion, 120), json(pricingSnapshot)],
+         pricing_snapshot, direct_rfbs_evidence
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16::jsonb,$17::jsonb)`,
+      [snapshotId, collectItem.id, mirrored?.draftId || null, mirrored?.version || 1, accountId || null, frozenStoreId, snapshotIdempotencyKey, snapshotHash, items.length, json(items), json(safeStocks), "v3", clean(versions.categoryRuleVersion, 120), clean(versions.dictionaryVersion, 120), clean(versions.richContentRuleVersion, 120), json(pricingSnapshot), directRfbsEvidence === null ? null : json(directRfbsEvidence)],
     );
     await client.query(
       `INSERT INTO submission_jobs (
          id, snapshot_id, collect_item_id, account_id, store_id, type, status,
-         item_count, correlation_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,'QUEUE_PENDING',$7,$8)`,
+         item_count, correlation_id, ozon_route
+       ) VALUES ($1,$2,$3,$4,$5,$6,'QUEUE_PENDING',$7,$8,COALESCE((SELECT route FROM account_ozon_routes WHERE account_id=$4),'CN'))`,
       [jobId, snapshotId, collectItem.id, accountId || null, frozenStoreId, type, items.length, correlationId],
     );
     if (frozenRfbsHandoff) {
@@ -1688,9 +1742,10 @@ export async function createSubmissionV3({
       const variantKey = clean(item.sku || item.offer_id || `${index + 1}`, 240);
       await client.query(
         `INSERT INTO submission_items (
-           id, job_id, snapshot_id, variant_key, sort_order, sku, offer_id, request_hash
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [stableId("submititem", jobId, variantKey), jobId, snapshotId, variantKey, index, clean(item.scraped_sku || item.sku, 240), clean(item.offer_id, 240), hash(item)],
+           id, job_id, snapshot_id, variant_key, sort_order, sku, offer_id, request_hash, source
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [stableId("submititem", jobId, variantKey), jobId, snapshotId, variantKey, index,
+          clean(sourceSkus[index] || item.scraped_sku || item.sku, 240), clean(item.offer_id, 240), hash(item), source],
       );
     }
     await client.query(
@@ -1739,7 +1794,9 @@ export async function prepareCollectItemForListing({
   idempotencyKey,
   collectItem,
   normalizedItems,
+  sourceSkus = [],
   stocks = [],
+  directRfbsEvidence = null,
   type = "COLLECT_BOX_DRAFT",
   versions = {},
 } = {}) {
@@ -1756,7 +1813,9 @@ export async function prepareCollectItemForListing({
     targetStoreId: preparation.targetStoreId,
     idempotencyKey: preparation.idempotencyKey,
     normalizedItems,
+    sourceSkus,
     stocks,
+    directRfbsEvidence,
     type,
     versions,
   });
@@ -1940,7 +1999,7 @@ export function projectSubmissionWorkRowV3(row) {
 export async function loadSubmissionWorkV3(jobId) {
   const pool = await poolReady();
   const result = await pool.query(
-    `SELECT j.*, s.items, s.stocks, s.snapshot_hash, s.idempotency_key,
+    `SELECT j.*, s.items, s.stocks, s.snapshot_hash, s.idempotency_key, s.direct_rfbs_evidence,
             c.source_sku, c.source_url,
             handoff.id AS rfbs_handoff_id,
             COALESCE(handoff.account_id,historical.account_id) AS rfbs_account_id,
@@ -2151,7 +2210,7 @@ async function transitionSubmissionStockWriteV3(rawCommand, { fromStatus, toStat
   const command = projectSubmissionStockWriteCommandV3(rawCommand);
   if (!command || !["IN_FLIGHT", "DONE", "AMBIGUOUS"].includes(toStatus)
     || (toStatus === "AMBIGUOUS"
-      && !["OZON_STOCK_WRITE_AMBIGUOUS", "OZON_STOCK_WRITE_REJECTED"].includes(failureCode))
+      && !["ZONGZI_STOCK_WRITE_AMBIGUOUS", "ZONGZI_STOCK_WRITE_REJECTED", "OZON_STOCK_WRITE_AMBIGUOUS", "OZON_STOCK_WRITE_REJECTED"].includes(failureCode))
     || (toStatus !== "AMBIGUOUS" && failureCode)) throw stockWriteConflict();
   try {
     return await transaction(async (client) => {
@@ -2199,7 +2258,7 @@ export function completeSubmissionStockWriteV3(command) {
   });
 }
 
-export function markSubmissionStockWriteAmbiguousV3(command, failureCode = "OZON_STOCK_WRITE_AMBIGUOUS") {
+export function markSubmissionStockWriteAmbiguousV3(command, failureCode = "ZONGZI_STOCK_WRITE_AMBIGUOUS") {
   return transitionSubmissionStockWriteV3(command, {
     fromStatus: "IN_FLIGHT", toStatus: "AMBIGUOUS", failureCode,
   });
@@ -2745,12 +2804,13 @@ export async function authorizeSubmissionRfbsWriteV3(input = {}) {
   }
 }
 
-export async function readStoreCredentialV3(storeId, accountId = "") {
-  const pool = await poolReady();
-  const result = await pool.query(
-    `SELECT s.id, s.client_id, sc.encrypted_api_key, sc.iv, sc.auth_tag, sc.algorithm, sc.key_version
+export async function readStoreCredentialV3(storeId, accountId = "", client = null, ozonRoute = null) {
+  const database = client || await poolReady();
+  const result = await database.query(
+    `SELECT s.id, s.client_id, sc.encrypted_api_key, sc.iv, sc.auth_tag, sc.algorithm, sc.key_version, COALESCE(r.route,'CN') AS ozon_route
      FROM stores s
      JOIN store_credentials sc ON sc.store_id=s.id
+     LEFT JOIN account_ozon_routes r ON r.account_id=s.owner_account_id
      WHERE s.id=$1
        AND ($2='' OR s.owner_account_id=$2)
        AND s.status <> 'disabled'`,
@@ -2761,6 +2821,7 @@ export async function readStoreCredentialV3(storeId, accountId = "") {
   return {
     id: row.id,
     clientId: row.client_id,
+    ozonRoute: ozonRoute || row.ozon_route,
     apiKey: decryptSecret({ encrypted_api_key: row.encrypted_api_key, iv: row.iv, auth_tag: row.auth_tag }),
   };
 }
@@ -2770,7 +2831,8 @@ export async function claimSubmissionJobV3(jobId, workerId, allowedStatuses) {
   const statuses = Array.isArray(allowedStatuses) && allowedStatuses.length ? allowedStatuses : ["QUEUED", "RETRY_PENDING"];
   const result = await pool.query(
     `UPDATE submission_jobs SET
-       locked_by=$2, lock_expires_at=NOW() + INTERVAL '4 minutes', updated_at=NOW(), attempt_count=attempt_count+1
+       locked_by=$2, lock_expires_at=NOW() + INTERVAL '4 minutes', updated_at=NOW(), attempt_count=attempt_count+1,
+       ozon_route=COALESCE(ozon_route,(SELECT route FROM account_ozon_routes WHERE account_id=submission_jobs.account_id),'CN')
      WHERE id=$1 AND status = ANY($3::text[])
        AND (lock_expires_at IS NULL OR lock_expires_at < NOW() OR locked_by=$2)
      RETURNING *`,
@@ -2841,22 +2903,22 @@ export async function transitionSubmissionJobV3(jobId, toStatus, patch = {}, eve
 export async function updateSubmissionItemsV3(rawInput = {}) {
   const input = projectOzonImportCarrier(rawInput);
   const identityFailure = () => Object.assign(new Error("Ozon 商品结果标识无法与冻结上架商品一致对应"), {
-    code: "OZON_IMPORT_OFFER_IDENTITY_MISMATCH",
+    code: "ZONGZI_IMPORT_OFFER_IDENTITY_MISMATCH",
     retryable: false,
     cause: null,
   });
   const scopeFailure = () => Object.assign(new Error("Ozon 商品结果不属于当前账号任务"), {
-    code: "OZON_IMPORT_RESULT_SCOPE_MISMATCH",
+    code: "ZONGZI_IMPORT_RESULT_SCOPE_MISMATCH",
     retryable: false,
     cause: null,
   });
   const resultConflict = () => Object.assign(new Error("Ozon 商品终态与已保存结果冲突，需要核对原任务"), {
-    code: "OZON_IMPORT_RESULT_CONFLICT",
+    code: "ZONGZI_IMPORT_RESULT_CONFLICT",
     retryable: false,
     cause: null,
   });
   const contractFailure = () => Object.assign(new Error("Ozon 商品结果结构无效，需要核对原任务"), {
-    code: "OZON_IMPORT_RESULT_CONTRACT_INVALID",
+    code: "ZONGZI_IMPORT_RESULT_CONTRACT_INVALID",
     retryable: false,
     cause: null,
   });
@@ -2941,7 +3003,7 @@ export async function updateSubmissionItemsV3(rawInput = {}) {
          SET status=$2,product_id=$3,error_code=$4,error_message=$5,response=$6::jsonb,updated_at=NOW()
          WHERE id=$1 AND job_id=$7 AND snapshot_id=$8 AND status=$9 AND product_id=$10
            AND COALESCE(response->'errorEvidence','null'::jsonb)=$11::jsonb`,
-        [target.id, status, productId, failed ? "OZON_ITEM_RESULT" : "",
+        [target.id, status, productId, failed ? "ZONGZI_ITEM_RESULT" : "",
           failed ? "Ozon 返回商品导入失败" : "", json(response), jobId, target.snapshot_id,
           target.status, target.product_id, json(target.current_error_evidence ?? null)],
       );
@@ -3166,9 +3228,24 @@ export async function patchLegacyCollectStatusV3(accountId, collectItemId, patch
   ).catch(() => {});
 }
 
+export async function updateCollectItemListingStatusV3(accountId, collectItemId, status) {
+  if (!listingPipelineEnabled()) return false;
+  const allowed = new Set(["上架中", "失败"]);
+  if (!allowed.has(status)) {
+    throw Object.assign(new Error("采集上架状态无效"), {status:400,code:"COLLECT_LISTING_STATUS_INVALID"});
+  }
+  const pool = await poolReady();
+  const result = await pool.query(
+    `UPDATE collect_items SET status=$3,updated_at=NOW()
+     WHERE account_id=$1 AND id=$2 AND deleted_at IS NULL`,
+    [clean(accountId,240),clean(collectItemId,240),status],
+  );
+  return Number(result.rowCount || 0) === 1;
+}
+
 export async function listingPipelineHealth() {
   if (!listingPipelineEnabled()) return { enabled: false };
-  const pool = await poolReady();
+  const pool = await getPostgresPool();
   const result = await pool.query(
     `SELECT
        (SELECT COUNT(*)::int FROM submission_jobs WHERE status NOT IN ('SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED')) AS active_jobs,

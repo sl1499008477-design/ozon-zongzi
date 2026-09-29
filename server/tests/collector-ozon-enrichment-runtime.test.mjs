@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCollectorOzonEnrichmentRuntime } from "../collector-ozon-enrichment-runtime.mjs";
+import { createCollectorOzonEnrichmentRuntime as createRuntime } from "../collector-ozon-enrichment-runtime.mjs";
+// Runtime transaction tests isolate the external official category read boundary.
+const createCollectorOzonEnrichmentRuntime = options => createRuntime({checkAdmission:async({item})=>item,...options});
 import { createJsonStateTransactionBoundary } from "../json-state-transaction.mjs";
 
 const NOW = new Date("2026-07-31T00:00:00.000Z");
@@ -124,6 +126,26 @@ test("PostgreSQL runtime forwards the exact read-only availability contract", as
     collectorSessionId: "collector-runtime",
     now: new Date(NOW),
   }]);
+});
+
+test("default PostgreSQL availability initializes without loading any full product state", async () => {
+  const queries = [];
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => { throw new Error("full catalog must not be hydrated for queue availability"); },
+    saveState: async () => { throw new Error("no JSON state writes"); },
+    persistenceMode: () => "postgres",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => false }),
+    postgresPool: { async query(sql, values) { queries.push({ sql, values }); return { rows: [{ available: true }] }; } },
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    readJson: async () => ({}), sendJson() {}, now: () => new Date(NOW),
+  });
+  for (let i = 0; i < 2; i++) assert.equal(await runtime.service.hasAvailableJob({
+    session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+  }), true);
+  assert.equal(queries.length, 2);
+  assert.ok(queries.every(({ sql, values }) => /SELECT EXISTS/.test(sql)
+    && !/local_state|products|collect_raw_payloads/.test(sql)
+    && values[0] === "account-runtime"));
 });
 
 const FENCED_SELLER_CONTEXT = Object.freeze({
@@ -449,7 +471,9 @@ test("JSON runtime enqueues a collect-linked job into the caller-owned transacti
   assert.equal(state.collectorOzonEnrichmentJobs[0].collectItemId, "collect-runtime-linked");
 });
 
-test("JSON runtime merges a linked Seller result and audits only allowlisted evidence", async () => {
+for (const height of [100, null]) {
+test(`JSON runtime atomically persists ${height === null ? 'partial' : 'complete'} Seller evidence and restores its cache`, async () => {
+  const expectedStatus = height === null ? 'NEEDS_ATTENTION' : 'COMPLETE';
   const completedAt = new Date("2026-08-01T08:00:01.000Z");
   const categoryCalls = [];
   const loggerSignals = [];
@@ -462,6 +486,7 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
         status: "PENDING_ENRICHMENT",
         draftVersion: 3,
         listingDraft: {
+          sku: "sku-runtime-merge",
           descriptionCategoryId: 88_000_001,
           typeId: 99_000_001,
           logistics: { weightG: 777, lengthMm: "", widthMm: "", heightMm: "" },
@@ -499,7 +524,7 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
     }],
     auditEvents: [],
   };
-  const runtime = createCollectorOzonEnrichmentRuntime({
+  const runtimeOptions = {
     loadState: async () => structuredClone(persisted),
     saveState: async (state) => { persisted = structuredClone(state); },
     persistenceMode: () => "json",
@@ -511,7 +536,7 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
     now: () => new Date(completedAt),
     categoryEvidencePort: {
       async recordCollectionResult(input) {
-        assert.equal(input.state.caches.collectBox[0].status, "COMPLETE");
+        assert.equal(input.state.caches.collectBox[0].status, expectedStatus);
         categoryCalls.push({
           accountId: input.accountId,
           collectItemId: input.collectItemId,
@@ -521,7 +546,8 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
       },
     },
     logger: { error: (...values) => loggerSignals.push(values) },
-  });
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime(runtimeOptions);
 
   await runtime.service.completeClaim({
     session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
@@ -532,7 +558,7 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
       weight: 500,
       depth: 300,
       width: 200,
-      height: 100,
+      height,
       attributes: [{ key: "8229", value: "Seller type", dictionary_value_id: 97_000_002 }],
       categories: [
         { level: 2, title: "Leaf" },
@@ -560,11 +586,12 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
   });
   assert.equal(item.draftVersion, 4);
   assert.deepEqual(item.enrichment, {
-    status: "COMPLETE",
-    missingFields: [],
+    status: expectedStatus,
+    missingFields: height === null ? ["heightMm"] : [],
+    ...(height === null ? {missingSkus:["sku-runtime-merge"]} : {}),
     attemptCount: 2,
     nextAttemptAt: "",
-    lastErrorCode: "",
+    lastErrorCode: height === null ? "ZONGZI_ENRICH_INCOMPLETE" : "",
     capturedAt: completedAt.toISOString(),
   });
   assert.equal(persisted.collectorOzonEnrichmentJobs[0].status, "SUCCESS");
@@ -582,9 +609,20 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
     productDraftVersion: 4,
   }]);
   assert.equal(loggerSignals.length, 0);
+  const restarted=createCollectorOzonEnrichmentRuntime(runtimeOptions);
+  const cached=await restarted.service.enrichOne({session:{collectorSessionId:'collector-runtime',accountId:'account-runtime'},requestId:'after-restart',sku:'sku-runtime-merge'});
+  assert.equal(cached.status,height === null ? 'PARTIAL' : 'COMPLETE');
+  assert.equal(cached.cache.hit,true);
+  if(height === null) {
+    assert.equal(item.listingDraft.logistics.heightMm,'');
+    assert.deepEqual(cached.missingFields,['heightMm']);
+  }
+  assert.equal(persisted.collectorOzonEnrichmentJobs.length,1);
 });
+}
 
-test("JSON success transaction rechecks the claim after loadState crosses its expiry", async () => {
+for (const takeover of ["none", "session", "fence"]) {
+test(`JSON late success preserves atomic ownership after lease expiry: ${takeover}`, async () => {
   const startedAt = new Date("2026-08-01T08:00:01.000Z");
   const claimExpiresAt = new Date("2026-08-01T08:00:02.000Z");
   let clock = startedAt.getTime();
@@ -606,6 +644,7 @@ test("JSON success transaction rechecks the claim after loadState crosses its ex
       accountId: "account-runtime",
       expiresAt: "2026-08-02T00:00:00.000Z",
       revokedAt: null,
+      sellerContext: structuredClone(FENCED_SELLER_CONTEXT),
     }],
     collectorOzonEnrichmentJobs: [{
       id: "job-runtime-complete-expired",
@@ -621,7 +660,8 @@ test("JSON success transaction rechecks the claim after loadState crosses its ex
       attemptCount: 2,
       nextAttemptAt: startedAt.toISOString(),
       lastError: null,
-      captureContext: null,
+      captureContext: structuredClone(FENCED_SELLER_CONTEXT),
+      claimFence: "claim-runtime-complete-expired",
       deadlineAt: "9999-12-31T23:59:59.999Z",
       result: null,
       error: null,
@@ -634,7 +674,11 @@ test("JSON success transaction rechecks the claim after loadState crosses its ex
   const runtime = createCollectorOzonEnrichmentRuntime({
     loadState: async () => {
       loadCount += 1;
-      if (loadCount === 3) clock = claimExpiresAt.getTime();
+      if (loadCount === 3) {
+        clock = claimExpiresAt.getTime() + 1;
+        if (takeover === "session") persisted.collectorOzonEnrichmentJobs[0].claimedSessionId = "collector-next";
+        if (takeover === "fence") persisted.collectorOzonEnrichmentJobs[0].claimFence = "claim-next";
+      }
       return structuredClone(persisted);
     },
     saveState: async (state) => { persisted = structuredClone(state); },
@@ -647,9 +691,10 @@ test("JSON success transaction rechecks the claim after loadState crosses its ex
     now: () => new Date(clock),
   });
 
-  await assert.rejects(runtime.service.completeClaim({
+  const completion = runtime.service.completeClaim({
     session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
     jobId: "job-runtime-complete-expired",
+    claimFence: "claim-runtime-complete-expired",
     variantData: {
       description_category_id: 17_000_001,
       type_id: 97_000_001,
@@ -664,13 +709,27 @@ test("JSON success transaction rechecks the claim after loadState crosses its ex
       revision: 4,
       observedAt: "2026-08-01T08:00:00.000Z",
     },
-  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+  });
+  if (takeover === "none") {
+    const result = await completion;
+    assert.equal(result.descriptionCategoryId, 17_000_001);
+    assert.equal(persisted.collectorOzonEnrichmentJobs[0].status, "SUCCESS");
+    assert.equal(persisted.collectorOzonEnrichmentJobs[0].attemptCount, 2);
+    assert.equal(persisted.collectorOzonEnrichmentJobs[0].claimFence, "claim-runtime-complete-expired");
+    assert.equal(persisted.caches.collectBox[0].status, "COMPLETE");
+    assert.equal(persisted.caches.collectBox[0].draftVersion, 4);
+    assert.deepEqual(persisted.caches.collectBox[0].listingDraft.logistics, { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 });
+    assert.equal(persisted.collectorOzonEnrichmentCache[0].status, "COMPLETE");
+    return;
+  }
+  await assert.rejects(completion, error => error.code === (takeover === "session" ? "ZONGZI_ENRICHMENT_JOB_OWNERSHIP" : "SELLER_CONTEXT_CHANGED"));
 
   assert.equal(persisted.collectorOzonEnrichmentJobs[0].status, "PROCESSING");
   assert.equal(persisted.caches.collectBox[0].status, "RETRYING");
   assert.equal(persisted.caches.collectBox[0].draftVersion, 3);
   assert.equal(persisted.collectorOzonEnrichmentCache, undefined);
 });
+}
 
 test("JSON runtime manual retry preserves identity, clears stable errors, and hides other accounts", async () => {
   const retriedAt = new Date("2026-08-01T08:10:00.000Z");
@@ -688,7 +747,7 @@ test("JSON runtime manual retry preserves identity, clears stable errors, and hi
           missingFields: ["weightG"],
           attemptCount: 3,
           nextAttemptAt: "",
-          lastErrorCode: "OZON_ENRICH_NOT_FOUND",
+          lastErrorCode: "ZONGZI_ENRICH_NOT_FOUND",
         },
       }],
     },
@@ -705,11 +764,11 @@ test("JSON runtime manual retry preserves identity, clears stable errors, and hi
       refreshBundle: {},
       attemptCount: 3,
       nextAttemptAt: "",
-      lastError: { code: "OZON_ENRICH_NOT_FOUND", status: 404 },
+      lastError: { code: "ZONGZI_ENRICH_NOT_FOUND", status: 404 },
       captureContext: { sellerCompanyId: "2681910", revision: 3, observedAt: "2026-08-01T08:00:00.000Z" },
       deadlineAt: "9999-12-31T23:59:59.999Z",
       result: null,
-      error: { code: "OZON_ENRICH_NOT_FOUND", status: 404 },
+      error: { code: "ZONGZI_ENRICH_NOT_FOUND", status: 404 },
       createdAt: "2026-08-01T08:00:00.000Z",
       updatedAt: "2026-08-01T08:00:01.000Z",
       completedAt: "2026-08-01T08:00:01.000Z",
@@ -868,8 +927,8 @@ test("JSON manual retry cannot revive stale failed history after the item is COM
       attemptCount: 1,
       nextAttemptAt: "",
       result: null,
-      error: { code: "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED", status: 409 },
-      lastError: { code: "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED", status: 409 },
+      error: { code: "ZONGZI_ENRICHMENT_DUPLICATE_SUPERSEDED", status: 409 },
+      lastError: { code: "ZONGZI_ENRICHMENT_DUPLICATE_SUPERSEDED", status: 409 },
       createdAt: "2026-08-01T08:01:00.000Z",
       updatedAt: "2026-08-01T08:06:00.000Z",
       completedAt: "2026-08-01T08:06:00.000Z",
@@ -961,7 +1020,7 @@ test("JSON NOT_FOUND failure and manual retry keep item attemptCount equal to th
   await runtime.service.failClaim({
     session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
     jobId: "job-runtime-attempt",
-    code: "OZON_ENRICH_NOT_FOUND",
+    code: "ZONGZI_ENRICH_NOT_FOUND",
   });
   assert.equal(persisted.collectorOzonEnrichmentJobs[0].attemptCount, 4);
   assert.equal(persisted.caches.collectBox[0].enrichment.attemptCount, 4);
@@ -1045,8 +1104,8 @@ test("JSON permanent failure rolls back job and cache when the item state cannot
   await assert.rejects(runtime.service.failClaim({
     session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
     jobId: "job-runtime-failure-atomic",
-    code: "OZON_ENRICH_NOT_FOUND",
-  }), (error) => error?.code === "OZON_ENRICH_UPSTREAM_FAILED");
+    code: "ZONGZI_ENRICH_NOT_FOUND",
+  }), (error) => error?.code === "ZONGZI_ENRICH_UPSTREAM_FAILED");
 
   assert.equal(persisted.collectorOzonEnrichmentJobs[0].status, "PROCESSING");
   assert.equal(persisted.collectorOzonEnrichmentJobs[0].attemptCount, 3);
@@ -1055,7 +1114,8 @@ test("JSON permanent failure rolls back job and cache when the item state cannot
   assert.equal(persisted.collectorOzonEnrichmentCache, undefined);
 });
 
-test("JSON permanent failure leaves the linked item unchanged when the claim expires at terminal commit", async () => {
+for (const takeover of ["none", "session", "fence"]) {
+test(`JSON late actual failure preserves atomic ownership after lease expiry: ${takeover}`, async () => {
   const failedAt = new Date("2026-08-01T10:00:00.000Z");
   let loadCount = 0;
   let persisted = {
@@ -1075,6 +1135,7 @@ test("JSON permanent failure leaves the linked item unchanged when the claim exp
       accountId: "account-runtime",
       expiresAt: "2026-08-02T00:00:00.000Z",
       revokedAt: null,
+      sellerContext: structuredClone(FENCED_SELLER_CONTEXT),
     }],
     collectorOzonEnrichmentJobs: [{
       id: "job-runtime-failure-expired",
@@ -1090,7 +1151,8 @@ test("JSON permanent failure leaves the linked item unchanged when the claim exp
       attemptCount: 3,
       nextAttemptAt: "2026-08-01T09:59:00.000Z",
       lastError: null,
-      captureContext: null,
+      captureContext: structuredClone(FENCED_SELLER_CONTEXT),
+      claimFence: "claim-runtime-failure-expired",
       deadlineAt: "9999-12-31T23:59:59.999Z",
       result: null,
       error: null,
@@ -1103,11 +1165,12 @@ test("JSON permanent failure leaves the linked item unchanged when the claim exp
   const runtime = createCollectorOzonEnrichmentRuntime({
     loadState: async () => {
       loadCount += 1;
-      const state = structuredClone(persisted);
       if (loadCount === 2) {
-        state.collectorOzonEnrichmentJobs[0].claimExpiresAt = failedAt.toISOString();
+        persisted.collectorOzonEnrichmentJobs[0].claimExpiresAt = new Date(failedAt.getTime() - 1).toISOString();
+        if (takeover === "session") persisted.collectorOzonEnrichmentJobs[0].claimedSessionId = "collector-next";
+        if (takeover === "fence") persisted.collectorOzonEnrichmentJobs[0].claimFence = "claim-next";
       }
-      return state;
+      return structuredClone(persisted);
     },
     saveState: async (state) => { persisted = structuredClone(state); },
     persistenceMode: () => "json",
@@ -1119,11 +1182,29 @@ test("JSON permanent failure leaves the linked item unchanged when the claim exp
     now: () => new Date(failedAt),
   });
 
-  await assert.rejects(runtime.service.failClaim({
+  const failure = runtime.service.failClaim({
     session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
     jobId: "job-runtime-failure-expired",
-    code: "OZON_ENRICH_NOT_FOUND",
-  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+    code: "ZONGZI_ENRICH_NOT_FOUND",
+    message: "Seller /api/v1/search: product 2102713588 not found",
+    claimFence: "claim-runtime-failure-expired",
+    captureContext: structuredClone(FENCED_SELLER_CONTEXT),
+  });
+  if (takeover === "none") {
+    assert.deepEqual(await failure, { id: "job-runtime-failure-expired", status: "FAILED" });
+    const job = persisted.collectorOzonEnrichmentJobs[0];
+    assert.equal(job.status, "FAILED");
+    assert.equal(job.attemptCount, 4);
+    assert.equal(job.claimFence, "claim-runtime-failure-expired");
+    assert.equal(job.error.message, "Seller /api/v1/search: product 2102713588 not found");
+    assert.equal(persisted.caches.collectBox[0].status, "NEEDS_ATTENTION");
+    assert.equal(persisted.caches.collectBox[0].enrichment.attemptCount, 4);
+    assert.deepEqual(persisted.caches.collectBox[0].listingDraft, { title: "keep" });
+    assert.equal(persisted.collectorOzonEnrichmentCache[0].status, "ERROR");
+    assert.deepEqual(persisted.collectorOzonEnrichmentCache[0].error, job.error);
+    return;
+  }
+  await assert.rejects(failure, error => error.code === (takeover === "session" ? "ZONGZI_ENRICHMENT_JOB_OWNERSHIP" : "SELLER_CONTEXT_CHANGED"));
 
   assert.equal(persisted.collectorOzonEnrichmentJobs[0].status, "PROCESSING");
   assert.equal(persisted.collectorOzonEnrichmentJobs[0].attemptCount, 3);
@@ -1131,6 +1212,7 @@ test("JSON permanent failure leaves the linked item unchanged when the claim exp
   assert.equal(persisted.caches.collectBox[0].enrichment.attemptCount, 3);
   assert.equal(persisted.collectorOzonEnrichmentCache, undefined);
 });
+}
 
 test("JSON retryable defer cannot overwrite a collect item that already became COMPLETE", async () => {
   const failedAt = new Date("2026-08-01T11:00:00.000Z");
@@ -1202,7 +1284,7 @@ test("JSON retryable defer cannot overwrite a collect item that already became C
   const result = await runtime.service.failClaim({
     session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
     jobId: "job-runtime-complete-wins",
-    code: "OZON_ENRICH_UPSTREAM_FAILED",
+    code: "ZONGZI_ENRICH_UPSTREAM_FAILED",
   });
 
   assert.deepEqual(result, { id: "job-runtime-complete-wins", status: "SUCCESS" });
@@ -1215,4 +1297,76 @@ test("JSON retryable defer cannot overwrite a collect item that already became C
   });
   assert.equal(persisted.collectorOzonEnrichmentJobs[0].claimedSessionId, null);
   assert.equal(saveCount, 2, "one atomic state save plus the serialized audit save");
+});
+
+const AUDIT_DIAGNOSTIC = Object.freeze({
+  stage: "seller.search", upstreamCode: "NETWORK_ERROR", upstreamStatus: 503,
+  requestSent: false, extensionVersion: "1.0.6",
+});
+
+for (const attemptCount of [0, 4]) {
+  test(`JSON runtime audit persists the sanitized original cause through linked retry/exhaustion: ${attemptCount}`, async () => {
+    const suffix = `audit-detail-${attemptCount}`;
+    const h = linkedSellerFenceRuntime(suffix);
+    h.state().collectorOzonEnrichmentJobs[0].attemptCount = attemptCount;
+    await h.runtime.service.failClaim({
+      session: { accountId: "account-runtime", collectorSessionId: "collector-runtime" },
+      jobId: `job-runtime-fence-${suffix}`, claimFence: `claim-runtime-fence-${suffix}`,
+      captureContext: FENCED_SELLER_CONTEXT, code: "NETWORK_ERROR",
+      message: "Seller /api/v1/search: net::ERR_CONNECTION_RESET; token=audit-private-secret",
+      diagnostic: AUDIT_DIAGNOSTIC,
+    });
+    const state = h.state();
+    const job = state.collectorOzonEnrichmentJobs[0];
+    assert.equal(job.attemptCount, attemptCount + 1);
+    assert.equal(job.status, attemptCount === 4 ? "FAILED" : "PENDING");
+    const stored = job.error || job.lastError;
+    assert.equal(stored.message, "Seller /api/v1/search: net::ERR_CONNECTION_RESET; [REDACTED]");
+    const audit = state.auditEvents.find(event => event.action === "COLLECTOR.OZON.ENRICHMENT.FAIL");
+    assert.equal(audit.metadata.message, stored.message);
+    assert.deepEqual(audit.metadata.diagnostic, AUDIT_DIAGNOSTIC);
+    assert.equal(audit.metadata.code, attemptCount === 4 ? "ZONGZI_ENRICH_RETRY_EXHAUSTED" : "ZONGZI_ENRICH_UPSTREAM_FAILED");
+    assert.equal(audit.accountId, "account-runtime");
+    assert.equal(audit.metadata.sku, job.sku);
+    assert.equal(audit.metadata.jobId, job.id);
+    assert.equal(JSON.stringify(state).includes("audit-private-secret"), false);
+  });
+}
+
+test("PostgreSQL runtime audit serialization preserves the safe message and five diagnostic fields", async () => {
+  const { createJsonCollectorOzonEnrichmentRepository } = await import("../collector-ozon-enrichment-repository.mjs");
+  const { insertPostgresAuditEvent } = await import("../audit-event.mjs");
+  const state = structuredClone(linkedSellerFenceRuntime("pg-audit-detail").state());
+  state.collectorOzonEnrichmentJobs[0].collectItemId = null;
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const rows = [];
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => { throw new Error("PostgreSQL audit must not read legacy JSON state"); },
+    saveState: async () => { throw new Error("PostgreSQL audit must not rewrite legacy JSON state"); },
+    persistenceMode: () => "postgres",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => false }),
+    authenticate: async () => ({ accountId: "account-runtime", collectorSessionId: "collector-runtime" }),
+    readJson: async () => ({}), sendJson() {},
+    initializePostgresRepository: async () => repository,
+    persistPostgresAuditEvent: event => insertPostgresAuditEvent({
+      async query(sql, params) {
+        assert.match(sql, /INSERT INTO audit_events/);
+        rows.push({ accountId: params[1], metadata: JSON.parse(params[12]) });
+        return { rows: [], rowCount: 1 };
+      },
+    }, event),
+    now: () => new Date("2026-08-01T08:00:03.000Z"),
+  });
+  await runtime.service.failClaim({
+    session: { accountId: "account-runtime", collectorSessionId: "collector-runtime" },
+    jobId: "job-runtime-fence-pg-audit-detail", claimFence: "claim-runtime-fence-pg-audit-detail",
+    captureContext: FENCED_SELLER_CONTEXT, code: "NETWORK_ERROR",
+    message: "Seller /api/v1/search: net::ERR_CONNECTION_RESET; password=pg-audit-private",
+    diagnostic: AUDIT_DIAGNOSTIC,
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].accountId, "account-runtime");
+  assert.equal(rows[0].metadata.message, "Seller /api/v1/search: net::ERR_CONNECTION_RESET; [REDACTED]");
+  assert.deepEqual(rows[0].metadata.diagnostic, AUDIT_DIAGNOSTIC);
+  assert.equal(JSON.stringify(rows).includes("pg-audit-private"), false);
 });

@@ -340,7 +340,7 @@ if (!enabled) {
       );
       await assertCurrentBasisRejectsDirectClaim(
         `UPDATE ${q(schema)}.account_ozon_shared_categories
-            SET status='INVALIDATED',version=2,safe_failure_code='OZON_CATEGORY_INVALIDATED',
+            SET status='INVALIDATED',version=2,safe_failure_code='ZONGZI_CATEGORY_INVALIDATED',
                 updated_at=updated_at+INTERVAL '1 second' WHERE id=$1`, [ids.shared],
       );
       await assertCurrentBasisRejectsDirectClaim(

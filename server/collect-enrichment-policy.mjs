@@ -1,3 +1,5 @@
+import { hasChineseProductText } from "./ozon-product-language.mjs";
+import { collectedAttributeValues } from "./collector-attribute-values.mjs";
 export const OZON_ENRICHMENT_FIELDS = Object.freeze([
   "descriptionCategoryId",
   "weightG",
@@ -139,6 +141,7 @@ function mergeEvidenceOnlyIntoBlanks(current, incoming) {
   if (!plainObject(incoming)) return plainObject(current) ? { ...current } : {};
   const merged = plainObject(current) ? structuredClone(current) : {};
   for (const [key, value] of Object.entries(incoming)) {
+    if (key === "values" && Array.isArray(merged[key])) continue;
     if (Array.isArray(merged[key]) && Array.isArray(value)) {
       merged[key] = mergeEvidenceArrays(merged[key], value);
     } else if (evidenceMissing(key, merged[key])) {
@@ -155,11 +158,12 @@ function categoryTypeEvidenceFromAttributes(category = {}) {
   const typeAttribute = attributes.find(
     (attribute) => cleanText(attribute?.key) === "8229",
   );
+  const typeValues = collectedAttributeValues(typeAttribute);
   return {
-    typeName: cleanText(typeAttribute?.value),
+    typeName: cleanText(typeValues[0]?.value),
     typeIdCandidate: firstPositive(
-      typeAttribute?.dictionary_value_id,
-      typeAttribute?.dictionaryValueId,
+      typeValues[0]?.dictionary_value_id,
+      typeValues[0]?.dictionaryValueId,
     ),
   };
 }
@@ -236,7 +240,8 @@ export function normalizeOzonCollectedSourceEvidence(payload = {}) {
   if (plainObject(normalized.listingDraft)) {
     const normalizeTargetRoots = (draftValue) => {
       if (!plainObject(draftValue)) return draftValue;
-      const draft = structuredClone(draftValue);
+      // payload was deep-cloned above; only these root category fields change.
+      const draft = { ...draftValue };
       const target = explicitOzonListingTarget(draft.categoryResolution);
       const sourceEvidence = mergeEvidenceOnlyIntoBlanks(
         sourceCategoryEvidence(draftValue),
@@ -353,9 +358,11 @@ export function mergeOzonEnrichmentResult(current = {}, result = {}) {
   const currentLogistics = draft.logistics && typeof draft.logistics === "object" ? draft.logistics : {};
   const logistics = { ...currentLogistics };
 
+  const candidates = result.variantData?.packagingCandidates;
+  const hasConflict = Array.isArray(candidates) && candidates.length === 2;
   for (const field of OZON_ENRICHMENT_FIELDS.slice(1)) {
     if (!positiveNumber(currentFields[field])) {
-      const enriched = positiveNumber(resultFields[field]);
+      const enriched = positiveNumber(hasConflict ? candidates[0][field] : resultFields[field]);
       if (enriched) logistics[field] = enriched;
     }
   }
@@ -366,11 +373,28 @@ export function mergeOzonEnrichmentResult(current = {}, result = {}) {
         descriptionCategoryId: resultFields.descriptionCategoryId,
         ...(positiveNumber(result?.typeId) ? { typeIdCandidate: positiveNumber(result.typeId) } : {}),
       };
+  // User-approved policy: prefer bundle top-level packaging (candidate 1).
+  // Keep source evidence, but exclude conflicting physical attribute fallbacks.
+  const safeSourceCategory = hasConflict ? {...resultSourceCategory,
+    attributes:(resultSourceCategory.attributes || []).filter(a => !['4497','4383','9454','9455','9456'].includes(String(a.key))),
+  } : resultSourceCategory;
   const merged = {
     ...draft,
+    ...(hasConflict ? {packagingCandidates:structuredClone(candidates)} : {}),
     logistics,
-    sourceCategory: mergeEvidenceOnlyIntoBlanks(draft.sourceCategory, resultSourceCategory),
+    sourceCategory: mergeEvidenceOnlyIntoBlanks(draft.sourceCategory, safeSourceCategory),
   };
+  // Existing draft arrays include deliberate clears. Only a missing field is
+  // enriched, and group instances stay intact for the listing builder.
+  const complexAttributes = result.variantData?.complex_attributes ?? result.sourceCategory?.complex_attributes;
+  if (!Object.hasOwn(draft, "complex_attributes") && Array.isArray(complexAttributes)) {
+    merged.complex_attributes = structuredClone(complexAttributes);
+  }
+  const sourceName = collectedAttributeValues(result.sourceCategory?.attributes?.find(attribute =>
+    String(attribute.key ?? attribute.id) === "4180"))
+    .map(value => value.value).find(value => value && !hasChineseProductText(value));
+  if (sourceName && (!draft.name || hasChineseProductText(draft.name))) merged.name = sourceName;
+  if (sourceName && hasChineseProductText(draft.title)) merged.title = sourceName;
   return merged;
 }
 

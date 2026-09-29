@@ -154,7 +154,7 @@ test("missing IDs use one exact read lookup before review and only resolved fact
   assert.equal(Object.isFrozen(resolved.categoryResolution), true);
 
   const unresolvedHarness = harness({
-    lookup: { async lookup() { return { status: "UNRESOLVED", reasonCode: "OZON_SOURCE_LOOKUP_UNRESOLVED" }; } },
+    lookup: { async lookup() { return { status: "UNRESOLVED", reasonCode: "ZONGZI_SOURCE_LOOKUP_UNRESOLVED" }; } },
   });
   const unresolved = await unresolvedHarness.service.resolveCollectionSource({
     ...sourceInput(), sourceDescriptionCategoryId: null, sourceTypeId: null,

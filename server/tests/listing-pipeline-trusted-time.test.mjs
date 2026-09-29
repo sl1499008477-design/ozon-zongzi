@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test, { after } from "node:test";
 
 const previousDatabaseUrl = process.env.DATABASE_URL;
+const previousPipelineFlag = process.env.LISTING_PIPELINE_V3;
+process.env.LISTING_PIPELINE_V3 = "1";
 process.env.DATABASE_URL = "postgres://query-contract.invalid/test";
-const { mirrorCollectItemV3 } = await import("../listing-pipeline.mjs");
+const { buildCollectItemDraftV4, mirrorCollectItemV3 } = await import("../listing-pipeline.mjs");
 
 const FUTURE_CLIENT_TIME = "2099-12-31T23:59:59.999Z";
 
@@ -23,7 +25,7 @@ function fakeClient({ existingRaw = null } = {}) {
       if (text.includes("INSERT INTO collect_items")) {
         return { rowCount: 1, rows: [{ id: params[0] }] };
       }
-      if (text.includes("SELECT version, data_hash FROM product_drafts")) {
+      if (text.includes("SELECT version, data_hash, data FROM product_drafts")) {
         return { rowCount: 0, rows: [] };
       }
       return { rowCount: 1, rows: [] };
@@ -48,6 +50,47 @@ function futureDatedItem(id) {
       title: "Trusted time fixture",
       price: "100.00",
       variants: [],
+    },
+  };
+}
+
+function reverseObjectKeys(value) {
+  if (Array.isArray(value)) return value.map(reverseObjectKeys);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value).reverse().map((key) => [key, reverseObjectKeys(value[key])]),
+  );
+}
+
+function existingDraftClient(storedDraft) {
+  const calls = [];
+  return {
+    calls,
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push({ sql: normalized, params });
+      if (normalized.startsWith("SELECT 1 FROM accounts")) {
+        return { rowCount: 1, rows: [{ exists: 1 }] };
+      }
+      if (normalized.startsWith("SELECT id, payload_hash FROM collect_raw_payloads")) {
+        return { rowCount: 1, rows: [{ id: "raw-canonical-order", payload_hash: "same-content" }] };
+      }
+      if (normalized.startsWith("INSERT INTO collect_items")) {
+        return { rowCount: 1, rows: [{ id: params[0] }] };
+      }
+      if (normalized.startsWith("SELECT version, data_hash")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            version: 2,
+            data_hash: "legacy-order-dependent-hash",
+            ...(normalized.startsWith("SELECT version, data_hash, data")
+              ? { data: storedDraft }
+              : {}),
+          }],
+        };
+      }
+      return { rowCount: 1, rows: [] };
     },
   };
 }
@@ -105,7 +148,45 @@ test("duplicate raw ingest still reuses the existing payload while item upsert u
   assert.equal(result.rawId, "raw-existing");
 });
 
+test("equivalent product draft key order does not create a new draft version", async () => {
+  const item = {
+    id: "collect-canonical-order",
+    sku: "sku-canonical-order",
+    name: "Canonical order fixture",
+    listingDraft: {
+      sku: "sku-canonical-order",
+      title: "Canonical order fixture",
+      price: "100.00",
+      sourceCategory: {
+        typeName: "电动工具备件",
+        attributes: [{ key: "8229", value: "电动工具备件", dictionary_value_id: 94891 }],
+        typeIdCandidate: 94891,
+        descriptionCategoryId: 76525013,
+      },
+      variants: [],
+    },
+  };
+  const client = existingDraftClient(reverseObjectKeys(buildCollectItemDraftV4(item)));
+
+  const result = await mirrorCollectItemV3(item, {
+    client,
+    collectId: item.id,
+    accountId: "account-canonical-order",
+    contentHash: "same-content",
+    captureRaw: false,
+  });
+
+  assert.equal(result.version, 2);
+  assert.equal(result.changed, false);
+  assert.equal(
+    client.calls.some(({ sql }) => sql.startsWith("UPDATE product_drafts SET")),
+    false,
+  );
+});
+
 after(() => {
+  if (previousPipelineFlag === undefined) delete process.env.LISTING_PIPELINE_V3;
+  else process.env.LISTING_PIPELINE_V3 = previousPipelineFlag;
   if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
   else process.env.DATABASE_URL = previousDatabaseUrl;
 });

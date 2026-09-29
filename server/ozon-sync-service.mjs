@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { activeStore, storesForAccount } from "./account-context.mjs";
 import { appendAuditEvent } from "./audit-event.mjs";
-import { callOzonSellerApi, getOzonSellerApi } from "./ozon-client.mjs";
+import { callOzonSellerApi } from "./ozon-client.mjs";
 import {
   cacheItemMatchesStore,
   cacheItemsForStore,
@@ -9,14 +9,13 @@ import {
   upsertCacheItemByStore,
   upsertProductByStore,
 } from "./store-cache-scope.mjs";
-import { resolvePostingCurrencyCode } from "../shared/order-money.mjs";
 
 const cleanText = (value, maxLength = 160) =>
   String(value ?? "").trim().slice(0, maxLength);
-const FBS_MAX_RANGE_SPLIT_DEPTH = 8;
-const FBS_MIN_RANGE_DURATION_MS = 60 * 60 * 1000;
 const LOCAL_STATE_SAVE_MAX_ATTEMPTS = 4;
 const STORE_SYNC_JOB_KIND = "STORE_SYNC";
+const SUPPORTED_SYNC_TYPES = new Set(["PRODUCTS", "WAREHOUSES"]);
+const RETIRED_SYNC_TYPES = new Set(["POSTINGS", "PROMOTIONS"]);
 const SYNC_COVERAGE_BY_TYPE = Object.freeze({
   PRODUCTS: Object.freeze([
     "PROFILE",
@@ -28,18 +27,9 @@ const SYNC_COVERAGE_BY_TYPE = Object.freeze({
     "FBS_STOCK",
     "FBO_STOCK",
   ]),
-  POSTINGS: Object.freeze([
-    "PROFILE",
-    "FBS_POSTINGS",
-    "FBO_POSTINGS",
-  ]),
   WAREHOUSES: Object.freeze([
     "PROFILE",
     "WAREHOUSES",
-  ]),
-  PROMOTIONS: Object.freeze([
-    "PROFILE",
-    "PROMOTIONS",
   ]),
 });
 
@@ -124,11 +114,6 @@ function failedSyncReplayError(report) {
   return error;
 }
 
-function normalizedPostingsSinceDays(type, value) {
-  if (type !== "POSTINGS") return null;
-  return Math.max(1, Math.min(Number(value) || 30, 365));
-}
-
 function storeSyncTaskId({ accountId, storeId, type, clientJobId }) {
   const digest = crypto
     .createHash("sha256")
@@ -137,10 +122,11 @@ function storeSyncTaskId({ accountId, storeId, type, clientJobId }) {
   return `store_sync_${digest.slice(0, 40)}`;
 }
 
-function storeSyncRequestHash({ requestId, postingsSinceDays }) {
+function storeSyncRequestHash({ requestId }) {
   return crypto
     .createHash("sha256")
-    .update(JSON.stringify({ requestId, postingsSinceDays }))
+    // Keep the old null option in the digest so retained sync replays remain compatible.
+    .update(JSON.stringify({ requestId, postingsSinceDays: null }))
     .digest("hex");
 }
 
@@ -287,6 +273,18 @@ function dedupeWarehouseStockRows(rows = []) {
   });
 }
 
+export async function refreshOzonKeyExpiry(store, {callApi=callOzonSellerApi,now=()=>new Date()}={}) {
+  try {
+    const response=await callApi(store,'/v1/roles',{},15_000);
+    const raw=response.expires_at || response.result?.expires_at;
+    if(!raw || !Number.isFinite(Date.parse(raw)))return false;
+    store.apiKeyExpiresAt=new Date(raw).toISOString();
+    store.apiKeyExpirySource='OZON_ROLES';
+    store.apiKeyExpiryCheckedAt=now().toISOString();
+    return true;
+  } catch {return false;}
+}
+
 export function createOzonSyncService({
   loadState,
   saveState,
@@ -395,13 +393,16 @@ export function createOzonSyncService({
     }
   }
 
-  async function mutateLatestStateWithConflictRetry(mutator) {
+  async function mutateLatestStateWithConflictRetry(mutator, {
+    hydrateCatalog = true,
+    catalogMutation = null,
+  } = {}) {
     let lastConflict = null;
     for (let attempt = 0; attempt < LOCAL_STATE_SAVE_MAX_ATTEMPTS; attempt += 1) {
-      const latest = await loadState();
+      const latest = await loadState({ hydrateCatalog });
       const result = mutator(latest);
       try {
-        await saveState(latest);
+        await saveState(latest, { catalogMutation });
         return { latest, result };
       } catch (error) {
         if (error?.code !== "LOCAL_STATE_VERSION_CONFLICT") throw error;
@@ -414,12 +415,12 @@ export function createOzonSyncService({
   async function persistSyncReport(report) {
     const { latest } = await mutateLatestStateWithConflictRetry((state) => {
       appendSyncReport(state, report);
-    });
+    }, { hydrateCatalog: false });
     return latest;
   }
 
   async function findSyncReplay(report) {
-    const latest = await loadState();
+    const latest = await loadState({ hydrateCatalog: false });
     const records = [
       ...(Array.isArray(latest.reports) ? latest.reports : []),
       ...Object.values(latest.jobs && typeof latest.jobs === "object" ? latest.jobs : {}),
@@ -477,6 +478,9 @@ export function createOzonSyncService({
     }
     store.profileSyncedAt = syncedAt;
     store.updatedAt = store.profileSyncedAt;
+    if(!store.apiKeyExpiryCheckedAt || now().getTime()-Date.parse(store.apiKeyExpiryCheckedAt)>=86_400_000) {
+      await refreshOzonKeyExpiry(store,{now});
+    }
     return profile;
   }
 
@@ -647,171 +651,6 @@ export function createOzonSyncService({
     return imported;
   }
 
-  async function fetchFbsPostingsForRange(store, rangeStart, rangeEnd, splitDepth = 0) {
-    const localPostings = [];
-    const filter = {
-      since: rangeStart.toISOString(),
-      to: rangeEnd.toISOString(),
-    };
-    try {
-      let cursor = "";
-      for (let page = 0; page < 50; page += 1) {
-        const listRes = await callOzonSellerApi(store, "/v4/posting/fbs/list", {
-          cursor,
-          limit: 100,
-          filter,
-          with: {
-            analytics_data: true,
-            barcodes: true,
-            financial_data: true,
-            translit: true,
-          },
-        });
-        const result = listRes?.result || listRes || {};
-        const postings = result.postings || result.items || [];
-        if (!postings.length) break;
-        localPostings.push(...postings);
-        const nextCursor = result.cursor || listRes?.cursor || "";
-        const hasNext = result.has_next ?? listRes?.has_next;
-        if (hasNext === false || !nextCursor || String(nextCursor) === String(cursor)) break;
-        cursor = String(nextCursor);
-      }
-      return localPostings;
-    } catch (error) {
-      if (!String(error?.message || "").includes("PERIOD_IS_TOO_LONG")) throw error;
-      const rangeDuration = rangeEnd.getTime() - rangeStart.getTime();
-      if (
-        splitDepth >= FBS_MAX_RANGE_SPLIT_DEPTH ||
-        !Number.isFinite(rangeDuration) ||
-        rangeDuration <= FBS_MIN_RANGE_DURATION_MS
-      ) {
-        throw error;
-      }
-      const midpoint = rangeStart.getTime() + Math.floor(rangeDuration / 2);
-      if (midpoint <= rangeStart.getTime() || midpoint >= rangeEnd.getTime()) throw error;
-      const midDate = new Date(midpoint);
-      const frontPostings = await fetchFbsPostingsForRange(
-        store,
-        rangeStart,
-        midDate,
-        splitDepth + 1,
-      );
-      const backPostings = await fetchFbsPostingsForRange(
-        store,
-        midDate,
-        rangeEnd,
-        splitDepth + 1,
-      );
-      return [...frontPostings, ...backPostings];
-    }
-  }
-
-  function postingSyncContextKey(store, postingId) {
-    return `${String(store?.id || "")}\u0000${String(postingId || "")}`;
-  }
-
-  function recordSyncedPosting(syncContext, store, postingId, fields) {
-    const key = postingSyncContextKey(store, postingId);
-    const previous = syncContext.postingsByIdentity.get(key) || {};
-    syncContext.postingsByIdentity.set(key, { ...previous, ...fields });
-  }
-
-  async function syncPostings(state, store, syncContext, sinceDays = 30) {
-    state.caches = state.caches && typeof state.caches === "object" ? state.caches : {};
-    state.caches.postings = Array.isArray(state.caches.postings) ? state.caches.postings : [];
-    let imported = 0;
-    const nowDate = now();
-    const totalDays = Math.max(1, Math.min(Number(sinceDays) || 30, 365));
-    const batchDays = 28;
-
-    for (let offset = 0; offset < totalDays; offset += batchDays) {
-      const batchEnd = new Date(nowDate.getTime() - Math.max(0, offset) * 24 * 60 * 60 * 1000);
-      const batchStart = new Date(
-        nowDate.getTime() - Math.min(totalDays, offset + batchDays) * 24 * 60 * 60 * 1000,
-      );
-      const postings = await fetchFbsPostingsForRange(store, batchStart, batchEnd);
-      for (const raw of postings) {
-        const id = raw.posting_number || raw.order_id || raw.id;
-        const currencyCode = resolvePostingCurrencyCode(raw, {
-          fallbackCurrencyCode: store.currencyCode || store.currency || store.companyCurrency,
-        });
-        const syncedFields = {
-          ...raw,
-          ...(currencyCode === "UNKNOWN" ? {} : { currency_code: currencyCode }),
-          id: String(id),
-          ...cacheItemScope(store, store.ownerAccountId),
-          syncedAt: nowIso(),
-        };
-        recordSyncedPosting(syncContext, store, id, syncedFields);
-        const existing = state.caches.postings.find((item) =>
-          String(item.id || item.posting_number || item.order_id || "") === String(id || "") &&
-          cacheItemMatchesStore(item, store)
-        ) || {};
-        upsertCacheItemByStore(
-          state.caches.postings,
-          store,
-          id,
-          {
-            ...existing,
-            ...syncedFields,
-          },
-          ["id", "posting_number", "order_id"],
-        );
-        imported += 1;
-      }
-    }
-
-    let fboLastId = "";
-    for (let page = 0; page < 50; page += 1) {
-      const fboPayload = { limit: 100, with: { analytics_data: true } };
-      if (fboLastId) fboPayload.last_id = fboLastId;
-      const fboRes = await callOzonSellerApi(store, "/v2/posting/fbo/list", fboPayload);
-      const nextFboLastId = String(fboRes?.result?.last_id || "");
-      if (nextFboLastId && nextFboLastId === fboLastId) {
-        const error = new Error("Ozon FBO 分页游标未推进");
-        error.status = 502;
-        error.code = "OZON_PAGINATION_STALLED";
-        throw error;
-      }
-      const fboPostings = fboRes?.result?.postings || [];
-      if (!fboPostings.length) break;
-      for (const raw of fboPostings) {
-        const id = raw.posting_number || raw.order_id || raw.id;
-        const currencyCode = resolvePostingCurrencyCode(raw, {
-          fallbackCurrencyCode: store.currencyCode || store.currency || store.companyCurrency,
-        });
-        const syncedFields = {
-          ...raw,
-          ...(currencyCode === "UNKNOWN" ? {} : { currency_code: currencyCode }),
-          id: String(id),
-          ...cacheItemScope(store, store.ownerAccountId),
-          syncedAt: nowIso(),
-          shipment_type: "FBO",
-        };
-        recordSyncedPosting(syncContext, store, id, syncedFields);
-        const existing = state.caches.postings.find((item) =>
-          String(item.id || item.posting_number || item.order_id || "") === String(id || "") &&
-          cacheItemMatchesStore(item, store)
-        ) || {};
-        upsertCacheItemByStore(
-          state.caches.postings,
-          store,
-          id,
-          {
-            ...existing,
-            ...syncedFields,
-          },
-          ["id", "posting_number", "order_id"],
-        );
-        imported += 1;
-      }
-      fboLastId = nextFboLastId;
-      if (!fboLastId) break;
-    }
-
-    return imported;
-  }
-
   async function syncWarehouses(state, store) {
     state.caches = state.caches && typeof state.caches === "object" ? state.caches : {};
     const response = await callOzonSellerApi(store, "/v2/warehouse/list", {});
@@ -838,31 +677,11 @@ export function createOzonSyncService({
     return scopedWarehouses.length;
   }
 
-  async function syncPromotions(state, store) {
-    state.caches = state.caches && typeof state.caches === "object" ? state.caches : {};
-    const response = await getOzonSellerApi(store, "/v1/actions");
-    const items = Array.isArray(response)
-      ? response
-      : (
-        Array.isArray(response?.result)
-          ? response.result
-          : (response?.result?.items || response?.items || response?.actions || [])
-      );
-    const promotions = (Array.isArray(items) ? items : []).map((raw) => ({
-      ...raw,
-      id: String(raw.id || raw.action_id || raw.title || crypto.randomUUID()),
-      ...cacheItemScope(store, store.ownerAccountId),
-      syncedAt: nowIso(),
-    }));
-    state.caches.promotions = [
-      ...(Array.isArray(state.caches.promotions) ? state.caches.promotions : [])
-        .filter((item) => !cacheItemMatchesStore(item, store)),
-      ...promotions,
-    ];
-    return promotions.length;
-  }
-
-  async function commitLocalSyncResult(workingState, store, accountId, type, report, syncContext) {
+  async function commitLocalSyncResult(workingState, store, accountId, type, report) {
+    const cacheKey = {
+      PRODUCTS: "products",
+      WAREHOUSES: "warehouses",
+    }[type];
     const { latest } = await mutateLatestStateWithConflictRetry((state) => {
       const latestStore = activeStore(state, store.id, accountId);
       if (!latestStore) {
@@ -872,46 +691,11 @@ export function createOzonSyncService({
         throw error;
       }
       state.caches = state.caches && typeof state.caches === "object" ? state.caches : {};
-      const cacheKey = {
-        PRODUCTS: "products",
-        POSTINGS: "postings",
-        WAREHOUSES: "warehouses",
-        PROMOTIONS: "promotions",
-      }[type];
-      if (type === "POSTINGS") {
-        const reportStartedAt = Date.parse(report.createdAt);
-        const latestPostings = Array.isArray(state.caches.postings) ? state.caches.postings : [];
-        for (const [identityKey, posting] of syncContext.postingsByIdentity) {
-          const syncedAt = Date.parse(posting?.syncedAt);
-          const id = posting.id || posting.posting_number || posting.order_id;
-          if (
-            identityKey !== postingSyncContextKey(store, id) ||
-            !Number.isFinite(reportStartedAt) ||
-            !Number.isFinite(syncedAt) ||
-            syncedAt < reportStartedAt
-          ) {
-            continue;
-          }
-          const latestPosting = latestPostings.find((item) =>
-            String(item.id || item.posting_number || item.order_id || "") === String(id || "") &&
-            cacheItemMatchesStore(item, latestStore)
-          ) || {};
-          upsertCacheItemByStore(
-            latestPostings,
-            latestStore,
-            id,
-            { ...latestPosting, ...posting },
-            ["id", "posting_number", "order_id"],
-          );
-        }
-        state.caches.postings = latestPostings;
-      } else {
-        state.caches[cacheKey] = [
-          ...(Array.isArray(state.caches[cacheKey]) ? state.caches[cacheKey] : [])
-            .filter((item) => !cacheItemMatchesStore(item, latestStore)),
-          ...cacheItemsForStore(workingState.caches?.[cacheKey], store),
-        ];
-      }
+      state.caches[cacheKey] = [
+        ...(Array.isArray(state.caches[cacheKey]) ? state.caches[cacheKey] : [])
+          .filter((item) => !cacheItemMatchesStore(item, latestStore)),
+        ...cacheItemsForStore(workingState.caches?.[cacheKey], store),
+      ];
       for (const key of [
         "companyName",
         "shopName",
@@ -926,6 +710,9 @@ export function createOzonSyncService({
         if (Object.hasOwn(store, key)) latestStore[key] = store[key];
       }
       appendSyncReport(state, report);
+    }, {
+      hydrateCatalog: false,
+      catalogMutation: { storeId: store.id, kind: cacheKey },
     });
     return latest;
   }
@@ -938,14 +725,12 @@ export function createOzonSyncService({
     requestId = "",
     deviceId = "",
     source = "",
-    postingsSinceDays,
   } = {}) {
     const upper = String(type || "").toUpperCase();
     const requestAccountId = String(accountId || "").trim();
     const requestedStoreId = String(storeId || "").trim();
     const normalizedClientJobId = cleanText(jobId || createJobId(), 240);
     const normalizedRequestId = cleanText(requestId || normalizedClientJobId, 240);
-    const normalizedSinceDays = normalizedPostingsSinceDays(upper, postingsSinceDays);
     const normalizedTaskId = storeSyncTaskId({
       accountId: requestAccountId,
       storeId: requestedStoreId,
@@ -966,7 +751,6 @@ export function createOzonSyncService({
         requestId: normalizedRequestId,
       });
     }
-    const supportedTypes = new Set(["PRODUCTS", "POSTINGS", "WAREHOUSES", "PROMOTIONS"]);
     const workingState = structuredClone(state);
     const store = activeStore(workingState, requestedStoreId, requestAccountId);
     if (!store) {
@@ -982,15 +766,27 @@ export function createOzonSyncService({
         requestId: normalizedRequestId,
       });
     }
+    if (!SUPPORTED_SYNC_TYPES.has(upper)) {
+      const retired = RETIRED_SYNC_TYPES.has(upper);
+      const error = new Error(retired ? "该运营辅助同步已停用" : "Ozon 本地同步尚未迁移到服务");
+      error.status = retired ? 410 : 501;
+      error.code = retired ? "FEATURE_RETIRED" : "ZONGZI_SYNC_UNSUPPORTED";
+      throw attachSyncErrorContext(error, {
+        accountId: requestAccountId,
+        storeId: requestedStoreId,
+        type: upper,
+        timestamp: createdAt,
+        taskId: normalizedTaskId,
+        requestId: normalizedRequestId,
+        store,
+      });
+    }
     const report = {
       id: normalizedTaskId,
       taskId: normalizedTaskId,
       clientJobId: normalizedClientJobId,
       requestId: normalizedRequestId,
-      requestHash: storeSyncRequestHash({
-        requestId: normalizedRequestId,
-        postingsSinceDays: normalizedSinceDays,
-      }),
+      requestHash: storeSyncRequestHash({ requestId: normalizedRequestId }),
       jobKind: STORE_SYNC_JOB_KIND,
       accountId: requestAccountId,
       storeId: store.id,
@@ -1033,12 +829,6 @@ export function createOzonSyncService({
         });
       }
       try {
-        if (!supportedTypes.has(upper)) {
-          const error = new Error("Ozon 本地同步尚未迁移到服务");
-          error.status = 501;
-          error.code = "OZON_SYNC_UNSUPPORTED";
-          throw error;
-        }
         let profileError = "";
         try {
           await syncStoreProfile(workingState, store);
@@ -1047,14 +837,9 @@ export function createOzonSyncService({
           profileError = sanitizedSyncText(error?.message || error, store, 240);
           store.profileSyncError = profileError;
         }
-        const syncContext = {
-          postingsByIdentity: new Map(),
-        };
         const syncByType = {
           PRODUCTS: () => syncProducts(workingState, store),
-          POSTINGS: () => syncPostings(workingState, store, syncContext, normalizedSinceDays),
           WAREHOUSES: () => syncWarehouses(workingState, store),
-          PROMOTIONS: () => syncPromotions(workingState, store),
         };
         report.fetchedCount = await syncByType[upper]();
         report.status = "SUCCESS";
@@ -1073,7 +858,6 @@ export function createOzonSyncService({
           requestAccountId,
           upper,
           report,
-          syncContext,
         );
         return report;
       } catch (error) {

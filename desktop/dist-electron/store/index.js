@@ -37,7 +37,7 @@ function readSecure(key) {
             return JSON.parse(safeStorage.decryptString(Buffer.from(String(encrypted), 'base64')));
         }
         catch {
-            store.delete(secureKey(key));
+            // Keep the ciphertext if OS credentials are temporarily unavailable during migration.
         }
     }
 

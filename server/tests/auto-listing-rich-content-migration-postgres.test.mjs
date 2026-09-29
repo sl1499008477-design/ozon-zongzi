@@ -17,7 +17,11 @@ if (!enabled) {
       legacyTerminalPreserved: true,
       nullAcceptedRejected: true,
       fullScopeLeaseCas: true,
+      expiredLeaseReclaimed: true,
       acceptedReplayUnique: true,
+      historicalCheckerSupersetAccepted: true,
+      derivedNumericProjectionAccepted: true,
+      mismatchedSharedFactRejected: true,
     });
   });
 }

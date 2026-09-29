@@ -33,6 +33,38 @@ function storedRow(overrides = {}) {
     height: content.height, size_bytes: content.sizeBytes, ...overrides,
   });
 }
+function acceptedAnalysisRow(overrides = {}) {
+  const analysis = {
+    accountId: scope.accountId,
+    jobId: scope.jobId,
+    itemId: scope.itemId,
+    owner: { kind: "SOURCE_IMAGE_ANALYSIS", id: "analysis-run-a" },
+    sourceAssetId: scope.sourceAssetId,
+    sourceRefHash: scope.sourceRefHash,
+    inputHash: scope.inputHash,
+    expectedStatusVersion: scope.expectedStatusVersion,
+    attemptNo: 1,
+    objectKeyVersion: "SOURCE_V2",
+    ...content,
+  };
+  return row({
+    parent_plan_id: null,
+    source_analysis_run_id: analysis.owner.id,
+    status: "ACCEPTED",
+    lease_owner: null,
+    lease_token: null,
+    lease_expires_at: null,
+    object_key_version: analysis.objectKeyVersion,
+    object_key: buildSourceMaterializationObjectKey(analysis),
+    content_hash: content.contentHash,
+    content_type: content.contentType,
+    width: content.width,
+    height: content.height,
+    size_bytes: content.sizeBytes,
+    accepted_at: new Date(),
+    ...overrides,
+  });
+}
 function transactionalPool(handler) {
   const calls = [];
   const client = {
@@ -133,6 +165,59 @@ test("PostgreSQL list is exact-scope, deterministically ordered and bounded at t
   assert.match(calls[0].sql, /WHERE account_id=\$1 AND job_id=\$2 AND item_id=\$3 AND parent_plan_id=\$4[\s\S]*expected_status_version=\$5 AND status='ACCEPTED'/i);
   assert.match(calls[0].sql, /ORDER BY source_asset_id,attempt_no LIMIT \$6/i);
   assert.deepEqual(calls[0].parameters.slice(4), [4, 8]);
+});
+
+test("PostgreSQL immutable listing uses one explicit source-analysis owner and preserves the legacy plan query", async () => {
+  const analysisRow = acceptedAnalysisRow();
+  const legacyRow = storedRow({
+    status: "ACCEPTED", lease_owner: null, lease_token: null,
+    lease_expires_at: null, accepted_at: new Date(),
+  });
+  const calls = [];
+  const pool = {
+    async query(sql, parameters) {
+      calls.push({ sql, parameters });
+      return { rows: [parameters.length >= 6 ? analysisRow : legacyRow], rowCount: 1 };
+    },
+  };
+  const repository = createPostgresSourceMaterializationRepository({ pool, maxRows: 7 });
+
+  const analysisRows = await repository.listAcceptedSourceMaterializationsForPlan({
+    accountId: scope.accountId,
+    jobId: scope.jobId,
+    itemId: scope.itemId,
+    parentPlanId: scope.parentPlanId,
+    sourceImageAnalysisRunId: "analysis-run-a",
+  });
+  const inheritedRows = await repository.listAcceptedSourceMaterializationsForPlan({
+    accountId: scope.accountId,
+    jobId: scope.jobId,
+    itemId: scope.itemId,
+    parentPlanId: scope.parentPlanId,
+    sourceImageAnalysisRunId: "analysis-run-derived",
+    sourceMaterializationAnalysisRunId: "analysis-run-a",
+  });
+  const legacyRows = await repository.listAcceptedSourceMaterializationsForPlan({
+    accountId: scope.accountId,
+    jobId: scope.jobId,
+    itemId: scope.itemId,
+    parentPlanId: scope.parentPlanId,
+  });
+
+  assert.deepEqual(analysisRows[0].owner, { kind: "SOURCE_IMAGE_ANALYSIS", id: "analysis-run-a" });
+  assert.deepEqual(inheritedRows[0].owner, { kind: "SOURCE_IMAGE_ANALYSIS", id: "analysis-run-a" });
+  assert.equal(legacyRows[0].parentPlanId, scope.parentPlanId);
+  assert.match(calls[0].sql, /JOIN ai_content_plans AS parent[\s\S]*parent\.id=\$4[\s\S]*parent\.source_image_analysis_run_id=\$5/iu);
+  assert.match(calls[0].sql, /attempt\.source_analysis_run_id=\$5[\s\S]*attempt\.status='ACCEPTED'/iu);
+  assert.doesNotMatch(calls[0].sql, /\sOR\s/iu);
+  assert.deepEqual(calls[0].parameters, ["account-a", "job-a", "item-a", "plan-a", "analysis-run-a", 8]);
+  assert.match(calls[1].sql, /parent\.source_image_analysis_run_id=\$5/iu);
+  assert.match(calls[1].sql, /attempt\.source_analysis_run_id=\$6/iu);
+  assert.deepEqual(calls[1].parameters, [
+    "account-a", "job-a", "item-a", "plan-a", "analysis-run-derived", "analysis-run-a", 8,
+  ]);
+  assert.match(calls[2].sql, /parent_plan_id=\$4[\s\S]*status='ACCEPTED'/iu);
+  assert.deepEqual(calls[2].parameters, ["account-a", "job-a", "item-a", "plan-a", 8]);
 });
 
 test("PostgreSQL errors and internal generator failures are normalized without raw database or URL text", async () => {

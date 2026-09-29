@@ -53,7 +53,7 @@
   const isTrustedWebBridgeSender = (sender) => {
     try {
       const url = new URL(String(sender?.url || ''));
-      return (url.protocol === 'https:' && (url.hostname === 'qh.jizhangerp.com' || url.hostname.endsWith('.qh.jizhangerp.com')))
+      return (url.protocol === 'https:' && (url.hostname === 'www.ozonzongzi.com' || url.hostname.endsWith('.www.ozonzongzi.com')))
         || (url.protocol === 'http:' && ['localhost', '127.0.0.1', 'store.localhost'].includes(url.hostname) && url.port === '3000');
     } catch { return false; }
   };

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import test from "node:test";
 import { normalizeOzonImportItems } from "../ozon-import-normalizer.mjs";
 
 const tree = [
@@ -48,9 +49,14 @@ async function normalize(items, options = {}) {
     targetStoreId: options.targetStoreId,
     now: options.now,
     allowUnresolvedRequiredDictionaryValues: !!options.allowUnresolvedRequiredDictionaryValues,
+    searchCategoryAttributeValuesExact: options.searchCategoryAttributeValuesExact,
     getCategoryTree: async () => options.tree || tree,
     getCategoryAttributes: async () => options.attrs || attrs,
-    getCategoryAttributeValues: async (_descriptionCategoryId, _typeId, attributeId) => {
+    getCategoryAttributeValues: async (_descriptionCategoryId, _typeId, attributeId, dictionaryOptions = {}) => {
+      if (dictionaryOptions.language === "ZH_HANS") {
+        if (options.localizedAttributeValuesError?.[Number(attributeId)]) throw options.localizedAttributeValuesError[Number(attributeId)];
+        return options.localizedAttributeValues?.[Number(attributeId)] || [];
+      }
       if (options.attributeValuesError?.[Number(attributeId)] || options.attributeValuesError?.[String(attributeId)]) {
         throw new Error(options.attributeValuesError[Number(attributeId)] || options.attributeValuesError[String(attributeId)]);
       }
@@ -63,6 +69,7 @@ function collectedCategoryItem({ offerId, descriptionCategoryId, typeName, typeI
   return {
     offer_id: offerId,
     name: `Collected ${offerId}`,
+    weight: 230, depth: 140, width: 150, height: 160,
     price: "100.00",
     images: [`https://cdn.example.test/${offerId}.jpg`],
     _sourceVariant: {
@@ -548,6 +555,7 @@ async function testFollowSellPayloadToOzonImportItem() {
 async function testListingDraftTitleWinsBeforeSkuFallback() {
   const result = await normalize([{
     offer_id: "jz-test-2916074139",
+    weight: 230, depth: 140, width: 150, height: 160,
     title: "Светильник с датчиком движения, 50 см, свет холодный, набор 2 штуки",
     scraped_sku: "2916074139",
     price: "100.00",
@@ -584,6 +592,7 @@ async function testSearchTypeDictionaryValueCanRecoverRealDescriptionCategory() 
   const result = await normalize([
     {
       offer_id: "jz-test-faucet",
+      weight: 230, depth: 140, width: 150, height: 160,
       name: "Смеситель для кухни",
       price: "1025.00",
       images: [{ file_name: "https://cdn.example.test/faucet.jpg", default: true }],
@@ -730,7 +739,7 @@ async function testValidRichContentTemplateCanPass() {
   ], { strictTypeMatch: true });
 
   const byId = new Map(result.items[0].attributes.map((attr) => [attr.id, attr]));
-  assert.equal(JSON.parse(byId.get(11254).values[0].value).widgetName, "raShowcase");
+  assert.equal(JSON.parse(byId.get(11254).values[0].value).content[0].widgetName, "raShowcase");
 }
 
 async function testFrontendRichContentWrapperIsConvertedBeforeUpload() {
@@ -746,6 +755,7 @@ async function testFrontendRichContentWrapperIsConvertedBeforeUpload() {
           },
         ],
       },
+      { widgetName: "raTextBlock", text: { content: ["Сохранить второй блок"] } },
     ],
     version: 0.3,
   });
@@ -768,11 +778,7 @@ async function testFrontendRichContentWrapperIsConvertedBeforeUpload() {
 
   const byId = new Map(result.items[0].attributes.map((attr) => [attr.id, attr]));
   const uploaded = JSON.parse(byId.get(11254).values[0].value);
-  assert.equal(uploaded.widgetName, "raShowcase");
-  assert.equal(uploaded.type, "roll");
-  assert.equal(Array.isArray(uploaded.blocks), true);
-  assert.equal(uploaded.content, undefined);
-  assert.equal(uploaded.version, undefined);
+  assert.deepEqual(uploaded, JSON.parse(richContent));
 }
 
 async function testHashtagsAreSanitizedForOzon() {
@@ -793,7 +799,8 @@ async function testHashtagsAreSanitizedForOzon() {
   ], { strictTypeMatch: true });
 
   const byId = new Map(result.items[0].attributes.map((attr) => [attr.id, attr]));
-  const tags = byId.get(23171).values.map((value) => value.value);
+  assert.equal(byId.get(23171).values.length, 1);
+  const tags = byId.get(23171).values[0].value.split(" ");
   assert.deepEqual(tags, ["#Уличный", "#светильник", "#LED", "#lamp", "#bad"]);
   assert.equal(tags.every((tag) => /^#[\p{L}\p{N}_]{1,29}$/u.test(tag)), true);
 }
@@ -822,7 +829,7 @@ async function testHashtagsUseCategorySpecificAttributeId() {
 
   const byId = new Map(result.items[0].attributes.map((attr) => [attr.id, attr]));
   assert.equal(byId.has(23171), false);
-  assert.deepEqual(byId.get(22508).values.map((value) => value.value), ["#светильник", "#LED"]);
+  assert.deepEqual(byId.get(22508).values.map((value) => value.value), ["#светильник #LED"]);
 }
 
 async function testOptionalUnresolvedDictionaryAttributeIsOmitted() {
@@ -881,7 +888,7 @@ async function testRequiredUnresolvedDictionaryFailsBeforeOzon() {
       attrs: [...attrs, { id: 778, dictionary_id: 701, is_required: true, name: "必填字典" }],
       attributeValues: { 778: [{ id: 1, value: "known value" }] },
     }),
-    (error) => error.status === 422 && error.code === "OZON_CATEGORY_DATA_INVALID" &&
+    (error) => error.status === 422 && error.code === "ZONGZI_CATEGORY_DATA_INVALID" &&
       error.body?.operation === "REQUIRED_DICTIONARY_VALUE" && error.cause === null,
   );
 }
@@ -997,7 +1004,7 @@ function requiredDictionaryItem(attributeId) {
 }
 
 async function testCategoryDictionaryFetchErrorsPropagateWithoutLeakingCause() {
-  for (const [status, code] of [[503, "OZON_CATEGORY_VALUES_UNAVAILABLE"], [504, "OZON_CATEGORY_VALUES_UNAVAILABLE"]]) {
+  for (const [status, code] of [[503, "ZONGZI_CATEGORY_VALUES_UNAVAILABLE"], [504, "ZONGZI_CATEGORY_VALUES_UNAVAILABLE"]]) {
     const source = new Error("未能从 Ozon 获取真实类目数据，请重试");
     source.status = status;
     source.code = code;
@@ -1022,7 +1029,7 @@ async function testUnresolvedRequiredDictionaryUsesStableSafeCategoryError() {
       getCategoryAttributes: async () => [...attrs, { id: 882, dictionary_id: 882, is_required: true, name: "Required dictionary" }],
       getCategoryAttributeValues: async () => [],
     }),
-    (error) => error.status === 422 && error.code === "OZON_CATEGORY_DATA_INVALID" &&
+    (error) => error.status === 422 && error.code === "ZONGZI_CATEGORY_DATA_INVALID" &&
       error.message === "必填字典属性未匹配到 Ozon 字典值，请检查后重试" &&
       error.body?.operation === "REQUIRED_DICTIONARY_VALUE" && error.cause === null,
   );
@@ -1066,3 +1073,528 @@ await testUnresolvedRequiredDictionaryUsesStableSafeCategoryError();
 await testNonCategoryFailureKeepsWarningWhenStrictTypeMatchIsFalse();
 
 console.log("ozon import normalizer ok");
+
+
+test("source OZN barcodes cannot reach either import barcode carrier", async () => {
+  for (const sku of ["1553617193", "3376550236", "1553617193-legacy"]) {
+    const result = await normalize([strictCategoryItem({
+      barcode: "OZN" + sku,
+      attributes: [{ id: 7822, values: [{ value: "OZN" + sku }] }],
+      _bundleItem: { barcode: "OZN" + sku },
+      _sourceVariant: { attributes: [{ key: "7822", value: "OZN" + sku }] },
+    })], { strictTypeMatch: true });
+    assert.equal(Object.hasOwn(result.items[0], "barcode"), false);
+    assert.equal(result.items[0].attributes.some(attribute => attribute.id === 7822), false);
+  }
+});
+
+test("real seller barcodes survive filtering mixed source barcode values", async () => {
+  const result = await normalize([strictCategoryItem({
+    barcode: "4600000000001",
+    attributes: [{ id: 7822, values: [{ value: "OZN1553617193" }, { value: "4600000000001" }] }],
+    _sourceVariant: { attributes: [{ key: "7822", value: "OZN1553617193" }] },
+  })], { strictTypeMatch: true });
+  assert.equal(result.items[0].barcode, "4600000000001");
+  assert.deepEqual(result.items[0].attributes.find(attribute => attribute.id === 7822).values,
+    [{ value: "4600000000001" }]);
+});
+
+test("a collected dictionary ID remains usable when display text is absent", async () => {
+  const result = await normalize([strictCategoryItem({
+    attributes: [],
+    _sourceVariant: { attributes: [{ id: 777, values: [{ dictionary_value_id: 42 }] }] },
+  })], { strictTypeMatch: true, attrs: [...attrs, { id: 777, dictionary_id: 700 }] });
+  assert.deepEqual(result.items[0].attributes.find(attribute => attribute.id === 777)?.values,
+    [{ dictionary_value_id: 42 }]);
+});
+
+test("dictionary values absent from the first page are resolved by exact search", async () => {
+  const result = await normalize([strictCategoryItem({
+    attributes: [{ id: 777, values: [{ value: "Late dictionary value" }] }],
+  })], {
+    strictTypeMatch: true,
+    attrs: [...attrs, { id: 777, dictionary_id: 700 }],
+    attributeValues: { 777: [{ id: 1, value: "First dictionary value" }] },
+    searchCategoryAttributeValuesExact: async (categoryId, typeId, attributeId, value) => {
+      assert.deepEqual([categoryId, typeId, attributeId, value], [17031664, 971001, 777, "Late dictionary value"]);
+      return [{ id: 1001, value: "Late dictionary value" }];
+    },
+  });
+  assert.deepEqual(result.items[0].attributes.find(attribute => attribute.id === 777)?.values,
+    [{ value: "Late dictionary value", dictionary_value_id: 1001 }]);
+});
+
+test("valid nested rich content survives an already truncated top-level copy", async () => {
+  const rich = JSON.stringify({ content: [{ widgetName: "raTextBlock", text: { content: ["Long description ".repeat(80).trim()] } }], version: 0.3 });
+  const result = await normalize([strictCategoryItem({
+    richContent: rich.slice(0, 500),
+    _sourceVariant: { richContent: rich, attributes: [] },
+  })], { strictTypeMatch: true });
+  assert.deepEqual(JSON.parse(result.items[0].attributes.find(attribute => attribute.id === 11254)?.values[0].value || "null"),
+    JSON.parse(rich));
+});
+
+test("canonical video groups retain separate entries and category filtering", async () => {
+  const groups = ["one", "two"].map(name => ({ attributes: [
+    { id: 100001, complex_id: 77, values: [{ value: "https://cdn.example.test/" + name + ".mp4" }] },
+    { id: 99999, complex_id: 77, values: [{ value: "not allowed" }] },
+  ] }));
+  const result = await normalize([strictCategoryItem({ complex_attributes: groups })], { strictTypeMatch: true });
+  assert.deepEqual(result.items[0].complex_attributes, [
+    { attributes: [{ id: 100001, complex_id: 77, values: [{ value: "https://cdn.example.test/one.mp4" }] }] },
+    { attributes: [{ id: 100001, complex_id: 77, values: [{ value: "https://cdn.example.test/two.mp4" }] }] },
+  ]);
+});
+
+test("source complex attributes go to the complex carrier only", async () => {
+  const result = await normalize([strictCategoryItem({
+    _sourceVariant: { attributes: [{ id: 100001, complex_id: 77, values: [{ value: "https://cdn.example.test/source.mp4" }] }] },
+  })], { strictTypeMatch: true });
+  assert.equal(result.items[0].attributes.some(attribute => attribute.id === 100001), false);
+  assert.deepEqual(result.items[0].complex_attributes, [{
+    attributes: [{ id: 100001, complex_id: 77, values: [{ value: "https://cdn.example.test/source.mp4" }] }],
+  }]);
+});
+
+
+test("Chinese Seller values resolve by platform dictionary ID while Russian values stay intact", async () => {
+  const result = await normalize([strictCategoryItem({
+    attributes: [],
+    _sourceVariant: { attributes: [
+      { key: "8385", value: "暖白色" }, { key: "6324", value: "机械" },
+      { key: "10096", value: "Черно-серый" }, { key: "4400", value: "12V/24V" },
+    ] },
+  })], {
+    strictTypeMatch: true,
+    attrs: [...attrs, ...[8385, 6324, 10096, 4400].map(id => ({ id, dictionary_id: id }))],
+    // Test dictionary IDs model the platform's shared IDs, not a translation table used by production.
+    attributeValues: {
+      8385: [{ id: 101, value: "Теплый белый" }], 6324: [{ id: 102, value: "Механический" }],
+      10096: [{ id: 103, value: "Черно-серый" }], 4400: [{ id: 104, value: "12В/24В" }],
+    },
+    localizedAttributeValues: {
+      8385: [{ id: 101, value: "暖白色" }], 6324: [{ id: 102, value: "机械" }],
+      10096: [{ id: 103, value: "黑灰色" }], 4400: [{ id: 104, value: "12V/24V" }],
+    },
+  });
+  for (const [id, dictionaryId, value] of [
+    [8385, 101, "Теплый белый"], [6324, 102, "Механический"],
+    [10096, 103, "Черно-серый"], [4400, 104, "12В/24В"],
+  ]) assert.deepEqual(result.items[0].attributes.find(attribute => attribute.id === id)?.values,
+    [{ value, dictionary_value_id: dictionaryId }]);
+});
+
+
+test("source HTML description retains only existing paragraph and break tags in 4191 without inventing rich JSON", async () => {
+  const result = await normalize([strictCategoryItem({
+    scraped_description: "Short flattened copy",
+    _sourceVariant: { attributes: [], descriptionHTML: '<p class="source">Первый <b>абзац</b>.</p><p>Второй<br>Продолжение.</p>' },
+  })], { strictTypeMatch: true });
+  assert.equal(result.items[0].attributes.find(attribute => attribute.id === 4191)?.values[0].value,
+    "<p>Первый абзац.</p><p>Второй<br/>Продолжение.</p>");
+  assert.equal(result.items[0].attributes.some(attribute => attribute.id === 11254), false);
+});
+
+test("existing JSON rich content remains independent of the source HTML description", async () => {
+  const rich = JSON.stringify({ content: [{ widgetName: "raTextBlock", text: { content: ["Existing rich text"] } }], version: 0.3 });
+  const result = await normalize([strictCategoryItem({
+    descriptionHTML: "Первый абзац.<br/><br/>Второй абзац.", richContent: rich,
+  })], { strictTypeMatch: true });
+  assert.equal(result.items[0].attributes.find(attribute => attribute.id === 4191)?.values[0].value,
+    "Первый абзац.<br/><br/>Второй абзац.");
+  assert.deepEqual(JSON.parse(result.items[0].attributes.find(attribute => attribute.id === 11254)?.values[0].value || "null"), JSON.parse(rich));
+});
+
+test("description conversion keeps list items, table cells and headings separated", async () => {
+  const result = await normalize([strictCategoryItem({
+    descriptionHTML: '<h2>Основные характеристики</h2><table><tr><th>Параметр</th><th>Значение</th></tr><tr><td>Диапазон частот</td><td>9 кГц – 6,4 ГГц</td></tr></table><ul class="features"><li>Два канала</li><li>USB Type-C</li></ul>',
+  })], { strictTypeMatch: true });
+  const description = result.items[0].attributes.find(attribute => attribute.id === 4191)?.values[0].value;
+  assert.match(description, /Основные характеристики<br\/>/);
+  assert.match(description, /Параметр Значение/);
+  assert.match(description, /Диапазон частот 9 кГц – 6,4 ГГц/);
+  assert.match(description, /<ul><li>Два канала<\/li><li>USB Type-C<\/li><\/ul>/);
+  assert.doesNotMatch(description, /характеристикиПараметр|ПараметрЗначение|каналаUSB|class=/);
+});
+
+test("an unusable JSON-LD fallback is retained in source but omitted from submission with an explanation", async () => {
+  const description = 'Основные характеристикиПараметрЗначениеДиапазон частот. Совместим с фильтрамиосциллографамилабораторными системами.';
+  const rich = JSON.stringify({ content: [{ widgetName: "raShowcase", blocks: [{ img: { src: "https://cdn.example.test/description.jpg" } }] }], version: 0.3 });
+  const source = strictCategoryItem({ scraped_description: description, description, richContent: rich,
+    contentDiagnostics: { description: { source: "json_ld", status: "provided" } } });
+  const before = structuredClone(source);
+  const result = await normalize([source], { strictTypeMatch: true });
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].attributes.some(attribute => attribute.id === 4191), false);
+  assert.deepEqual(JSON.parse(result.items[0].attributes.find(attribute => attribute.id === 11254)?.values[0].value), JSON.parse(rich));
+  assert.match(result.warnings.join(" "), /简介.*机器摘要.*27.*原文.*保留.*未.*提交/);
+  assert.deepEqual(source, before);
+});
+
+test("same-SKU Seller description is preferred to a malformed JSON-LD fallback", async () => {
+  const result = await normalize([strictCategoryItem({
+    scraped_description: 'Основные характеристикиПараметрЗначениеДиапазон частот',
+    contentDiagnostics: { description: { source: "json_ld", status: "provided" } },
+    _sourceVariant: { attributes: [{ id: 4191, values: [{ value: '<p>Генератор с двумя каналами.</p>' }] }] },
+  })], { strictTypeMatch: true });
+  assert.equal(result.items[0].attributes.find(attribute => attribute.id === 4191)?.values[0].value, '<p>Генератор с двумя каналами.</p>');
+  assert.doesNotMatch(result.warnings.join(" "), /机器摘要/);
+});
+
+test("ordered description lists retain a supported list container", async () => {
+  const result = await normalize([strictCategoryItem({ descriptionHTML: '<ol><li>Первый режим</li><li>Второй режим</li></ol>' })], { strictTypeMatch: true });
+  assert.equal(result.items[0].attributes.find(attribute => attribute.id === 4191)?.values[0].value,
+    '<ul><li>Первый режим</li><li>Второй режим</li></ul>');
+});
+
+test("long translated JSON-LD text still reaches the existing Russian product language gate", async () => {
+  await assert.rejects(normalize([strictCategoryItem({
+    scraped_description: '这是一段翻译后的中文商品简介不能因为文字较长而跳过原有的俄语检查要求',
+    contentDiagnostics: { description: { source: 'json_ld', status: 'provided' } },
+  })], { strictTypeMatch: true }), { code: 'ZONGZI_PRODUCT_RUSSIAN_REQUIRED' });
+});
+
+test("a valid JSON-LD fallback retains technical terms and a manual revision overrides its historical HTML", async () => {
+  for (const input of [
+    { scraped_description: 'RF-генератор SL6 Pro. Два канала CH1/CH2, управление через USB Type-C и SCPI.', contentDiagnostics: { description: { source: 'json_ld', status: 'provided' } } },
+    { scraped_description: 'Генератор с двумя каналами.', descriptionHTML: 'характеристикиПараметрЗначениеДиапазон', contentDiagnostics: { description: { source: 'manual', status: 'provided' } } },
+  ]) {
+    const result = await normalize([strictCategoryItem(input)], { strictTypeMatch: true });
+    assert.equal(result.items[0].attributes.find(attribute => attribute.id === 4191)?.values[0].value, input.scraped_description);
+    assert.doesNotMatch(result.warnings.join(" "), /机器摘要/);
+  }
+});
+
+
+test("two Chinese color SKUs resolve their own candidate subsets", async () => {
+  const requests = [];
+  const result = await normalizeOzonImportItems([
+    strictCategoryItem({ offer_id: "gray-sku", attributes: [{ id: 10096, values: [{ value: "灰" }] }] }),
+    strictCategoryItem({ offer_id: "black-gray-sku", attributes: [{ id: 10096, values: [{ value: "黑灰" }] }] }),
+  ], {
+    strictTypeMatch: true,
+    getCategoryTree: async () => tree,
+    getCategoryAttributes: async () => [{ id: 10096, dictionary_id: 10096 }],
+    getCategoryAttributeValues: async (_category, _type, _attribute, options = {}) => {
+      if (options.language !== "ZH_HANS") return [{ id: 700, value: "Серый" }, { id: 61607, value: "черно-серый" }];
+      const candidates = options.matchCandidates.map(candidate => candidate.value);
+      requests.push(candidates);
+      return [{ id: 700, value: "灰" }, { id: 61607, value: "黑灰" }].filter(value => candidates.includes(value.value));
+    },
+  });
+  assert.deepEqual(result.items.map(item => item.attributes[0].values), [
+    [{ value: "Серый", dictionary_value_id: 700 }],
+    [{ value: "черно-серый", dictionary_value_id: 61607 }],
+  ]);
+  assert.deepEqual(requests, [["灰"], ["黑灰"]]);
+});
+
+test("optional dictionary fallback outages preserve already resolved values", async () => {
+  for (const failedLookup of ["localized", "search"]) {
+    const unavailable = Object.assign(new Error("fallback unavailable"), { code: "ZONGZI_CATEGORY_VALUES_UNAVAILABLE" });
+    const result = await normalize([strictCategoryItem({
+      attributes: [{ id: 777, values: [{ value: "Known RU" }, { value: "未知值" }] }],
+    })], {
+      strictTypeMatch: true,
+      attrs: [...attrs, { id: 777, dictionary_id: 700, required: false }],
+      attributeValues: { 777: [{ id: 1, value: "Known RU" }] },
+      localizedAttributeValuesError: failedLookup === "localized" ? { 777: unavailable } : {},
+      searchCategoryAttributeValuesExact: async () => {
+        if (failedLookup === "search") throw unavailable;
+        return [];
+      },
+    });
+    assert.equal(result.items.length, 1);
+    assert.deepEqual(result.items[0].attributes.find(attribute => attribute.id === 777)?.values,
+      [{ value: "Known RU", dictionary_value_id: 1 }]);
+  }
+});
+
+test("required dictionary fallback outages keep submission failure and preview warning semantics", async () => {
+  const unavailable = Object.assign(new Error("fallback unavailable"), { code: "ZONGZI_CATEGORY_VALUES_UNAVAILABLE" });
+  const item = strictCategoryItem({ attributes: [{ id: 777, values: [{ value: "未知值" }] }] });
+  const options = {
+    strictTypeMatch: true,
+    attrs: [...attrs, { id: 777, dictionary_id: 700, required: true, name: "Required fixture" }],
+    attributeValues: { 777: [{ id: 1, value: "Known RU" }] },
+    localizedAttributeValuesError: { 777: unavailable },
+  };
+  await assert.rejects(normalize([item], options), { code: "ZONGZI_CATEGORY_DATA_INVALID", status: 422 });
+  const preview = await normalize([item], { ...options, allowUnresolvedRequiredDictionaryValues: true });
+  assert.equal(preview.items.length, 1);
+  assert.equal(preview.warnings.length, 1);
+  assert.equal(preview.items[0].attributes.some(attribute => attribute.id === 777), false);
+});
+
+
+test("optional unmapped values produce per-item warnings while retaining supplied dictionary IDs", async () => {
+  for (const unavailable of [false, true]) {
+    const result = await normalizeOzonImportItems([strictCategoryItem({ scraped_sku: "warning-sku", offer_id: "warning-offer", attributes: [
+      { id: 777, values: [{ dictionary_value_id: 42 }, { value: "未匹配颜色" }] },
+    ] })], { strictTypeMatch: true, getCategoryAttributes: async () => [{ id: 777, name: "Цвет", dictionary_id: 700 }],
+      getCategoryAttributeValues: async () => {
+        if (unavailable) throw Object.assign(new Error("private upstream detail"), { code: "ZONGZI_CATEGORY_VALUES_UNAVAILABLE", status: 502 });
+        return [];
+      },
+    });
+    assert.deepEqual(result.items[0].attributes[0].values, [{ dictionary_value_id: 42 }]);
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /warning-sku.*777.*未匹配颜色/);
+    assert.match(result.warnings[0], /未上传/);
+    assert.doesNotMatch(result.warnings[0], /private upstream/);
+    assert.deepEqual(result.itemWarnings, [{ offerId: "warning-offer", warnings: result.warnings }]);
+  }
+});
+
+test("ID-only single and multi values bypass an unavailable dictionary", async () => {
+  const result = await normalizeOzonImportItems([strictCategoryItem({ attributes: [
+    { id: 777, values: [{ dictionary_value_id: 42 }, { dictionary_value_id: 43 }] },
+    { id: 778, values: [{ dictionary_value_id: 44 }] },
+  ] })], { strictTypeMatch: true, getCategoryAttributes: async () => [777, 778].map(id => ({ id, dictionary_id: 700 })),
+    getCategoryAttributeValues: async () => { throw new Error("No dictionary lookup is needed for supplied IDs"); },
+  });
+  assert.deepEqual(result.items[0].attributes.map(attribute => attribute.values), [[{ dictionary_value_id: 42 }, { dictionary_value_id: 43 }], [{ dictionary_value_id: 44 }]]);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("optional dictionary warnings never hide account/store authorization failures", async () => {
+  for (const stage of ["primary", "localized", "search"]) {
+    const denied = Object.assign(new Error("denied"), { code: "ZONGZI_CATEGORY_STORE_FORBIDDEN", status: 403 });
+    await assert.rejects(normalizeOzonImportItems([strictCategoryItem({ attributes: [{ id: 777, values: [{ value: "unknown" }] }] })], {
+      strictTypeMatch: true, getCategoryAttributes: async () => [{ id: 777, dictionary_id: 700 }],
+      getCategoryAttributeValues: async (_category, _type, _id, options = {}) => {
+        if (stage === (options.language === "ZH_HANS" ? "localized" : "primary")) throw denied;
+        return [];
+      },
+      searchCategoryAttributeValuesExact: async () => { throw denied; },
+    }), caught => caught === denied);
+  }
+});
+
+
+test("authoritative empty values survive item/source/bundle precedence without reviving old IDs", async () => {
+  const known = id => ({ values: [{ dictionary_value_id: id }] });
+  const cases = [
+    { name: "current item clears stale source and bundle", attributes: [{ id: 777, values: [] }], source: [{ key: "777", ...known(42) }], bundle: [{ attribute_id: 777, ...known(43) }], expected: [] },
+    { name: "current source clears its historical bundle", attributes: [], source: [{ key: "777", value: "stale", values: [] }], bundle: [{ attribute_id: 777, ...known(43) }], expected: [] },
+    { name: "current item retains priority over an empty source", attributes: [{ id: 777, ...known(44) }], source: [{ key: "777", values: [] }], bundle: [{ attribute_id: 777, ...known(43) }], expected: [44] },
+    { name: "structured source retains its IDs over historical bundle", attributes: [], source: [{ key: "777", ...known(42) }], bundle: [{ attribute_id: 777, ...known(43) }], expected: [42] },
+  ];
+  for (const row of cases) {
+    const result = await normalizeOzonImportItems([strictCategoryItem({ attributes: row.attributes,
+      _sourceVariant: { attributes: row.source, _bundleItem: { attributes: row.bundle } },
+    })], { strictTypeMatch: true, getCategoryAttributes: async () => [{ id: 777, dictionary_id: 700 }],
+      getCategoryAttributeValues: async () => { throw new Error("supplied IDs require no lookup"); } });
+    assert.deepEqual((result.items[0].attributes || []).filter(attr => attr.id === 777).flatMap(attr => attr.values.map(value => value.dictionary_value_id)), row.expected, row.name);
+  }
+});
+
+test("source strict policy also honors a cleared source while compatibility text cannot revive rich JSON", async () => {
+  const rich = JSON.stringify({ version: 0.3, content: [{ widgetName: "raTextBlock", text: { content: ["Old rich"] } }] });
+  const result = await normalizeOzonImportItems([strictCategoryItem({ attributes: [{ id: 777, values: [{ dictionary_value_id: 44 }] }],
+    _sourceVariant: { attributes: [{ key: "777", values: [] }, { key: "11254", value: rich, values: [] }] },
+  })], { strictTypeMatch: true, categoryMatchPolicy: "SOURCE_CATEGORY_STRICT", sourceCategory: strictSourceCategory,
+    currentCategoryMetadata: strictMetadata([{ id: 777 }, { id: 11254 }]) });
+  assert.equal((result.items[0].attributes || []).some(attr => [777, 11254].includes(attr.id)), false);
+});
+
+
+test("localized collection label yields this SKU's Russian title without changing explicit names or reviving cleared values", async () => {
+  const nativeTitle = "Уличный настенный светильник,220V IP65 Материал из алюминиевого сплава";
+  const raw = { offer_id: "jz-2102714113-01", scraped_sku: "2102714113", name: "Lison 路灯",
+    description_category_id: 17031664, type_id: 971001, price: "123.45", currency_code: "CNY",
+    weight: 490, depth: 330, width: 40, height: 40, images: ["https://images.example.test/generated.jpg"],
+    _sourceVariant: { attributes: [{key: "4180", value: "stale title", values: [{value: nativeTitle}]}] } };
+  const original = structuredClone(raw);
+  const result = (await normalize([raw], {strictTypeMatch:true})).items[0];
+  assert.equal(result.name, nativeTitle);
+  assert.equal(result.attributes.find(a=>a.id===4180).values[0].value, nativeTitle);
+  assert.equal(result.offer_id, raw.offer_id);
+  assert.deepEqual(result.images, raw.images);
+  assert.deepEqual(raw, original);
+  for (const name of ["Светильник с изменённым названием", "Lison XR-20"]) {
+    assert.equal((await normalize([{...raw,name}], {strictTypeMatch:true})).items[0].name, name);
+  }
+  const cleared = {...raw, attributes:[{id:4180,values:[]}]};
+  await assert.rejects(normalize([cleared], {strictTypeMatch:true}), /俄语.*name|name.*俄语/,
+    "an explicitly cleared title must not be revived from collected evidence");
+  const other = {...raw, offer_id:"other-sku", _sourceVariant:{attributes:[{key:4180,values:[{value:"Другой светильник, 60 см"}]}]}};
+  assert.deepEqual((await normalize([raw,other],{strictTypeMatch:true})).items.map(item=>item.name),[nativeTitle,"Другой светильник, 60 см"]);
+});
+
+
+test("Russian source prose replaces localized prose; dictionary IDs carry facts without Chinese labels", async () => {
+  const rich = JSON.stringify({version:0.3,content:[{widgetName:"raTextBlock",text:{content:["Русское описание товара"]}}]});
+  const raw = {offer_id:"ru-source",name:"Светильник",description_category_id:17031664,type_id:971001,
+    weight:490,depth:330,width:40,height:40,price:"100.00",images:["https://cdn.test/one.jpg"],
+    scraped_description:"中文描述",richContent:JSON.stringify({version:0.3,content:[{widgetName:"raTextBlock",text:{content:["中文详情"]}}]}),
+    attributes:[{id:777,values:[{dictionary_value_id:42,value:"暖白色"}]}],
+    _sourceVariant:{description:"Русское описание товара",attributes:[{key:"11254",values:[{value:rich}]}]}};
+  const result=(await normalize([raw],{strictTypeMatch:true,attrs:[...attrs,{id:777,dictionary_id:77}]})).items[0];
+  assert.equal(result.attributes.find(a=>a.id===4191).values[0].value,"Русское описание товара");
+  assert.deepEqual(JSON.parse(result.attributes.find(a=>a.id===11254).values[0].value),JSON.parse(rich));
+  assert.deepEqual(result.attributes.find(a=>a.id===777).values,[{dictionary_value_id:42}]);
+  for(const [field, patch] of [
+    ["name",{name:"中文名称"}],
+    ["4191",{scraped_description:"中文描述",_sourceVariant:{}}],
+    ["11254",{richContent:raw.richContent,_sourceVariant:{}}],
+    ["777",{attributes:[{id:777,values:[{value:"中文自由属性"}]}]}],
+  ]) {
+    await assert.rejects(normalize([{...raw,scraped_description:"",richContent:"",_sourceVariant:{},attributes:[],...patch}],
+      {strictTypeMatch:true,attrs:[...attrs,{id:777},{id:21837},{id:21841}]}), error=>
+        error.code==="ZONGZI_PRODUCT_RUSSIAN_REQUIRED" && error.message.includes(field));
+  }
+  const withChineseVideoNames = (await normalize([{...raw,scraped_description:"",richContent:"",_sourceVariant:{},attributes:[],
+    videos:[{url:"https://cdn.test/video.mp4",name:"1月16日.mp4"},{url:"https://cdn.test/second.mp4",title:"安装演示"}]}],
+    {strictTypeMatch:true,attrs:[...attrs,{id:21837},{id:21841}]})).items[0];
+  assert.deepEqual(withChineseVideoNames.complex_attributes[0].attributes.find(attribute=>attribute.id===21837).values,
+    [{value:"1月16日.mp4"},{value:"安装演示"}]);
+});
+
+test("content coverage retains supplied optional attributes without calling the whole category template missing", async () => {
+  const result = await normalize([strictCategoryItem({
+    attributes: [{ id: 7001, values: [{ value: "Сталь" }, { value: "Алюминий" }] }],
+    complex_attributes: [{ attributes: [{ id: 7002, complex_id: 77, values: [{ value: "Комплект 2 шт." }] }] }],
+    contentDiagnostics: { description: { status: "not_provided" } },
+  })], { strictTypeMatch: true, attrs: [
+    ...attrs, { id: 7001, name: "Материал", is_required: false },
+    { id: 7002, complex_id: 77, name: "Комплект", is_required: false },
+    { id: 7003, name: "Страна-изготовитель", is_required: false },
+  ] });
+  assert.deepEqual(result.items[0].attributes.find(attribute => attribute.id === 7001)?.values,
+    [{ value: "Сталь" }, { value: "Алюминий" }]);
+  assert.deepEqual(result.items[0].complex_attributes,
+    [{ attributes: [{ id: 7002, complex_id: 77, values: [{ value: "Комплект 2 шт." }] }] }]);
+  assert.doesNotMatch(result.warnings.join(" "), /7003|Страна-изготовитель|另有.*可选属性未提交/);
+});
+
+test("dedicated logistics and gallery fields are not reported as missing ordinary attributes", async () => {
+  const result = await normalize([strictCategoryItem({
+    offer_id: "jz-1602438352", weight: 102, depth: 317, width: 304, height: 41,
+    images: ["https://cdn.example.test/one.jpg", "https://cdn.example.test/two.jpg"],
+    contentDiagnostics: { description: { status: "provided" } },
+    description: "Описание исходного товара",
+  })], { strictTypeMatch: true, attrs: [
+    { id: 4191 }, { id: 4497, name: "Вес в упаковке", is_required: false },
+    ...[9454, 9455, 9456, 4194, 4195].map(id => ({ id, is_required: false })),
+  ] });
+  assert.equal(result.items[0].weight, 102);
+  assert.deepEqual([result.items[0].depth, result.items[0].width, result.items[0].height], [317, 304, 41]);
+  assert.deepEqual(result.items[0].images, ["https://cdn.example.test/one.jpg", "https://cdn.example.test/two.jpg"]);
+  assert.doesNotMatch(result.warnings.join(" "), /4497|9454|9455|9456|4194|4195|Вес в упаковке/);
+});
+
+test("saved structured media outside the accepted destination produces a source-specific warning", async () => {
+  const source = strictCategoryItem({
+    _sourceVariant: {
+      attributes: [],
+      complex_attributes: [{ attributes: [
+        { id: 21841, complex_id: 100001, values: [{ value: "https://cdn.example.test/source.mp4" }] },
+        { id: 21845, complex_id: 100002, values: [{ value: "https://cdn.example.test/cover.mp4" }] },
+      ] }],
+    },
+  });
+  const result = await normalize([source], { strictTypeMatch: true, attrs: [{ id: 4191 }] });
+  assert.equal(result.items[0].complex_attributes, undefined);
+  assert.match(result.warnings.join(" "), /普通视频.*已保存.*当前类目.*未提交/);
+  assert.match(result.warnings.join(" "), /封面视频.*已保存.*当前类目.*未提交/);
+});
+
+test("media coverage verifies the complex destination instead of accepting the same ID in an ordinary field", async () => {
+  const result = await normalize([strictCategoryItem({
+    attributes: [{ id: 21841, values: [{ value: "https://cdn.example.test/source.mp4" }] }],
+    contentDiagnostics: { videos: { status: "provided" } },
+  })], { strictTypeMatch: true, attrs: [{ id: 21841, complex_id: 100001 }, { id: 21837, complex_id: 100001 }] });
+  assert.match(result.warnings.join(" "), /普通视频.*未.*(?:请求|提交)/);
+});
+
+test("incomplete historical content diagnostics stay unverified and distinguish captured values from missing reads", async () => {
+  const result = await normalize([strictCategoryItem({
+    contentDiagnostics: {
+      description: { status: "not_provided" },
+      richContent: { status: "read_failed", message: "HTTP 503" },
+      videos: { status: "provided" },
+      videoCoverUrl: { status: "unverified" },
+    },
+  })], { strictTypeMatch: true, attrs: [...attrs, { id: 21841, complex_id: 100001 }, { id: 21845, complex_id: 100002 }] });
+  const messages = result.warnings.join(" ");
+  assert.match(messages, /简介.*源未提供/);
+  assert.match(messages, /富内容.*读取失败.*503/);
+  assert.match(messages, /普通视频.*采集时已提供.*未提交/);
+  assert.match(messages, /颜色样本.*未记录来源状态.*待核实/);
+  assert.match(messages, /封面视频.*待核实/);
+  assert.doesNotMatch(messages, /颜色样本源未提供/);
+});
+
+test("explicitly cleared media cannot be restored from stale canonical or structured source values", async () => {
+  const rich = JSON.stringify({ version: 0.3, content: [{ widgetName: "raTextBlock", text: { content: ["Старое описание"] } }] });
+  const result = await normalize([strictCategoryItem({
+    richContent: "", videos: [], color_image: "", videoCoverUrl: "",
+    contentDiagnostics: Object.fromEntries(["richContent", "videos", "color_image", "videoCoverUrl"]
+      .map(field => [field, { status: "not_provided", source: "manual" }])),
+    _sourceVariant: {
+      richContent: rich, videos: [{ url: "https://cdn.example.test/old.mp4" }],
+      color_image: "https://cdn.example.test/old.jpg", videoCoverUrl: "https://cdn.example.test/old-cover.mp4",
+      attributes: [{ key: "11254", values: [{ value: rich }] }],
+      complex_attributes: [{ attributes: [
+        { id: 21841, complex_id: 100001, values: [{ value: "https://cdn.example.test/structured.mp4" }] },
+        { id: 21837, complex_id: 100001, values: [{ value: "Старое видео" }] },
+        { id: 21845, complex_id: 100002, values: [{ value: "https://cdn.example.test/structured-cover.mp4" }] },
+      ] }],
+    },
+  })], { strictTypeMatch: true, attrs: [...attrs, { id: 21841 }, { id: 21837 }, { id: 21845 }] });
+  assert.equal((result.items[0].attributes || []).some(attribute => attribute.id === 11254), false);
+  assert.equal(result.items[0].complex_attributes, undefined);
+  assert.equal(result.items[0].color_image, undefined);
+  assert.doesNotMatch(result.warnings.join(" "), /富内容源未提供|普通视频源未提供|颜色样本源未提供|封面视频源未提供/);
+});
+
+test("partly submitted video lists still report the source links omitted by the import limit", async () => {
+  const videos = Array.from({ length: 6 }, (_, index) => ({ url: `https://cdn.example.test/video-${index + 1}.mp4` }));
+  const result = await normalize([strictCategoryItem({ videos })], { strictTypeMatch: true,
+    attrs: [...attrs, { id: 21841, complex_id: 100001 }, { id: 21837, complex_id: 100001 }],
+  });
+  assert.deepEqual(result.items[0].complex_attributes.flatMap(group => group.attributes)
+    .find(attribute => attribute.id === 21841)?.values.map(value => value.value), [
+    "https://cdn.example.test/video-1.mp4", "https://cdn.example.test/video-2.mp4",
+    "https://cdn.example.test/video-3.mp4", "https://cdn.example.test/video-4.mp4",
+    "https://cdn.example.test/video-5.mp4",
+  ]);
+  assert.match(result.warnings.join(" "), /普通视频.*1.*未.*(?:请求|提交)/);
+});
+
+test("manual description clearing is not mislabeled as source content lost in submission", async () => {
+  const result = await normalize([strictCategoryItem({
+    scraped_description: "", descriptionHTML: "<p>Старое описание</p>",
+    contentDiagnostics: { description: { source: "manual", status: "not_provided" } },
+    _sourceVariant: { attributes: [{ key: "4191", values: [{ value: "Старое описание Seller" }] }] },
+  })], { strictTypeMatch: true });
+  assert.equal(result.items[0].attributes.some(attribute => attribute.id === 4191), false);
+  assert.match(result.warnings.join(" "), /简介.*手动清空/);
+  assert.doesNotMatch(result.warnings.join(" "), /简介.*已保存.*未进入/);
+});
+
+test("historical empty media defaults preserve same-SKU Seller content and report their unknown edit intent", async () => {
+  const rich = JSON.stringify({ version: 0.3, content: [{ widgetName: "raTextBlock", text: { content: ["Сохранённое описание Seller"] } }] });
+  const result = await normalize([strictCategoryItem({
+    richContent: "", videos: [], color_image: "", videoCoverUrl: "",
+    contentDiagnostics: { description: { status: "not_provided", source: "json_ld" } },
+    _sourceVariant: {
+      color_image: "https://cdn.example.test/saved-color.jpg",
+      attributes: [{ key: "11254", values: [{ value: rich }] }],
+      complex_attributes: [{ attributes: [
+        { id: 21841, complex_id: 100001, values: [{ value: "https://cdn.example.test/saved.mp4" }] },
+        { id: 21837, complex_id: 100001, values: [{ value: "Сохранённое видео" }] },
+        { id: 21845, complex_id: 100002, values: [{ value: "https://cdn.example.test/saved-cover.mp4" }] },
+      ] }],
+    },
+  })], { strictTypeMatch: true, attrs: [...attrs, { id: 21841 }, { id: 21837 }, { id: 21845 }] });
+  assert.deepEqual(JSON.parse(result.items[0].attributes.find(attribute => attribute.id === 11254)?.values[0].value || "null"), JSON.parse(rich));
+  const complex = result.items[0].complex_attributes.flatMap(group => group.attributes);
+  assert.equal(complex.find(attribute => attribute.id === 21841)?.values[0].value, "https://cdn.example.test/saved.mp4");
+  assert.equal(complex.find(attribute => attribute.id === 21845)?.values[0].value, "https://cdn.example.test/saved-cover.mp4");
+  assert.equal(result.items[0].color_image, "https://cdn.example.test/saved-color.jpg");
+  for (const label of ["富内容", "普通视频", "颜色样本", "封面视频"]) {
+    assert.match(result.warnings.join(" "), new RegExp(`${label}历史空值.*待核实.*保留`));
+  }
+});

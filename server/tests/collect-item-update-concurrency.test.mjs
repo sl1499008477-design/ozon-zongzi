@@ -89,7 +89,7 @@ test("PostgreSQL mirror summary preserves the latest enrichment during a later u
     enrichment: {
       status: "NEEDS_ATTENTION",
       attemptCount: 4,
-      lastErrorCode: "OZON_ENRICH_NOT_FOUND",
+      lastErrorCode: "ZONGZI_ENRICH_NOT_FOUND",
     },
   }), {
     name: "edited title",
@@ -98,7 +98,7 @@ test("PostgreSQL mirror summary preserves the latest enrichment during a later u
     enrichment: {
       status: "NEEDS_ATTENTION",
       attemptCount: 4,
-      lastErrorCode: "OZON_ENRICH_NOT_FOUND",
+      lastErrorCode: "ZONGZI_ENRICH_NOT_FOUND",
     },
   });
 });
@@ -159,7 +159,7 @@ function completionFailureHarness(error) {
 
 test("linked complete persistence failure leaves no visible COMPLETE item", async () => {
   const h = completionFailureHarness(Object.assign(new Error("disk unavailable"), {
-    code: "OZON_ENRICHMENT_PERSISTENCE_FAILED",
+    code: "ZONGZI_ENRICHMENT_PERSISTENCE_FAILED",
     status: 500,
   }));
 
@@ -168,7 +168,7 @@ test("linked complete persistence failure leaves no visible COMPLETE item", asyn
     jobId: h.job.id,
     variantData: sellerVariantData(),
     captureContext: captureContext(),
-  }), (error) => error?.code === "OZON_ENRICH_UPSTREAM_FAILED");
+  }), (error) => error?.code === "ZONGZI_ENRICH_UPSTREAM_FAILED");
 
   assert.equal(h.visibleItem().status, "RETRYING");
   assert.deepEqual(h.visibleItem().listingDraft, { title: "visible draft", logistics: {} });
@@ -177,7 +177,7 @@ test("linked complete persistence failure leaves no visible COMPLETE item", asyn
 
 test("linked claim loss during final commit leaves no visible COMPLETE item", async () => {
   const h = completionFailureHarness(Object.assign(new Error("claim lost"), {
-    code: "OZON_ENRICHMENT_JOB_OWNERSHIP",
+    code: "ZONGZI_ENRICHMENT_JOB_OWNERSHIP",
     status: 409,
   }));
 
@@ -186,7 +186,7 @@ test("linked claim loss during final commit leaves no visible COMPLETE item", as
     jobId: h.job.id,
     variantData: sellerVariantData(),
     captureContext: captureContext(),
-  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_OWNERSHIP");
 
   assert.equal(h.visibleItem().status, "RETRYING");
   assert.deepEqual(h.visibleItem().listingDraft, { title: "visible draft", logistics: {} });
@@ -210,7 +210,7 @@ test("linked completion rechecks the clock after a slow merge crosses claim expi
   jobRepository.completeJobAndCache = async (input) => {
     if (input.now.getTime() >= new Date(job.claimExpiresAt).getTime()) {
       throw Object.assign(new Error("claim expired during merge"), {
-        code: "OZON_ENRICHMENT_JOB_OWNERSHIP",
+        code: "ZONGZI_ENRICHMENT_JOB_OWNERSHIP",
         status: 409,
       });
     }
@@ -247,7 +247,7 @@ test("linked completion rechecks the clock after a slow merge crosses claim expi
     jobId: job.id,
     variantData: sellerVariantData(),
     captureContext: captureContext(),
-  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_OWNERSHIP");
 
   assert.equal(visibleItem.status, "RETRYING");
   assert.equal(job.status, "PROCESSING");
@@ -309,8 +309,8 @@ test("PostgreSQL success transaction samples the terminal clock after connection
           if (normalized.startsWith("INSERT INTO collect_items")) {
             return { rows: [{ id: "collect-delayed-terminal" }], rowCount: 1 };
           }
-          if (normalized.startsWith("SELECT version, data_hash FROM product_drafts")) {
-            return { rows: [{ version: 3, data_hash: "old" }], rowCount: 1 };
+          if (normalized.startsWith("SELECT version, data_hash, data FROM product_drafts")) {
+            return { rows: [{ version: 3, data_hash: "old", data: {} }], rowCount: 1 };
           }
           if (
             normalized.startsWith("UPDATE product_drafts SET")
@@ -394,7 +394,7 @@ test("PostgreSQL success transaction samples the terminal clock after connection
           stagedItem = null;
           throw error;
         }
-      })(), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+      })(), (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_OWNERSHIP");
 
       assert.deepEqual(visibleItem, { status: "RETRYING", draftVersion: 3 });
       assert.equal(stagedItem, null);
@@ -441,7 +441,7 @@ test("PostgreSQL permanent failure helper commits job truth and item summary on 
       missingFields: [],
       attemptCount: 3,
       nextAttemptAt: "",
-      lastErrorCode: "OZON_ENRICH_NOT_FOUND",
+      lastErrorCode: "ZONGZI_ENRICH_NOT_FOUND",
     },
     failJobAndCache: async (receivedClient) => {
       assert.equal(receivedClient, client);
@@ -488,7 +488,7 @@ test("PostgreSQL retryable defer locks the item and lets COMPLETE evidence close
     collectItemId: "collect-defer-complete-pg",
     accountId: "account-a",
     status: "RETRYING",
-    error: { code: "OZON_ENRICH_UPSTREAM_FAILED" },
+    error: { code: "ZONGZI_ENRICH_UPSTREAM_FAILED" },
     deferJob: async (receivedClient) => {
       assert.equal(receivedClient, client);
       order.push("defer-job");
@@ -684,9 +684,29 @@ test("a fourth expected-version conflict leaves the job recoverable and never ca
     jobId: job.id,
     variantData: sellerVariantData(),
     captureContext: captureContext(),
-  }), (error) => error?.code === "OZON_ENRICH_UPSTREAM_FAILED");
+  }), (error) => error?.code === "ZONGZI_ENRICH_UPSTREAM_FAILED");
 
   assert.equal(saveAttempts, 4);
   assert.equal(order.includes("complete"), false);
   assert.equal(job.status, "PROCESSING");
+});
+
+test('retry of a recollected item creates a task for its missing child instead of returning not found', async()=>{
+ const row={id:'new-item',account_id:'account-a',status:'PENDING_ENRICHMENT',summary:{enrichment:{status:'PENDING_ENRICHMENT'}},draft_version:1,draft_data:{sku:'parent',sourceCategory:{descriptionCategoryId:123},logistics:{weightG:100,lengthMm:10,widthMm:10,heightMm:10},variants:[{sku:'child'}]}};
+ let job=null;
+ const client={async query(sql,args){
+  const q=sql.replace(/\s+/g,' ').trim();
+  if(q.startsWith('SELECT c.id'))return {rows:[row]};
+  if(q.startsWith('SELECT pg_advisory'))return {rows:[]};
+  if(q.startsWith('SELECT * FROM collector_ozon_enrichment_jobs'))return {rows:job?[job]:[]};
+  if(q.startsWith('INSERT INTO collector_ozon_enrichment_jobs')){
+   assert.equal(args[2],'new-item');assert.equal(args[4],'child');
+   job={id:args[0],account_id:args[1],collect_item_id:args[2],request_id:args[3],sku:args[4],status:'PENDING',attempt_count:0,created_at:NOW,updated_at:NOW};return {rows:[job]};
+  }
+  if(q.startsWith('UPDATE collector_ozon_enrichment_jobs'))return {rows:[job]};
+  if(q.startsWith('UPDATE collect_items'))return {rows:[{...row,summary:JSON.parse(args[2])}]};
+  throw new Error(q);
+ }};
+ const result=await listingPipeline.retryCollectItemEnrichmentWithClientV4(client,{accountId:'account-a',collectItemId:'new-item',now:NOW});
+ assert.equal(result.job.sku,'child');assert.equal(result.item.enrichment.status,'RETRYING');
 });

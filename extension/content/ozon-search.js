@@ -46,7 +46,7 @@
   // fleet 服务端取数灰度命中时放宽(下方 setParams):请求走后端,SW 侧
   // FLEET_MAX_INFLIGHT=6 并发闸兜底,这层 stagger 只剩拖慢;非灰度/查询失败
   // 保持保守默认(老路 SW _sellerPortalGate 200ms 仍是全局兜底)。
-  const variantsQueue = window.jzMakeStaggeredQueue({ concurrency: 2, staggerMs: 300 });
+  const variantsQueue = window.jzMakeStaggeredQueue({ concurrency: 2, staggerMs: 300, taskTimeoutMs: 0 });
   window.sendMessage('getFleetServersideFlag', {})
     .then((d) => { if (d?.on) variantsQueue.setParams({ concurrency: 6, staggerMs: 0 }); })
     .catch(() => {});
@@ -225,6 +225,8 @@
       card.querySelector('[data-widget="webPrice"]');
     const priceText = extractVisiblePriceText(card, priceNode);
     const price = window.normalizePrice(priceText);
+    const priceCurrency = detectPriceCurrency(priceText);
+    const priceSymbol = { CNY: '¥', RUB: '₽' }[priceCurrency] || '';
     const oldPriceNode = card.querySelector('[data-widget="searchResultsOldPrice"]') ||
       card.querySelector('[data-widget="oldPrice"]');
     const oldPriceText = oldPriceNode?.textContent || '';
@@ -246,7 +248,7 @@
     badge.innerHTML = `
       ${salesText ? `<div class="ozon-helper-card-sales">${salesText}</div>` : ''}
       ${discount ? `<div class="ozon-helper-card-discount">-${discount}%</div>` : ''}
-      ${price ? `<div class="ozon-helper-card-price">${window.formatNumber(price)} ₽</div>` : ''}
+      ${price && priceSymbol ? `<div class="ozon-helper-card-price">${window.formatNumber(price)} ${priceSymbol}</div>` : ''}
       ${sellerText ? `<div class="ozon-helper-card-seller">${sellerText}</div>` : ''}
       ${ratingText ? `<div class="ozon-helper-card-rating">${ratingText}</div>` : ''}
     `;
@@ -512,12 +514,6 @@
       return;
     }
 
-    if (action === 'open-followsell' || action === 'follow-sell') {
-      // 底部「一键跟卖」按钮 → 主扩展上架面板
-      window.open(info.url + '#jz-follow-sell', '_blank');
-      return;
-    }
-
     if (action === 'edit-list') {
       await handleEditList(card, panel, btn, info);
       return;
@@ -543,7 +539,10 @@
   }
 
   async function buildSearchCollectRaw(sku, info, data) {
-    const collectImages = info.image ? [info.image] : [];
+    const media = await window.jzReadOzonProductMedia(info.url, { expectedSku: String(sku) });
+    if (!media.images?.length) throw Object.assign(new Error(`SKU ${sku} 图册读取失败，请打开商品页后重试`), {
+      code: 'COLLECT_GALLERY_FAILED', retryable: true,
+    });
     const sellerEvidence = typeof window.jzReadOzonCollectEvidence === 'function'
       ? await Promise.resolve(
           window.jzReadOzonCollectEvidence(sku, data?.preFetched?.variant),
@@ -558,8 +557,16 @@
       priceCurrency: info.priceCurrency || undefined,
       marketingPrice: info.marketingPrice != null ? String(info.marketingPrice) : undefined,
       marketingPriceCurrency: info.marketingPriceCurrency || undefined,
-      image: info.image || undefined,
-      images: collectImages.length ? collectImages : undefined,
+      image: media.images[0],
+      images: media.images,
+      description: media.description || undefined,
+      richContent: media.richContent || undefined,
+      videos: media.videos,
+      videoUrl: media.videos[0]?.url,
+      videoCover: media.videos[0]?.coverUrl,
+      color_image: media.color_image,
+      videoCoverUrl: media.videoCoverUrl,
+      contentDiagnostics: media.contentDiagnostics,
       hashtags: Array.isArray(info.hashtags) && info.hashtags.length ? [...info.hashtags] : undefined,
       soldCount: data?.soldCount ?? undefined,
       soldSum: data?.gmvSum != null ? String(data.gmvSum) : undefined,
@@ -652,7 +659,7 @@
       });
       const resp = await collectPromise;
       const itemId = resp?.result?.id;
-      const frontendUrl = 'http://127.0.0.1:3000';
+      const frontendUrl = 'https://www.ozonzongzi.com';
       window.open(
         itemId
           ? `${frontendUrl}/ozon/products/collect/edit?id=${itemId}`

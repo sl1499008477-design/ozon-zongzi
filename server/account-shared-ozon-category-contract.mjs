@@ -41,7 +41,7 @@ const SHARED_SOURCES = new Set(["SOURCE_DIRECT", "OZON_REFRESH", "MANUAL"]);
 
 function invalid() {
   return Object.assign(new TypeError("Account-shared Ozon category input is invalid"), {
-    code: "ACCOUNT_SHARED_OZON_CATEGORY_CONTRACT_INVALID",
+    code: "ACCOUNT_SHARED_ZONGZI_CATEGORY_CONTRACT_INVALID",
   });
 }
 

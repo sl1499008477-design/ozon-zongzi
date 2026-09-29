@@ -5,9 +5,11 @@ import path from "node:path";
 import { assertPopupWebLoginGuidance } from "./extension-capture-only-policy.mjs";
 import { requireExtensionUpstreamDir } from "./extension-upstream-config.mjs";
 
-const sourceDir = requireExtensionUpstreamDir("scripts/check-extension-ui-parity.mjs");
-if (!sourceDir) process.exit(2);
+const localOnly = process.argv.includes("--local-only");
+const sourceDir = localOnly ? null : requireExtensionUpstreamDir("scripts/check-extension-ui-parity.mjs");
+if (!localOnly && !sourceDir) process.exit(2);
 const localDir = process.env.QH_LOCAL_EXTENSION_DIR || "extension";
+const localBaseline = JSON.parse(readFileSync(new URL("./extension-local-ui-baseline.json", import.meta.url), "utf8"));
 
 const exactUiFiles = [
   "batch-upload/index.css",
@@ -15,30 +17,25 @@ const exactUiFiles = [
   "lib/store-picker.css",
 ];
 
-// These pairs lock the complete reviewed contents on both sides of each
-// deliberate UI difference. A future intentional change is safe only after
-// reviewing the full upstream/local diff and updating the affected pair here;
-// unrelated edits and unnoticed upstream drift both fail closed.
+// Preserve original upstream evidence for the independent historical check.
+// Local fingerprints have one authority: extension-local-ui-baseline.json.
 const reviewedUiFingerprints = new Map([
   [
     "batch-upload/index.html",
     {
       upstream: "cc6d244da650e31d24e38484f9c7ea3d1777f91acfb58d8817efb33117d05a03",
-      local: "f6b02cb769d42bd90f34dcf2e6411047998121cfb3e10c118b64f6d58fb572e5",
     },
   ],
   [
     "batch-upload/index.js",
     {
       upstream: "d6a6cba6639fecd68965f0a782d4289821b833d2d913e5e59a72bc82193e075e",
-      local: "f45d3efaee577e8f188792a29f80d611eb06a7b503fef2d4c58dcaf701dc0d19",
     },
   ],
   [
     "content/ozon-product.css",
     {
       upstream: "d10a9c8b0982d0f9637c7a907c665a5c2c070cc289b921d5a9357edbd41c3a44",
-      local: "4c3e4409378648383434e0beaa8e307b13154be3408bba97a637a6414635633e",
     },
   ],
   [
@@ -47,7 +44,6 @@ const reviewedUiFingerprints = new Map([
       // Task 6 replaces the retired generic selection controls with the
       // category-strategy-only sampling, validation/error, and action states.
       upstream: "510c3f330ce5c227733cc8da60499b17c766871408e8380af1078d5ef55a5aba",
-      local: "7c3de747978c9d72d0651d3bedac3c611ec640fcf2bbe92d4e9473a5ff63b015",
     },
   ],
 ]);
@@ -81,11 +77,6 @@ const assertReviewedUiDifference = (rel, expected) => {
     expected.upstream,
     `reviewed upstream UI fingerprint mismatch: ${rel} (upstream full-file hash); review the complete diff before updating`,
   );
-  assert.equal(
-    localHash,
-    expected.local,
-    `reviewed local UI fingerprint mismatch: ${rel} (local full-file hash); review the complete diff before updating`,
-  );
   assert.notEqual(
     localHash,
     upstreamHash,
@@ -102,11 +93,14 @@ const assertPng = (rel, width, height) => {
   assert.equal(bytes.readUInt32BE(20), height, `unexpected PNG height: ${rel}`);
 };
 
-requireExistingSource();
-
-for (const rel of exactUiFiles) assertSameFile(rel);
-for (const [rel, expected] of reviewedUiFingerprints) {
-  assertReviewedUiDifference(rel, expected);
+for (const [rel, expected] of Object.entries(localBaseline.files)) {
+  assert.equal(hashFile(path.join(localDir, rel)), expected,
+    `reviewed local UI fingerprint mismatch: ${rel} (local full-file hash); review the complete diff before updating`);
+}
+if (!localOnly) {
+  requireExistingSource();
+  for (const rel of exactUiFiles) assertSameFile(rel);
+  for (const [rel, expected] of reviewedUiFingerprints) assertReviewedUiDifference(rel, expected);
 }
 
 assertPng("icons/icon16.png", 16, 16);
@@ -159,4 +153,4 @@ assert.match(batchHtml, /SEO/);
 assert.match(batchJs, /cfg-ai-poster/);
 assert.match(batchJs, /cfg-ai-rewrite/);
 
-console.log(`extension ui parity ok against ${sourceDir}`);
+console.log(localOnly ? `extension local UI baseline ok: ${localBaseline.id}` : `extension ui parity ok against ${sourceDir}`);

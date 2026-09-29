@@ -1,3 +1,5 @@
+import {collectCaptureSkus} from './collect-enrichment-recovery.mjs';
+import {admitCollectedItem} from './collection-admission.mjs';
 import {
   assertCollectorScopeFieldsAbsentV4,
   preflightCollectRequestsV4,
@@ -29,6 +31,7 @@ export function createJsonAccountScopedCollectionHandler({
   categoryEvidencePort = null,
   logger = null,
   now = () => new Date(),
+  checkAdmission = admitCollectedItem,
 } = {}) {
   if (
     typeof authenticate !== "function"
@@ -84,6 +87,19 @@ export function createJsonAccountScopedCollectionHandler({
         inputs,
         source: pathSource,
       });
+      const admissionState=await loadState();
+      const admissions=[];
+      const savedBefore=[];
+      for(const {prepared} of preparedInputs){
+        const saved=(admissionState.caches?.collectBox||[]).find(item=>item.id===prepared.collectId&&item.accountId===account.id);
+        const replay=(admissionState.collectRequests||[]).some(request=>request.accountId===account.id
+          && request.idempotencyKey===prepared.idempotencyKey&&request.status==='SUCCEEDED');
+        savedBefore.push(JSON.stringify(saved||null));
+        const candidate=saved ? mergeCollectedItemPublicEvidence(saved,prepared.normalizedItem) : prepared.normalizedItem;
+        if(saved)candidate.listingDraft=mergeOzonEnrichmentResult(candidate.listingDraft||{},candidate);
+        admissions.push(replay?null:await checkAdmission({accountId:account.id,item:candidate,
+          trustedAdmission:saved?.collectionAdmission||saved?.listingDraft?.collectionAdmission},{state:admissionState}));
+      }
       const responseBody = await stateTransaction.run(async () => {
         const latestState = await loadState();
         const workingState = latestState;
@@ -139,11 +155,15 @@ export function createJsonAccountScopedCollectionHandler({
             continue;
           }
 
+          const currentSaved=collectBox.find(item=>item.id===prepared.collectId&&item.accountId===account.id);
+          if(!admissions[index] || JSON.stringify(currentSaved||null)!==savedBefore[index])
+            throw routeError('已有采集记录已变化，请重试保存',409,'COLLECT_ADMISSION_RETRY');
+
           const enrichment = prepared.identity.source === "ozon"
-            ? buildOzonEnrichmentSummary(prepared.normalizedItem)
+            ? buildOzonEnrichmentSummary(admissions[index])
             : null;
           const normalized = normalizeItem({
-            ...prepared.normalizedItem,
+            ...admissions[index],
             ...(enrichment ? { enrichment } : {}),
             id: prepared.collectId,
             raw: input.payload,
@@ -180,6 +200,11 @@ export function createJsonAccountScopedCollectionHandler({
           const effectiveEnrichment = enrichment
             ? reconcileOzonEnrichmentSummary(item, canonicalItem?.enrichment)
             : null;
+          const captureSkus = collectCaptureSkus(item);
+          if (effectiveEnrichment && captureSkus.length > 1) {
+            effectiveEnrichment.status = 'PENDING_ENRICHMENT';
+            effectiveEnrichment.missingSkus = captureSkus;
+          }
           if (effectiveEnrichment) item.enrichment = effectiveEnrichment;
           if (effectiveEnrichment?.status === "COMPLETE") {
             const previousDraft = item.listingDraft && typeof item.listingDraft === "object"
@@ -200,12 +225,12 @@ export function createJsonAccountScopedCollectionHandler({
             : {};
           workingState.caches.collectBox = collectBox;
           if (effectiveEnrichment?.status === "PENDING_ENRICHMENT") {
-            await enqueueForCollect({
+            for (const captureSku of captureSkus) await enqueueForCollect({
               state: workingState,
               accountId: account.id,
               collectItemId: item.id,
               requestId: prepared.identity.requestId,
-              sku: prepared.identity.sourceSku,
+              sku: captureSku,
               refreshBundle: {},
               now: processedAt,
             });

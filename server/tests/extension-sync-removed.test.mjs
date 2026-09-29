@@ -147,11 +147,19 @@ test("every retired extension sync contract returns stable 410 without side effe
   for (const [method, pathname, body] of retiredRoutes) {
     const response = await requestJson(method, pathname, body);
     assert.equal(response.status, 410, `${method} ${pathname}`);
-    assert.deepEqual(response.body, {
-      ok: false,
-      code: "EXTENSION_SYNC_REMOVED",
-      message: "插件同步已移除，请更新插件并在 Web 端执行同步",
-    }, `${method} ${pathname}`);
+    if (pathname === "/ozon/postings/cache/import") {
+      assert.deepEqual(response.body, {
+        ok: false,
+        code: "FEATURE_RETIRED",
+        message: "该运营辅助功能已停用",
+      }, `${method} ${pathname}`);
+    } else {
+      assert.deepEqual(response.body, {
+        ok: false,
+        code: "EXTENSION_SYNC_REMOVED",
+        message: "插件同步已移除，请更新插件并在 Web 端执行同步",
+      }, `${method} ${pathname}`);
+    }
   }
   assert.equal(ozonCalls.length, 0);
   assert.equal(await readFile(dataFile, "utf8"), before);

@@ -166,11 +166,13 @@ function projectLegacyCategoryResolutions(value) {
   if (!value || typeof value !== "object") return value;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return value;
-  const result = {};
+  // This tree is already privately owned by withoutPublicCollectionScope.
+  const result = value;
   for (const [key, nested] of Object.entries(value)) {
     if (canonicalPathKey(key) === "categoryresolution") {
       const resolution = publicLegacyCategoryResolution(nested);
       if (resolution) result[key] = resolution;
+      else delete result[key];
       continue;
     }
     result[key] = projectLegacyCategoryResolutions(nested);

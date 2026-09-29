@@ -1,0 +1,10 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["oss:GetObject", "oss:PutObject"],
+      "Resource": ["acs:oss:*:*:ozon-zongzi-media-hk-20260915-15028b9/listing-media/v1/*"]
+    }
+  ]
+}

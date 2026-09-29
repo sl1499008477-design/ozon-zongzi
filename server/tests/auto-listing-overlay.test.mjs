@@ -266,6 +266,32 @@ test("freezes a V2 CNY base and submits native CNY without conversion", () => {
   assert.equal(draft.priceCalculation.currency, "CNY");
 });
 
+test("freezes and submits a scraped actual price when no comparison price exists", () => {
+  const price = {
+    currency: "CNY", currencySource: "SOURCE",
+    blackKopecks: "10390", greenKopecks: null,
+  };
+  const pricingEvidence = { ...price, evidenceHash: digest(price) };
+  const base = freezeAutoListingListingBase({
+    ...freezeInput([{
+      ...wrapper("blue"),
+      item: { ...item("blue"), currency_code: "CNY", price: "103.90" },
+      pricingEvidence,
+    }]),
+    pricingEvidence,
+  });
+
+  const assets = groupAssets("group-a");
+  const draft = buildAutoListingSubmissionDraft(submissionInput(base, [
+    groupContract("group-a", ["variant-blue"], assets),
+  ], assets));
+
+  assert.equal(base.pricingEvidence.greenKopecks, null);
+  assert.equal(draft.items[0].price, "103.90");
+  assert.equal(draft.priceCalculation.branch, "SOURCE_PRICE_ONLY");
+  assert.equal(draft.priceCalculation.sourcePriceKopecks, "10390");
+});
+
 test("accepts a below-80 source price with a legal green price and keeps the below-80 formula", () => {
   const price = {
     currency: "CNY", currencySource: "SOURCE",
@@ -414,7 +440,7 @@ test("rejects incomplete group mappings, private or unaccepted assets, missing M
     mutate(value);
     assert.throws(
       () => buildAutoListingSubmissionDraft(value),
-      (error) => ["AUTO_LISTING_OVERLAY_INVALID", "AUTO_LISTING_OZON_RICH_CONTENT_INVALID"].includes(error?.code),
+      (error) => ["AUTO_LISTING_OVERLAY_INVALID", "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID"].includes(error?.code),
     );
   }
 });
@@ -467,7 +493,7 @@ test("binds target store, plan scope, visual groups, assets, and group-local ric
   for (const mutate of mutations) {
     const value = structuredClone(valid); mutate(value);
     assert.throws(() => buildAutoListingSubmissionDraft(value), (error) => [
-      "AUTO_LISTING_OVERLAY_INVALID", "AUTO_LISTING_OZON_RICH_CONTENT_INVALID",
+      "AUTO_LISTING_OVERLAY_INVALID", "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID",
     ].includes(error?.code));
   }
 });

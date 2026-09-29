@@ -255,7 +255,7 @@ if (!databaseUrl) {
       await terminalClient.query("BEGIN ISOLATION LEVEL READ COMMITTED");
       await assert.rejects(terminalRepository.failJobAndCache({
         ...terminalInput(switchedFirst, "fail"),
-        error: { status: 404, code: "OZON_ENRICH_NOT_FOUND" },
+        error: { status: 404, code: "ZONGZI_ENRICH_NOT_FOUND" },
       }), (error) => error?.code === "SELLER_CONTEXT_CHANGED" && error?.status === 409);
       await terminalClient.query("ROLLBACK");
 
@@ -264,7 +264,7 @@ if (!databaseUrl) {
         accountId: switchedFirst.accountId,
         collectorSessionId: switchedFirst.collectorSessionId,
         jobId: switchedFirst.jobs.defer.jobId,
-        error: { status: 502, code: "OZON_ENRICH_UPSTREAM_FAILED" },
+        error: { status: 502, code: "ZONGZI_ENRICH_UPSTREAM_FAILED" },
         captureContext: OLD_CONTEXT,
         claimFence: switchedFirst.jobs.defer.claimFence,
         now: new Date("2026-08-01T08:00:03.000Z"),

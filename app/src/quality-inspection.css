@@ -1,0 +1,33 @@
+.ant-menu-item.quality-menu-entry { position: relative; }
+.quality-menu-entry .quality-menu-badge.ant-badge { position: absolute; inset-block-start: 6px; inset-inline-end: 10px; line-height: 1; }
+.ant-menu-item-divider.quality-menu-divider { margin: 12px 8px; border-color: var(--prototype-border, #dce8f7); }
+.quality-inspection-page { display: grid; gap: 20px; }
+.quality-inspection-page .source-section-title { flex-wrap: wrap; gap: 16px; }
+.quality-inspection-page .source-section-title > .ant-space { flex-wrap: wrap; }
+.quality-summary { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px; }
+.quality-summary .ant-card-body { display: grid; gap: 8px; }
+.quality-summary strong { font-size: 26px; }
+.quality-summary span,.quality-summary small { color: #617698; }
+.quality-filters { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 18px; }
+.quality-filters > .ant-input-search { width: 280px; }
+.quality-order-identity,.quality-order-products,.quality-order-postings,.quality-coverage,.quality-settings-body { display: grid; gap: 12px; }
+.quality-order-identity .ant-tag { width: fit-content; margin: 0; }
+.quality-order-postings > div,.quality-coverage > div { display: grid; gap: 4px; }
+.quality-order-postings .ant-btn { padding: 0; width: fit-content; }
+.quality-order-postings span,.quality-coverage span { font-size: 12px; color: #617698; }
+.quality-coverage .quality-coverage-error { color: #b52a36; }
+.quality-prefix-row { display: flex; align-items: flex-start; gap: 8px; }
+.quality-prefix-row .ant-form-item { flex: 1; }
+.quality-reminder-popover { width: min(350px,calc(100vw - 64px)); display: grid; gap: 12px; }
+.quality-reminder-heading,.quality-reminder-item > span:first-child { display: flex; justify-content: space-between; gap: 12px; }
+.quality-reminder-item { display: grid; gap: 6px; width: 100%; text-align: left; padding: 12px; border: 1px solid #dce8f7; border-radius: 10px; background: #fff; color: #183658; cursor: pointer; overflow-wrap: anywhere; }
+.quality-reminder-item:hover { background: #f1f7ff; }
+.quality-reminder-item:disabled { cursor: wait; opacity: .65; }
+.quality-reminder-item small { color: #617698; }
+.quality-reminder-trigger .ant-badge { font-size: 19px; color: #005af8; }
+@media (max-width: 760px) {
+ .quality-summary { grid-template-columns: minmax(0,1fr); }
+ .quality-filters > .ant-input-search { width: 100%; }
+ .quality-inspection-page .source-section-title > .ant-space { width: 100%; }
+ .quality-reminder-trigger > div { display: none; }
+}

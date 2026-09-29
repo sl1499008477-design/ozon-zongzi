@@ -67,6 +67,7 @@ const service = createOzonSyncService({
 try {
   globalThis.fetch = async (url, options) => {
     requests.push({ url, options });
+    if(new URL(url).pathname === "/v1/roles") return jsonResponse({expires_at:"2027-01-30T00:00:00Z"});
     return jsonResponse({
       result: {
         company: {
@@ -89,7 +90,7 @@ try {
   });
 
   assert.deepEqual(result, { syncedCount: 1, errors: [] });
-  assert.equal(requests.length, 1);
+  assert.deepEqual(requests.map(request=>new URL(request.url).pathname), ["/v1/seller/info","/v1/roles"]);
   assert.equal(requests[0].options.method, "POST");
   assert.equal(new URL(requests[0].url).pathname, "/v1/seller/info");
   assert.equal(persisted.stores[0].companyName, "Seller A");
@@ -415,305 +416,29 @@ try {
     ["RUNNING", "FAILED"],
   );
 
-  persisted = clone(basePersisted);
-  persisted.caches.postings = [
-    {
-      id: "old_posting",
-      storeId: "store_a",
-      clientId: "client_a",
-      accountId: "acct_a",
-    },
-    {
-      id: "foreign_posting",
-      storeId: "store_b",
-      clientId: "client_b",
-      accountId: "acct_b",
-    },
-  ];
-  const capturedFbsBodies = [];
-  globalThis.fetch = async (url, options) => {
-    requests.push({ url, options });
-    const path = new URL(url).pathname;
-    const body = options.body ? JSON.parse(options.body) : {};
-    if (path === "/v1/seller/info") {
-      return jsonResponse({ result: { company: { name: "Seller A" } } });
-    }
-    if (path === "/v4/posting/fbs/list") {
-      capturedFbsBodies.push(body);
-      return jsonResponse({
-        result: {
-          postings: [{ posting_number: "fbs_1", status: "awaiting_packaging" }],
-          cursor: "",
-          has_next: false,
-        },
-      });
-    }
-    if (path === "/v2/posting/fbo/list") {
-      return jsonResponse({
-        result: {
-          postings: [{ posting_number: "fbo_1", status: "awaiting_deliver" }],
-          last_id: "",
-        },
-      });
-    }
-    throw new Error(`unexpected postings sync request: ${path}`);
-  };
+  for (const type of ["POSTINGS", "PROMOTIONS"]) {
+    persisted = clone(basePersisted);
+    persisted.caches.postings = [{ id: "historical_posting", storeId: "store_a" }];
+    persisted.caches.promotions = [{ id: "historical_promotion", storeId: "store_a" }];
+    let retiredEndpointCalls = 0;
+    globalThis.fetch = async () => {
+      retiredEndpointCalls += 1;
+      throw new Error("retired sync must not call Ozon");
+    };
 
-  const postingReport = await service.runLocalSync(clone(persisted), {
-    accountId: "acct_a",
-    storeId: "store_a",
-    type: "POSTINGS",
-    jobId: "job_postings_success",
-    postingsSinceDays: 1,
-  });
-
-  assert.equal(postingReport.status, "SUCCESS");
-  assert.equal(postingReport.fetchedCount, 2);
-  assert.equal(
-    persisted.caches.postings.find((row) => row.id === "fbs_1").storeId,
-    "store_a",
-  );
-  assert.equal(
-    persisted.caches.postings.find((row) => row.id === "fbo_1").shipment_type,
-    "FBO",
-  );
-  assert.equal(persisted.caches.postings.find((row) => row.id === "fbs_1").currency_code, "RUB");
-  assert.equal(persisted.caches.postings.find((row) => row.id === "fbo_1").currency_code, "RUB");
-  assert.equal(capturedFbsBodies[0].filter.to, "2026-07-28T08:00:00.000Z");
-  assert.equal(
-    persisted.caches.postings.some((row) => row.id === "foreign_posting" && row.storeId === "store_b"),
-    true,
-  );
-
-  persisted = clone(basePersisted);
-  const splitRangeFbsBodies = [];
-  globalThis.fetch = async (url, options) => {
-    requests.push({ url, options });
-    const path = new URL(url).pathname;
-    const body = options.body ? JSON.parse(options.body) : {};
-    if (path === "/v1/seller/info") {
-      return jsonResponse({ result: { company: { name: "Seller A" } } });
-    }
-    if (path === "/v4/posting/fbs/list") {
-      splitRangeFbsBodies.push(body);
-      const { since, to } = body.filter;
-      if (
-        since === "2026-06-30T08:00:00.000Z" &&
-        to === "2026-07-28T08:00:00.000Z" &&
-        !body.cursor
-      ) {
-        throw Object.assign(new Error("PERIOD_IS_TOO_LONG"), { code: "PERIOD_IS_TOO_LONG" });
-      }
-      if (
-        since === "2026-06-30T08:00:00.000Z" &&
-        to === "2026-07-14T08:00:00.000Z" &&
-        !body.cursor
-      ) {
-        return jsonResponse({
-          result: {
-            postings: [{ posting_number: "front_half_1" }],
-            cursor: "front_page_2",
-            has_next: true,
-          },
-        });
-      }
-      if (
-        since === "2026-06-30T08:00:00.000Z" &&
-        to === "2026-07-14T08:00:00.000Z" &&
-        body.cursor === "front_page_2"
-      ) {
-        return jsonResponse({
-          result: {
-            postings: [{ posting_number: "front_half_2" }],
-            cursor: "",
-            has_next: false,
-          },
-        });
-      }
-      if (
-        since === "2026-07-14T08:00:00.000Z" &&
-        to === "2026-07-28T08:00:00.000Z" &&
-        !body.cursor
-      ) {
-        return jsonResponse({
-          result: {
-            postings: [{ posting_number: "back_half_1" }],
-            cursor: "",
-            has_next: false,
-          },
-        });
-      }
-      throw new Error(`unexpected FBS range/cursor: ${JSON.stringify(body)}`);
-    }
-    if (path === "/v2/posting/fbo/list") {
-      return jsonResponse({ result: { postings: [], last_id: "" } });
-    }
-    throw new Error(`unexpected shortened postings request: ${path}`);
-  };
-
-  const splitRangeReport = await service.runLocalSync(clone(persisted), {
-    accountId: "acct_a",
-    storeId: "store_a",
-    type: "POSTINGS",
-    jobId: "job_postings_shortened",
-    postingsSinceDays: 28,
-  });
-
-  assert.equal(splitRangeReport.fetchedCount, 3);
-  assert.deepEqual(
-    splitRangeFbsBodies.map((body) => ({
-      since: body.filter.since,
-      to: body.filter.to,
-      cursor: body.cursor || "",
-    })),
-    [
-      {
-        since: "2026-06-30T08:00:00.000Z",
-        to: "2026-07-28T08:00:00.000Z",
-        cursor: "",
-      },
-      {
-        since: "2026-06-30T08:00:00.000Z",
-        to: "2026-07-14T08:00:00.000Z",
-        cursor: "",
-      },
-      {
-        since: "2026-06-30T08:00:00.000Z",
-        to: "2026-07-14T08:00:00.000Z",
-        cursor: "front_page_2",
-      },
-      {
-        since: "2026-07-14T08:00:00.000Z",
-        to: "2026-07-28T08:00:00.000Z",
-        cursor: "",
-      },
-    ],
-  );
-  assert.deepEqual(
-    persisted.caches.postings
-      .filter((row) => row.storeId === "store_a")
-      .map((row) => row.id)
-      .sort(),
-    ["back_half_1", "front_half_1", "front_half_2"],
-  );
-
-  persisted = clone(basePersisted);
-  persisted.caches.postings = [
-    {
-      id: "old_posting",
-      storeId: "store_a",
-      clientId: "client_a",
-      accountId: "acct_a",
-    },
-    {
-      id: "foreign_posting",
-      storeId: "store_b",
-      clientId: "client_b",
-      accountId: "acct_b",
-    },
-  ];
-  globalThis.fetch = async (url, options) => {
-    requests.push({ url, options });
-    const path = new URL(url).pathname;
-    if (path === "/v1/seller/info") {
-      return jsonResponse({ result: { company: { name: "Seller A" } } });
-    }
-    if (path === "/v4/posting/fbs/list") {
-      return jsonResponse({
-        result: {
-          postings: [{ posting_number: "partial_fbs" }],
-          cursor: "",
-          has_next: false,
-        },
-      });
-    }
-    if (path === "/v2/posting/fbo/list") {
-      throw Object.assign(new Error("FBO unavailable"), { code: "EFBO" });
-    }
-    throw new Error(`unexpected failed postings request: ${path}`);
-  };
-
-  await assert.rejects(
-    () => service.runLocalSync(clone(persisted), {
-      accountId: "acct_a",
-      storeId: "store_a",
-      type: "POSTINGS",
-      jobId: "job_postings_failed",
-      postingsSinceDays: 1,
-    }),
-    (error) => error.status === 502 && error.code === "EFBO",
-  );
-  assert.deepEqual(
-    persisted.caches.postings
-      .filter((row) => row.storeId === "store_a")
-      .map((row) => row.id),
-    ["old_posting"],
-  );
-  assert.equal(syncJob(persisted, "job_postings_failed").status, "FAILED");
-
-  persisted = clone(basePersisted);
-  persisted.caches.postings = [
-    {
-      id: "old_posting",
-      storeId: "store_a",
-      clientId: "client_a",
-      accountId: "acct_a",
-    },
-    {
-      id: "foreign_posting",
-      storeId: "store_b",
-      clientId: "client_b",
-      accountId: "acct_b",
-    },
-  ];
-  let stalledFboRequestCount = 0;
-  globalThis.fetch = async (url) => {
-    requests.push({ url });
-    const path = new URL(url).pathname;
-    if (path === "/v1/seller/info") {
-      return jsonResponse({ result: { company: { name: "Seller A" } } });
-    }
-    if (path === "/v4/posting/fbs/list") {
-      return jsonResponse({ result: { postings: [], cursor: "", has_next: false } });
-    }
-    if (path === "/v2/posting/fbo/list") {
-      stalledFboRequestCount += 1;
-      return jsonResponse({
-        result: {
-          postings: [{
-            posting_number: stalledFboRequestCount === 1
-              ? "fbo_first_page"
-              : "fbo_stalled_page",
-          }],
-          last_id: "repeated_token",
-        },
-      });
-    }
-    throw new Error(`unexpected stalled FBO request: ${path}`);
-  };
-
-  await assert.rejects(
-    () => service.runLocalSync(clone(persisted), {
-      accountId: "acct_a",
-      storeId: "store_a",
-      type: "POSTINGS",
-      jobId: "job_postings_stalled",
-      postingsSinceDays: 1,
-    }),
-    (error) => error.status === 502 && error.code === "OZON_PAGINATION_STALLED",
-  );
-  assert.equal(stalledFboRequestCount, 2);
-  assert.deepEqual(
-    persisted.caches.postings
-      .filter((row) => row.storeId === "store_a")
-      .map((row) => row.id),
-    ["old_posting"],
-  );
-  assert.equal(
-    persisted.caches.postings.some((row) => row.id === "fbo_stalled_page"),
-    false,
-  );
-  assert.equal(syncJob(persisted, "job_postings_stalled").status, "FAILED");
+    await assert.rejects(
+      () => service.runLocalSync(clone(persisted), {
+        accountId: "acct_a",
+        storeId: "store_a",
+        type,
+        jobId: `job_retired_${type.toLowerCase()}`,
+      }),
+      (error) => error.status === 410 && error.code === "FEATURE_RETIRED",
+    );
+    assert.equal(retiredEndpointCalls, 0);
+    assert.deepEqual(persisted.caches.postings, [{ id: "historical_posting", storeId: "store_a" }]);
+    assert.deepEqual(persisted.caches.promotions, [{ id: "historical_promotion", storeId: "store_a" }]);
+  }
 
   persisted = clone(basePersisted);
   persisted.caches.warehouses = [
@@ -756,46 +481,6 @@ try {
   );
   assert.equal(
     persisted.caches.warehouses.some((row) => row.id === "foreign_warehouse" && row.storeId === "store_b"),
-    true,
-  );
-
-  persisted = clone(basePersisted);
-  persisted.caches.promotions = [
-    { id: "old_promotion", storeId: "store_a", clientId: "client_a", accountId: "acct_a" },
-    { id: "foreign_promotion", storeId: "store_b", clientId: "client_b", accountId: "acct_b" },
-  ];
-  let capturedPromotionMethod = "";
-  globalThis.fetch = async (url, options) => {
-    requests.push({ url, options });
-    const path = new URL(url).pathname;
-    if (path === "/v1/seller/info") {
-      return jsonResponse({ result: { company: { name: "Seller A" } } });
-    }
-    if (path === "/v1/actions") {
-      capturedPromotionMethod = options.method;
-      return jsonResponse({ result: [{ id: "promotion_1", title: "Promotion 1" }] });
-    }
-    throw new Error(`unexpected promotion sync request: ${path}`);
-  };
-
-  const promotionReport = await service.runLocalSync(clone(persisted), {
-    accountId: "acct_a",
-    storeId: "store_a",
-    type: "PROMOTIONS",
-    jobId: "job_promotions_success",
-  });
-
-  assert.equal(promotionReport.status, "SUCCESS");
-  assert.equal(promotionReport.fetchedCount, 1);
-  assert.equal(capturedPromotionMethod, "GET");
-  assert.deepEqual(
-    persisted.caches.promotions
-      .filter((row) => row.storeId === "store_a")
-      .map((row) => row.id),
-    ["promotion_1"],
-  );
-  assert.equal(
-    persisted.caches.promotions.some((row) => row.id === "foreign_promotion" && row.storeId === "store_b"),
     true,
   );
 
@@ -942,93 +627,6 @@ try {
   }
 
   {
-    let mergePersisted = clone(basePersisted);
-    mergePersisted.caches.postings = [
-      {
-        id: "old_posting",
-        storeId: "store_a",
-        clientId: "client_a",
-        accountId: "acct_a",
-        status: "before_status",
-        operatorNote: "before",
-      },
-    ];
-    const mergeService = createOzonSyncService({
-      loadState: async () => clone(mergePersisted),
-      saveState: async (state) => {
-        mergePersisted = clone(state);
-      },
-      now: () => new Date("2026-07-28T08:00:00.000Z"),
-      logger: { warn() {} },
-    });
-    globalThis.fetch = async (url) => {
-      const path = new URL(url).pathname;
-      if (path === "/v1/seller/info") {
-        return jsonResponse({ result: { company: { name: "Seller A" } } });
-      }
-      if (path === "/v4/posting/fbs/list") {
-        return jsonResponse({
-          result: {
-            postings: [
-              { posting_number: "old_posting", status: "awaiting_deliver" },
-              { posting_number: "synced_posting" },
-            ],
-            cursor: "",
-            has_next: false,
-          },
-        });
-      }
-      if (path === "/v2/posting/fbo/list") {
-        mergePersisted.caches.postings
-          .find((row) => row.id === "old_posting").operatorNote = "concurrent";
-        mergePersisted.caches.postings.push({
-          id: "concurrent_posting",
-          storeId: "store_a",
-          clientId: "client_a",
-          accountId: "acct_a",
-          syncedAt: "2026-07-28T08:00:00.001Z",
-        });
-        return jsonResponse({
-          result: {
-            postings: [{ posting_number: "old_posting", fboMetric: 7 }],
-            last_id: "",
-          },
-        });
-      }
-      throw new Error(`unexpected postings merge request: ${path}`);
-    };
-
-    await mergeService.runLocalSync(clone(mergePersisted), {
-      accountId: "acct_a",
-      storeId: "store_a",
-      type: "POSTINGS",
-      jobId: "job_postings_merge",
-      postingsSinceDays: 1,
-    });
-
-    assert.deepEqual(
-      mergePersisted.caches.postings.map((row) => row.id).sort(),
-      ["concurrent_posting", "old_posting", "synced_posting"],
-    );
-    assert.equal(
-      mergePersisted.caches.postings.find((row) => row.id === "old_posting").status,
-      "awaiting_deliver",
-    );
-    assert.equal(
-      mergePersisted.caches.postings.find((row) => row.id === "old_posting").fboMetric,
-      7,
-    );
-    assert.equal(
-      mergePersisted.caches.postings.find((row) => row.id === "old_posting").shipment_type,
-      "FBO",
-    );
-    assert.equal(
-      mergePersisted.caches.postings.find((row) => row.id === "old_posting").operatorNote,
-      "concurrent",
-    );
-  }
-
-  {
     let unsupportedPersisted = clone(basePersisted);
     let unsupportedEndpointCalls = 0;
     const unsupportedService = createOzonSyncService({
@@ -1051,17 +649,11 @@ try {
         type: "UNKNOWN",
         jobId: "job_unknown",
       }),
-      (error) => error.status === 501 && error.code === "OZON_SYNC_UNSUPPORTED",
+      (error) => error.status === 501 && error.code === "ZONGZI_SYNC_UNSUPPORTED",
     );
     assert.equal(unsupportedEndpointCalls, 0);
-    const unsupportedJob = syncJob(unsupportedPersisted, "job_unknown");
-    assert.equal(unsupportedJob.status, "FAILED");
-    assert.equal(
-      unsupportedPersisted.auditEvents.some((event) =>
-        event.entityId === unsupportedJob.taskId && event.status === "FAILED"
-      ),
-      true,
-    );
+    assert.equal(Object.keys(unsupportedPersisted.jobs).length, 0);
+    assert.equal(unsupportedPersisted.auditEvents.length, 0);
   }
 
   {
@@ -1179,8 +771,8 @@ try {
       }),
       (error) => {
         assert.equal(error.status, 403);
-        assert.equal(error.code, "OZON_HTTP_403");
-        assert.equal(error.message, "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)");
+        assert.equal(error.code, "ZONGZI_HTTP_403");
+        assert.equal(error.message, "Ozon 403: /v2/warehouse/list (ZONGZI_HTTP_403)");
         assert.deepEqual(error.body, {
           accountId: "acct_a",
           storeId: "store_a",
@@ -1188,8 +780,8 @@ try {
           timestamp: "2026-07-28T08:00:00.000Z",
           taskId: error.body.taskId,
           requestId: "request_sensitive_http_error",
-          code: "OZON_HTTP_403",
-          message: "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
+          code: "ZONGZI_HTTP_403",
+          message: "Ozon 403: /v2/warehouse/list (ZONGZI_HTTP_403)",
           details: {
             status: 403,
             apiPath: "/v2/warehouse/list",
@@ -1203,7 +795,7 @@ try {
     const sensitiveJob = syncJob(sensitivePersisted, "job_sensitive_http_error");
     assert.equal(
       sensitiveJob.error,
-      "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
+      "Ozon 403: /v2/warehouse/list (ZONGZI_HTTP_403)",
     );
     assertSyncReportContract(sensitiveJob, {
       accountId: "acct_a",

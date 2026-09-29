@@ -209,7 +209,7 @@ for (const invalidPath of [
     res: { id: "response" },
     status: 400,
     message: "未能从 Ozon 获取真实类目数据，请重试",
-    code: "OZON_CATEGORY_DATA_INVALID",
+    code: "ZONGZI_CATEGORY_DATA_INVALID",
   }]);
 }
 
@@ -310,12 +310,12 @@ for (const invalidPath of [
 {
   const categoryError = Object.assign(new Error("未能从 Ozon 获取真实类目数据，请重试"), {
     status: 502,
-    code: "OZON_CATEGORY_TREE_UNAVAILABLE",
+    code: "ZONGZI_CATEGORY_TREE_UNAVAILABLE",
     body: { operation: "TREE" },
     cause: null,
   });
   Object.defineProperty(categoryError, "diagnostic", {
-    value: Object.freeze({ operation: "TREE", sourceCode: "OZON_TIMEOUT", sourceStatus: null, retryable: true }),
+    value: Object.freeze({ operation: "TREE", sourceCode: "ZONGZI_TIMEOUT", sourceStatus: null, retryable: true }),
     enumerable: false,
   });
   const { calls, handler } = createFixture({
@@ -328,11 +328,11 @@ for (const invalidPath of [
     res: { id: "response" },
     status: 502,
     message: "未能从 Ozon 获取真实类目数据，请重试",
-    code: "OZON_CATEGORY_TREE_UNAVAILABLE",
+    code: "ZONGZI_CATEGORY_TREE_UNAVAILABLE",
   }]);
   assert.deepEqual(calls.reportError, [{
     operation: "TREE",
-    sourceCode: "OZON_TIMEOUT",
+    sourceCode: "ZONGZI_TIMEOUT",
     sourceStatus: null,
     retryable: true,
   }]);
@@ -341,7 +341,7 @@ for (const invalidPath of [
 {
   const unsafeStableCodeError = Object.assign(new Error("raw upstream credential text"), {
     status: 200,
-    code: "OZON_CATEGORY_TREE_UNAVAILABLE",
+    code: "ZONGZI_CATEGORY_TREE_UNAVAILABLE",
   });
   const { calls, handler } = createFixture({
     categoryService: { getCategoryTree: async () => { throw unsafeStableCodeError; } },
@@ -353,14 +353,14 @@ for (const invalidPath of [
     res: { id: "response" },
     status: 502,
     message: "未能从 Ozon 获取真实类目数据，请重试",
-    code: "OZON_CATEGORY_TREE_UNAVAILABLE",
+    code: "ZONGZI_CATEGORY_TREE_UNAVAILABLE",
   }]);
 }
 
 {
   const invalidInputError = Object.assign(new Error("raw caller value"), {
     status: 400,
-    code: "OZON_CATEGORY_DATA_INVALID",
+    code: "ZONGZI_CATEGORY_DATA_INVALID",
     body: { operation: "INPUT" },
     cause: null,
   });
@@ -374,14 +374,14 @@ for (const invalidPath of [
     res: { id: "response" },
     status: 400,
     message: "未能从 Ozon 获取真实类目数据，请重试",
-    code: "OZON_CATEGORY_DATA_INVALID",
+    code: "ZONGZI_CATEGORY_DATA_INVALID",
   }]);
 }
 
 {
   const missingTypeError = Object.assign(new Error("raw upstream tree"), {
     status: 422,
-    code: "OZON_CATEGORY_TYPE_NOT_FOUND",
+    code: "ZONGZI_CATEGORY_TYPE_NOT_FOUND",
     body: { operation: "TYPE" },
     cause: null,
   });
@@ -397,7 +397,7 @@ for (const invalidPath of [
     res: { id: "response" },
     status: 422,
     message: "未能从 Ozon 获取真实类目数据，请重试",
-    code: "OZON_CATEGORY_TYPE_NOT_FOUND",
+    code: "ZONGZI_CATEGORY_TYPE_NOT_FOUND",
   }]);
 }
 

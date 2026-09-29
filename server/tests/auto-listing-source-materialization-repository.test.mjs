@@ -38,6 +38,119 @@ const evidence = (lease, overrides = {}) => ({
   ...overrides,
 });
 
+const analysisScope = Object.freeze({
+  accountId: "account-a",
+  jobId: "job-a",
+  itemId: "item-a",
+  owner: Object.freeze({ kind: "SOURCE_IMAGE_ANALYSIS", id: "analysis-run-a" }),
+  sourceAssetId: "source-analysis-a",
+  sourceRefHash: "d".repeat(64),
+  inputHash: "e".repeat(64),
+  expectedStatusVersion: 4,
+});
+const analysisObjectKey = (attemptNo = 1, contentHash = HASHES.content) => [
+  "auto-listing/source/v2",
+  ...[analysisScope.accountId, analysisScope.jobId, analysisScope.itemId].map(segment),
+  "analysis-run",
+  segment(analysisScope.owner.id),
+  segment(analysisScope.sourceAssetId),
+  analysisScope.sourceRefHash,
+  `attempt-${attemptNo}`,
+  analysisScope.inputHash,
+  `${contentHash}.png`,
+].join("/");
+const analysisEvidence = (lease, overrides = {}) => ({
+  ...analysisScope,
+  attemptId: lease.attemptId,
+  attemptNo: lease.attemptNo,
+  leaseToken: lease.leaseToken,
+  objectKeyVersion: "SOURCE_V2",
+  objectKey: analysisObjectKey(lease.attemptNo),
+  contentHash: HASHES.content,
+  contentType: "image/png",
+  width: 900,
+  height: 1200,
+  sizeBytes: 1234,
+  ...overrides,
+});
+
+test("analysis-owned reservations use a closed owner union and exact SOURCE_V2 evidence", async () => {
+  const { createMemorySourceMaterializationRepository } = await repositoryModule();
+  const repository = createMemorySourceMaterializationRepository({
+    now: () => 3_000,
+    token: () => "analysis-lease",
+    id: () => "analysis-materialization-a",
+  });
+  const lease = await repository.reserveSourceMaterialization({ ...analysisScope, maxAttempts: 3 });
+  assert.deepEqual(lease, {
+    status: "RESERVED",
+    attemptId: "analysis-materialization-a",
+    attemptNo: 1,
+    leaseToken: "analysis-lease:1",
+    leaseExpiresAt: "1970-01-01T00:01:03.000Z",
+    ...analysisScope,
+  });
+  await repository.recordStoredSourceMaterialization(analysisEvidence(lease));
+  const accepted = await repository.completeSourceMaterialization(analysisEvidence(lease));
+  assert.equal(accepted.status, "ACCEPTED");
+  assert.deepEqual(accepted.owner, analysisScope.owner);
+  assert.equal(accepted.objectKeyVersion, "SOURCE_V2");
+  assert.equal(Object.hasOwn(accepted, "parentPlanId"), false);
+  assert.equal(Object.hasOwn(accepted, "sourceAnalysisRunId"), false);
+});
+
+test("SOURCE_V1 accepts only content-plan owners and SOURCE_V2 accepts only analysis owners", async () => {
+  const { createMemorySourceMaterializationRepository } = await repositoryModule();
+  for (const [currentScope, mutate] of [
+    [analysisScope, (value) => { value.objectKeyVersion = "SOURCE_V1"; }],
+    [analysisScope, (value) => { value.objectKey = value.objectKey.replace("/analysis-run/", "/content-plan/"); }],
+  ]) {
+    const repository = createMemorySourceMaterializationRepository({ token: () => "invalid-owner-lease", id: () => "invalid-owner-attempt" });
+    const lease = await repository.reserveSourceMaterialization({ ...currentScope, maxAttempts: 3 });
+    const value = analysisEvidence(lease);
+    mutate(value);
+    await assert.rejects(repository.recordStoredSourceMaterialization(value), {
+      code: "AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID",
+    });
+  }
+  const repository = createMemorySourceMaterializationRepository({ token: () => "plan-v2-lease", id: () => "plan-v2-attempt" });
+  const lease = await repository.reserveSourceMaterialization({ ...scope, maxAttempts: 3 });
+  await assert.rejects(repository.recordStoredSourceMaterialization(evidence(lease, {
+    objectKeyVersion: "SOURCE_V2",
+  })), { code: "AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID" });
+});
+
+test("analysis cleanup obligations retain the exact owner and attempt compound key", async () => {
+  const { createMemorySourceMaterializationRepository } = await repositoryModule();
+  const repository = createMemorySourceMaterializationRepository({
+    token: () => "analysis-cleanup-lease",
+    id: () => "analysis-cleanup-attempt",
+  });
+  const lease = await repository.reserveSourceMaterialization({ ...analysisScope, maxAttempts: 3 });
+  const orphan = analysisEvidence(lease);
+  const request = {
+    ...analysisScope,
+    materializationAttemptId: lease.attemptId,
+    attemptNo: lease.attemptNo,
+    leaseToken: lease.leaseToken,
+    objectKeyVersion: orphan.objectKeyVersion,
+    objectKey: orphan.objectKey,
+    contentHash: orphan.contentHash,
+    contentType: orphan.contentType,
+    width: orphan.width,
+    height: orphan.height,
+    sizeBytes: orphan.sizeBytes,
+    reasonCode: "AUTO_LISTING_SOURCE_OBJECT_UNREFERENCED",
+    originalErrorCode: "AUTO_LISTING_SOURCE_MATERIALIZATION_CLAIM_REJECTED",
+  };
+  const first = await repository.recordSourceObjectCleanupRequired(request);
+  assert.equal(first.status, "PENDING");
+  assert.deepEqual(first.owner, analysisScope.owner);
+  assert.equal(first.materializationAttemptId, lease.attemptId);
+  assert.equal(Object.hasOwn(first, "parentPlanId"), false);
+  assert.deepEqual(await repository.recordSourceObjectCleanupRequired(request), first);
+});
+
 test("reserve is closed, validates the complete account/job/item/plan/source fence and returns the frozen lease", async () => {
   const { createMemorySourceMaterializationRepository } = await repositoryModule();
   const repository = createMemorySourceMaterializationRepository({
@@ -209,6 +322,51 @@ test("three failed attempts are terminal and the fourth reservation is exhausted
   assert.deepEqual(await repository.reserveSourceMaterialization({ ...scope, maxAttempts: 3 }), { status: "ATTEMPTS_EXHAUSTED" });
 });
 
+test("analysis exhaustion replays only the exact last safe failed attempt for terminal repair", async () => {
+  const { createMemorySourceMaterializationRepository } = await repositoryModule();
+  let nonce = 0;
+  const repository = createMemorySourceMaterializationRepository({
+    token: () => `analysis-replay-lease-${++nonce}`,
+    id: () => `analysis-replay-attempt-${nonce}`,
+  });
+  let lastFailure;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const lease = await repository.reserveSourceMaterialization({ ...analysisScope, maxAttempts: 3 });
+    lastFailure = await repository.failSourceMaterialization({
+      ...analysisScope,
+      attemptId: lease.attemptId,
+      attemptNo: lease.attemptNo,
+      leaseToken: lease.leaseToken,
+      errorCode: "AUTO_LISTING_SOURCE_DOWNLOAD_FAILED",
+      errorRetryable: true,
+    });
+  }
+  assert.deepEqual(await repository.reserveSourceMaterialization({ ...analysisScope, maxAttempts: 3 }), {
+    status: "EXHAUSTED_SAFE_FAILURE",
+    record: lastFailure,
+  });
+
+  let unsafeNonce = 0;
+  const unsafeRepository = createMemorySourceMaterializationRepository({
+    token: () => "analysis-unsafe-lease",
+    id: () => `analysis-unsafe-attempt-${++unsafeNonce}`,
+  });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const lease = await unsafeRepository.reserveSourceMaterialization({ ...analysisScope, maxAttempts: 3 });
+    await unsafeRepository.failSourceMaterialization({
+      ...analysisScope,
+      attemptId: lease.attemptId,
+      attemptNo: lease.attemptNo,
+      leaseToken: lease.leaseToken,
+      errorCode: attempt === 3 ? "AUTO_LISTING_SOURCE_ASSET_STORAGE_UNAVAILABLE" : "AUTO_LISTING_SOURCE_DOWNLOAD_FAILED",
+      errorRetryable: true,
+    });
+  }
+  assert.deepEqual(await unsafeRepository.reserveSourceMaterialization({ ...analysisScope, maxAttempts: 3 }), {
+    status: "ATTEMPTS_EXHAUSTED",
+  });
+});
+
 test("owner transitions require unexpired lease, unchanged statusVersion and closed safe failure evidence", async () => {
   const { createMemorySourceMaterializationRepository } = await repositoryModule();
   let time = 4_000;
@@ -260,6 +418,44 @@ test("accepted listing is exact-plan and account scoped, bounded, sorted and ret
   assert.doesNotMatch(JSON.stringify(rows), /https?:|query|redirect|responseBody/i);
   assert.deepEqual(await repository.listAcceptedSourceMaterializations({ accountId: "account-b", jobId: "job-a", itemId: "item-a", parentPlanId: "plan-a", expectedStatusVersion: 4 }), []);
   await assert.rejects(repository.listAcceptedSourceMaterializations({ accountId: "account-a", jobId: "job-a", itemId: "item-a", parentPlanId: "plan-a", expectedStatusVersion: 4, extra: true }), { code: "AUTO_LISTING_SOURCE_MATERIALIZATION_INVALID" });
+});
+
+test("immutable listing selects one explicit source-analysis owner without broadening legacy plan ownership", async () => {
+  const { createMemorySourceMaterializationRepository } = await repositoryModule();
+  let nonce = 0;
+  const repository = createMemorySourceMaterializationRepository({
+    token: () => `analysis-list-lease-${++nonce}`,
+    id: () => `analysis-list-materialization-${nonce}`,
+  });
+  const analysisLease = await repository.reserveSourceMaterialization({ ...analysisScope, maxAttempts: 3 });
+  const stored = analysisEvidence(analysisLease);
+  await repository.recordStoredSourceMaterialization(stored);
+  await repository.completeSourceMaterialization(stored);
+
+  const analysisRows = await repository.listAcceptedSourceMaterializationsForPlan({
+    accountId: analysisScope.accountId,
+    jobId: analysisScope.jobId,
+    itemId: analysisScope.itemId,
+    parentPlanId: "plan-a",
+    sourceImageAnalysisRunId: analysisScope.owner.id,
+  });
+
+  assert.deepEqual(analysisRows.map((row) => row.owner), [analysisScope.owner]);
+  const inheritedRows = await repository.listAcceptedSourceMaterializationsForPlan({
+    accountId: analysisScope.accountId,
+    jobId: analysisScope.jobId,
+    itemId: analysisScope.itemId,
+    parentPlanId: "plan-derived",
+    sourceImageAnalysisRunId: "analysis-run-derived",
+    sourceMaterializationAnalysisRunId: analysisScope.owner.id,
+  });
+  assert.deepEqual(inheritedRows.map((row) => row.owner), [analysisScope.owner]);
+  assert.deepEqual(await repository.listAcceptedSourceMaterializationsForPlan({
+    accountId: analysisScope.accountId,
+    jobId: analysisScope.jobId,
+    itemId: analysisScope.itemId,
+    parentPlanId: "plan-a",
+  }), []);
 });
 
 test("accepted listing is fenced by the exact expected status version", async () => {

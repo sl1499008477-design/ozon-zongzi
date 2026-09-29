@@ -236,7 +236,7 @@ test("JSON cache lease admission counts unique live owners per account", async (
     leaseExpiresAt: new Date("2026-07-31T00:01:00.000Z"),
     now: at,
     maxActiveLeases: 4,
-  }), (error) => error?.status === 429 && error?.code === "OZON_ENRICH_BUSY");
+  }), (error) => error?.status === 429 && error?.code === "ZONGZI_ENRICH_BUSY");
 });
 
 test("JSON job creation is stable and claims at most four unexpired jobs per account", async () => {
@@ -346,7 +346,7 @@ test("preferred claim is exclusive for one second then falls back only within th
     collectorSessionId: "collector-other-account",
     now: new Date("2026-07-31T00:00:01.000Z"),
     claimExpiresAt: new Date("2026-07-31T00:00:06.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_SESSION_SCOPE");
   const fallback = await repository.claimNextJob({
     accountId: "account-a",
     collectorSessionId: "collector-fallback",
@@ -399,7 +399,7 @@ test("JSON availability is read-only and follows the claimable job contract", as
       collectorOzonEnrichmentJobs: [job({ deadlineAt: "2026-07-31T00:00:10.000Z" })],
     },
     { accountId: "account-a", collectorSessionId: "collector-a" },
-    false,
+    true,
   );
   await check(
     {
@@ -701,7 +701,7 @@ test("JSON atomic terminal write rejects a lost claim without publishing cache",
     capturedAt: new Date("2026-07-31T00:00:05.001Z"),
     expiresAt: new Date("2026-07-31T06:00:05.001Z"),
     now: new Date("2026-07-31T00:00:05.001Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_OWNERSHIP");
   assert.equal(await repository.readCache({
     key: ACCOUNT_A_KEY,
     now: new Date("2026-07-31T00:00:05.001Z"),
@@ -791,7 +791,7 @@ test("JSON atomic terminal persistence failure rolls back both job and cache", a
     collectorSessionId: "collector-owner",
     jobId: "job-atomic-rollback",
     key: ACCOUNT_A_KEY,
-    error: { status: 502, code: "OZON_ENRICH_UPSTREAM_FAILED" },
+    error: { status: 502, code: "ZONGZI_ENRICH_UPSTREAM_FAILED" },
     responseHash: "atomic-rollback-hash",
     capturedAt: new Date("2026-07-31T00:00:01.000Z"),
     expiresAt: new Date("2026-07-31T00:01:01.000Z"),
@@ -832,7 +832,7 @@ test("JSON create-or-get returns the stable job before validating a changed pref
   assert.deepEqual(retried, created);
 });
 
-test("JSON create-or-get atomically requeues only an expired nonterminal stable job", async () => {
+test("JSON create-or-get preserves retry history across an expired HTTP wait window", async () => {
   const state = {
     collectorSessions: [
       activeSession("collector-original", "account-a"),
@@ -864,6 +864,7 @@ test("JSON create-or-get atomically requeues only an expired nonterminal stable 
     now: new Date("2026-07-31T00:00:01.000Z"),
   });
 
+  const beforeReplay = structuredClone(state.collectorOzonEnrichmentJobs[0]);
   const retried = await repository.createOrGetJob({
     id: "job-new-id-must-not-replace-stable-id",
     accountId: "account-a",
@@ -875,33 +876,20 @@ test("JSON create-or-get atomically requeues only an expired nonterminal stable 
     createdAt: new Date("2026-07-31T00:00:21.000Z"),
   });
 
-  assert.equal(retried.id, "job-expired-stable");
-  assert.equal(retried.status, "PENDING");
-  assert.equal(retried.preferredSessionId, "collector-retry");
-  assert.equal(retried.claimedSessionId, null);
-  assert.equal(retried.claimExpiresAt, null);
-  assert.equal(retried.attemptCount, 0);
-  assert.equal(retried.nextAttemptAt, "2026-07-31T00:00:21.000Z");
-  assert.equal(retried.lastError, null);
-  assert.equal(retried.result, null);
-  assert.equal(retried.error, null);
-  assert.equal(retried.completedAt, null);
-  assert.equal(retried.createdAt, "2026-07-31T00:00:21.000Z");
-  assert.equal(retried.deadlineAt, "2026-07-31T00:00:41.000Z");
-  assert.equal(retried.refreshBundle, true);
+  assert.deepEqual(retried, beforeReplay);
 
   const claimed = await repository.claimNextJob({
     accountId: "account-a",
     collectorSessionId: "collector-retry",
-    now: new Date("2026-07-31T00:00:21.000Z"),
-    claimExpiresAt: new Date("2026-07-31T00:00:26.000Z"),
+    now: new Date("2026-07-31T00:00:31.000Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:36.000Z"),
   });
   const succeeded = await completeTerminalJob(repository, {
     accountId: "account-a",
     collectorSessionId: "collector-retry",
     jobId: claimed.id,
     result: completeResult(818),
-    now: new Date("2026-07-31T00:00:22.000Z"),
+    now: new Date("2026-07-31T00:00:32.000Z"),
   });
   const terminalRetry = await repository.createOrGetJob({
     id: "job-terminal-must-not-revive",
@@ -937,7 +925,7 @@ test("JSON create-or-get rejects one job id mapped to a different stable key", a
     refreshBundle: {},
     deadlineAt: new Date("2026-07-31T01:00:00.000Z"),
     createdAt: new Date("2026-07-31T00:01:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_ID_CONFLICT");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_ID_CONFLICT");
 });
 
 test("JSON job results require the owning session and terminal jobs are immutable", async () => {
@@ -974,7 +962,7 @@ test("JSON job results require the owning session and terminal jobs are immutabl
       result: completeResult(303),
       now: new Date("2026-07-31T00:11:00.000Z"),
     }),
-    (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_OWNERSHIP",
   );
   await assert.rejects(
     failTerminalJob(repository, {
@@ -984,7 +972,7 @@ test("JSON job results require the owning session and terminal jobs are immutabl
       error: { code: "ATTACKER_ERROR" },
       now: new Date("2026-07-31T00:11:00.000Z"),
     }),
-    (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_OWNERSHIP",
   );
   const succeeded = await completeTerminalJob(repository, {
     accountId: "account-a",
@@ -1004,7 +992,7 @@ test("JSON job results require the owning session and terminal jobs are immutabl
       error: { code: "LATE_ERROR" },
       now: new Date("2026-07-31T00:13:00.000Z"),
     }),
-    (error) => error?.code === "OZON_ENRICHMENT_JOB_TERMINAL",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_TERMINAL",
   );
   assert.deepEqual(await repository.readJob({
     accountId: "account-a",
@@ -1082,7 +1070,7 @@ test("JSON rejects Collector sessions from another account for writes and claims
     executorSessionId: "collector-b",
     capturedAt: new Date("2026-07-31T00:00:00.000Z"),
     expiresAt: new Date("2026-07-31T06:00:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_SESSION_SCOPE");
 
   await repository.createOrGetJob({
     id: "job-a",
@@ -1099,7 +1087,7 @@ test("JSON rejects Collector sessions from another account for writes and claims
     collectorSessionId: "collector-b",
     now: new Date("2026-07-31T00:10:00.000Z"),
     claimExpiresAt: new Date("2026-07-31T00:20:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_SESSION_SCOPE");
 });
 
 test("JSON cache writes fail closed for missing, malformed, expired, or revoked sessions", async (t) => {
@@ -1122,7 +1110,7 @@ test("JSON cache writes fail closed for missing, malformed, expired, or revoked 
         executorSessionId: "collector-a",
         capturedAt: new Date("2026-07-31T00:00:00.000Z"),
         expiresAt: new Date("2026-07-31T06:00:00.000Z"),
-      }), (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+      }), (error) => error?.code === "ZONGZI_ENRICHMENT_SESSION_SCOPE");
     });
   }
 
@@ -1135,7 +1123,7 @@ test("JSON cache writes fail closed for missing, malformed, expired, or revoked 
     responseHash: "missing-executor-hash",
     capturedAt: new Date("2026-07-31T00:00:00.000Z"),
     expiresAt: new Date("2026-07-31T06:00:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_SCOPE_REQUIRED");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_SCOPE_REQUIRED");
 });
 
 test("JSON cache write rechecks session after waiting for the serialized mutation queue", async () => {
@@ -1172,7 +1160,7 @@ test("JSON cache write rechecks session after waiting for the serialized mutatio
   state.collectorSessions[0].revokedAt = "2026-07-31T00:00:00.500Z";
   releasePersist.resolve();
   await blocker;
-  await assert.rejects(pending, (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+  await assert.rejects(pending, (error) => error?.code === "ZONGZI_ENRICHMENT_SESSION_SCOPE");
 });
 
 test("JSON claim and finish recheck session after waiting for the serialized mutation queue", async () => {
@@ -1238,7 +1226,7 @@ test("JSON claim and finish recheck session after waiting for the serialized mut
     await blocker;
     await assert.rejects(
       pending,
-      (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE",
+      (error) => error?.code === "ZONGZI_ENRICHMENT_SESSION_SCOPE",
       operation,
     );
   }
@@ -1268,7 +1256,7 @@ test("repository rejects absent dates and null terminal payloads before mutation
   };
   const jsonRepository = createJsonCollectorOzonEnrichmentRepository({ state });
   await assert.rejects(jsonRepository.readCache({ key: ACCOUNT_A_KEY, now: null }),
-    (error) => error?.code === "OZON_ENRICHMENT_DATE_INVALID");
+    (error) => error?.code === "ZONGZI_ENRICHMENT_DATE_INVALID");
   await assert.rejects(jsonRepository.writeCompleteCache({
     key: ACCOUNT_A_KEY,
     result: null,
@@ -1276,14 +1264,14 @@ test("repository rejects absent dates and null terminal payloads before mutation
     executorSessionId: "collector-a",
     capturedAt: new Date("2026-07-31T00:00:00.000Z"),
     expiresAt: new Date("2026-07-31T06:00:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_PAYLOAD_REQUIRED");
   await assert.rejects(jsonRepository.writeNegativeCache({
     key: ACCOUNT_A_KEY,
     error: null,
     responseHash: "null-error",
     capturedAt: new Date("2026-07-31T00:00:00.000Z"),
     expiresAt: new Date("2026-07-31T00:01:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_PAYLOAD_REQUIRED");
   await assert.rejects(jsonRepository.completeJobAndCache({
     accountId: "account-a",
     collectorSessionId: "collector-a",
@@ -1294,7 +1282,7 @@ test("repository rejects absent dates and null terminal payloads before mutation
     capturedAt: new Date("2026-07-31T00:10:00.000Z"),
     expiresAt: new Date("2026-07-31T06:10:00.000Z"),
     now: new Date("2026-07-31T00:10:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_PAYLOAD_REQUIRED");
   await assert.rejects(jsonRepository.failJobAndCache({
     accountId: "account-a",
     collectorSessionId: "collector-a",
@@ -1305,7 +1293,7 @@ test("repository rejects absent dates and null terminal payloads before mutation
     capturedAt: new Date("2026-07-31T00:10:00.000Z"),
     expiresAt: new Date("2026-07-31T00:11:00.000Z"),
     now: new Date("2026-07-31T00:10:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_PAYLOAD_REQUIRED");
 
   let queryCalls = 0;
   const pgRepository = createPostgresCollectorOzonEnrichmentRepository({
@@ -1318,14 +1306,14 @@ test("repository rejects absent dates and null terminal payloads before mutation
     executorSessionId: "collector-a",
     capturedAt: new Date("2026-07-31T00:00:00.000Z"),
     expiresAt: new Date("2026-07-31T06:00:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_PAYLOAD_REQUIRED");
   await assert.rejects(pgRepository.writeNegativeCache({
     key: ACCOUNT_A_KEY,
     error: null,
     responseHash: "null-error",
     capturedAt: new Date("2026-07-31T00:00:00.000Z"),
     expiresAt: new Date("2026-07-31T00:01:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_PAYLOAD_REQUIRED");
   await assert.rejects(pgRepository.completeJobAndCache({
     accountId: "account-a",
     collectorSessionId: "collector-a",
@@ -1336,7 +1324,7 @@ test("repository rejects absent dates and null terminal payloads before mutation
     capturedAt: new Date("2026-07-31T00:10:00.000Z"),
     expiresAt: new Date("2026-07-31T06:10:00.000Z"),
     now: new Date("2026-07-31T00:10:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_PAYLOAD_REQUIRED");
   await assert.rejects(pgRepository.failJobAndCache({
     accountId: "account-a",
     collectorSessionId: "collector-a",
@@ -1347,7 +1335,7 @@ test("repository rejects absent dates and null terminal payloads before mutation
     capturedAt: new Date("2026-07-31T00:10:00.000Z"),
     expiresAt: new Date("2026-07-31T00:11:00.000Z"),
     now: new Date("2026-07-31T00:10:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_PAYLOAD_REQUIRED");
   assert.equal(queryCalls, 0);
 });
 
@@ -1441,7 +1429,7 @@ test("PostgreSQL cache lease admission reports account capacity without exposing
     now: new Date("2026-07-31T00:00:00.000Z"),
     maxActiveLeases: 4,
   }), (error) => error?.status === 429
-    && error?.code === "OZON_ENRICH_BUSY"
+    && error?.code === "ZONGZI_ENRICH_BUSY"
     && !error?.message.includes("SELECT"));
 });
 
@@ -1525,7 +1513,7 @@ test("PostgreSQL atomic terminal write rolls back the job when cache persistence
   }));
   assert.equal(calls[0], "BEGIN ISOLATION LEVEL READ COMMITTED");
   assert.match(calls[1], /pg_advisory_xact_lock/);
-  assert.match(calls[2], /deadline_at>\$4/);
+  assert.doesNotMatch(calls[2], /deadline_at>\$4|claim_expires_at>\$4/);
   assert.equal(calls.at(-1), "ROLLBACK");
   assert.equal(calls.includes("COMMIT"), false);
 });
@@ -1655,6 +1643,7 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
   assert.match(calls[3].sql, /SELECT id,seller_context_json FROM collector_sessions/);
   assert.match(calls[3].sql, /revoked_at IS NULL/);
   assert.match(calls[3].sql, /expires_at>\$3/);
+  assert.equal(calls.some(call => call.sql.includes("attempt_count=attempt_count+1")), false);
   assert.match(calls[4].sql, /status='PROCESSING'/);
   assert.match(calls[4].sql, /claim_expires_at>/);
   assert.match(calls[5].sql, /FOR UPDATE SKIP LOCKED/);
@@ -1665,7 +1654,7 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
     calls[5].sql,
     /ORDER BY CASE WHEN job\.collect_item_id IS NOT NULL THEN 0 ELSE 1 END, CASE WHEN job\.attempt_count=0 THEN 0 ELSE 1 END, CASE WHEN job\.preferred_session_id=\$2 THEN 0 ELSE 1 END/,
   );
-  assert.match(calls[5].sql, /claim_expires_at=LEAST\(\$4, job\.deadline_at\)/);
+  assert.match(calls[5].sql, /claim_expires_at=\$4/);
   assert.equal(calls.at(-1).sql, "COMMIT");
 
   calls.length = 0;
@@ -1714,7 +1703,7 @@ test("PostgreSQL availability uses one read-only account-session scoped query", 
   assert.match(calls[0].sql, /job\.account_id=\$1/);
   assert.match(calls[0].sql, /job\.status='PENDING'/);
   assert.match(calls[0].sql, /job\.claim_expires_at<=\$3/);
-  assert.match(calls[0].sql, /job\.deadline_at>\$3/);
+  assert.doesNotMatch(calls[0].sql, /job\.deadline_at>\$3/);
   assert.match(calls[0].sql, /job\.next_attempt_at<=\$3/);
   assert.match(calls[0].sql, /job\.preferred_session_id=\$2/);
   assert.match(calls[0].sql, /job\.created_at \+ INTERVAL '1 second'<=\$3/);
@@ -1814,7 +1803,7 @@ test("PostgreSQL claim rejects an invalid session before checking account capaci
     collectorSessionId: "collector-invalid",
     now: new Date("2026-07-31T00:10:00.000Z"),
     claimExpiresAt: new Date("2026-07-31T00:20:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_SESSION_SCOPE");
   assert.equal(calls.some((call) => call.sql.startsWith("SELECT COUNT(*)")), false);
   assert.equal(calls.at(-1).sql, "ROLLBACK");
 });
@@ -1901,23 +1890,23 @@ test("PostgreSQL create-or-get returns a concurrent stable row despite an invali
   assert.match(calls[0].sql, /ON CONFLICT DO NOTHING/);
 });
 
-test("PostgreSQL create-or-get atomically resets an expired nonterminal stable row", async () => {
+test("PostgreSQL create-or-get returns the existing fenced row after its HTTP wait expires", async () => {
   const calls = [];
   const resetRow = {
     id: "job-expired-stable",
     account_id: "account-a",
     request_id: "request-expired-stable",
     sku: "sku-expired-stable",
-    status: "PENDING",
+    status: "PROCESSING",
     refresh_bundle: true,
     preferred_session_id: "collector-retry",
-    claimed_session_id: null,
-    claim_expires_at: null,
+    claimed_session_id: "collector-original",
+    claim_expires_at: "2026-07-31T00:00:30.000Z", claim_fence: "original-fence",
     deadline_at: "2026-07-31T00:00:41.000Z",
     created_at: "2026-07-31T00:00:21.000Z",
     updated_at: "2026-07-31T00:00:21.000Z",
     completed_at: null,
-    attempt_count: 0,
+    attempt_count: 2,
     next_attempt_at: "2026-07-31T00:00:21.000Z",
     last_error_json: null,
   };
@@ -1928,7 +1917,7 @@ test("PostgreSQL create-or-get atomically resets an expired nonterminal stable r
       if (normalized.startsWith("INSERT INTO collector_ozon_enrichment_jobs")) {
         return { rows: [], rowCount: 0 };
       }
-      if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs AS job")) {
+      if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
         return { rows: [resetRow], rowCount: 1 };
       }
       return { rows: [], rowCount: 0 };
@@ -1947,19 +1936,12 @@ test("PostgreSQL create-or-get atomically resets an expired nonterminal stable r
   });
 
   assert.equal(retried.id, "job-expired-stable");
-  assert.equal(retried.status, "PENDING");
-  assert.match(calls[1].sql, /status='PENDING'/);
-  assert.match(calls[1].sql, /claimed_session_id=NULL/);
-  assert.match(calls[1].sql, /claim_expires_at=NULL/);
-  assert.match(calls[1].sql, /result_json=NULL/);
-  assert.match(calls[1].sql, /error_json=NULL/);
-  assert.match(calls[1].sql, /completed_at=NULL/);
-  assert.match(calls[1].sql, /attempt_count=0/);
-  assert.match(calls[1].sql, /next_attempt_at=\$8/);
-  assert.match(calls[1].sql, /last_error_json=NULL/);
-  assert.match(calls[1].sql, /status IN \('PENDING','PROCESSING'\)/);
-  assert.match(calls[1].sql, /deadline_at<=\$8/);
-  assert.match(calls[1].sql, /preferred\.account_id=\$2/);
+  assert.equal(retried.status, "PROCESSING");
+  assert.equal(retried.claimFence, "original-fence");
+  assert.equal(retried.claimedSessionId, "collector-original");
+  assert.equal(retried.attemptCount, 2);
+  assert.equal(calls.some(call => call.sql.startsWith("UPDATE")), false);
+  assert.match(calls[1].sql, /account_id=\$1 AND request_id=\$2 AND sku=\$3/);
 });
 
 test("PostgreSQL create-or-get reports an explicit id conflict after atomic insert loses", async () => {
@@ -1988,7 +1970,7 @@ test("PostgreSQL create-or-get reports an explicit id conflict after atomic inse
     refreshBundle: {},
     deadlineAt: new Date("2026-07-31T01:00:00.000Z"),
     createdAt: new Date("2026-07-31T00:00:00.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_ID_CONFLICT");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_ID_CONFLICT");
 });
 
 test("create-or-get snapshots caller input once before validation and persistence", async () => {
@@ -2058,7 +2040,7 @@ test("create-or-get rejects sensitive caller fields before JSON save or PostgreS
   });
   await assert.rejects(
     jsonRepository.createOrGetJob(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
   );
   assert.equal(state.collectorOzonEnrichmentJobs, undefined);
   assert.equal(jsonSaveCalled, false);
@@ -2074,7 +2056,7 @@ test("create-or-get rejects sensitive caller fields before JSON save or PostgreS
   });
   await assert.rejects(
     postgresRepository.createOrGetJob(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
   );
   assert.equal(postgresQueried, false);
 });
@@ -2111,7 +2093,7 @@ test("create-or-get rejects unknown and server-owned caller fields before persis
           state,
           async persist() { jsonSaveCalled = true; },
         }).createOrGetJob(input),
-        (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+        (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
       );
       assert.equal(state.collectorOzonEnrichmentJobs, undefined);
       assert.equal(jsonSaveCalled, false);
@@ -2126,7 +2108,7 @@ test("create-or-get rejects unknown and server-owned caller fields before persis
             },
           },
         }).createOrGetJob(input),
-        (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+        (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
       );
       assert.equal(postgresQueried, false);
     });
@@ -2209,7 +2191,7 @@ test("create-or-get derives internal retry and capture state for valid new jobs 
   assert.match(calls[0].sql, /0,\$8,NULL,NULL/);
 });
 
-test("create-or-get held reset clears server-owned retry and capture state in both adapters", async () => {
+test("create-or-get preserves server-owned retry and historical capture state in both adapters", async () => {
   const createdAt = new Date("2026-07-31T00:00:21.000Z");
   const existing = {
     id: "job-held-derived-reset",
@@ -2250,17 +2232,7 @@ test("create-or-get held reset clears server-owned retry and capture state in bo
   const state = { collectorOzonEnrichmentJobs: [structuredClone(existing)] };
   const jsonReset = await createJsonCollectorOzonEnrichmentRepository({ state })
     .createOrGetJob(input);
-  assert.deepEqual({
-    attemptCount: jsonReset.attemptCount,
-    nextAttemptAt: jsonReset.nextAttemptAt,
-    lastError: jsonReset.lastError,
-    captureContext: jsonReset.captureContext,
-  }, {
-    attemptCount: 0,
-    nextAttemptAt: createdAt.toISOString(),
-    lastError: null,
-    captureContext: null,
-  });
+  assert.deepEqual(jsonReset, existing);
 
   const calls = [];
   const postgresRepository = createPostgresCollectorOzonEnrichmentRepository({
@@ -2271,7 +2243,7 @@ test("create-or-get held reset clears server-owned retry and capture state in bo
         if (normalized.startsWith("INSERT INTO collector_ozon_enrichment_jobs")) {
           return { rows: [], rowCount: 0 };
         }
-        if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs AS job")) {
+        if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
           return { rows: [{
             id: existing.id,
             account_id: existing.accountId,
@@ -2280,10 +2252,10 @@ test("create-or-get held reset clears server-owned retry and capture state in bo
             status: "PENDING",
             preferred_session_id: null,
             refresh_bundle: true,
-            attempt_count: 0,
-            next_attempt_at: createdAt.toISOString(),
-            last_error_json: null,
-            capture_context_json: null,
+            attempt_count: existing.attemptCount,
+            next_attempt_at: existing.nextAttemptAt,
+            last_error_json: existing.lastError,
+            capture_context_json: existing.captureContext,
             deadline_at: input.deadlineAt.toISOString(),
             created_at: createdAt.toISOString(),
             updated_at: createdAt.toISOString(),
@@ -2294,9 +2266,10 @@ test("create-or-get held reset clears server-owned retry and capture state in bo
     },
   });
   const postgresReset = await postgresRepository.createOrGetJob(input);
-  assert.equal(postgresReset.nextAttemptAt, createdAt.toISOString());
-  assert.equal(postgresReset.captureContext, null);
-  assert.match(calls[1].sql, /capture_context_json=NULL/);
+  assert.equal(postgresReset.nextAttemptAt, existing.nextAttemptAt);
+  assert.equal(postgresReset.attemptCount, existing.attemptCount);
+  assert.deepEqual(postgresReset.captureContext, existing.captureContext);
+  assert.equal(calls.some(call => call.sql.startsWith("UPDATE")), false);
 });
 
 test("JSON linked enqueue is idempotent and rejects a collect-item mismatch", async () => {
@@ -2329,7 +2302,7 @@ test("JSON linked enqueue is idempotent and rejects a collect-item mismatch", as
   await assert.rejects(repository.enqueueForCollect({
     ...input,
     collectItemId: "collect-other",
-  }), (error) => error?.code === "OZON_ENRICHMENT_COLLECT_ITEM_CONFLICT");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_COLLECT_ITEM_CONFLICT");
 });
 
 test("linked enqueue ignores terminal history and creates one fresh active job in both adapters", async () => {
@@ -2473,7 +2446,7 @@ test("collected complete evidence terminates active linked jobs in both adapters
   assert.equal(state.collectorOzonEnrichmentJobs[0].claimFence, null);
   assert.equal(state.collectorOzonEnrichmentJobs[1].status, "FAILED");
   assert.deepEqual(state.collectorOzonEnrichmentJobs[1].error, {
-    code: "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED",
+    code: "ZONGZI_ENRICHMENT_DUPLICATE_SUPERSEDED",
     status: 409,
   });
   assert.equal(state.collectorOzonEnrichmentJobs[2].status, "PENDING");
@@ -2582,7 +2555,7 @@ test("linked enqueue rejects sensitive caller fields outside refreshBundle befor
       state,
       async persist() { jsonSaveCalled = true; },
     }).enqueueForCollect(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
   );
   assert.equal(state.collectorOzonEnrichmentJobs, undefined);
   assert.equal(jsonSaveCalled, false);
@@ -2597,7 +2570,7 @@ test("linked enqueue rejects sensitive caller fields outside refreshBundle befor
         },
       },
     }).enqueueForCollect(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
   );
   assert.equal(postgresQueried, false);
 });
@@ -2623,7 +2596,7 @@ test("linked enqueue rejects composite Seller credential keys before persistence
     };
     await assert.rejects(
       jsonRepository.enqueueForCollect(input),
-      (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+      (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
     );
     assert.equal(state.collectorOzonEnrichmentJobs, undefined);
 
@@ -2633,7 +2606,7 @@ test("linked enqueue rejects composite Seller credential keys before persistence
     });
     await assert.rejects(
       postgresRepository.enqueueForCollect(input),
-      (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+      (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
     );
     assert.equal(queried, false);
   }
@@ -2678,7 +2651,7 @@ test("linked enqueue rejects normalized Seller credential semantics before persi
     };
     await assert.rejects(
       jsonRepository.enqueueForCollect(input),
-      (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+      (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
     );
     assert.equal(state.collectorOzonEnrichmentJobs, undefined);
 
@@ -2688,7 +2661,7 @@ test("linked enqueue rejects normalized Seller credential semantics before persi
     });
     await assert.rejects(
       postgresRepository.enqueueForCollect(input),
-      (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+      (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
     );
     assert.equal(queried, false);
   }
@@ -2765,10 +2738,10 @@ test("linked enqueue rejects plural and nonterminal credential semantics before 
         postgresCode: postgresError?.code ?? null,
         postgresQueried,
       }, {
-        jsonCode: "OZON_ENRICHMENT_SENSITIVE_DATA",
+        jsonCode: "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
         jsonJobCreated: false,
         jsonSaveCalled: false,
-        postgresCode: "OZON_ENRICHMENT_SENSITIVE_DATA",
+        postgresCode: "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
         postgresQueried: false,
       });
     });
@@ -2815,7 +2788,7 @@ test("linked enqueue rejects non-empty metadata outside the fixed refresh contra
       state,
       async persist() { jsonSaveCalled = true; },
     }).enqueueForCollect(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
   );
   assert.equal(state.collectorOzonEnrichmentJobs, undefined);
   assert.equal(jsonSaveCalled, false);
@@ -2830,7 +2803,7 @@ test("linked enqueue rejects non-empty metadata outside the fixed refresh contra
         },
       },
     }).enqueueForCollect(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
   );
   assert.equal(postgresQueried, false);
 });
@@ -2870,7 +2843,7 @@ test("linked enqueue rejects forged internal job state before either persistence
       state,
       async persist() { jsonSaveCalled = true; },
     }).enqueueForCollect(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
   );
   assert.equal(state.collectorOzonEnrichmentJobs, undefined);
   assert.equal(jsonSaveCalled, false);
@@ -2885,7 +2858,7 @@ test("linked enqueue rejects forged internal job state before either persistence
         },
       },
     }).enqueueForCollect(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_SENSITIVE_DATA",
   );
   assert.equal(postgresQueried, false);
 });
@@ -2912,13 +2885,13 @@ test("JSON linked enqueue hides cross-account and missing collect items behind o
     }
   }
   assert.deepEqual(errors.map(({ code, status }) => ({ code, status })), [
-    { code: "OZON_ENRICHMENT_COLLECT_ITEM_NOT_FOUND", status: 404 },
-    { code: "OZON_ENRICHMENT_COLLECT_ITEM_NOT_FOUND", status: 404 },
+    { code: "ZONGZI_ENRICHMENT_COLLECT_ITEM_NOT_FOUND", status: 404 },
+    { code: "ZONGZI_ENRICHMENT_COLLECT_ITEM_NOT_FOUND", status: 404 },
   ]);
   assert.equal(state.collectorOzonEnrichmentJobs, undefined);
 });
 
-test("JSON linked retries wait until due and persist only stable error fields", async () => {
+test("JSON linked retries wait until due and persist the safe service error projection", async () => {
   const state = {
     caches: { collectBox: [collectItem("collect-a", "account-a")] },
     collectorSessions: [activeSession("collector-a", "account-a", {
@@ -2948,7 +2921,7 @@ test("JSON linked retries wait until due and persist only stable error fields", 
     error: {
       code: "OZON_RETRYABLE",
       status: 503,
-      message: "contains unstable and potentially sensitive detail",
+      message: "Seller /api/v1/search: net::ERR_CONNECTION_RESET",
       stack: "must not persist",
       sellerToken: "must not persist",
     },
@@ -2960,7 +2933,7 @@ test("JSON linked retries wait until due and persist only stable error fields", 
   assert.equal(deferred.nextAttemptAt, "2026-08-01T08:00:31.000Z");
   assert.equal(deferred.claimedSessionId, null);
   assert.equal(deferred.claimExpiresAt, null);
-  assert.deepEqual(deferred.lastError, { code: "OZON_RETRYABLE", status: 503 });
+  assert.deepEqual(deferred.lastError, { code: "OZON_RETRYABLE", status: 503, message: "Seller /api/v1/search: net::ERR_CONNECTION_RESET" });
   assert.equal(await repository.claimNextJob({
     accountId: "account-a",
     collectorSessionId: "collector-a",
@@ -3052,7 +3025,7 @@ test("JSON claim normalizes legacy duplicate active linked jobs and preserves su
     );
     assert.equal(duplicate.status, "FAILED");
     assert.deepEqual(duplicate.error, {
-      code: "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED",
+      code: "ZONGZI_ENRICHMENT_DUPLICATE_SUPERSEDED",
       status: 409,
     });
     assert.deepEqual(duplicate.lastError, duplicate.error);
@@ -3237,7 +3210,7 @@ test("JSON linked jobs enforce account scope for read, claim, defer, and complet
     jobId: job.id,
     error: { code: "ATTACK" },
     now: new Date("2026-08-01T08:00:01.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_NOT_FOUND");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_NOT_FOUND");
   await assert.rejects(repository.completeJobAndCache({
     accountId: "account-b",
     collectorSessionId: "collector-b",
@@ -3248,7 +3221,7 @@ test("JSON linked jobs enforce account scope for read, claim, defer, and complet
     capturedAt: new Date("2026-08-01T08:00:01.000Z"),
     expiresAt: new Date("2026-08-01T14:00:01.000Z"),
     now: new Date("2026-08-01T08:00:01.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_NOT_FOUND");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_JOB_NOT_FOUND");
 });
 
 test("JSON completion stores allowlisted capture evidence and rejects extra keys", async () => {
@@ -3307,7 +3280,7 @@ test("JSON completion stores allowlisted capture evidence and rejects extra keys
     capturedAt: new Date("2026-08-01T08:00:02.000Z"),
     expiresAt: new Date("2026-08-01T14:00:02.000Z"),
     now: new Date("2026-08-01T08:00:02.000Z"),
-  }), (error) => error?.code === "OZON_ENRICHMENT_CAPTURE_CONTEXT_INVALID");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_CAPTURE_CONTEXT_INVALID");
 });
 
 test("JSON Seller-context watermark linearizes switch-before-result and result-before-switch", async () => {
@@ -3392,7 +3365,7 @@ test("JSON Seller-context watermark linearizes switch-before-result and result-b
     collectorSessionId: "collector-a",
     jobId: failedAfterSwitch.job.id,
     key: ACCOUNT_A_KEY,
-    error: { status: 404, code: "OZON_ENRICH_NOT_FOUND" },
+    error: { status: 404, code: "ZONGZI_ENRICH_NOT_FOUND" },
     responseHash: "watermark-stale-failure",
     captureContext: oldContext,
     claimFence: "fence-watermark-failed-after-switch",
@@ -3487,7 +3460,7 @@ test("JSON terminal failure increments and returns the persisted attemptCount", 
     collectorSessionId: "collector-a",
     jobId: "job-failed-attempt-json",
     key: ACCOUNT_A_KEY,
-    error: { status: 404, code: "OZON_ENRICH_NOT_FOUND" },
+    error: { status: 404, code: "ZONGZI_ENRICH_NOT_FOUND" },
     responseHash: "failed-attempt-json-hash",
     capturedAt: new Date("2026-08-01T08:00:01.000Z"),
     expiresAt: new Date("2026-08-01T08:01:01.000Z"),
@@ -3512,7 +3485,7 @@ test("PostgreSQL terminal failure increments attemptCount in the atomic job writ
           sku: ACCOUNT_A_KEY.sku,
           status: "FAILED",
           attempt_count: 4,
-          error_json: { status: 404, code: "OZON_ENRICH_NOT_FOUND" },
+          error_json: { status: 404, code: "ZONGZI_ENRICH_NOT_FOUND" },
           deadline_at: "9999-12-31T23:59:59.999Z",
           created_at: "2026-08-01T08:00:00.000Z",
           updated_at: "2026-08-01T08:00:01.000Z",
@@ -3532,7 +3505,7 @@ test("PostgreSQL terminal failure increments attemptCount in the atomic job writ
     collectorSessionId: "collector-a",
     jobId: "job-failed-attempt-pg",
     key: ACCOUNT_A_KEY,
-    error: { status: 404, code: "OZON_ENRICH_NOT_FOUND" },
+    error: { status: 404, code: "ZONGZI_ENRICH_NOT_FOUND" },
     responseHash: "failed-attempt-pg-hash",
     capturedAt: new Date("2026-08-01T08:00:01.000Z"),
     expiresAt: new Date("2026-08-01T08:01:01.000Z"),
@@ -3598,7 +3571,7 @@ test("PostgreSQL linked enqueue, due claim, defer, and capture evidence stay acc
     accountId: "account-a",
     collectorSessionId: "collector-a",
     jobId: "job-linked-pg",
-    error: { code: "OZON_RETRYABLE", status: 503, message: "do not persist" },
+    error: { code: "OZON_RETRYABLE", status: 503, message: "safe upstream explanation" },
     captureContext: captureEvidence,
     claimFence: "claim-fenced-defer",
     now: new Date("2026-08-01T08:00:01.000Z"),
@@ -3619,7 +3592,7 @@ test("PostgreSQL linked enqueue, due claim, defer, and capture evidence stay acc
     deferCall.sql,
     /CASE WHEN attempt_count=0 THEN \$6::double precision WHEN attempt_count=1 THEN \$7::double precision WHEN attempt_count=2 THEN \$8::double precision WHEN attempt_count=3 THEN \$9::double precision ELSE \$10::double precision END \* INTERVAL '1 millisecond'/,
   );
-  assert.equal(deferCall.params[4], JSON.stringify({ code: "OZON_RETRYABLE", status: 503 }));
+  assert.equal(deferCall.params[4], JSON.stringify({ code: "OZON_RETRYABLE", status: 503, message: "safe upstream explanation" }));
   assert.deepEqual(deferCall.params.slice(5), [
     30_000,
     120_000,
@@ -3707,7 +3680,7 @@ test("PostgreSQL linked enqueue replays only the same collect item", async () =>
   await assert.rejects(repository.enqueueForCollect({
     ...input,
     collectItemId: "collect-other",
-  }), (error) => error?.code === "OZON_ENRICHMENT_COLLECT_ITEM_CONFLICT");
+  }), (error) => error?.code === "ZONGZI_ENRICHMENT_COLLECT_ITEM_CONFLICT");
   assert.ok(calls.some((entry) => /collect_item_id=\$2 AND sku=\$3/.test(entry.sql)));
   assert.ok(calls.some((entry) => /request_id=\$2 AND sku=\$3/.test(entry.sql)));
 });
@@ -3882,4 +3855,139 @@ test("PostgreSQL terminal completion joins a caller-owned collect-item transacti
   assert.equal(calls.some((call) => ["BEGIN", "COMMIT", "ROLLBACK"].includes(call.sql)), false);
   assert.equal(calls.filter((call) => call.sql.startsWith("UPDATE collector_ozon_enrichment_jobs")).length, 1);
   assert.equal(calls.filter((call) => call.sql.startsWith("INSERT INTO collector_ozon_enrichment_cache")).length, 1);
+});
+
+test('expired linked claims rotate fences without counting elapsed time as failure', async () => {
+ const start=new Date('2026-07-31T00:00:00.000Z');
+ const state={collectorSessions:[activeSession('collector-a','account-a')],caches:{collectBox:[collectItem('item-timeout','account-a')]}};
+ const repository=createJsonCollectorOzonEnrichmentRepository({state});
+ await repository.enqueueForCollect({accountId:'account-a',collectItemId:'item-timeout',requestId:'timeout-repeat',sku:'4862904234',refreshBundle:true,now:start});
+ let first;
+ for(let i=0;i<6;i++){
+  const at=new Date(start.getTime()+i*31000);
+  const job=await repository.claimNextJob({accountId:'account-a',collectorSessionId:'collector-a',now:at,claimExpiresAt:new Date(at.getTime()+30000)});
+  if(i===0)first=job;
+  assert.ok(job);assert.equal(job.attemptCount,0);
+ }
+ const final=await repository.readJob({accountId:'account-a',jobId:first.id});
+ assert.equal(final.status,'PROCESSING');assert.equal(final.attemptCount,0);
+ assert.equal(final.error,null);assert.equal(final.lastError,null);
+});
+
+test('repair PostgreSQL: expired claims, progress, late commits and takeover retain atomic fences', {
+  skip: !process.env.SONLI_MIGRATION_TEST_DATABASE_URL && 'SONLI_MIGRATION_TEST_DATABASE_URL is not configured',
+  timeout: 30_000,
+}, async () => {
+  const { Pool } = await import('pg');
+  const { readdir, readFile } = await import('node:fs/promises');
+  const { randomUUID } = await import('node:crypto');
+  const schema = `collector_repair_${randomUUID().replaceAll('-', '')}`;
+  const pool = new Pool({ connectionString: process.env.SONLI_MIGRATION_TEST_DATABASE_URL,
+    options: `-c search_path=${schema},public` });
+  try {
+    await pool.query(`CREATE SCHEMA ${schema}`);
+    const dir = new URL('../db/migrations/', import.meta.url);
+    for (const file of (await readdir(dir)).filter(name => /^\d{3}_.+\.sql$/.test(name)).sort()) {
+      let sql = await readFile(new URL(file, dir), 'utf8');
+      // Migration 120 qualifies a restore helper as public; keep that helper in
+      // this test's isolated schema while applying the full current migration set.
+      if (file === '120_database_restore_compatibility.sql') {
+        sql = sql.replaceAll('public.', `${schema}.`).replace('search_path = public,', `search_path = ${schema},`);
+      }
+      await pool.query(sql);
+    }
+    await pool.query("INSERT INTO accounts(id,username,display_name,role,status) VALUES ('repair-account','repair','repair','user','active')");
+    await pool.query("INSERT INTO sessions(token,account_id,issued_at,expires_at) VALUES ('repair-web','repair-account','2026-08-01','9999-12-31')");
+    const context = { sellerCompanyId: '2681910', revision: 1, observedAt: '2026-08-01T08:00:00.000Z' };
+    for (const id of ['executor-a', 'executor-b']) await pool.query(
+      `INSERT INTO collector_sessions(id,token_hash,account_id,parent_session_token,permissions,expires_at,seller_context_json)
+       VALUES ($1,$1,'repair-account','repair-web','["collector.ozon.read"]','9999-12-31',$2::jsonb)`,
+      [id, JSON.stringify(context)],
+    );
+    await pool.query(`INSERT INTO collect_items(id,account_id,source,identity_key,source_sku,status,summary)
+      VALUES ('repair-item','repair-account','ozon','repair-identity','2102713588','PENDING_ENRICHMENT','{}')`);
+    const repository = createPostgresCollectorOzonEnrichmentRepository({pool});
+    const start = new Date(context.observedAt);
+    const at = ms => new Date(start.getTime() + ms);
+    const scope = {accountId: 'repair-account', collectorSessionId: 'executor-a'};
+    const create = async (id, sku = id) => repository.createOrGetJob({
+      id, accountId: scope.accountId, requestId: id, sku, refreshBundle: true, deadlineAt: at(20_000), createdAt: start,
+    });
+    const claim = (fence, ms, extra = {}) => repository.claimNextJob({
+      ...scope, claimFence: fence, captureContext: context, now: at(ms), claimExpiresAt: at(ms + 30_000), ...extra,
+    });
+    const terminal = (job, ms, extra = {}) => ({
+      ...scope, jobId: job.id, key: {accountId: scope.accountId, source: 'ozon', sku: job.sku, contractVersion: 'collector.ozon.enrichment.v1'},
+      claimFence: job.claimFence, captureContext: context, now: at(ms), capturedAt: at(ms), expiresAt: at(ms + 60_000),
+      responseHash: `repair-${job.id}`, ...extra,
+    });
+
+    await create('repair-slow', '2102713588');
+    const original = await claim('slow-fence', 0);
+    const replay = await repository.createOrGetJob({
+      id: 'replacement', accountId: scope.accountId, requestId: 'repair-slow', sku: '2102713588',
+      refreshBundle: true, deadlineAt: at(700_000), createdAt: at(660_000),
+    });
+    assert.equal(replay.claimFence, 'slow-fence');
+    assert.equal(replay.status, 'PROCESSING');
+    const renewed = await claim('slow-fence', 660_000, {jobId: original.id});
+    assert.equal(renewed.claimFence, original.claimFence);
+    assert.equal(renewed.claimExpiresAt, at(690_000).toISOString());
+    assert.equal(renewed.attemptCount, 0);
+    assert.equal(renewed.status, 'PROCESSING');
+    const done = await repository.completeJobAndCache({...terminal(original, 720_000), result: completeResult(123)});
+    assert.equal(done.status, 'SUCCESS');
+    await assert.rejects(repository.completeJobAndCache({...terminal(original, 721_000), result: completeResult(456)}),
+      error => error.code === 'ZONGZI_ENRICHMENT_JOB_TERMINAL');
+    const cache = await repository.readCache({key: terminal(original, 0).key, now: at(721_000)});
+    assert.equal(cache.result.descriptionCategoryId, 123);
+
+    await repository.enqueueForCollect({accountId: scope.accountId, collectItemId: 'repair-item', requestId: 'repair-linked',
+      sku: '2102713769', refreshBundle: true, now: start});
+    let held = await claim('linked-0', 0);
+    for (let i=1; i<=6; i++) {
+      held = await claim(`linked-${i}`, i * 31_000);
+      assert.equal(held.attemptCount, 0);
+      assert.equal(held.lastError, null);
+    }
+    await assert.rejects(repository.failJobAndCache({...terminal(held, 187_000, {claimFence: 'linked-0'}), error: {code:'NETWORK_ERROR'}}),
+      error => error.code === 'SELLER_CONTEXT_CHANGED');
+    const error = {code:'ZONGZI_ENRICH_UPSTREAM_FAILED',status:502,message:'Seller /api/v1/search: net::ERR_CONNECTION_RESET',
+      diagnostic:{stage:'seller.search',upstreamCode:'NETWORK_ERROR',requestSent:true,extensionVersion:'1.0.6'}};
+    const deferred = await repository.deferClaim({...terminal(held, 220_000), error});
+    assert.equal(deferred.attemptCount, 1);
+    assert.deepEqual(deferred.lastError, error);
+    await assert.rejects(claim(held.claimFence, 221_000, {jobId: held.id}), error => error.code === 'ZONGZI_ENRICHMENT_JOB_OWNERSHIP');
+
+    const lastAttempt = await claim('linked-terminal', 251_000);
+    const failed = await repository.failJobAndCache({...terminal(lastAttempt, 282_000), error});
+    assert.equal(failed.attemptCount, 2);
+    assert.deepEqual(failed.error, error);
+    await create('repair-race');
+    const racing = await claim('race-old', 300_000);
+    const results = await Promise.allSettled([
+      claim('race-old', 331_000, {jobId: racing.id}),
+      claim('race-new', 331_000, {collectorSessionId: 'executor-b'}),
+    ]);
+    const winner = await repository.readJob({accountId: scope.accountId, jobId: racing.id});
+    assert.equal(winner.attemptCount, 0);
+    assert.equal(winner.error, null);
+    // Only the winning lease/fence may continue; an expiry never opens both paths.
+    if (winner.claimFence === 'race-old') {
+      assert.equal(results[0].status, 'fulfilled');
+      assert.notEqual(results[1].value?.id, racing.id);
+    } else {
+      assert.equal(winner.claimFence, 'race-new');
+      assert.equal(results[0].status, 'rejected');
+      await assert.rejects(repository.completeJobAndCache({...terminal(racing, 332_000), result: completeResult(789)}),
+        error => ['ZONGZI_ENRICHMENT_JOB_OWNERSHIP','SELLER_CONTEXT_CHANGED'].includes(error.code));
+    }
+    const currentScope = {...scope, collectorSessionId: winner.claimedSessionId};
+    await repository.advanceSellerContext({...currentScope, captureContext:{...context,revision:2}, now:at(332_000)});
+    await assert.rejects(claim(winner.claimFence, 333_000, {jobId: winner.id, ...currentScope}),
+      error => error.code === 'SELLER_CONTEXT_CHANGED');
+  } finally {
+    await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await pool.end();
+  }
 });

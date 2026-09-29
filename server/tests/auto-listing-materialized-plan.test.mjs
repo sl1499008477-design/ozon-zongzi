@@ -104,6 +104,178 @@ function fixedParentPlan() {
   return parent;
 }
 
+function intelligentParentPlan() {
+  const parent = fixedParentPlan();
+  parent.planningContract = "FIXED_SKELETON_SOURCE_IMAGE_V1";
+  parent.sourceImageAnalysisRunId = "analysis-run-a";
+  parent.sourceImageIntelligenceHash = H("9");
+  parent.visualGroups.groups[0].referenceImages = [parent.visualGroups.groups[0].referenceImages[0]];
+  parent.visualGroups.groups[0].referenceImages[0].contentHash = null;
+  parent.visualGroups.groups[0].referenceImages[0].evidenceKind = "SOURCE_REF_HASH";
+  parent.visualGroups.visualGroupsHash = hash({
+    sourceHash: parent.visualGroups.sourceHash,
+    groups: parent.visualGroups.groups,
+    reasonCodes: parent.visualGroups.reasonCodes,
+  });
+  parent.visualGroupsHash = parent.visualGroups.visualGroupsHash;
+  parent.plan.version = 3;
+  parent.plan.slots = parent.plan.slots.map((slot) => ({
+    ...slot,
+    requestedRole: slot.role,
+    substitutionReasonCode: null,
+    referenceAssetIds: ["source-url-a"],
+    targetView: "FRONT_LEFT_3_4",
+    evidenceMode: "SYNTHESIZED_SAFE",
+    prohibitedViews: ["BACK", "BOTTOM", "INTERIOR", "HIDDEN_PORTS"],
+    prohibitedOverlayTexts: [],
+    identityAssetId: "source-url-a",
+    selectionReasonCodes: ["SOURCE_VIEW_EVIDENCE_SELECTED", "IDENTITY_REFERENCE_SELECTED"],
+  }));
+  parent.planHash = hash(parent.plan);
+  return parent;
+}
+
+function acceptedV2(parent, digit = "4") {
+  const source = parent.visualGroups.groups[0].referenceImages[0];
+  const record = {
+    accountId: scope.accountId, jobId: scope.jobId, itemId: scope.itemId,
+    owner: { kind: "SOURCE_IMAGE_ANALYSIS", id: parent.sourceImageAnalysisRunId },
+    sourceAssetId: source.assetId, sourceRefHash: source.sourceRefHash, inputHash: H("7"),
+    expectedStatusVersion: scope.expectedStatusVersion, attemptId: "attempt-source-v2", attemptNo: 1,
+    status: "ACCEPTED", leaseOwner: null, leaseToken: null, leaseExpiresAt: null,
+    objectKeyVersion: "SOURCE_V2", objectKey: "", contentHash: H(digit), contentType: "image/png",
+    width: 900, height: 1200, sizeBytes: 1234, acceptedAt: "2026-08-04T00:00:00.000Z",
+    errorCode: null, errorRetryable: null, createdAt: "2026-08-04T00:00:00.000Z", updatedAt: "2026-08-04T00:00:00.000Z",
+  };
+  record.objectKey = buildSourceAssetObjectKey(record);
+  return record;
+}
+
+test("intelligent V3 finalization reuses SOURCE_V2 evidence and carries the frozen run/hash without downloading", async () => {
+  const { buildMaterializedPlan, finalizeMaterializedPlan } = await moduleUnderTest();
+  const parent = intelligentParentPlan();
+  const record = acceptedV2(parent);
+  const derived = buildMaterializedPlan({ scope, parentPlan: parent, acceptedMaterializations: [record] });
+  assert.equal(derived.plan.version, 3);
+  assert.equal(derived.sourceImageAnalysisRunId, "analysis-run-a");
+  assert.equal(derived.sourceImageIntelligenceHash, H("9"));
+  assert.equal(derived.visualGroups.groups[0].referenceImages[0].contentHash, H("4"));
+  assert.equal(derived.plan.slots[0].targetView, "FRONT_LEFT_3_4");
+  assert.equal(derived.plan.slots[0].evidenceMode, "SYNTHESIZED_SAFE");
+
+  const calls = [];
+  const finalized = await finalizeMaterializedPlan({
+    scope,
+    parentPlan: parent,
+    repository: {
+      async listAcceptedSourceMaterializations(input) { calls.push(["list", input]); return [record]; },
+      async createDerivedMaterializedPlan(input) { calls.push(["create", input]); return input.derivedPlan; },
+    },
+  });
+  assert.equal(finalized.sourceImageAnalysisRunId, "analysis-run-a");
+  assert.equal(finalized.plan.slots[0].targetView, "FRONT_LEFT_3_4");
+  assert.equal(finalized.plan.slots[0].evidenceMode, "SYNTHESIZED_SAFE");
+  assert.deepEqual(calls.map(([name]) => name), ["list", "create"]);
+  assert.equal(calls[0][1].sourceImageAnalysisRunId, "analysis-run-a");
+
+  const missingIdentity = intelligentParentPlan();
+  missingIdentity.plan.slots[0].identityAssetId = null;
+  missingIdentity.planHash = hash(missingIdentity.plan);
+  assert.throws(() => buildMaterializedPlan({ scope, parentPlan: missingIdentity, acceptedMaterializations: [record] }), {
+    code: "AUTO_LISTING_MATERIALIZED_PLAN_INPUT_INVALID",
+  });
+});
+
+test("intelligent V3 finalization accepts a server-frozen sibling structure reference for a variant slot", async () => {
+  const { buildMaterializedPlan } = await moduleUnderTest();
+  const parent = intelligentParentPlan();
+  const siblingSource = source("source-url-b", "b");
+  parent.visualGroups.groups.push({
+    visualGroupKey: "group-b", sourceSkus: ["sku-b"], variantIds: ["variant-b"],
+    referenceImages: [siblingSource],
+    factEvidence: [{ factId: "fact.material", kind: "MATERIAL", value: "сталь" }],
+    reasonCodes: ["VISIBLE_APPEARANCE_DIFFERENCE"],
+  });
+  parent.visualGroups.reasonCodes = ["COMPLETE_APPEARANCE_EVIDENCE", "VISIBLE_APPEARANCE_DIFFERENCE"];
+  parent.visualGroups.visualGroupsHash = hash({
+    sourceHash: parent.visualGroups.sourceHash,
+    groups: parent.visualGroups.groups,
+    reasonCodes: parent.visualGroups.reasonCodes,
+  });
+  parent.visualGroupsHash = parent.visualGroups.visualGroupsHash;
+  parent.plan.slots[0].referenceAssetIds = ["source-url-b", "source-url-a"];
+  parent.plan.slots[0].identityAssetId = "source-url-a";
+  parent.plan.slots[0].selectionReasonCodes = [
+    "CROSS_VARIANT_STRUCTURE_REFERENCE_SELECTED", "IDENTITY_REFERENCE_SELECTED",
+  ];
+  parent.planHash = hash(parent.plan);
+  const own = acceptedV2(parent, "4");
+  const sibling = {
+    ...acceptedV2(parent, "5"),
+    sourceAssetId: siblingSource.assetId,
+    sourceRefHash: siblingSource.sourceRefHash,
+    attemptId: "attempt-source-v2-sibling",
+  };
+  sibling.objectKey = buildSourceAssetObjectKey(sibling);
+
+  const derived = buildMaterializedPlan({
+    scope,
+    parentPlan: parent,
+    acceptedMaterializations: [own, sibling],
+  });
+
+  assert.deepEqual(derived.plan.slots[0].referenceAssetIds, ["source-url-b", "source-url-a"]);
+  assert.equal(derived.plan.slots[0].identityAssetId, "source-url-a");
+});
+
+test("manual-decision V3 finalization reuses only the explicit immutable ancestor materialization scope", async () => {
+  const { buildMaterializedPlan, finalizeMaterializedPlan } = await moduleUnderTest();
+  const parent = intelligentParentPlan();
+  parent.sourceImageAnalysisRunId = "analysis-run-derived";
+  const record = acceptedV2(parent);
+  record.owner = { kind: "SOURCE_IMAGE_ANALYSIS", id: "analysis-run-root" };
+  record.expectedStatusVersion = 6;
+  record.objectKey = buildSourceAssetObjectKey(record);
+  const sourceMaterializationScope = {
+    analysisRunId: "analysis-run-root",
+    expectedStatusVersion: 6,
+  };
+
+  const derived = buildMaterializedPlan({
+    scope,
+    parentPlan: parent,
+    acceptedMaterializations: [record],
+    sourceMaterializationScope,
+  });
+  assert.equal(derived.sourceImageAnalysisRunId, "analysis-run-derived");
+
+  const calls = [];
+  const finalized = await finalizeMaterializedPlan({
+    scope,
+    parentPlan: parent,
+    sourceMaterializationScope,
+    repository: {
+      async listAcceptedSourceMaterializations(input) { calls.push(input); return [record]; },
+      async createDerivedMaterializedPlan(input) { return input.derivedPlan; },
+    },
+  });
+  assert.equal(finalized.sourceImageAnalysisRunId, "analysis-run-derived");
+  assert.deepEqual(calls, [{
+    accountId: scope.accountId,
+    jobId: scope.jobId,
+    itemId: scope.itemId,
+    sourceImageAnalysisRunId: "analysis-run-root",
+    expectedStatusVersion: 6,
+  }]);
+
+  assert.throws(() => buildMaterializedPlan({
+    scope,
+    parentPlan: parent,
+    acceptedMaterializations: [{ ...record, owner: { kind: "SOURCE_IMAGE_ANALYSIS", id: "analysis-run-other" } }],
+    sourceMaterializationScope,
+  }), { code: "AUTO_LISTING_MATERIALIZED_PLAN_EVIDENCE_INVALID" });
+});
+
 test("builds one deterministic immutable derived plan and changes only materialized source evidence and derivation identities", async () => {
   const { buildMaterializedPlan } = await moduleUnderTest();
   const parent = parentPlan();

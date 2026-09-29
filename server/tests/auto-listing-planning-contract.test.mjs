@@ -6,10 +6,11 @@ import {
   selectAutoListingPlanningContract,
 } from "../auto-listing-planning-contract.mjs";
 
-test("new collect-box items use the server-owned fixed skeleton by default", () => {
+test("all new collect-box and Excel items use the server-owned fixed skeleton by default", () => {
   for (const candidate of [
-    { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a" },
-    { accountId: "account-b", sourceType: "COLLECT_BOX", collectItemId: "collect-b" },
+    { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a", sourceImageIntelligenceEnabled: false },
+    { accountId: "account-b", sourceType: "COLLECT_BOX", collectItemId: "collect-b", sourceImageIntelligenceEnabled: false },
+    { accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "excel-a", sourceImageIntelligenceEnabled: false },
   ]) {
     assert.equal(
       selectAutoListingPlanningContract(candidate),
@@ -18,11 +19,11 @@ test("new collect-box items use the server-owned fixed skeleton by default", () 
   }
 });
 
-test("Excel and invalid selectors keep the legacy contract", () => {
+test("invalid selectors keep the legacy contract", () => {
   for (const candidate of [
-    { accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "collect-a" },
-    { accountId: "", sourceType: "COLLECT_BOX", collectItemId: "collect-a" },
-    { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "" },
+    { accountId: "", sourceType: "COLLECT_BOX", collectItemId: "collect-a", sourceImageIntelligenceEnabled: false },
+    { accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "", sourceImageIntelligenceEnabled: false },
+    { accountId: "account-a", sourceType: "UNKNOWN", collectItemId: "collect-a", sourceImageIntelligenceEnabled: false },
     {},
   ]) {
     assert.equal(
@@ -42,8 +43,18 @@ test("selector rejects extra authority and hostile carriers without executing th
     accountId: "account-a",
     sourceType: "COLLECT_BOX",
     collectItemId: "collect-a",
+    sourceImageIntelligenceEnabled: false,
     planningContract: "LEGACY_FULL_PLAN_V3",
   }), AUTO_LISTING_PLANNING_CONTRACTS.LEGACY);
+});
+
+test("the feature flag selects the new contract only for new supported-source tasks", () => {
+  assert.equal(selectAutoListingPlanningContract({
+    accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a", sourceImageIntelligenceEnabled: true,
+  }), AUTO_LISTING_PLANNING_CONTRACTS.INTELLIGENT);
+  assert.equal(selectAutoListingPlanningContract({
+    accountId: "account-a", sourceType: "COLLECT_BOX", collectItemId: "collect-a", sourceImageIntelligenceEnabled: false,
+  }), AUTO_LISTING_PLANNING_CONTRACTS.FIXED);
 });
 
 test("content planning has one authoritative business validator", () => {

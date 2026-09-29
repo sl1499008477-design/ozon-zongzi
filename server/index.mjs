@@ -1,20 +1,43 @@
+import {productCatalogPage} from '../shared/product-catalog.mjs';
+import { buildCollectBoxListingItems, listingFirstText, listingNumber, listingImageList } from "./collect-box-listing-items.mjs";
+import {findCollectedSku,withoutListedSkus} from "./collection-sku-rules.mjs";
+import {listCollectItemsV3} from "./listing-pipeline.mjs";
+import {readCollectProgressForAccount} from "./collect-progress-reader.mjs";
+import {readCollectSummaryPage} from "./collect-read-summary.mjs";
+import {collectCaptureSkus} from "./collect-enrichment-recovery.mjs";
+import {reconcileCollectEnrichment} from "./collect-enrichment-reconciler.mjs";
+import { verifyDirectRfbsTargets } from "./listing-direct-rfbs.mjs";
+import { validateCollectListingWarehouses } from "./collect-listing-warehouse-validation.mjs";
+import { createAutoListingRfbsWarehouseVerifier } from "./auto-listing-rfbs-warehouse-verifier.mjs";
+import {admitCollectedItem} from "./collection-admission.mjs";
 import "./env.mjs";
+import { buildOzonEnrichmentSummary } from "./collect-enrichment-policy.mjs";
+import { createPostgresCollectorOzonEnrichmentRepository } from "./collector-ozon-enrichment-repository.mjs";
+import { handleHealthRoute } from "./health-routes.mjs";
 import { assertProductionConfiguration } from "./runtime-config.mjs";
-import { createAutoListingRuntime } from "./auto-listing-runtime.mjs";
-import { createAutoListingHttpHandler } from "./auto-listing-routes.mjs";
-import { createAutoListingWebRuntime } from "./auto-listing-web-runtime.mjs";
+import { createAiListingRuntime } from "./ai-listing-runtime.mjs";
+import { createDashboardRuntime } from "./dashboard-runtime.mjs";
+import { createMessageRuntime } from "./message-runtime.mjs";
+import { createStockRuntime } from './stock-runtime.mjs';
+import { createOrderManagementRuntime } from './order-management-runtime.mjs';
+import { createOrderInspectionRuntime } from './order-inspection-runtime.mjs';
+import { createPromotionRuntime } from "./promotion-runtime.mjs";
+import { getPostgresPool, closePostgresPool } from "./db/connection.mjs";
+import { createApiLifecycle } from "./api-lifecycle.mjs";
+import { captureFormalMirrorBaseline } from "./formal-persistence.mjs";
+import { readLocalStateForAccount, readProductCatalogPage, productPageOptions } from "./local-state-reader.mjs";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import { readFile } from 'node:fs/promises';
 import { normalizeOzonImportItems } from "./ozon-import-normalizer.mjs";
+import {createAccountOzonRouteService,createAccountOzonRouteHandler} from './account-ozon-route.mjs';
 import { callOzonSellerApi } from "./ozon-client.mjs";
 import { createOzonCategoryService } from "./ozon-category-service.mjs";
 import { createOzonCategoryRouteHandler } from "./ozon-category-routes.mjs";
 import { createOzonSyncService } from "./ozon-sync-service.mjs";
-import { summarizeOrderMoney } from "./order-money-summary.mjs";
-import { resolvePostingCurrencyCode } from "../shared/order-money.mjs";
 import { appendAuditEvent } from "./audit-event.mjs";
 import { removeAccountScope } from "./account-deletion.mjs";
 import { migrateLegacyDataCollectionStoreStateForAudit } from "./legacy-data-collection-store.mjs";
@@ -84,8 +107,11 @@ import {
   mirrorCollectItemV3,
   listSubmissionJobsV3,
   prepareCollectItemForListing,
+  patchLegacyCollectStatusV3,
+  readStoreCredentialV3,
   softDeleteCollectItemsForAccountV4,
   updateCollectItemDraftV4,
+  updateCollectItemListingStatusV3,
 } from "./listing-pipeline.mjs";
 import { assertListingPreparationInput, publicQueuedListingSubmission, resolveLocalListingTarget } from "./listing-submission-policy.mjs";
 import {
@@ -129,10 +155,15 @@ import {
   requireActiveSyncLease,
 } from "./sync-lease-policy.mjs";
 import { createCollectorHttpHandler } from "./collector-routes.mjs";
+import { createOzonWebCollectionService } from "./ozon-web-collection.mjs";
+import { createOzonWebCollectionHttpHandler } from "./ozon-web-collection-routes.mjs";
+import { readCollectorAccountCounts } from "./collector-account-status-routes.mjs";
 import { handleCollectorArtifactRoute } from "./collector-artifact-routes.mjs";
 import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
-import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
+import { getCollectorTaskForAccount, getCollectorRunForAccount, listCollectorRunItems } from "./collector-desktop-service.mjs";
+import { createCollectorHandoffRepository, createCollectorRunHandoffWorker } from './collector-run-handoff.mjs';
+import { addSelectedCollectorItemsToCollectBox } from './collector-selection-service.mjs';
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import {
   createAccountSharedOzonCategoryComposition,
@@ -147,7 +178,7 @@ import {
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
 import { handleRemovedDataCollectionStoreRoute } from "./data-collection-store-retirement.mjs";
-import { assertListingStockSelectionEligible, listingEligibilityCaches } from "./listing-warehouse-eligibility.mjs";
+import { annotateListingWarehouseEligibility } from "./listing-warehouse-eligibility.mjs";
 import { createOzonSkuCollectionService } from "./ozon-sku-collection-service.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 assertProductionConfiguration("api");
@@ -192,6 +223,32 @@ const defaultState = () => ({
   pendingObjectDeletions: [],
   updatedAt: new Date().toISOString(),
 });
+
+const retiredSecondaryOperationRoutes = Object.freeze([
+  ["POST", /^\/local\/sync\/(?:POSTINGS|PROMOTIONS)$/iu],
+  ["POST", /^\/ozon\/postings\/cache\/import$/u],
+  ["GET", /^\/ozon\/returns$/u],
+  ["POST", /^\/ozon\/returns\/batch$/u],
+  ["GET", /^\/ozon\/message-templates$/u],
+  ["POST", /^\/ozon\/message-templates$/u],
+  ["PUT", /^\/ozon\/message-templates\/[^/]+$/u],
+  ["DELETE", /^\/ozon\/message-templates\/[^/]+$/u],
+  ["GET", /^\/ozon\/message-history$/u],
+  ["POST", /^\/ozon\/message-history\/batch$/u],
+]);
+
+function handleRetiredSecondaryOperation(req, res, url) {
+  const retired = /^\/(?:auto-listing|admin\/auto-listing|extension\/auto-listing)(?:\/|$)/u.test(url.pathname) || retiredSecondaryOperationRoutes.some(
+    ([method, pattern]) => method === req.method && pattern.test(url.pathname),
+  );
+  if (!retired) return false;
+  sendJson(res, 410, {
+    ok: false,
+    code: "FEATURE_RETIRED",
+    message: "该运营辅助功能已停用",
+  });
+  return true;
+}
 
 function normalizeCollectBoxListingStates(state) {
   const collectBox = state?.caches?.collectBox;
@@ -314,83 +371,137 @@ function ensureAccountState(state) {
   return state;
 }
 
-async function loadState() {
-  try {
-    const parsed = await loadPersistedState({ dataFile });
-    if (!parsed) return ensureAccountState(defaultState());
-    const storageVersion = Number(parsed.__storageVersion || 0);
-    const base = defaultState();
-    const state = ensureAccountState({
-      ...base,
-      ...parsed,
-      caches: { ...base.caches, ...(parsed.caches || {}) },
-      hashes: { ...base.hashes, ...(parsed.hashes || {}) },
-      leases: { ...base.leases, ...(parsed.leases || {}) },
-      browserAgents: { ...base.browserAgents, ...(parsed.browserAgents || {}) },
-      jobs: { ...base.jobs, ...(parsed.jobs || {}) },
-      reports: Array.isArray(parsed.reports) ? parsed.reports : base.reports,
-      auditEvents: Array.isArray(parsed.auditEvents) ? parsed.auditEvents : base.auditEvents,
-      accounts: Array.isArray(parsed.accounts) ? parsed.accounts : base.accounts,
-      stores: Array.isArray(parsed.stores) ? parsed.stores : base.stores,
+async function loadState({ hydrateCatalog = true } = {}) {
+  const parsed = await loadPersistedState({ dataFile, hydrateCatalog });
+  if (!parsed) return ensureAccountState(defaultState());
+  const storageVersion = Number(parsed.__storageVersion || 0);
+  const base = defaultState();
+  const state = ensureAccountState({
+    ...base,
+    ...parsed,
+    caches: { ...base.caches, ...(parsed.caches || {}) },
+    hashes: { ...base.hashes, ...(parsed.hashes || {}) },
+    leases: { ...base.leases, ...(parsed.leases || {}) },
+    browserAgents: { ...base.browserAgents, ...(parsed.browserAgents || {}) },
+    jobs: { ...base.jobs, ...(parsed.jobs || {}) },
+    reports: Array.isArray(parsed.reports) ? parsed.reports : base.reports,
+    auditEvents: Array.isArray(parsed.auditEvents) ? parsed.auditEvents : base.auditEvents,
+    accounts: Array.isArray(parsed.accounts) ? parsed.accounts : base.accounts,
+    stores: Array.isArray(parsed.stores) ? parsed.stores : base.stores,
+  });
+  if (storageVersion > 0) {
+    Object.defineProperty(state, "__storageVersion", {
+      value: storageVersion,
+      enumerable: false,
+      configurable: true,
+      writable: true,
     });
-    if (storageVersion > 0) {
-      Object.defineProperty(state, "__storageVersion", {
-        value: storageVersion,
-        enumerable: false,
-        configurable: true,
-        writable: true,
+  }
+  if (hydrateCatalog && listingPipelineEnabled() && !collectV3BackfillDone) {
+    const pool = await getPostgresPool();
+    const existing = new Set((await pool.query("SELECT account_id,id FROM collect_items")).rows
+      .map(row => `${row.account_id}:${row.id}`));
+    for (const item of state.caches.collectBox || []) {
+      if (existing.has(`${item.accountId || state.currentAccountId}:${item.id}`)) continue;
+      await mirrorCollectItemV3(item, {
+        accountId: state.currentAccountId,
+        storeId: item.storeId || item.localStoreId || state.currentStoreId,
+        captureRaw: true,
       });
     }
-    if (listingPipelineEnabled() && !collectV3BackfillDone) {
-      for (const item of state.caches.collectBox || []) {
-        await mirrorCollectItemV3(item, {
-          accountId: state.currentAccountId,
-          storeId: item.storeId || item.localStoreId || state.currentStoreId,
-          captureRaw: true,
-        });
-      }
-      collectV3BackfillDone = true;
-    }
-    await hydrateLegacyStateWithV3(state);
-    return state;
-  } catch (error) {
-    if (listingPipelineEnabled()) throw error;
-    return ensureAccountState(defaultState());
+    collectV3BackfillDone = true;
   }
+  const ownerIds=[...new Set(state.stores.map(store=>store.ownerAccountId).filter(Boolean))];
+  const routes=persistenceMode()==='postgres'&&ownerIds.length
+    ?Object.fromEntries((await (await getPostgresPool()).query('SELECT account_id,route FROM account_ozon_routes WHERE account_id=ANY($1::text[])',[ownerIds])).rows.map(row=>[row.account_id,row.route]))
+    :Object.fromEntries(Object.entries(state.ozonRoutesByAccount||{}).map(([id,value])=>[id,value.route]));
+  for(const store of state.stores)store.ozonRoute=routes[store.ownerAccountId]||'CN';
+  if (hydrateCatalog) await hydrateLegacyStateWithV3(state);
+  return captureFormalMirrorBaseline(state, { includeCatalog: hydrateCatalog });
 }
 
-async function saveState(state) {
+async function saveState(state, options = {}) {
   state.updatedAt = new Date().toISOString();
-  await savePersistedState({ dataDir, dataFile, state });
+  await savePersistedState({ dataDir, dataFile, state, ...options });
 }
 
 const jsonStateTransaction = createJsonStateTransactionBoundary({ enabled: () => persistenceMode() === "json" });
+
+function legacyRouteNeedsCatalogHydration(req, url) {
+  const method = String(req?.method || "GET").toUpperCase();
+  const pathname = String(url?.pathname || "");
+
+  // Deleting an account removes every account-owned compatibility cache.
+  if (method === "DELETE" && /^\/local\/accounts\/[^/]+$/.test(pathname)) return true;
+
+  // These compatibility handlers directly read formal product/warehouse rows.
+  if (method === "GET" && /^\/ozon\/product-data\/[^/]+$/.test(pathname)) return true;
+  if (method === "POST" && pathname === "/ozon/product-data/batch") return true;
+  if (method === "GET" && pathname === "/ozon/warehouses") return true;
+
+  // Collection deletion and listing/draft operations consume the hydrated
+  // compatibility collect cache. Other collection writes own their fresh load.
+  if (method === "DELETE" && (
+    pathname === "/ozon/collect-box/batch"
+    || /^\/ozon\/collect-box\/[^/]+$/.test(pathname)
+  )) return true;
+  if (method === "POST" && /^\/ozon\/collect-box\/[^/]+\/ai-listing-draft(?:\/(confirm|publish))?$/.test(pathname)) return true;
+
+  return false;
+}
+
 const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, stateTransaction: jsonStateTransaction, readJson: readBody, sendJson });
 const authenticateAutoListingRequest = async (req) => {
   if (listingPipelineEnabled()) return authenticateCollectionRequest(req);
   return jsonStateTransaction.run(async () => requireAuth(req, await loadState()));
 };
-const autoListingRuntime = createAutoListingRuntime({ persistenceMode });
-const handleAutoListingRoute = createAutoListingHttpHandler({
-  authenticate: authenticateAutoListingRequest,
-  runtime: autoListingRuntime,
-  readJson: readBody,
-  sendJson,
-});
-const autoListingWebRuntime = createAutoListingWebRuntime({
-  authenticate: authenticateAutoListingRequest,
-  authenticateCollector: async (req, permission) => {
-    const collectorAccount = await collectorAuthRuntime.authenticateRequest(req, permission);
-    const current = activeAccount(await loadState(), collectorAccount.id);
-    assertPermission(current, PERMISSIONS.AI_CONTENT_MANAGE);
-    return current;
-  },
-  getAutoListingService: autoListingRuntime.getService,
-  collectSku: (input) => autoListingSkuCollectionService.collectOzonSkuForAccount(input),
-  readJson: readBody,
-  sendJson,
-});
+const accountOzonRouteService=createAccountOzonRouteService(persistenceMode()==='postgres'
+  ?{pool:getPostgresPool}:{loadState:()=>loadState({hydrateCatalog:false}),saveState,transaction:fn=>jsonStateTransaction.run(fn)});
+const handleAccountOzonRoute=createAccountOzonRouteHandler({service:accountOzonRouteService,authenticate:authenticateAutoListingRequest,readJson:readBody,sendJson});
 const ozonCategoryService = createOzonCategoryService();
+const dashboardRuntime = createDashboardRuntime({ authenticate:authenticateAutoListingRequest, sendJson });
+const messageRuntime = createMessageRuntime({ authenticate:authenticateAutoListingRequest, readJson:readBody, sendJson });
+const stockRuntime = createStockRuntime({ authenticate:authenticateAutoListingRequest, readJson:readBody, sendJson });
+const orderManagementRuntime = createOrderManagementRuntime({ authenticate:authenticateAutoListingRequest, readJson:readBody, sendJson });
+const orderInspectionRuntime = createOrderInspectionRuntime({ authenticate:authenticateAutoListingRequest, readJson:readBody, sendJson });
+const promotionRuntime = createPromotionRuntime({ authenticate:authenticateAutoListingRequest, readJson:readBody, sendJson });
+const aiListingRuntime = createAiListingRuntime({
+  authenticate: authenticateAutoListingRequest,
+  readJson: readBody,
+  sendJson,
+  buildListingItems: buildCollectBoxListingItems,
+});
+let collectorHandoffWorker,collectorHandoffStartTimer,collectorHandoffStarting;
+async function startCollectorHandoff() {
+  const pool = await getPostgresPool();
+  // Run through the collector's existing migration gate before querying its outbox.
+  await getCollectorRunForAccount('__startup__', '__startup__');
+  if (lifecycle.stopping) return;
+  collectorHandoffWorker = createCollectorRunHandoffWorker({ repository: createCollectorHandoffRepository(pool),
+    readRun: async ({accountId,runId}) => {
+      const account = (await pool.query('SELECT status,expires_at FROM accounts WHERE id=$1', [accountId])).rows[0];
+      if (!account || account.status !== 'active' || (account.expires_at && new Date(account.expires_at).getTime() <= Date.now())) {
+        throw Object.assign(new Error('账号不可用，自动发送已停止'), {code:'COLLECTOR_HANDOFF_ACCOUNT_UNAVAILABLE'});
+      }
+      const run = await getCollectorRunForAccount(accountId, runId);
+      if (run && !await getCollectorTaskForAccount(accountId, run.taskId)) {
+        throw Object.assign(new Error('采集任务已删除，未完成的自动发送已停止'), {code:'COLLECTOR_HANDOFF_TASK_DELETED'});
+      }
+      return run;
+    },
+    listItems: listCollectorRunItems, addSelected: addSelectedCollectorItemsToCollectBox,
+    createTasks: input => aiListingRuntime.createCollectorTasks(input),
+  });
+  collectorHandoffWorker.start();
+}
+async function scheduleCollectorHandoffStart() {
+  if (lifecycle.stopping) return;
+  try { await (collectorHandoffStarting = startCollectorHandoff()); }
+  catch {
+    console.error('[collector-handoff] startup deferred; retrying in 10 seconds');
+    if(!lifecycle.stopping && server.listening)collectorHandoffStartTimer=setTimeout(scheduleCollectorHandoffStart,10000);
+  } finally { collectorHandoffStarting = null; }
+}
 function requiredOptionalFunctionOverride(overrides, name) {
   if (!Object.hasOwn(overrides, name)) return {};
   if (typeof overrides[name] !== "function") {
@@ -439,18 +550,48 @@ const objectCleanupWorker = createObjectCleanupWorker({
 });
 
 function sendJson(res, status, data, extraHeaders = {}) {
+  const serializationStarted=performance.now();
+  const body=JSON.stringify(data),bytes=Buffer.byteLength(body);
+  const measurement=res.pipelineRead;
+  const duration=measurement?performance.now()-measurement.startedAt:null;
+  if(measurement&&(duration>5000||bytes>1024*1024))console.info('[pipeline-read]',{route:measurement.route,status,bytes,durationMs:Math.round(duration)});
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, x-ozon-store-id, x-device-fingerprint",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    ...(status!==204?{'Content-Length':bytes}:{}),
+    ...(measurement?{'Server-Timing':`app;dur=${duration.toFixed(1)}, serialize;dur=${(performance.now()-serializationStarted).toFixed(1)}`}:{}),
     ...extraHeaders,
   });
-  res.end(JSON.stringify(data));
+  res.end(status===204?undefined:body);
 }
 
 function sendError(res, status, message, code = "LOCAL_ERROR", details = {}) {
   sendJson(res, status, { ok: false, message, code, ...(details || {}) });
+}
+
+async function resolvePostgresOzonCategoryContext(req, _state, url) {
+  const account = await authenticateCollectionRequest(req);
+  const requestedStoreId = String(url.searchParams.get("storeId") || req.headers["x-ozon-store-id"] || "").trim();
+  const pool = await getPostgresPool();
+  const selected = (await pool.query(
+    `SELECT id FROM stores WHERE owner_account_id=$1 ${requestedStoreId ? "AND id=$2" : ""}
+     ORDER BY is_current DESC, saved_at DESC NULLS LAST, id LIMIT 1`,
+    requestedStoreId ? [account.id, requestedStoreId] : [account.id],
+  )).rows[0];
+  if (!selected && requestedStoreId) {
+    throw Object.assign(new Error("经营店铺不存在或不属于当前 sonli 账号"), {
+      status:403, code:"STORE_ACCOUNT_FORBIDDEN",
+    });
+  }
+  const store = selected ? await readStoreCredentialV3(selected.id, account.id) : null;
+  if (!store) {
+    throw Object.assign(new Error("店铺不存在或不属于当前账号"), {
+      status:404, code:"STORE_NOT_FOUND",
+    });
+  }
+  return {account, store:{...store, ownerAccountId:account.id}};
 }
 
 const handleOzonCategoryRoute = createOzonCategoryRouteHandler({
@@ -624,92 +765,14 @@ function appendRequestAudit(state, req, account, {
   });
 }
 
-const dayKeyFormatter = new Intl.DateTimeFormat("en-CA", {
-  timeZone: process.env.TZ || "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-function dateKey(value = new Date()) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return dayKeyFormatter.format(date);
-}
-
-function postingDateKey(posting = {}) {
-  return dateKey(
-    posting.in_process_at ||
-      posting.created_at ||
-      posting.shipment_date ||
-      posting.delivering_date ||
-      posting.syncedAt
-  );
-}
-
 function summarize(state) {
-  const postings = state.caches.postings || [];
-  const currencyByStoreId = Object.fromEntries((state.stores || []).map((store) => [
-    String(store.id || ""),
-    publicStore(store, state)?.currencyCode || "",
-  ]).filter(([storeId, currency]) => storeId && currency));
-  const syncTypes = new Set(["PRODUCTS", "POSTINGS", "WAREHOUSES", "PROMOTIONS"]);
-  const today = dateKey();
-  const dayMs = 24 * 60 * 60 * 1000;
-  const weekKeys = new Set(
-    Array.from({ length: 7 }, (_, index) => dateKey(Date.now() - index * dayMs))
-  );
-  const moneySummary = summarizeOrderMoney(postings, {
-    dateKey,
-    todayKey: today,
-    weekKeys,
-    currencyByStoreId,
-  });
-  const postingStats = postings.reduce(
-    (stats, posting) => {
-      const status = String(posting.status || "").toLowerCase();
-      const day = postingDateKey(posting);
-      if (status) stats.statusCounts[status] = (stats.statusCounts[status] || 0) + 1;
-      if (day === today) {
-        stats.todayPostings += 1;
-      }
-      if (weekKeys.has(day)) {
-        stats.weekPostings += 1;
-      }
-      if (status === "awaiting_packaging") stats.awaitingPackaging += 1;
-      if (status === "awaiting_deliver") stats.awaitingDeliver += 1;
-      if (status.startsWith("awaiting")) stats.pendingPostings += 1;
-      return stats;
-    },
-    {
-      todayPostings: 0,
-      weekPostings: 0,
-      awaitingPackaging: 0,
-      awaitingDeliver: 0,
-      pendingPostings: 0,
-      statusCounts: {},
-    }
-  );
+  const syncTypes = new Set(["PRODUCTS", "WAREHOUSES"]);
   return {
     products: state.caches.products?.length || 0,
-    postings: postings.length,
-    postingsTotal: postings.length,
-    ...moneySummary,
-    todayPostings: postingStats.todayPostings,
-    weekPostings: postingStats.weekPostings,
-    awaitingPackaging: postingStats.awaitingPackaging,
-    awaitingDeliver: postingStats.awaitingDeliver,
-    pendingPostings: postingStats.pendingPostings,
-    statusCounts: postingStats.statusCounts,
     warehouses: state.caches.warehouses?.length || 0,
     collectBox: state.caches.collectBox?.length || 0,
     favorites: state.caches.favorites?.length || 0,
-    promotions: state.caches.promotions?.length || 0,
-    returns: state.caches.returns?.length || 0,
-    refunds: state.caches.refunds?.length || 0,
     announcements: state.caches.announcements?.length || 0,
-    messageTemplates: state.caches.messageTemplates?.length || 0,
-    messageHistory: state.caches.messageHistory?.length || 0,
     productTemplates: state.caches.productTemplates?.length || 0,
     files: state.caches.files?.length || 0,
     lastSyncAt: state.reports.findLast?.((r) => r.status === "SUCCESS" && syncTypes.has(r.type))?.createdAt || null,
@@ -728,7 +791,15 @@ function limitedLocalStatePayload(state) {
     binding: null,
     stores: [],
     summary: summarize(empty),
-    caches: empty.caches,
+    caches: {
+      products: empty.caches.products,
+      warehouses: empty.caches.warehouses,
+      collectBox: empty.caches.collectBox,
+      favorites: empty.caches.favorites,
+      announcements: empty.caches.announcements,
+      productTemplates: empty.caches.productTemplates,
+      files: empty.caches.files,
+    },
     jobs: {},
     updatedAt: state.updatedAt,
   };
@@ -767,9 +838,12 @@ async function publicCollectBoxItemsForAccount(
   state,
   account,
   categoryResolutionReadPort = accountSharedOzonCategoryRuntime,
+  {ids = null} = {},
 ) {
-  const items = cacheItemsForAccount(state, "collectBox", account);
   const accountId = String(account?.id || "").trim();
+  const items = listingPipelineEnabled() && accountId
+    ? await listCollectItemsV3({accountId, ...(ids !== null ? {ids, limit:ids.length} : {})})
+    : cacheItemsForAccount(state, "collectBox", account);
   const requestedScopes = new Map(items.map((item) => [
     String(item?.id || ""),
     taxonomyScopeForCollectionItem(item),
@@ -783,6 +857,7 @@ async function publicCollectBoxItemsForAccount(
       collectItemIds: [...requestedScopes.keys()],
     });
   } catch (error) {
+    if (ids !== null) throw error;
     console.error("collect category summary read failed", {
       accountId,
       code: stableCategorySummaryReadCode(error),
@@ -798,7 +873,18 @@ async function publicCollectBoxItemsForAccount(
     ) continue;
     byCollectItemId.set(collectItemId, resolution);
   }
-  return items.map((item) => publicPersistedCollectionItem(item, {
+  const scopedSkus = ids !== null ? [...new Set(items.flatMap(collectCaptureSkus))] : null;
+  const completed = listingPipelineEnabled()
+    ? [{status:'COMPLETED',source:{items:(await (await getPostgresPool()).query(`SELECT DISTINCT item->>'sku' AS sku
+      FROM ai_image_listing_tasks t CROSS JOIN LATERAL jsonb_array_elements(CASE
+        WHEN t.status='COMPLETED' THEN CASE WHEN jsonb_typeof(t.body#>'{source,items}')='array' THEN t.body#>'{source,items}' ELSE '[]'::jsonb END
+        ELSE CASE WHEN jsonb_typeof(t.body->'submissionResults')='array' THEN t.body->'submissionResults' ELSE '[]'::jsonb END END) item
+      WHERE t.account_id=$1 AND (t.status='COMPLETED' OR t.body->'submissionResults' @> '[{"importStatus":"SUCCEEDED"}]'::jsonb)
+        AND (t.status='COMPLETED' OR item->>'importStatus'='SUCCEEDED') AND item->>'sku' IS NOT NULL
+        ${scopedSkus === null ? '' : `AND item->>'sku'=ANY($2::text[])`}`,
+      scopedSkus === null ? [accountId] : [accountId,scopedSkus]))
+      .rows}}] : [];
+  return withoutListedSkus(items,completed).map((item) => publicPersistedCollectionItem(item, {
     categoryResolution: byCollectItemId.get(String(item?.id || "")) || null,
   }));
 }
@@ -824,38 +910,25 @@ function localStatePayload(state, options = {}) {
   const accountStores = storesForAccount(state, account.id);
   const accountCurrentStoreId = currentStoreIdForAccount(state, account.id);
   const accountStoreIds = new Set(accountStores.map((store) => String(store.id || "")).filter(Boolean));
-  const visibleJobs = Object.fromEntries(Object.entries(state.jobs || {}).filter(([, job]) =>
-    String(job?.accountId || "") === String(account.id),
-  ));
+  const visibleJobs = Object.fromEntries(Object.entries(state.jobs || {}).filter(([, job]) => {
+    if (String(job?.accountId || "") !== String(account.id)) return false;
+    return job?.jobKind !== "STORE_SYNC" || !["POSTINGS", "PROMOTIONS"].includes(String(job.type || "").toUpperCase());
+  }));
   const visibleCollectBox = (state.caches.collectBox || [])
     .filter((item) => String(item?.accountId || "") === String(account.id))
     .map(publicPersistedCollectionItem);
   const visibleFiles = ensureFilesCache(state).filter((file) => canAccessLocalFile(file, account));
-  const listingCaches = listingEligibilityCaches({ products: accountScopedCache(state.caches.products, account, accountStoreIds), warehouses: accountScopedCache(state.caches.warehouses, account, accountStoreIds), accountId: account.id });
-  const currencyByStoreId = Object.fromEntries(accountStores.map((store) => [
-    String(store.id || ""),
-    publicStore(store, state)?.currencyCode || "",
-  ]).filter(([storeId, currency]) => storeId && currency));
-  const visiblePostings = accountScopedCache(state.caches.postings, account, accountStoreIds)
-    .map((posting) => {
-      const currencyCode = resolvePostingCurrencyCode(posting, { currencyByStoreId });
-      return currencyCode === "UNKNOWN" || resolvePostingCurrencyCode(posting) !== "UNKNOWN"
-        ? posting
-        : { ...posting, currency_code: currencyCode };
-    });
   const visibleCaches = {
-    products: listingCaches.products,
-    postings: visiblePostings,
-    warehouses: listingCaches.warehouses,
+    products: accountScopedCache(state.caches.products, account, accountStoreIds),
+    warehouses: annotateListingWarehouseEligibility({
+      warehouses: accountScopedCache(state.caches.warehouses, account, accountStoreIds),
+      products: accountScopedCache(state.listingWarehouseProducts ?? state.caches.products, account, accountStoreIds),
+      accountId: account.id,
+    }),
     collectBox: visibleCollectBox,
     favorites: accountScopedCache(state.caches.favorites, account, accountStoreIds),
-    promotions: accountScopedCache(state.caches.promotions, account, accountStoreIds),
-    returns: accountScopedCache(state.caches.returns, account, accountStoreIds),
-    refunds: accountScopedCache(state.caches.refunds, account, accountStoreIds),
     // Announcements are intentionally global broadcasts.
     announcements: state.caches.announcements || [],
-    messageTemplates: accountScopedCache(state.caches.messageTemplates, account, accountStoreIds),
-    messageHistory: accountScopedCache(state.caches.messageHistory, account, accountStoreIds),
     productTemplates: accountScopedCache(state.caches.productTemplates, account, accountStoreIds),
     files: visibleFiles,
   };
@@ -898,6 +971,9 @@ function accountOwnedCollectBoxItem(item, account) {
 }
 
 async function saveCollectBoxItemAtomic(item, { account }) {
+  const existing = listingPipelineEnabled() ? await findCollectedSku(await getPostgresPool(),account.id,item.sku) : null;
+  if(existing) return {item:existing,state:await loadState(),duplicate:true};
+  item=await admitCollectedItem({accountId:account.id,item},persistenceMode()==='json'?{state:await loadState({hydrateCatalog:false})}:{});
   const latest = await loadState();
   const scopedItem = accountOwnedCollectBoxItem(item, account);
   const key = collectItemKey(scopedItem);
@@ -975,6 +1051,58 @@ async function updateCollectBoxItemAtomic(id, patch, { account } = {}) {
   return latest.caches.collectBox[index];
 }
 
+async function updateCollectBoxListingState(id, patch, {account, currentItem} = {}) {
+  if (!listingPipelineEnabled() || persistenceMode() !== "postgres") {
+    return updateCollectBoxItemAtomic(id, patch, {account});
+  }
+  if (!currentItem) return null;
+  if (patch.status && !await updateCollectItemListingStatusV3(account.id,id,patch.status)) return null;
+  await patchLegacyCollectStatusV3(account.id, id, {
+    ...withoutCollectorScope(patch),
+    updatedAt:new Date().toISOString(),
+  });
+  return currentItem;
+}
+
+function applyAccountSharedListingCategory(item, resolution, targetStoreId) {
+  if (!resolution || typeof resolution !== "object") return item;
+  const descriptionCategoryId=Number(resolution?.currentDescriptionCategoryId || 0);
+  const typeId=Number(resolution?.currentTypeId || 0);
+  const active=resolution.status === "ACTIVE" && descriptionCategoryId>0 && typeId>0 && targetStoreId;
+  const categoryResolution=active ? {
+    status:"MATCHED",
+    method:"ACCOUNT_SHARED_ACTIVE",
+    target:{storeId:targetStoreId,descriptionCategoryId,typeId},
+  } : {
+    status:String(resolution.status || "NEEDS_REVIEW"),
+    method:"ACCOUNT_SHARED_CURRENT",
+  };
+  const draft=item?.listingDraft || {};
+  return {
+    ...item,
+    categoryResolution,
+    listingDraft:{
+      ...draft,
+      categoryResolution,
+      ...(Array.isArray(draft.variants) ? {variants:draft.variants.map(variant=>({
+        ...variant,categoryResolution,
+      }))} : {}),
+    },
+  };
+}
+
+async function syncCommittedCollectListingState({result,updateStatus,logWarning=console.warn}) {
+  const patch={
+    status:"上架中",
+    listingTaskId:result.task_id || result.result?.task_id || "",
+    listingJobId:result.job?.localTaskId || result.job?.id || "",
+    listingLastError:"",
+  };
+  try { await updateStatus(patch); }
+  catch (error) { logWarning("[collect-listing] committed submission status sync failed", error?.code || error?.message || error); }
+  return result;
+}
+
 async function deleteCollectBoxItemsAtomic(latest, ids = [], { account }) {
   const targetIds = new Set(ids.map((id) => String(id || "")).filter(Boolean));
   const visibleBefore = cacheItemsForAccount(latest, "collectBox", account);
@@ -994,6 +1122,15 @@ async function deleteCollectBoxItemsAtomic(latest, ids = [], { account }) {
 }
 
 async function saveCollectBoxBatchAtomic(items, { account }) {
+  if(listingPipelineEnabled()) {
+    const fresh=[];
+    for(const item of items) if(!await findCollectedSku(await getPostgresPool(),account.id,item.sku))fresh.push(item);
+    items=fresh;
+  }
+  const admitted=[];
+  const admissionContext=persistenceMode()==='json'?{state:await loadState({hydrateCatalog:false})}:{};
+  for(const item of items)admitted.push(await admitCollectedItem({accountId:account.id,item},admissionContext));
+  items=admitted;
   const latest = await loadState();
   latest.caches.collectBox = latest.caches.collectBox || [];
   const scopedItems = items.map((item) => accountOwnedCollectBoxItem(item, account));
@@ -1046,61 +1183,18 @@ function storeContractCurrencyCode(state, store = null) {
 
 function withStoreContractCurrency(state, store, items = []) {
   const currencyCode = storeContractCurrencyCode(state, store);
-  return (Array.isArray(items) ? items : []).map((item) => ({
-    ...item,
-    currency_code: currencyCode,
-    currencyCode,
-  }));
-}
-
-function normalizeMessageTemplate(body, existing = {}) {
-  const now = new Date().toISOString();
-  const templateName = cleanText(
-    hasOwn(body, "templateName") ? body.templateName : hasOwn(body, "name") ? body.name : existing.templateName || existing.name,
-    80
-  );
-  if (!templateName) {
-    const err = new Error("模板名称必填");
-    err.status = 400;
-    throw err;
-  }
-  const categoryValue = cleanText(hasOwn(body, "category") ? body.category : existing.category || "custom", 32);
-  const allowedCategories = new Set(["review", "pickup", "custom"]);
-  const content = cleanText(hasOwn(body, "content") ? body.content : existing.content || "", 2000);
-  return {
-    ...existing,
-    id: existing.id || crypto.randomUUID(),
-    templateName,
-    name: templateName,
-    category: allowedCategories.has(categoryValue) ? categoryValue : "custom",
-    content,
-    createdAt: existing.createdAt || now,
-    updatedAt: now,
-  };
-}
-
-function normalizeMessageHistoryItem(body, store = null) {
-  const now = new Date().toISOString();
-  const kindValue = cleanText(body.kind || body.type || "custom", 32);
-  const allowedKinds = new Set(["review", "pickup", "custom"]);
-  const statusValue = cleanText(body.status || "local_record", 32);
-  const allowedStatuses = new Set(["local_record", "success", "failed", "pending"]);
-  const sentAt = cleanText(body.sentAt || body.createdAt || now, 40);
-  return {
-    id: body.id || crypto.randomUUID(),
-    kind: allowedKinds.has(kindValue) ? kindValue : "custom",
-    receiver: cleanText(body.receiver || body.postingNumber || body.posting_number || "—", 120),
-    postingNumber: cleanText(body.postingNumber || body.posting_number || body.receiver || "", 120),
-    templateName: cleanText(body.templateName || body.template || "默认模板", 120),
-    content: cleanText(body.content || "", 1000),
-    status: allowedStatuses.has(statusValue) ? statusValue : "local_record",
-    storeId: cleanText(body.storeId || store?.id || "", 80),
-    storeName: cleanText(body.storeName || store?.label || store?.companyName || "当前店铺", 120),
-    sentAt,
-    createdAt: now,
-    local: true,
-    dryRun: true,
-  };
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const declaredCurrencies = [item.currency_code, item.currencyCode]
+      .map(normalizeCurrencyCode).filter(Boolean);
+    const mismatch = declaredCurrencies.find((code) => currencyCode && code !== currencyCode);
+    if (mismatch) {
+      throw Object.assign(new Error(`商品 ${item.offer_id || item.sku || ""} 的价格币种 ${mismatch} 与店铺 ${currencyCode} 不一致，请先填写以 ${currencyCode} 计价的售价。`), {
+        status: 422,
+        code: "IMPORT_CURRENCY_MISMATCH",
+      });
+    }
+    return { ...item, currency_code: currencyCode, currencyCode };
+  });
 }
 
 function normalizeAnnouncement(body, existing = {}) {
@@ -1135,49 +1229,6 @@ function normalizeAnnouncement(body, existing = {}) {
     sections,
     read: Boolean(hasOwn(body, "read") ? body.read : existing.read),
     createdAt: existing.createdAt || now,
-    updatedAt: now,
-    local: true,
-  };
-}
-
-function normalizeReturnItem(body, kind = "return", store = null) {
-  const now = new Date().toISOString();
-  const id = cleanText(
-    body.id ||
-      body.returnId ||
-      body.return_id ||
-      body.refundId ||
-      body.refund_id ||
-      body.postingNumber ||
-      body.posting_number ||
-      crypto.randomUUID(),
-    160
-  );
-  const typeValue = cleanText(body.type || body.kind || kind, 32);
-  const statusValue = cleanText(body.status || body.state || "unknown", 60);
-  const createdAt = cleanText(
-    body.createdAt ||
-      body.created_at ||
-      body.requestedAt ||
-      body.requested_at ||
-      body.return_date ||
-      now,
-    60
-  );
-  const products = Array.isArray(body.products) ? body.products : [];
-  const firstProduct = products[0] || {};
-  return {
-    ...body,
-    id,
-    type: typeValue,
-    status: statusValue || "unknown",
-    postingNumber: cleanText(body.postingNumber || body.posting_number || body.posting || "", 160),
-    sku: cleanText(body.sku || body.offer_id || firstProduct.sku || firstProduct.offer_id || "", 160),
-    productName: cleanText(body.productName || body.product_name || firstProduct.name || firstProduct.title || "", 300),
-    storeId: cleanText(body.storeId || store?.id || "", 80),
-    storeName: cleanText(body.storeName || store?.label || store?.companyName || "当前店铺", 120),
-    requestedAt: createdAt,
-    createdAt,
     updatedAt: now,
     local: true,
   };
@@ -1229,7 +1280,7 @@ function localWriteDisabled(res, feature = "该功能") {
     res,
     409,
     `${feature}在本地复刻版中不会直接写入 Ozon。请先在后台绑定并确认真实写入链路后再启用。`,
-    "LOCAL_OZON_WRITE_DISABLED",
+    "LOCAL_ZONGZI_WRITE_DISABLED",
   );
 }
 
@@ -1466,35 +1517,97 @@ async function scrapeOzonProductDetail(sku) {
 }
 
 const ozonSkuCollectionService = createOzonSkuCollectionService({
-  scrapeProductDetail: scrapeOzonProductDetail,
-  normalizeItem: normalizeCollectItem,
-  saveItem: saveCollectBoxItemAtomic,
-});
-// Excel 自动上架采集只写入正式 PostgreSQL 采集记录，不改动旧版 JSON 采集箱。
-// 这样后台任务与用户正在操作的采集箱互不覆盖，同时仍保留原始响应用于追溯。
-const autoListingSkuCollectionService = createOzonSkuCollectionService({
+  findExisting: async ({accountId,sku}) => listingPipelineEnabled() ? findCollectedSku(await getPostgresPool(),accountId,sku) : null,
   scrapeProductDetail: scrapeOzonProductDetail,
   normalizeItem: normalizeCollectItem,
   async saveItem(item, { account }) {
-    if (item?.raw?.error === "scrape_failed") {
-      const error = new Error("AUTO_LISTING_SOURCE_SCRAPE_EMPTY");
-      error.code = "AUTO_LISTING_SOURCE_SCRAPE_EMPTY";
-      throw error;
+    if (!listingPipelineEnabled() || item?.raw?.error === "scrape_failed") {
+      return saveCollectBoxItemAtomic(item, { account });
     }
-    const scopedItem = accountOwnedCollectBoxItem(item, account);
-    const persisted = await mirrorCollectItemV3(scopedItem, {
-      accountId: account.id,
-      source: "AUTO_LISTING_EXCEL_SKU",
-      captureRaw: true,
-    });
-    if (!persisted?.collectId) {
-      const error = new Error("AUTO_LISTING_SOURCE_PERSIST_FAILED");
-      error.code = "AUTO_LISTING_SOURCE_PERSIST_FAILED";
-      throw error;
+    // Use the same category evidence and enrichment contracts as extension collection.
+    let prepared = accountOwnedCollectBoxItem(item, account);
+    try {
+      prepared = await resolveAutoListingExcelSourceCategory(item, account);
+    } catch (error) {
+      // Preserve the collected facts; unresolved categories can be completed later.
+      console.warn("[sku-collection] category lookup:", error?.code || "CATEGORY_UNRESOLVED");
     }
-    return { item: { ...scopedItem, id: persisted.collectId } };
+    prepared.enrichment = buildOzonEnrichmentSummary(prepared);
+    prepared=await admitCollectedItem({accountId:account.id,item:prepared});
+    const pool = await getPostgresPool();
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const persisted = await mirrorCollectItemV3(prepared, {
+        client, accountId: account.id, captureRaw: true,
+      });
+      const category = await accountSharedOzonCategoryRuntime.recordCollectionResult({
+        postgresExecutor: client, accountId: account.id,
+        collectItemId: persisted.collectId, item: prepared,
+      });
+      if (prepared.enrichment.status === "PENDING_ENRICHMENT") {
+        const repository = createPostgresCollectorOzonEnrichmentRepository({ pool: client, transactionOwner: "caller" });
+        await repository.enqueueForCollect({
+          accountId: account.id, collectItemId: persisted.collectId,
+          requestId: crypto.randomUUID(), sku: prepared.sku, refreshBundle: {}, now: new Date(),
+        });
+      }
+      await client.query("COMMIT");
+      return { item: { ...prepared, id: persisted.collectId, categoryResolution: category.categoryResolution } };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 });
+
+async function resolveAutoListingExcelSourceCategory(
+  item,
+  account,
+  { loadStateFn = loadState, categoryService = ozonCategoryService, store: suppliedStore = null } = {},
+) {
+  const scopedItem = accountOwnedCollectBoxItem(item, account);
+  const sourceCategory = scopedItem.sourceCategory
+    && typeof scopedItem.sourceCategory === "object"
+    && !Array.isArray(scopedItem.sourceCategory) ? scopedItem.sourceCategory : {};
+  const descriptionCategoryId = Number(sourceCategory.descriptionCategoryId);
+  const typeId = Number(sourceCategory.typeIdCandidate ?? sourceCategory.typeId);
+  if (Number.isSafeInteger(descriptionCategoryId) && descriptionCategoryId > 0
+    && Number.isSafeInteger(typeId) && typeId > 0) return scopedItem;
+  const typeName = String(sourceCategory.typeName || "").trim();
+  if (!typeName) return scopedItem;
+  let store = suppliedStore;
+  if (!store) {
+    const latest = await loadStateFn();
+    store = activeStore(
+      latest,
+      currentStoreIdForAccount(latest, account.id),
+      account.id,
+    );
+  }
+  if (!store) {
+    const error = new Error("AUTO_LISTING_SOURCE_STORE_REQUIRED");
+    error.code = "AUTO_LISTING_SOURCE_STORE_REQUIRED";
+    throw error;
+  }
+  const resolved = await categoryService.resolveExactTypeByName({
+    accountId: account.id,
+    store,
+    typeName,
+    language: "DEFAULT",
+  });
+  return {
+    ...scopedItem,
+    sourceCategory: {
+      ...sourceCategory,
+      descriptionCategoryId: resolved.descriptionCategoryId,
+      typeIdCandidate: resolved.typeId,
+      typeName: resolved.typeName,
+    },
+  };
+}
 function getRequestStore(state, req, fallbackStoreId) {
   const storeId = req.headers["x-ozon-store-id"] || fallbackStoreId || state.currentStoreId;
   const store = activeStore(state, storeId);
@@ -1676,6 +1789,7 @@ function collectPatchFromImportStatus(statusInfo = {}) {
 const importStatusPollableStatuses = new Set(["QUEUED", "RUNNING", "PENDING", "PROCESSING", "CREATED", "SUBMITTED"]);
 let importStatusPollTimer = null;
 let importStatusPollRunning = false;
+let importStatusPollActive;
 
 function importJobNeedsStatusPoll(job = {}) {
   return Boolean(
@@ -1741,27 +1855,34 @@ function applyImportStatusCheckFailure(state, job, error) {
 }
 
 function scheduleImportStatusPolling(delayMs = 15000) {
-  if (process.env.QH_LOCAL_NO_LISTEN === "1" || importStatusPollTimer) return;
+  if (lifecycle.stopping || process.env.QH_LOCAL_NO_LISTEN === "1" || importStatusPollTimer) return;
   importStatusPollTimer = setTimeout(() => {
     importStatusPollTimer = null;
-    runPendingImportStatusPolls().catch((error) => {
+    if (lifecycle.stopping || importStatusPollRunning) return;
+    importStatusPollActive = runPendingImportStatusPolls();
+    importStatusPollActive.catch((error) => {
       console.warn(`[listing-status] background poll failed: ${String(error?.message || error).slice(0, 300)}`);
       scheduleImportStatusPolling(30000);
-    });
+    }).finally(() => { importStatusPollActive = null; });
   }, delayMs);
   importStatusPollTimer.unref?.();
 }
 
 async function runPendingImportStatusPolls() {
-  if (importStatusPollRunning) return;
+  if (lifecycle.stopping || importStatusPollRunning) return;
   importStatusPollRunning = true;
   try {
     return await jsonStateTransaction.run(async () => {
+      // V3 jobs have their own worker. Inspect the legacy job index before
+      // restoring catalog data that an idle legacy poller will never use.
+      const legacyState = await loadState({ hydrateCatalog: false });
+      if (!Object.values(legacyState.jobs || {}).some(importJobNeedsStatusPoll)) return;
       const latest = await loadState();
       const jobs = Object.values(latest.jobs || {}).filter(importJobNeedsStatusPoll).slice(0, 20);
       if (!jobs.length) return;
       let changed = false;
       for (const job of jobs) {
+        if (lifecycle.stopping) break;
         const store = activeStore(latest, job.storeId, job.accountId || latest.currentAccountId);
         if (!store) continue;
         try {
@@ -1865,7 +1986,12 @@ function publicImportPreviewItem(item = {}, raw = {}, resolution) {
   };
 }
 
-async function previewOzonProductImport(state, req, body) {
+function resolvePreviewCategoryMatchPolicy(body={},override="") {
+  if (override === "TARGET_STORE_EXACT") return override;
+  return body.entry === "COLLECT_EDIT_AUTO_CATEGORY" ? "TARGET_STORE_EXACT" : "DEFAULT";
+}
+
+async function previewOzonProductImport(state, req, body, {categoryMatchPolicy:policyOverride="",collectedSource=false} = {}) {
   const store = getRequestStore(state, req, body.storeId);
   const rawItems = withStoreContractCurrency(state, store, Array.isArray(body.items) ? body.items.filter(Boolean) : []);
   if (!rawItems.length) {
@@ -1873,15 +1999,14 @@ async function previewOzonProductImport(state, req, body) {
     err.status = 400;
     throw err;
   }
-  const categoryMatchPolicy = body.entry === "COLLECT_EDIT_AUTO_CATEGORY"
-    ? "TARGET_STORE_EXACT"
-    : "DEFAULT";
+  const categoryMatchPolicy = collectedSource ? "DEFAULT" : resolvePreviewCategoryMatchPolicy(body,policyOverride);
   const normalized = await normalizeOzonImportItems(rawItems, {
     strictTypeMatch: !!body.strictTypeMatch,
     categoryMatchPolicy,
+    trustSuppliedDictionaryIds: collectedSource,
     targetStoreId: store.id,
     allowUnresolvedRequiredDictionaryValues: categoryMatchPolicy === "TARGET_STORE_EXACT",
-    getCategoryTree: async () => (
+    getCategoryTree: collectedSource ? undefined : async () => (
       await ozonCategoryService.getCategoryTree({
         accountId: store.ownerAccountId,
         store,
@@ -1896,7 +2021,7 @@ async function previewOzonProductImport(state, req, body) {
         typeId,
         language: "DEFAULT",
       }).then(({ items }) => items),
-    getCategoryAttributeValues: (descriptionCategoryId, typeId, attributeId) =>
+    getCategoryAttributeValues: (descriptionCategoryId, typeId, attributeId, dictionaryOptions = {}) =>
       ozonCategoryService.getCategoryAttributeValues({
         accountId: store.ownerAccountId,
         store,
@@ -1905,6 +2030,11 @@ async function previewOzonProductImport(state, req, body) {
         attributeId,
         language: "DEFAULT",
         limit: 5000,
+        ...dictionaryOptions,
+      }).then(({ items }) => items),
+    searchCategoryAttributeValuesExact: (descriptionCategoryId, typeId, attributeId, value) =>
+      ozonCategoryService.searchCategoryAttributeValuesExact({
+        accountId: store.ownerAccountId, store, descriptionCategoryId, typeId, attributeId, value,
       }).then(({ items }) => items),
   });
   if (normalized.items.length !== rawItems.length) {
@@ -1985,9 +2115,10 @@ async function queueCollectSubmissionV3(state, req, body, collectItem, type = "C
   }
   const normalized = await normalizeOzonImportItems(rawItems, {
     strictTypeMatch: !!body.strictTypeMatch,
-    categoryMatchPolicy: collectItem ? "TARGET_STORE_EXACT" : "DEFAULT",
+    categoryMatchPolicy: "DEFAULT",
+    trustSuppliedDictionaryIds: Boolean(collectItem),
     targetStoreId: store.id,
-    getCategoryTree: async () => (
+    getCategoryTree: collectItem ? undefined : async () => (
       await categoryService.getCategoryTree({
         accountId: store.ownerAccountId,
         store,
@@ -2002,7 +2133,7 @@ async function queueCollectSubmissionV3(state, req, body, collectItem, type = "C
         typeId,
         language: "DEFAULT",
       }).then(({ items }) => items),
-    getCategoryAttributeValues: (descriptionCategoryId, typeId, attributeId) =>
+    getCategoryAttributeValues: (descriptionCategoryId, typeId, attributeId, dictionaryOptions = {}) =>
       categoryService.getCategoryAttributeValues({
         accountId: store.ownerAccountId,
         store,
@@ -2011,6 +2142,11 @@ async function queueCollectSubmissionV3(state, req, body, collectItem, type = "C
         attributeId,
         language: "DEFAULT",
         limit: 5000,
+        ...dictionaryOptions,
+      }).then(({ items }) => items),
+    searchCategoryAttributeValuesExact: (descriptionCategoryId, typeId, attributeId, value) =>
+      categoryService.searchCategoryAttributeValuesExact({
+        accountId: store.ownerAccountId, store, descriptionCategoryId, typeId, attributeId, value,
       }).then(({ items }) => items),
   });
   if (normalized.items.length !== rawItems.length) {
@@ -2037,6 +2173,14 @@ async function queueCollectSubmissionV3(state, req, body, collectItem, type = "C
     listingDraft: { variants: rawItems },
     createdAt: new Date().toISOString(),
   };
+  const stockRows = Array.isArray(body.stocks) ? body.stocks : [];
+  // This evidence comes only from our official verifier, never from request JSON.
+  const directRfbsEvidence = dependencies.verifiedDirectRfbsEvidence?.length
+    ? dependencies.verifiedDirectRfbsEvidence : stockRows.length ? await (dependencies.verifyDirectRfbsTargets || verifyDirectRfbsTargets)({
+    pool: await getPostgresPool(), accountId: account.id, storeId: store.id, stocks: stockRows,
+    readCredential: readStoreCredentialV3, callOzonSellerApi,
+    correlationId: `direct-prepare-${crypto.randomUUID()}`,
+  }) : [];
   const created = await (preparation ? prepareListing : createSubmission)({
     collectItem: submissionCollectItem,
     collectItemId: submissionCollectItem.id,
@@ -2046,7 +2190,9 @@ async function queueCollectSubmissionV3(state, req, body, collectItem, type = "C
     accountId: account.id,
     idempotencyKey: preparation?.idempotencyKey || "",
     normalizedItems: normalized.items,
-    stocks: Array.isArray(body.stocks) ? body.stocks : [],
+    sourceSkus: rawItems.map(item => cleanText(item.scraped_sku || item.sku || "", 240)),
+    stocks: stockRows,
+    directRfbsEvidence,
     type,
     versions: {
       categoryRuleVersion: process.env.OZON_CATEGORY_RULE_VERSION || "2026-07-v1",
@@ -2056,134 +2202,6 @@ async function queueCollectSubmissionV3(state, req, body, collectItem, type = "C
     retryFailed: body.retryFailed === true,
   });
   return publicQueuedListingSubmission(created, normalized.warnings);
-}
-
-function listingFirstText(...values) {
-  for (const value of values) {
-    const text = cleanText(value, 500);
-    if (text) return text;
-  }
-  return "";
-}
-
-function listingNumber(value) {
-  const text = String(value ?? "").replace(",", ".").trim();
-  const match = text.match(/-?\d+(?:\.\d+)?/);
-  if (!match) return 0;
-  const number = Number(match[0]);
-  return Number.isFinite(number) ? number : 0;
-}
-
-function listingSourceCategoryEvidence(...candidates) {
-  for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
-    const descriptionCategoryId = Number(listingFirstText(
-      candidate.descriptionCategoryId,
-      candidate.description_category_id,
-    ));
-    if (Number.isFinite(descriptionCategoryId) && descriptionCategoryId > 0) return candidate;
-  }
-  return {};
-}
-
-function listingImageList(...values) {
-  const out = [];
-  const seen = new Set();
-  for (const value of values) {
-    const rawList = Array.isArray(value) ? value : value ? [value] : [];
-    for (const raw of rawList) {
-      const url = cleanText(typeof raw === "object" ? raw.file_name || raw.url || raw.src || raw.image || raw.value : raw, 1000);
-      if (!url) continue;
-      const key = url.split("?")[0].split("#")[0].toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(url);
-    }
-  }
-  return out;
-}
-
-function listingAttributeValues(attr = {}) {
-  if (Array.isArray(attr.values) && attr.values.length) return attr.values;
-  if (Array.isArray(attr.collection) && attr.collection.length) {
-    return attr.collection.map((value) => typeof value === "object" ? value : { value }).filter((value) => cleanText(value?.value || value?.name || value?.title));
-  }
-  if (attr.value != null && String(attr.value).trim()) return [{ value: attr.value }];
-  return [];
-}
-
-function listingDraftAttributes(draft = {}, item = {}) {
-  const source = Array.isArray(draft.categoryAttributes) && draft.categoryAttributes.length
-    ? draft.categoryAttributes
-    : Array.isArray(item.attributes)
-      ? item.attributes
-      : [];
-  return source
-    .map((attr) => {
-      const id = Number(attr.id || attr.attribute_id || attr.attributeId || attr.key) || 0;
-      const values = listingAttributeValues(attr);
-      if (!id || !values.length) return null;
-      return {
-        id,
-        name: attr.name || attr.label || "",
-        values,
-        is_required: !!attr.required || !!attr.is_required,
-      };
-    })
-    .filter(Boolean);
-}
-
-function listingVariantSourceSnapshot(variant = {}, item = {}, rowSku = "", anchorSku = "") {
-  const direct = [
-    variant.sourceVariant,
-    variant._sourceVariant,
-    variant.variantData,
-    variant.variant_data,
-    variant.sv,
-  ].find((value) => value && typeof value === "object" && !Array.isArray(value));
-  if (direct) return direct;
-  if (Array.isArray(variant.attributes) && variant.attributes.length) return variant;
-  if (String(rowSku || "") !== String(anchorSku || "")) return {};
-  return [
-    item._sourceVariant,
-    item.sourceVariant,
-    item.variantData,
-    item.variant_data,
-    item.raw?.variantData,
-    item.raw?.variant_data,
-  ].find((value) => value && typeof value === "object" && !Array.isArray(value)) || {};
-}
-
-function listingSourceAttribute(source = {}, attributeId) {
-  const key = String(attributeId);
-  return (Array.isArray(source.attributes) ? source.attributes : []).find((attr) =>
-    String(attr?.key ?? attr?.id ?? attr?.attribute_id ?? attr?.attributeId) === key
-  );
-}
-
-function listingSourceImages(source = {}) {
-  const primary = listingSourceAttribute(source, 4194);
-  const gallery = listingSourceAttribute(source, 4195);
-  return listingImageList(
-    primary?.value,
-    primary?.values,
-    primary?.collection,
-    gallery?.value,
-    gallery?.values,
-    gallery?.collection,
-    source.images,
-    source.image,
-  );
-}
-
-function listingVariantDraftAttributes(variant = {}, fallback = []) {
-  if (Array.isArray(variant.categoryAttributes)) {
-    return listingDraftAttributes({ categoryAttributes: variant.categoryAttributes }, {});
-  }
-  if (Array.isArray(variant.attributes) && variant.attributes.length) {
-    return listingDraftAttributes({ categoryAttributes: variant.attributes }, {});
-  }
-  return fallback;
 }
 
 function listingStockRowsFromDraft(draft = {}, item = {}, listingItems = []) {
@@ -2210,147 +2228,6 @@ function listingStockRowsFromDraft(draft = {}, item = {}, listingItems = []) {
     const sku = listingFirstText(listingItem.scraped_sku, draft.sku, item.sku, item.product_id, item.id);
     if (sku) row.sku = Number(sku) || sku;
     return row;
-  });
-}
-
-function buildCollectBoxListingItems(item = {}, targetStoreId = "") {
-  const draft = item.listingDraft && typeof item.listingDraft === "object" ? item.listingDraft : {};
-  const draftSourceCategory = listingSourceCategoryEvidence(
-    draft.sourceCategory,
-    draft.categoryResolution?.source,
-    item.sourceCategory,
-    item.categoryResolution?.source,
-  );
-  const draftLogistics = draft.logistics && typeof draft.logistics === "object"
-    ? draft.logistics
-    : {};
-  const sku = listingFirstText(draft.sku, item.sku, item.product_id, item.productId, item.id);
-  const baseTitle = listingFirstText(draft.title, item.name, item.title, sku);
-  const basePrice = listingNumber(listingFirstText(draft.price, item.price?.price, item.price, item.priceText));
-  const currencyCode = normalizeCurrencyCode(listingFirstText(draft.currencyCode, draft.currency_code, item.currency_code, item.currencyCode)) || "CNY";
-  const offerPrefix = listingFirstText(draft.offerPrefix, item.offerPrefix, "jz-") || "jz-";
-  const sharedImages = listingImageList(draft.images, draft.image, item.images, item.image);
-  const anchorTarget = explicitOzonListingTarget(
-    draft.categoryResolution || item.categoryResolution,
-    { targetStoreId },
-  ) || {};
-  const anchorAttributes = listingDraftAttributes(draft, item);
-  const sharedModelName = listingFirstText(draft.modelName, item.modelName, item.model_name, sku);
-  const variants = Array.isArray(draft.variants) && draft.variants.length ? draft.variants : [];
-  const rows = variants.length ? variants : [{
-    sku,
-    name: baseTitle,
-    sellPrice: basePrice,
-    oldPrice: item.old_price || item.oldPrice,
-    offerId: listingFirstText(item.offer_id, item.offerId, `${offerPrefix}${sku}`),
-    image: sharedImages[0] || "",
-  }];
-  const matchedAnchorIndex = rows.findIndex((variant) =>
-    String(listingFirstText(variant.sku, variant.product_id)) === String(sku)
-  );
-  const anchorIndex = matchedAnchorIndex >= 0 ? matchedAnchorIndex : 0;
-
-  return rows.map((variant, index) => {
-    const rowSku = listingFirstText(variant.sku, variant.product_id, sku);
-    const isAnchor = index === anchorIndex;
-    const sourceVariant = listingVariantSourceSnapshot(variant, item, rowSku, sku);
-    const offerId = listingFirstText(
-      variant.offerId,
-      variant.offer_id,
-      rowSku ? `${offerPrefix}${rowSku}${rows.length > 1 ? `-${String(index + 1).padStart(2, "0")}` : ""}` : "",
-    );
-    const price = listingNumber(listingFirstText(variant.sellPrice, variant.price, draft.price, item.price?.price, item.price));
-    const oldPrice = listingNumber(listingFirstText(variant.oldPrice, variant.old_price, item.old_price, item.oldPrice));
-    const ownImages = listingImageList(variant.image, variant.images, variant.picture, listingSourceImages(sourceVariant));
-    const variantImages = ownImages.length ? ownImages : sharedImages;
-    const variantAttributes = listingVariantDraftAttributes(variant, isAnchor ? anchorAttributes : []);
-    const variantTarget = explicitOzonListingTarget(
-      variant.categoryResolution,
-      { targetStoreId },
-    ) || {};
-    const descriptionCategoryId = variantTarget.descriptionCategoryId
-      || anchorTarget.descriptionCategoryId
-      || 0;
-    const typeId = variantTarget.typeId || anchorTarget.typeId || 0;
-    const description = listingFirstText(
-      variant.description,
-      variant.scraped_description,
-      isAnchor ? draft.description : "",
-    );
-    const richContent = listingFirstText(
-      variant.richContent,
-      variant.rich_content,
-      isAnchor ? draft.richContent : "",
-    );
-    const tags = Array.isArray(variant.tags)
-      ? variant.tags
-      : (isAnchor && Array.isArray(draft.tags) ? draft.tags : undefined);
-    const variantLogistics = variant.logistics && typeof variant.logistics === "object"
-      ? variant.logistics
-      : {};
-    const sourceCategory = listingSourceCategoryEvidence(
-      variant.sourceCategory,
-      variant.categoryResolution?.source,
-      draftSourceCategory,
-    );
-    const weight = Math.round(listingNumber(listingFirstText(
-      variant.packageWeight,
-      variant.weight,
-      variantLogistics.weightG,
-      isAnchor ? listingFirstText(draft.packageWeight, draftLogistics.weightG) : "",
-    )));
-    const depth = Math.round(listingNumber(listingFirstText(
-      variant.packageLength,
-      variant.depth,
-      variantLogistics.lengthMm,
-      isAnchor ? listingFirstText(draft.packageLength, draftLogistics.lengthMm) : "",
-    )));
-    const width = Math.round(listingNumber(listingFirstText(
-      variant.packageWidth,
-      variant.width,
-      variantLogistics.widthMm,
-      isAnchor ? listingFirstText(draft.packageWidth, draftLogistics.widthMm) : "",
-    )));
-    const height = Math.round(listingNumber(listingFirstText(
-      variant.packageHeight,
-      variant.height,
-      variantLogistics.heightMm,
-      isAnchor ? listingFirstText(draft.packageHeight, draftLogistics.heightMm) : "",
-    )));
-    return {
-      offer_id: offerId,
-      name: listingFirstText(variant.name, variant.title, baseTitle, rowSku),
-      price: price > 0 ? price.toFixed(2) : "",
-      old_price: oldPrice > 0 ? oldPrice.toFixed(2) : (price > 0 ? (price * 1.25).toFixed(2) : ""),
-      vat: listingFirstText(variant.vat, "0"),
-      currency_code: normalizeCurrencyCode(listingFirstText(variant.priceCurrency, variant.currencyCode, variant.currency_code, currencyCode)) || currencyCode,
-      images: variantImages,
-      scraped_description: description || undefined,
-      scraped_sku: rowSku,
-      // Ozon uses the shared model name to merge otherwise independent variants.
-      scraped_model_name: sharedModelName,
-      brand: listingFirstText(variant.brand, isAnchor ? draft.brand : ""),
-      _aiHashtags: tags,
-      richContent: richContent || undefined,
-      videoUrl: listingFirstText(variant.video, variant.videoUrl, variant.video_url) || undefined,
-      _sourceVariant: sourceVariant,
-      _bundleItem: variant._bundleItem || sourceVariant._bundleItem || {},
-      attributes: variantAttributes,
-      complex_attributes: Array.isArray(variant.complex_attributes) ? variant.complex_attributes : [],
-      bundleComplexAttrs: variant.bundleComplexAttrs || sourceVariant._bundleComplexAttrs || undefined,
-      sourceCategory: Object.keys(sourceCategory).length
-        ? structuredClone(sourceCategory)
-        : undefined,
-      barcode: listingFirstText(variant.barcode, isAnchor ? item.barcode : "") || undefined,
-      description_category_id: descriptionCategoryId || undefined,
-      type_id: typeId || undefined,
-      weight,
-      depth,
-      width,
-      height,
-      weight_unit: "g",
-      dimension_unit: "mm",
-    };
   });
 }
 
@@ -2392,7 +2269,7 @@ function assertCollectListingTargets(items = []) {
   );
 }
 
-async function collectBoxListingRequest(state, req, id, body = {}, { account, dryRun = false } = {}) {
+async function collectBoxListingRequest(state, req, id, body = {}, { account, dryRun = false, scopedItem = null } = {}) {
   const requestedTargetStoreId = cleanText(body.targetStoreId || body.storeId);
   const replayInput = !dryRun && listingPipelineEnabled()
     ? assertListingPreparationInput({
@@ -2402,8 +2279,9 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
         idempotencyKey: body.idempotencyKey,
       })
     : null;
-  const item = cacheItemsForAccount(state, "collectBox", account)
-    .find((row) => String(row.id) === String(id));
+  const item = String(scopedItem?.id || "") === String(id)
+    ? scopedItem
+    : cacheItemsForAccount(state, "collectBox", account).find((row) => String(row.id) === String(id));
   if (!item) {
     const err = new Error("采集箱条目不存在");
     err.status = 404;
@@ -2445,7 +2323,25 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     err.body = { ok: false, errors };
     throw err;
   }
-  assertListingStockSelectionEligible({ warehouses: cacheItemsForAccount(state, "warehouses", account), products: cacheItemsForAccount(state, "products", account), targetStoreId: requestedTargetStoreId, accountId: account?.id, stocks });
+  const warehouses = cacheItemsForAccount(state, "warehouses", account);
+  const verifier = createAutoListingRfbsWarehouseVerifier({
+    callOzonSellerApi,
+    readCredential: ({accountId, targetStoreId}) => readStoreCredentialV3(targetStoreId, accountId),
+    loadTarget: ({accountId, targetStoreId, targetWarehouseId}) => {
+      const w = warehouses.find(w => String(w.id) === targetWarehouseId
+        && String(w.storeId || w.store_id) === targetStoreId
+        && String(w.accountId || w.account_id || w.ownerAccountId) === accountId);
+      return w ? { ...w, warehouse_id: String(w.warehouse_id),
+        ...(w.warehouseId != null ? {warehouseId: String(w.warehouseId)} : {}) } : null;
+    },
+  });
+  const verifiedDirectRfbsEvidence = [];
+  await validateCollectListingWarehouses({ warehouses, products: cacheItemsForAccount(state, "products", account),
+    targetStoreId: requestedTargetStoreId, accountId: account.id, stocks, verifyRfbsWarehouse: async (input) => {
+      const evidence = await verifier.verifyRfbsWarehouse(input);
+      verifiedDirectRfbsEvidence.push(evidence);
+      return evidence;
+    } });
   const payload = {
     ...body,
     storeId: requestedTargetStoreId,
@@ -2456,14 +2352,52 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     items,
     stocks,
   };
-  if (dryRun) return previewOzonProductImport(state, req, payload);
+  if (dryRun) return previewOzonProductImport(state, req, payload, {collectedSource:true});
   if (!listingPipelineEnabled()) {
     const error = new Error("安全上架任务队列当前不可用，请恢复 PostgreSQL 与 LISTING_PIPELINE_V3 后重试");
     error.status = 503;
     error.code = "LISTING_PIPELINE_REQUIRED";
     throw error;
   }
-  return queueCollectSubmissionV3(state, req, payload, item, "COLLECT_BOX_DRAFT");
+  return queueCollectSubmissionV3(state, req, payload, item, "COLLECT_BOX_DRAFT", {verifiedDirectRfbsEvidence});
+}
+
+async function respondCollectBoxListingRoute({req,res,state,account,id,action,body,currentItem=null}) {
+  try {
+    const result = await collectBoxListingRequest(state, req, id, body, {
+      account,
+      dryRun: action === "preview",
+      scopedItem:currentItem,
+    });
+    if (action === "submit" && result?.ok) {
+      await syncCommittedCollectListingState({result,updateStatus:patch=>updateCollectBoxListingState(id, {
+        ...patch,listingSubmittedAt:new Date().toISOString(),
+      }, {account,currentItem})});
+    }
+    sendJson(res, 200, result);
+  } catch (error) {
+    const errorCode = error?.code || error?.body?.code || "COLLECT_LISTING_FAILED";
+    const enrichmentIncomplete = errorCode === "COLLECT_ENRICHMENT_INCOMPLETE";
+    const failurePatch = {
+      listingLastError: error?.message || (action === "preview" ? "采集箱草稿预检失败" : "采集箱草稿上架失败"),
+      listingLastErrorAt: new Date().toISOString(),
+    };
+    if (action === "submit") {
+      failurePatch.status = "失败";
+      failurePatch.listingTaskId = "";
+      failurePatch.listingJobId = "";
+    }
+    if (!enrichmentIncomplete && !error?.preserveExistingListing) {
+      await updateCollectBoxListingState(id, failurePatch, {account,currentItem}).catch(() => null);
+    }
+    sendJson(res, error?.status || 502, {
+      ok: false,
+      code: errorCode,
+      message: error?.message || (action === "preview" ? "采集箱草稿预检失败" : "采集箱草稿上架失败"),
+      ...(Array.isArray(error?.missingFields) ? { missingFields: error.missingFields } : {}),
+      ...(error?.body || {}),
+    });
+  }
 }
 
 async function mutateLatestStateWithRetry(mutator, maxAttempts = 4) {
@@ -2491,11 +2425,54 @@ export async function handleFastCollectionRoute(req, res, url, {
   authenticateMutationRequest = authenticateCollectionRequest,
   ingestCollectRequest = ingestCollectRequestV4,
   updateCollectItemDraft = updateCollectItemDraftV4,
+  readCollectProgress = ({accountId, ids}) => readCollectProgressForAccount({
+    accountId, ids,
+    readItems: scope => publicCollectBoxItemsForAccount(null, {id:scope.accountId}, accountSharedOzonCategoryRuntime, {ids:scope.ids}),
+  }),
+  readCollectSummary = async input => readCollectSummaryPage({...input,pool:await getPostgresPool()}),
 } = {}) {
   if (typeof categoryEvidencePort?.recordCollectionResult !== "function") {
     throw new TypeError("fast collection category evidence port is required");
   }
+  const isCollectProgress = req.method === 'GET' && url.pathname === '/ozon/collect-box/progress';
+  if (req.method === 'GET' && url.pathname === '/ozon/collect-box/summary') {
+    if (!pipelineEnabled()) return false;
+    try {
+      const account=await authenticateMutationRequest(req);
+      const result=await readCollectSummary({accountId:account.id,limit:url.searchParams.get('limit'),offset:url.searchParams.get('offset'),
+        status:url.searchParams.get('status')||'',source:url.searchParams.get('source')||'',variant:url.searchParams.get('variant')||''});
+      sendJson(res,200,result);
+    } catch(error) {
+      const code=error.code||'COLLECT_SUMMARY_READ_FAILED';
+      if((error.status||500)>=500)console.error('collect summary read failed',{code});
+      sendError(res,error.status||500,error.status&&error.status<500?error.message:'采集列表读取失败，请稍后重试',code);
+    }
+    return true;
+  }
+  if (isCollectProgress) {
+    try {
+      if (!pipelineEnabled()) throw Object.assign(new Error('采集进度读取需要 PostgreSQL'), {status:503,code:'COLLECT_PROGRESS_UNAVAILABLE'});
+      const account = await authenticateMutationRequest(req);
+      const progress = await readCollectProgress({accountId:account.id, ids:url.searchParams.getAll('ids')});
+      sendJson(res,200,progress);
+    } catch (error) {
+      const code = error.code || (/Connection terminated unexpectedly/i.test(error.message || '')
+        ? 'DB_CONNECTION_LOST' : 'COLLECT_PROGRESS_READ_FAILED');
+      if ((error.status || 500) >= 500) console.error('collect progress read failed', {code, message:error.message});
+      sendError(res,error.status||500,error.status && error.status < 500 ? error.message : '采集进度读取失败，请稍后重试',code);
+    }
+    return true;
+  }
   if (!pipelineEnabled()) return false;
+  const skuStatusMatch = req.method === 'GET' && url.pathname.match(/^\/collector\/ozon\/sku-status\/(\d{6,16})$/);
+  if(skuStatusMatch){
+    try {
+      const account=await collectorAuthRuntime.authenticateRequest(req,'collector.ozon.read');
+      const existing=await findCollectedSku(await getPostgresPool(),account.id,skuStatusMatch[1]);
+      sendJson(res,200,{ok:true,status:existing?.collectionState||'AVAILABLE'});
+    } catch(error){sendError(res,error.status||500,'无法查询采集状态',error.code||'COLLECT_STATUS_FAILED');}
+    return true;
+  }
   const sourceCollectMatch = url.pathname.match(/^\/sources\/([^/]+)\/collect(?:\/batch)?$/);
   const collectRequestMatch = url.pathname.match(/^\/local\/collect-requests\/([^/]+)$/);
   const collectItemMatch = url.pathname.match(/^\/ozon\/collect-box\/([^/]+)$/);
@@ -2596,6 +2573,7 @@ export async function handleFastCollectionRoute(req, res, url, {
         ? { ok: errors.length === 0, imported: imported.length, data: imported, results, errors }
         : {
             ok: true,
+            duplicate: Boolean(imported[0]?.duplicate),
             data: imported[0] || null,
             requestId: imported[0]?.collectRequestId || "",
             ...(imported[0]?.enrichment ? { enrichment: imported[0].enrichment } : {}),
@@ -2616,7 +2594,21 @@ export async function handleFastCollectionRoute(req, res, url, {
 }
 
 const handleCollectorHttpRoute = createCollectorHttpHandler({
+  ozonRouteService:accountOzonRouteService,
   authenticate: collectorAuthRuntime.authenticateRequest,
+  readAccountCounts: async (accountId) => {
+    if (persistenceMode() === 'postgres') {
+      return readCollectorAccountCounts({ pool: await getPostgresPool(), accountId });
+    }
+    const state = await loadState();
+    const account = { id: accountId };
+    const stores = storesForAccount(state, accountId);
+    const products = cacheItemsForAccount(state, 'products', account);
+    return {
+      collect: cacheItemsForAccount(state, 'collectBox', account).length,
+      products: new Set(stores.flatMap(store => cacheItemsForStore(products, store))).size,
+    };
+  },
   readJson: readBody,
   sendJson,
 });
@@ -2624,7 +2616,11 @@ const handleCollectorHttpRoute = createCollectorHttpHandler({
 export function createHttpHandler({
   composition = defaultAccountSharedOzonCategoryComposition,
   categoryResolutionReadPort = composition?.accountSharedOzonCategoryRuntime,
+  categoryService = ozonCategoryService,
 } = {}) {
+  // Legacy full responses can exceed 70 MB. Build one at a time; page and
+  // bootstrap reads remain independent so task polling stays responsive.
+  let fullStateReadFinished = Promise.resolve();
   if (
     typeof composition?.collectorOzonEnrichmentRuntime?.handleHttpRoute !== "function"
     || typeof composition?.handleJsonAccountScopedCollectionRoute !== "function"
@@ -2633,26 +2629,52 @@ export function createHttpHandler({
   ) {
     throw new TypeError("server category auto-resolution HTTP composition is required");
   }
+  const handlePostgresOzonCategoryRoute = createOzonCategoryRouteHandler({
+    categoryService,
+    resolveContext: resolvePostgresOzonCategoryContext,
+    sendJson,
+    sendError,
+    reportError: (diagnostic) => console.warn("[ozon-category]", diagnostic),
+  });
+  const handleWebCollectionRoute = createOzonWebCollectionHttpHandler({
+    service: createOzonWebCollectionService({ categoryEvidencePort: composition.accountSharedOzonCategoryRuntime }),
+    authenticateWeb: async (request) => {
+      if (persistenceMode() !== 'postgres') throw Object.assign(new Error('网页采集需要数据库服务'), { status: 503 });
+      return authenticateCollectionRequest(request);
+    },
+    authenticateCollector: collectorAuthRuntime.authenticateSessionRequest,
+    readJson: readBody,
+    sendJson,
+  });
   return async function handle(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  if(req.method==='GET'&&['/local/state','/ozon/collect-box/summary','/ozon/collect-box/progress','/ai-listing/tasks'].includes(url.pathname)){
+    res.pipelineRead={route:url.pathname,startedAt:performance.now()};
+  }
   if (handleRemovedDataCollectionStoreRoute(req, res, url, { sendJson })) return;
   if (req.method === "OPTIONS") {
     sendJson(res, 204, {});
     return;
   }
+  if (handleRetiredSecondaryOperation(req, res, url)) return;
+  if (await handleHealthRoute(req, res, url, {
+    sendJson, dataFile, persistenceMode, persistenceHealth, objectStorageHealth, objectStorageInfo,
+    listingPipelineHealth, listingPipelineEnabled,
+  })) return;
 
   if (handleRetiredExtensionSyncRoute(req, res, url, { sendJson })) return;
+  if (await handleAccountOzonRoute(req,res)) return;
   if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
+  if (await handleWebCollectionRoute(req, res, url)) return;
   if (await composition.handleCategoryConfirmationRoute(req, res, url)) return;
   if (await composition.collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)) return;
-  if (await autoListingWebRuntime.handleReviewAssetRoute(req, res, url)) return;
-  if (await autoListingWebRuntime.handleItemRoute(req, res, url)) return;
-  if (await handleAutoListingRoute(req, res, url)) return;
-  if (await autoListingWebRuntime.handleUserWorkflowRoute(req, res, url)) return;
-  if (await autoListingWebRuntime.handleCategoryStrategyExtensionRoute(req, res, url)) return;
-  if (await autoListingWebRuntime.handleCategoryStrategyAdminRoute(req, res, url)) return;
-  if (await autoListingWebRuntime.handleAiAdminRoute(req, res, url)) return;
-  if (await autoListingWebRuntime.handleAdminRoute(req, res, url)) return;
+  if (await dashboardRuntime.handleRoute(req, res, url)) return;
+  if (await aiListingRuntime.handleRoute(req, res, url)) return;
+  if (await messageRuntime.handleRoute(req, res, url)) return;
+  if (await promotionRuntime.handleRoute(req, res, url)) return;
+  if (await stockRuntime.handleRoute(req, res, url)) return;
+  if (await orderManagementRuntime.handleRoute(req, res, url)) return;
+  if (await orderInspectionRuntime.handleRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
     authenticate: (request) => collectorAuthRuntime.authenticateRequest(
       request,
@@ -2665,9 +2687,99 @@ export function createHttpHandler({
   if (await handleCollectorHttpRoute(req, res)) return;
   if (await handleFastCollectionRoute(req, res, url, {
     categoryEvidencePort: composition.accountSharedOzonCategoryRuntime,
+    readCollectSummary:async input=>readCollectSummaryPage({...input,pool:await getPostgresPool(),readCategories:scope=>categoryResolutionReadPort.readForItems(scope)}),
+    readCollectProgress: ({accountId, ids}) => readCollectProgressForAccount({
+      accountId, ids,
+      readItems: scope => publicCollectBoxItemsForAccount(null, {id:scope.accountId}, categoryResolutionReadPort, {ids:scope.ids}),
+    }),
   })) return;
+  if (persistenceMode()==='postgres' && req.method==='GET' && ['/local/state','/ozon/products/cache','/ozon/products/cache/status-counts'].includes(url.pathname)) {
+    let account;
+    try {account=await authenticateCollectionRequest(req);}
+    catch(error){if(url.pathname!=='/local/state'||![401,403].includes(error.status))throw error;sendJson(res,200,limitedLocalStatePayload(defaultState()));return;}
+    if(url.pathname==='/ozon/products/cache'&&url.searchParams.get('view')==='page'){
+      const storeId=url.searchParams.get('storeId')||req.headers['x-ozon-store-id']||'';
+      sendJson(res,200,await readProductCatalogPage({pool:await getPostgresPool(),accountId:account.id,storeId,options:productPageOptions(url.searchParams)}));return;
+    }
+    const statePlan=localStateRequestPlan(url.searchParams);
+    const {bootstrap}=statePlan;
+    let releaseFullStateRead;
+    if(url.pathname==='/local/state' && statePlan.includeFullCollection){
+      const previous=fullStateReadFinished;
+      fullStateReadFinished=new Promise(resolve=>{releaseFullStateRead=resolve;});
+      await previous;
+    }
+    try {
+    const state=await readLocalStateForAccount({pool:await getPostgresPool(),accountId:account.id,bootstrap,
+      storeId:url.pathname==='/local/state'?null:url.searchParams.get('storeId')||req.headers['x-ozon-store-id']||null});
+    if(url.pathname==='/local/state'){
+      if(statePlan.includeSubmissionJobs && listingPipelineEnabled())for(const job of await listSubmissionJobsV3({accountId:account.id,storeId:state.currentStoreId,limit:500}))state.jobs[job.id]=job;
+      const payload=localStatePayload(state,{account:state.accounts?.[0]||account,token:bearerToken(req)});
+      if(statePlan.includeFullCollection)payload.caches.collectBox=await publicCollectBoxItemsForAccount(state,account,categoryResolutionReadPort);
+      else payload.caches.collectBox=[];
+      if(statePlan.collectIds.length){
+        const ids=statePlan.collectIds;
+        if(ids.length>100||ids.some(id=>!id||id.length>500))throw Object.assign(new Error('请选择最多100件采集商品'),{status:400});
+        payload.caches.collectBox=await publicCollectBoxItemsForAccount(state,account,categoryResolutionReadPort,{ids});
+      }
+      if(!statePlan.includeSubmissionJobs)payload.jobs={};
+      payload.summary={...payload.summary,...state.summaryCounts,...(statePlan.includeFullCollection?{collectBox:payload.caches.collectBox.length}:{})};
+      sendJson(res,200,payload);
+    }else if(url.pathname.endsWith('status-counts'))sendJson(res,200,{ALL:state.summaryCounts.products,total:state.summaryCounts.products,storeId:state.currentStoreId});
+    else sendJson(res,200,{data:state.caches.products,total:state.summaryCounts.products,storeId:state.currentStoreId});
+    } finally { releaseFullStateRead?.(); }
+    return;
+  }
+  if(req.method==='GET' && url.pathname==='/extension/latest'){
+    const {version}=JSON.parse(await readFile(new URL('../extension/manifest.json',import.meta.url),'utf8'));
+    sendJson(res,200,{version,latestVersion:version,downloadUrl:`/ozon 粽子-扩展-v${version}.zip`});return;
+  }
+  if (req.method === "GET" && url.pathname === "/feature-flags/me") {
+    sendJson(res, 200, {
+      ozon_fleet_serverside: false,
+      ozon_public_import: false,
+      localClone: true,
+    });
+    return;
+  }
+  if (persistenceMode() === "postgres"
+    && await handlePostgresOzonCategoryRoute({req, res, url})) return;
+  const scopedCollectListingMatch = url.pathname.match(/^\/ozon\/collect-box\/([^/]+)\/listing\/(preview|submit)$/);
+  if (persistenceMode() === "postgres" && req.method === "POST" && scopedCollectListingMatch) {
+    const account = await authenticateCollectionRequest(req);
+    const id = decodeURIComponent(scopedCollectListingMatch[1]);
+    const action = scopedCollectListingMatch[2];
+    const body = await readBody(req);
+    const targetStoreId = cleanText(body.targetStoreId || body.storeId);
+    const state = await readLocalStateForAccount({
+      pool:await getPostgresPool(),
+      accountId:account.id,
+      bootstrap:false,
+      storeId:targetStoreId || null,
+    });
+    let item = (await listCollectItemsV3({accountId:account.id,ids:[id],limit:1}))[0] || null;
+    if (item && targetStoreId) {
+      const shared = await accountSharedOzonCategoryRuntime.readForItems({
+        accountId:account.id,
+        collectItemIds:[id],
+      });
+      const resolution = shared.find(entry=>String(entry?.collectItemId || "") === String(id))?.categoryResolution;
+      item = applyAccountSharedListingCategory(item,resolution,targetStoreId);
+    }
+    state.accounts = [{...(state.accounts?.[0] || {}),...account,status:"active"}];
+    state.currentAccountId = account.id;
+    state.token = bearerToken(req);
+    state.sessions = {[state.token]:{accountId:account.id}};
+    state.caches.collectBox = item ? [item] : [];
+    await respondCollectBoxListingRoute({req,res,state,account,id,action,body,currentItem:item});
+    return;
+  }
   return jsonStateTransaction.run(async () => {
-  let state = await loadState();
+  // JSON keeps its historical whole-state behavior. PostgreSQL materializes the
+  // relational catalog only for handlers that explicitly own catalog work.
+  const hydrateLegacyCatalog = persistenceMode() !== "postgres"
+    || legacyRouteNeedsCatalogHydration(req, url);
+  let state = await loadState({ hydrateCatalog: hydrateLegacyCatalog });
   if (await handleCollectorPricingRoute(req, res, url, {
     requireAuth,
     readBody,
@@ -2676,49 +2788,6 @@ export function createHttpHandler({
     resolveStoreId: (storeId, { account }) => storeIdForAccountRequest(state, account, storeId),
     resolveTask: (taskId, { account }) => getCollectorTaskForAccount(account.id, taskId),
   })) return;
-
-  if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, {
-      ok: true,
-      service: "qh-local-api",
-      version: "0.13.46.27-local",
-      persistence: persistenceMode(),
-    });
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/local/storage/health") {
-    let persistence;
-    let objectStorage;
-    let listingPipeline;
-    try {
-      persistence = await persistenceHealth({ dataFile });
-    } catch (error) {
-      persistence = { ok: false, mode: persistenceMode(), message: error.message };
-    }
-    try {
-      objectStorage = await objectStorageHealth();
-    } catch (error) {
-      objectStorage = { ok: false, ...objectStorageInfo(), message: error.message };
-    }
-    try {
-      listingPipeline = await listingPipelineHealth();
-    } catch (error) {
-      listingPipeline = { enabled: listingPipelineEnabled(), ok: false, message: error.message };
-    }
-    sendJson(res, persistence.ok && objectStorage.ok ? 200 : 503, {
-      ok: Boolean(persistence.ok && objectStorage.ok),
-      persistence,
-      objectStorage,
-      listingPipeline,
-      objectCleanup: {
-        pending: Array.isArray(state.pendingObjectDeletions)
-          ? state.pendingObjectDeletions.length
-          : 0,
-      },
-    });
-    return;
-  }
 
   if (req.method === "GET" && url.pathname === "/local/state") {
     const token = bearerToken(req);
@@ -2875,16 +2944,39 @@ export function createHttpHandler({
       entityId: account.id,
     });
     await saveState(state);
+    const postgresLogin = persistenceMode() === "postgres";
+    const bootstrapLogin = postgresLogin && url.searchParams.get("view") === "bootstrap";
+    // The existing Web login consumes this response directly, including on a
+    // product/collect edit page. Release the write snapshot, then read only this
+    // account's current view instead of returning the compatibility catalog.
+    if (postgresLogin) state = null;
+    const loginState = postgresLogin
+      ? await readLocalStateForAccount({ pool: await getPostgresPool(), accountId: account.id, bootstrap: bootstrapLogin })
+      : state;
+    if (postgresLogin && !bootstrapLogin && listingPipelineEnabled()) {
+      for (const job of await listSubmissionJobsV3({ accountId: account.id, storeId: loginState.currentStoreId, limit: 500 })) {
+        loginState.jobs[job.id] = job;
+      }
+    }
+    const payload = localStatePayload(loginState, {
+      authenticated: true,
+      account,
+      token,
+      includeAccounts: false,
+    });
+    if (postgresLogin && !bootstrapLogin) {
+      payload.caches.collectBox = await publicCollectBoxItemsForAccount(loginState, account, categoryResolutionReadPort);
+    }
+    if (postgresLogin) payload.summary = {
+      ...payload.summary,
+      ...loginState.summaryCounts,
+      ...(!bootstrapLogin ? { collectBox: payload.caches.collectBox.length } : {}),
+    };
     sendJson(res, 200, {
       ok: true,
       token,
       account: publicAccount(account),
-      state: localStatePayload(state, {
-        authenticated: true,
-        account,
-        token,
-        includeAccounts: false,
-      }),
+      state: payload,
     });
     return;
   }
@@ -2988,7 +3080,7 @@ export function createHttpHandler({
         reason: recoveryReason,
         state,
       });
-      state = await loadState();
+      state = await loadState({ hydrateCatalog: false });
       account = state.accounts.find((item) => item.id === accountId);
       if (!account) {
         sendError(res, 404, "账号不存在");
@@ -3119,12 +3211,14 @@ export function createHttpHandler({
     }
     const storeName = requestedLabel || existing?.label || "已绑定门店";
     const apiKeyCreatedAt = normalizeDateOnly(body.apiKeyCreatedAt ?? existing?.apiKeyCreatedAt) || todayDateOnly();
-    const apiKeyExpiresAt = normalizeDateOnly(body.apiKeyExpiresAt ?? existing?.apiKeyExpiresAt);
+    const keyChanged=existing?.apiKey!==apiKey;
+    const apiKeyExpiresAt = normalizeDateOnly(body.apiKeyExpiresAt ?? (keyChanged?'':existing?.apiKeyExpiresAt));
     const store = {
       ...(existing || {}),
       id,
       storeId: id,
       ownerAccountId: account.id,
+      ozonRoute:(await accountOzonRouteService.read(account.id)).route,
       label: storeName,
       companyName: storeName,
       legalName: storeName,
@@ -3132,6 +3226,7 @@ export function createHttpHandler({
       apiKey,
       apiKeyCreatedAt,
       apiKeyExpiresAt,
+      ...(keyChanged?{apiKeyExpiryCheckedAt:'',apiKeyExpirySource:''}:{}),
       savedAt: existing?.savedAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -3214,7 +3309,7 @@ export function createHttpHandler({
       accountId: account.id,
       storeId,
     });
-    sendJson(res, 200, { ok: true, ...result, state: localStatePayload(await loadState(), { account, token: bearerToken(req) }) });
+    sendJson(res, 200, { ok: true, ...result, state: localStatePayload(await loadState({ hydrateCatalog: hydrateLegacyCatalog }), { account, token: bearerToken(req) }) });
     return;
   }
 
@@ -3238,6 +3333,10 @@ export function createHttpHandler({
     }
     const nextApiKey = String(body.apiKey || "").trim();
     if (nextApiKey) {
+      if(nextApiKey!==store.apiKey){
+        if(!Object.hasOwn(body,'apiKeyExpiresAt'))store.apiKeyExpiresAt='';
+        store.apiKeyExpiryCheckedAt='';store.apiKeyExpirySource='';
+      }
       store.apiKey = nextApiKey;
       if (!store.apiKeyCreatedAt) store.apiKeyCreatedAt = todayDateOnly();
       try {
@@ -3286,9 +3385,9 @@ export function createHttpHandler({
         storeId: body.storeId || currentStoreIdForAccount(state, account.id),
         type: localSyncMatch[1], jobId: body.jobId, requestId: body.requestId,
         deviceId: String(req.headers["x-device-fingerprint"] || body.deviceId || "").trim(),
-        source: req.headers["x-device-fingerprint"] ? "extension" : "web", postingsSinceDays: body.postingsSinceDays,
+        source: req.headers["x-device-fingerprint"] ? "extension" : "web",
       });
-      sendJson(res, 200, { ok: true, job: report, state: localStatePayload(await loadState(), { account, token: bearerToken(req) }) });
+      sendJson(res, 200, { ok: true, job: report, state: localStatePayload(await loadState({ hydrateCatalog: hydrateLegacyCatalog }), { account, token: bearerToken(req) }) });
     } catch (error) {
       const failure = ozonSyncService.publicSyncErrorResponse(error);
       sendJson(res, failure.status, failure.body);
@@ -3380,15 +3479,6 @@ export function createHttpHandler({
     } catch (error) {
       sendError(res, error.status || 400, error.message, "LOCAL_BINDING_REQUIRED");
     }
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/feature-flags/me") {
-    sendJson(res, 200, {
-      ozon_fleet_serverside: false,
-      ozon_public_import: false,
-      localClone: true,
-    });
     return;
   }
 
@@ -4022,67 +4112,6 @@ export function createHttpHandler({
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/ozon/postings/cache/import") {
-    const account = requireAuth(req, state);
-    const body = await readBody(req);
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      body.storeId || req.headers["x-ozon-store-id"] || "",
-    );
-    const store = activeStore(state, storeId, account.id);
-    if (!store) {
-      sendError(res, 400, "请先选择经营店铺");
-      return;
-    }
-    requireActiveSyncLease(state, {
-      accountId: account.id,
-      storeId,
-      type: "POSTINGS",
-      leaseId: body.leaseId,
-      deviceId: body.deviceId,
-    });
-    const items = Array.isArray(body.items) ? body.items : [];
-    const { result } = await mutateLatestStateWithRetry(async (latest) => {
-      requireActiveSyncLease(latest, {
-        accountId: account.id,
-        storeId,
-        type: "POSTINGS",
-        leaseId: body.leaseId,
-        deviceId: body.deviceId,
-      });
-      const latestStore = activeStore(latest, storeId, account.id);
-      if (!latestStore) {
-        const error = new Error("经营店铺已被删除或转移");
-        error.status = 409;
-        throw error;
-      }
-      for (const item of items) {
-        const id = String(item.posting_number || item.order_id || item.id || crypto.randomUUID());
-        const existing = latest.caches.postings.find((row) =>
-          String(row.id || row.posting_number || row.order_id || "") === id &&
-          cacheItemMatchesStore(row, latestStore),
-        ) || {};
-        upsertCacheItemByStore(
-          latest.caches.postings,
-          latestStore,
-          id,
-          {
-            ...existing,
-            ...item,
-            id,
-            ...cacheItemScope(latestStore, account.id),
-            syncedAt: new Date().toISOString(),
-          },
-          ["id", "posting_number", "order_id"],
-        );
-      }
-      return { imported: items.length, storeId: latestStore.id, save: items.length > 0 };
-    });
-    sendJson(res, 200, { imported: result.imported, storeId: result.storeId });
-    return;
-  }
-
   if (req.method === "POST" && url.pathname === "/ozon/warehouses/cache/import") {
     const account = requireAuth(req, state);
     const body = await readBody(req);
@@ -4157,7 +4186,8 @@ export function createHttpHandler({
     );
     const store = activeStore(state, storeId, account.id);
     const products = store ? cacheItemsForStore(state.caches.products, store) : [];
-    sendJson(res, 200, { data: products, total: products.length, storeId });
+    if(url.searchParams.get('view')==='page')sendJson(res,200,{...productCatalogPage(products,productPageOptions(url.searchParams)),storeId});
+    else sendJson(res, 200, { data: products, total: products.length, storeId });
     return;
   }
 
@@ -4216,10 +4246,15 @@ export function createHttpHandler({
         ok: true,
         data: publicPersistedCollectionItem(result.item),
         scraped: result.scraped,
-        ...(result.scraped ? {} : { error: "未能从 ozon.ru 抓取到商品数据" }),
+        duplicate: result.duplicate === true,
+        ...(result.scraped || result.duplicate ? {} : { error: "未能从 ozon.ru 抓取到商品数据" }),
       });
-    } catch {
-      sendError(res, 500, "抓取失败，请稍后重试", "OZON_SKU_COLLECTION_FAILED");
+    } catch (error) {
+      if (error?.code === "ZONGZI_SKU_SCRAPE_EMPTY") {
+        sendError(res, 503, "未能抓取到商品资料，本次未新增或覆盖商品。请使用采集助手链接采集；如已有同 SKU 失败记录，请先留存手工资料并删除旧失败记录，再重新采集、发送。", error.code);
+        return;
+      }
+      sendError(res, 500, "抓取失败，请稍后重试", "ZONGZI_SKU_COLLECTION_FAILED");
     }
     return;
   }
@@ -4262,6 +4297,8 @@ export function createHttpHandler({
     const body = await readBody(req);
     const sku = String(body.sku || "").trim();
     const isUrl = /^https?:\/\//i.test(String(body.productUrl || body.url || body.name || ""));
+    const existing = listingPipelineEnabled() && sku ? await findCollectedSku(await getPostgresPool(),account.id,sku) : null;
+    if(existing) { sendJson(res,200,{ok:true,item:existing,data:existing,duplicate:true,action:"skipped"});return; }
     // 如果有 SKU 且不是 URL，尝试抓取 ozon.ru 数据
     if (sku && !isUrl) {
       try {
@@ -4321,44 +4358,7 @@ export function createHttpHandler({
     const id = decodeURIComponent(collectListingMatch[1]);
     const action = collectListingMatch[2];
     const body = await readBody(req);
-    try {
-      const result = await collectBoxListingRequest(state, req, id, body, {
-        account,
-        dryRun: action === "preview",
-      });
-      if (action === "submit" && result?.ok) {
-        await updateCollectBoxItemAtomic(id, {
-          status: "上架中",
-          listingTaskId: result.task_id || result.result?.task_id || "",
-          listingJobId: result.job?.localTaskId || result.job?.id || "",
-          listingSubmittedAt: new Date().toISOString(),
-          listingLastError: "",
-        }, { account });
-      }
-      sendJson(res, 200, result);
-    } catch (error) {
-      const errorCode = error?.code || error?.body?.code || "COLLECT_LISTING_FAILED";
-      const enrichmentIncomplete = errorCode === "COLLECT_ENRICHMENT_INCOMPLETE";
-      const failurePatch = {
-        listingLastError: error?.message || (action === "preview" ? "采集箱草稿预检失败" : "采集箱草稿上架失败"),
-        listingLastErrorAt: new Date().toISOString(),
-      };
-      if (action === "submit") {
-        failurePatch.status = "失败";
-        failurePatch.listingTaskId = "";
-        failurePatch.listingJobId = "";
-      }
-      if (!enrichmentIncomplete && !error?.preserveExistingListing) {
-        await updateCollectBoxItemAtomic(id, failurePatch, { account }).catch(() => null);
-      }
-      sendJson(res, error?.status || 502, {
-        ok: false,
-        code: errorCode,
-        message: error?.message || (action === "preview" ? "采集箱草稿预检失败" : "采集箱草稿上架失败"),
-        ...(Array.isArray(error?.missingFields) ? { missingFields: error.missingFields } : {}),
-        ...(error?.body || {}),
-      });
-    }
+    await respondCollectBoxListingRoute({req,res,state,account,id,action,body});
     return;
   }
 
@@ -4434,63 +4434,6 @@ export function createHttpHandler({
   if (req.method === "GET" && url.pathname === "/ozon/warehouses") {
     const account = requireAuth(req, state);
     sendJson(res, 200, cacheItemsForAccount(state, "warehouses", account));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/ozon/returns") {
-    const account = requireAuth(req, state);
-    const query = cleanText(url.searchParams.get("q") || url.searchParams.get("query") || "", 120).toLowerCase();
-    const type = cleanText(url.searchParams.get("type") || "", 32).toLowerCase();
-    const status = cleanText(url.searchParams.get("status") || "", 60).toLowerCase();
-    const source = [
-      ...cacheItemsForAccount(state, "returns", account),
-      ...cacheItemsForAccount(state, "refunds", account),
-    ];
-    const items = source.filter((item) => {
-      if (type && !String(item.type || item.kind || "").toLowerCase().includes(type)) return false;
-      if (status && !String(item.status || "").toLowerCase().includes(status)) return false;
-      if (query) {
-        const text = [
-          item.id,
-          item.postingNumber,
-          item.posting_number,
-          item.sku,
-          item.offer_id,
-          item.productName,
-          item.product_name,
-          item.status,
-        ].filter(Boolean).join(" ").toLowerCase();
-        if (!text.includes(query)) return false;
-      }
-      return true;
-    });
-    sendJson(res, 200, emptyPage(url, items));
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/ozon/returns/batch") {
-    const account = requireAuth(req, state);
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      req.headers["x-ozon-store-id"] || "",
-    );
-    const store = activeStore(state, storeId, account.id);
-    const body = await readBody(req);
-    const kind = cleanText(body.kind || body.type || "return", 32);
-    const target = kind.toLowerCase().includes("refund") ? state.caches.refunds : state.caches.returns;
-    const items = (Array.isArray(body.items) ? body.items : []).slice(0, 200).map((item) =>
-      scopeCacheItemForAccount(normalizeReturnItem(item, kind, store), account, store)
-    );
-    for (const item of items) upsertCacheItemByStore(target, store, item.id, item);
-    await saveState(state);
-    sendJson(res, 200, {
-      ok: true,
-      created: items.length,
-      items,
-      state: localStatePayload(state, { account, token: bearerToken(req) }),
-      local: true,
-    });
     return;
   }
 
@@ -4695,137 +4638,6 @@ export function createHttpHandler({
       item,
       state: localStatePayload(state, { account, token: bearerToken(req) }),
       local: true,
-    });
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/ozon/message-templates") {
-    const account = requireAuth(req, state);
-    const templateName = cleanText(url.searchParams.get("templateName"), 80).toLowerCase();
-    const category = cleanText(url.searchParams.get("category"), 32);
-    const contentPreview = cleanText(url.searchParams.get("contentPreview"), 120).toLowerCase();
-    const templates = cacheItemsForAccount(state, "messageTemplates", account);
-    const filtered = templates.filter((item) => {
-      const itemName = String(item.templateName || item.name || "").toLowerCase();
-      const itemContent = String(item.content || "").toLowerCase();
-      if (templateName && !itemName.includes(templateName)) return false;
-      if (category && item.category !== category) return false;
-      if (contentPreview && !itemContent.includes(contentPreview)) return false;
-      return true;
-    });
-    sendJson(res, 200, emptyPage(url, filtered));
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/ozon/message-templates") {
-    const account = requireAuth(req, state);
-    const body = await readBody(req);
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      req.headers["x-ozon-store-id"] || "",
-    );
-    const store = activeStore(state, storeId, account.id);
-    const item = scopeCacheItemForAccount(normalizeMessageTemplate(body), account, store);
-    state.caches.messageTemplates = state.caches.messageTemplates || [];
-    state.caches.messageTemplates.unshift(item);
-    await saveState(state);
-    sendJson(res, 200, {
-      ok: true,
-      item,
-      state: localStatePayload(state, { account, token: bearerToken(req) }),
-      local: true,
-    });
-    return;
-  }
-
-  const messageTemplateMatch = url.pathname.match(/^\/ozon\/message-templates\/([^/]+)$/);
-  if (messageTemplateMatch && (req.method === "PUT" || req.method === "DELETE")) {
-    const account = requireAuth(req, state);
-    const id = decodeURIComponent(messageTemplateMatch[1]);
-    state.caches.messageTemplates = state.caches.messageTemplates || [];
-    const index = state.caches.messageTemplates.findIndex((item) =>
-      String(item.id) === String(id) && cacheItemBelongsToAccount(state, item, account),
-    );
-    if (index < 0) {
-      sendError(res, 404, "消息模板不存在");
-      return;
-    }
-    if (req.method === "DELETE") {
-      const [removed] = state.caches.messageTemplates.splice(index, 1);
-      await saveState(state);
-      sendJson(res, 200, {
-        ok: true,
-        removedId: removed.id,
-        state: localStatePayload(state, { account, token: bearerToken(req) }),
-        local: true,
-      });
-      return;
-    }
-    const body = await readBody(req);
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      req.headers["x-ozon-store-id"] || state.caches.messageTemplates[index].storeId || "",
-    );
-    const store = activeStore(state, storeId, account.id);
-    state.caches.messageTemplates[index] = scopeCacheItemForAccount(
-      normalizeMessageTemplate(body, state.caches.messageTemplates[index]),
-      account,
-      store,
-    );
-    await saveState(state);
-    sendJson(res, 200, {
-      ok: true,
-      item: state.caches.messageTemplates[index],
-      state: localStatePayload(state, { account, token: bearerToken(req) }),
-      local: true,
-    });
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/ozon/message-history") {
-    const account = requireAuth(req, state);
-    const receiver = cleanText(url.searchParams.get("receiver"), 120).toLowerCase();
-    const template = cleanText(url.searchParams.get("template") || url.searchParams.get("templateName"), 120).toLowerCase();
-    const content = cleanText(url.searchParams.get("content"), 120).toLowerCase();
-    const status = cleanText(url.searchParams.get("status"), 32);
-    const kind = cleanText(url.searchParams.get("kind"), 32);
-    const records = cacheItemsForAccount(state, "messageHistory", account);
-    const filtered = records.filter((item) => {
-      if (receiver && !String(item.receiver || item.postingNumber || "").toLowerCase().includes(receiver)) return false;
-      if (template && !String(item.templateName || "").toLowerCase().includes(template)) return false;
-      if (content && !String(item.content || "").toLowerCase().includes(content)) return false;
-      if (status && item.status !== status) return false;
-      if (kind && item.kind !== kind) return false;
-      return true;
-    });
-    sendJson(res, 200, emptyPage(url, filtered));
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/ozon/message-history/batch") {
-    const account = requireAuth(req, state);
-    const body = await readBody(req);
-    const items = Array.isArray(body.items) ? body.items : [];
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      req.headers["x-ozon-store-id"] || "",
-    );
-    const store = activeStore(state, storeId, account.id);
-    const created = items.slice(0, 200).map((item) =>
-      scopeCacheItemForAccount(normalizeMessageHistoryItem(item, store), account, store)
-    );
-    state.caches.messageHistory = [...created, ...(state.caches.messageHistory || [])].slice(0, 1000);
-    await saveState(state);
-    sendJson(res, 200, {
-      ok: true,
-      created: created.length,
-      items: created,
-      state: localStatePayload(state, { account, token: bearerToken(req) }),
-      local: true,
-      dryRun: true,
     });
     return;
   }
@@ -5116,13 +4928,20 @@ export function createHttpHandler({
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/extension/latest") {
-    sendJson(res, 200, { version: "0.13.46.27", latestVersion: "0.13.46.27", downloadUrl: "/sonli-extension-0.13.46.27.zip" });
-    return;
-  }
-
   sendError(res, 404, `未实现的本地接口: ${req.method} ${url.pathname}`, "LOCAL_NOT_FOUND");
   });
+  };
+}
+
+export function localStateRequestPlan(searchParams) {
+  const view=searchParams.get('view');
+  const bootstrap=view==='bootstrap';
+  const products=view==='products';
+  return {
+    bootstrap,
+    includeFullCollection:!bootstrap&&!products,
+    includeSubmissionJobs:!bootstrap&&!products,
+    collectIds:bootstrap&&searchParams.has('collectIds')?[...new Set(searchParams.getAll('collectIds'))]:[],
   };
 }
 
@@ -5130,6 +4949,7 @@ const handle = createHttpHandler();
 
 export const testExports = {
   activeStore,
+  applyAccountSharedListingCategory,
   buildCollectBoxListingItems,
   cacheItemMatchesStore,
   cacheItemsForStore,
@@ -5143,29 +4963,85 @@ export const testExports = {
   upsertProductByStore,
   validateCollectBoxListingDraft,
   queueCollectSubmissionV3,
+  previewOzonProductImport,
   readBody,
+  resolveAutoListingExcelSourceCategory,
+  resolvePreviewCategoryMatchPolicy,
+  syncCommittedCollectListingState,
 };
 
 export { handle };
 
 const server = http.createServer((req, res) => {
-  handle(req, res).catch((error) => {
+  if (lifecycle.stopping) {
+    sendJson(res, 503, { ok: false, code: "API_STOPPING", message: "服务正在停止，请稍后重试" }, { Connection: "close" });
+    return;
+  }
+  void lifecycle.trackRequest(() => handle(req, res).catch((error) => {
     const status = Number(error?.status || 500);
     sendError(res, status, error?.message || "本地服务异常");
-  });
+  }));
 });
 
-server.once("close", () => {
-  void autoListingWebRuntime.stopWorkers();
+let enrichmentRepairTimer, enrichmentRepairActive, stopObjectCleanup;
+let enrichmentRepairCursor = "";
+async function scheduleEnrichmentRepair() {
+  if (lifecycle.stopping) return;
+  try {
+    enrichmentRepairActive = reconcileCollectEnrichment({afterId:enrichmentRepairCursor,enqueueMissing:true});
+    const result = await enrichmentRepairActive;
+    enrichmentRepairCursor=result.afterId;
+  } catch { console.error("[collect-enrichment] recovery failed; will retry"); }
+  finally { enrichmentRepairActive = null; }
+  if (!lifecycle.stopping && server.listening) enrichmentRepairTimer=setTimeout(scheduleEnrichmentRepair,60_000);
+}
+const lifecycle = createApiLifecycle({
+  server,
+  signals: process.env.QH_LOCAL_NO_LISTEN === "1" ? { on() {} } : process,
+  stopScheduling() {
+    clearTimeout(enrichmentRepairTimer);
+    clearTimeout(collectorHandoffStartTimer);
+    clearTimeout(importStatusPollTimer);
+    importStatusPollTimer = null;
+  },
+  async drainBackground() {
+    const results = await Promise.allSettled([
+      stopObjectCleanup?.(),
+      collectorHandoffWorker?.stop(),
+      collectorHandoffStarting,
+      importStatusPollActive,
+      enrichmentRepairActive,
+    ]);
+    if (results.some(result => result.status === "rejected")) throw new Error("API background drain failed");
+  },
+  closeResources: closePostgresPool,
 });
 
 if (process.env.QH_LOCAL_NO_LISTEN !== "1") {
   server.listen(port, listenHost, () => {
+    if (lifecycle.stopping) return;
     console.log(`QH local API listening on http://${listenHost}:${port}`);
     scheduleImportStatusPolling(1000);
-    objectCleanupWorker.start();
-    void autoListingWebRuntime.startWorkers().catch(() => {
-      console.error("[auto-listing] user workflow workers failed to start");
+    stopObjectCleanup = objectCleanupWorker.start();
+    if (listingPipelineEnabled()) void lifecycle.start(messageRuntime).catch(() => {
+      console.error("[messages] worker failed to start");
+    });
+    if (listingPipelineEnabled()) void lifecycle.start(orderManagementRuntime).catch(() => {
+      console.error("[order-management] worker failed to start");
+    });
+    if (listingPipelineEnabled()) void lifecycle.start(orderInspectionRuntime).catch(() => {
+      console.error("[order-inspection] coordinator failed to start");
+    });
+    if (listingPipelineEnabled()) void lifecycle.start(stockRuntime).catch(() => {
+      console.error("[stocks] worker failed to start");
+    });
+    if (listingPipelineEnabled()) void lifecycle.start(promotionRuntime).catch(() => {
+      console.error("[promotions] worker failed to start");
+    });
+    if (listingPipelineEnabled()) enrichmentRepairTimer=setTimeout(scheduleEnrichmentRepair,5000);
+    if (listingPipelineEnabled()) void scheduleCollectorHandoffStart();
+    if (listingPipelineEnabled()) void lifecycle.start(aiListingRuntime, { mode: "prepare" }).catch(() => {
+      console.error("[ai-listing] worker failed to start");
     });
   });
 }

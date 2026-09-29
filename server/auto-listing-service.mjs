@@ -6,10 +6,11 @@ import {
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
 import {
   isSafeAutoListingBlockedCancellationFailure,
+  isSafeAutoListingPlanningRetryFailure,
   isSafeAutoListingPreOzonRetryFailure,
 } from "./auto-listing-state-machine.mjs";
 import { AUTO_LISTING_PLANNING_CONTRACTS } from "./auto-listing-planning-contract.mjs";
-import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
+import { calculateAutoListingPriceFromEvidence } from "./auto-listing-pricing.mjs";
 import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
 import {
@@ -23,16 +24,21 @@ import {
   listingWarehouseEligibility,
 } from "./listing-warehouse-eligibility.mjs";
 import { selectAutoListingUploadPolicyForNewJob } from "./auto-listing-upload-policy.mjs";
-import { assertPermission, hasPermission, PERMISSIONS } from "./permissions.mjs";
+import { assertPermission, PERMISSIONS } from "./permissions.mjs";
 
 const REQUEST_KEYS = new Set(["actor", "collectItemIds", "idempotencyKey", "config", "correlationId"]);
-const PRICE_STRING_FIELDS = ["blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "preMultiplierPriceKopecks", "priceMultiplierMicros", "finalPriceKopecks"];
+const PRICE_STRING_FIELDS = ["blackKopecks", "greenKopecks", "sourcePriceKopecks", "realPriceKopecks", "adjustmentKopecks", "preMultiplierPriceKopecks", "priceMultiplierMicros", "finalPriceKopecks"];
 const BLOCKED_SOURCE_FAILURE_CODES = new Set([
   "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
   "AUTO_LISTING_SOURCE_SKU_REQUIRED",
   "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
   "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED",
   "AUTO_LISTING_SOURCE_CURRENCY_MISMATCH",
+]);
+const BLOCKED_LISTING_BASE_PREPARATION_FAILURE_CODES = new Set([
+  "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE",
+  "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED",
+  "AUTO_LISTING_REQUIRED_BRAND_UNRESOLVED",
 ]);
 const CATEGORY_STRATEGY_MODES = new Set(["LEGACY_FALLBACK", "REQUIRE_EXACT_STRATEGY"]);
 const CATEGORY_STRATEGY_DRAFT_STATUSES = new Set([
@@ -48,6 +54,15 @@ function error(code, status = 422) {
 
 function text(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function isolatedListingBasePreparationFailure(caught) {
+  const failureCode = text(caught?.code);
+  return caught?.retryable !== true
+    && Number(caught?.status || 422) < 500
+    && BLOCKED_LISTING_BASE_PREPARATION_FAILURE_CODES.has(failureCode)
+    ? failureCode
+    : null;
 }
 
 const COLLECT_SOURCE_KEYS = new Set([
@@ -232,20 +247,6 @@ function resolveForExactScope(published, scope) {
   }
 }
 
-function strategyRequired({ scope, control, actor }) {
-  const canManage = hasPermission(actor, PERMISSIONS.AI_CONTENT_MANAGE);
-  const draft = control.drafts.find((candidate) => scopeKey(candidate.scope) === scopeKey(scope));
-  const details = {
-    scope,
-    status: draft?.status || "NOT_CONFIGURED",
-    canManage,
-    ...(canManage && draft ? { draftId: draft.draftId } : {}),
-  };
-  const failure = error("AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED", 409);
-  failure.details = Object.freeze(details);
-  return failure;
-}
-
 function assertRequest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)
     || Object.keys(input).some((key) => !REQUEST_KEYS.has(key))) {
@@ -279,10 +280,10 @@ function categoryAncestors(ids) {
     .filter((entry) => entry.categoryId);
 }
 
-function strategyFor(snapshot, source, published) {
+function strategyFor(snapshot, source, published, useCategoryStrategy = true) {
   return resolveAiContentStrategy({
     strategyVersion: published.strategyVersion,
-    rules: published.rules,
+    rules: useCategoryStrategy ? published.rules : [],
     product: {
       taxonomyScope: snapshot.targetCategory.taxonomyScope,
       descriptionCategoryId: snapshot.targetCategory.descriptionCategoryId,
@@ -352,13 +353,13 @@ function buildJobItems({
         configSnapshot: config, configHash, sourceCapture: captured,
       }),
     };
-    const strategy = strategyFor(captured.snapshot, source, published);
+    const strategy = strategyFor(captured.snapshot, source, published, config.useCategoryStrategy !== false);
     try {
       return {
         ...base, strategyId: strategy.strategyId, strategyVersionId: strategy.strategyVersionId,
         ruleId: strategy.ruleId, style: strategy.style, matchedBy: strategy.matchedBy,
         status: "SOURCE_READY",
-        price: calculateAutoListingPrice(priceInput(
+        price: calculateAutoListingPriceFromEvidence(priceInput(
           captured.snapshot, config.priceAdjustmentKopecks, config.priceMultiplierMicros,
         )),
       };
@@ -375,7 +376,7 @@ function buildJobItems({
 function safePrice(value) {
   const currency = normalizeAutoListingCurrency(value?.currency);
   if (!value || typeof value !== "object" || Array.isArray(value) || !currency
-    || !["BLACK_GTE_80", "BLACK_LT_80"].includes(value.branch)) return undefined;
+    || !["BLACK_GTE_80", "BLACK_LT_80", "SOURCE_PRICE_ONLY"].includes(value.branch)) return undefined;
   const price = { currency, branch: value.branch };
   for (const field of PRICE_STRING_FIELDS) {
     if (value[field] === undefined) continue;
@@ -400,6 +401,8 @@ function safeItemActions(source) {
   const hasReview = Boolean(safeString(source.activeContentPlanId) || safeString(source.active_content_plan_id));
   const recoveryPoint = safeString(source.recoveryPoint) || safeString(source.recovery_point) || "";
   const failureCode = safeString(source.failureCode) || safeString(source.failure_code) || "";
+  const sourceImageConfirmation = status === "BLOCKED"
+    && failureCode === "AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED";
   const recoverableBlockedFailure = status === "BLOCKED" && [
     "AUTO_LISTING_MAIN_IMAGE_REQUIRED",
     "AUTO_LISTING_MINIMUM_IMAGE_COUNT_NOT_MET",
@@ -409,15 +412,64 @@ function safeItemActions(source) {
   ].includes(failureCode);
   const uploadPolicyPreflightBlocked = status === "BLOCKED"
     && isSafeAutoListingPreOzonRetryFailure(failureCode);
+  const recoverableBlockedPlanningFailure = status === "BLOCKED"
+    && isSafeAutoListingPlanningRetryFailure(failureCode);
+  const replannableRetry = status === "RETRYABLE_ERROR"
+    && ["PLANNING", "GENERATION"].includes(recoveryPoint);
   const cancellable = ["CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "READY_FOR_REVIEW", "UPLOAD_QUEUED", "RETRYABLE_ERROR"].includes(status)
     || (status === "BLOCKED" && isSafeAutoListingBlockedCancellationFailure(failureCode));
   return Object.freeze({
-    review: hasReview && ["READY_FOR_REVIEW", "SUCCEEDED"].includes(status),
+    review: sourceImageConfirmation || (hasReview && ["READY_FOR_REVIEW", "SUCCEEDED"].includes(status)),
     approve: hasReview && (status === "READY_FOR_REVIEW" || uploadPolicyPreflightBlocked),
-    retry: (status === "RETRYABLE_ERROR" && ["PLANNING", "GENERATION"].includes(recoveryPoint)) || recoverableBlockedFailure,
-    regenerate: hasReview && status === "READY_FOR_REVIEW",
+    retry: replannableRetry || recoverableBlockedFailure || recoverableBlockedPlanningFailure,
+    regenerate: replannableRetry || (hasReview && status === "READY_FOR_REVIEW"),
     cancel: cancellable,
   });
+}
+
+const SOURCE_IMAGE_FAILURE_REASON_CODES = new Set([
+  "UNIQUE_VIEW_MARKING_UNCERTAIN",
+  "EVIDENCE_INSUFFICIENT",
+  "INPUT_TOO_LARGE",
+  "ANALYSIS_RESULT_INVALID",
+  "DOWNLOAD_FAILED",
+  "UNSUPPORTED_MEDIA",
+]);
+const SOURCE_IMAGE_FAILURE_VIEWPOINTS = new Set([
+  "FRONT", "BACK", "LEFT", "RIGHT", "FRONT_LEFT_3_4", "FRONT_RIGHT_3_4",
+  "BACK_LEFT_3_4", "BACK_RIGHT_3_4", "TOP", "BOTTOM", "INTERIOR", "DETAIL",
+  "SCENE", "PACKAGE", "UNKNOWN",
+]);
+const SOURCE_IMAGE_FAILURE_CODES = new Set([
+  "AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED",
+  "AUTO_LISTING_SOURCE_IMAGE_EVIDENCE_INSUFFICIENT",
+  "AUTO_LISTING_SOURCE_IMAGE_INPUT_TOO_LARGE",
+  "AUTO_LISTING_SOURCE_IMAGE_ANALYSIS_RESULT_INVALID",
+]);
+
+function safeSourceImageFailure(value, failureCode) {
+  try {
+    if (!SOURCE_IMAGE_FAILURE_CODES.has(failureCode)
+      || !value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+    const keys = ["reasonCode", "sourceOrdinal", "viewpoint"];
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (Reflect.ownKeys(value).length !== keys.length || keys.some((key) =>
+      descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) return null;
+    const reasonCode = descriptors.reasonCode.value;
+    const sourceOrdinal = descriptors.sourceOrdinal.value;
+    const viewpoint = descriptors.viewpoint.value;
+    const concreteAttribution = (failureCode === "AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED"
+      && reasonCode === "UNIQUE_VIEW_MARKING_UNCERTAIN")
+      || (failureCode !== "AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED"
+        && ["DOWNLOAD_FAILED", "UNSUPPORTED_MEDIA"].includes(reasonCode));
+    if (!concreteAttribution || !SOURCE_IMAGE_FAILURE_REASON_CODES.has(reasonCode)
+      || !Number.isSafeInteger(sourceOrdinal) || sourceOrdinal < 0 || sourceOrdinal > 9999
+      || !SOURCE_IMAGE_FAILURE_VIEWPOINTS.has(viewpoint)) return null;
+    return Object.freeze({ reasonCode, sourceOrdinal, viewpoint });
+  } catch {
+    return null;
+  }
 }
 
 function failureStageFor(source) {
@@ -428,17 +480,74 @@ function failureStageFor(source) {
   if (recoveryPoint === "GENERATION") return "GENERATION";
   if (recoveryPoint === "PLANNING") return "PREPARATION";
   const code = safeString(source.failureCode) || safeString(source.failure_code) || "";
-  if (/^(?:AUTO_LISTING_(?:UPLOAD|DIRECT|PUBLICATION|RECONCILE)_|OZON_(?:SUBMISSION|RICH_CONTENT)_)/u.test(code)) return "UPLOAD";
+  if (/^(?:AUTO_LISTING_(?:UPLOAD|DIRECT|PUBLICATION|RECONCILE)_|(?:OZON|ZONGZI)_(?:SUBMISSION|RICH_CONTENT)_)/u.test(code)) return "UPLOAD";
   if (safeString(source.activeContentPlanId) || safeString(source.active_content_plan_id)) return "GENERATION";
   return "PREPARATION";
+}
+
+const EMPTY_AI_QUEUE_PROJECTION = Object.freeze({
+  aiQueueState: null,
+  aiChannelDisplayName: null,
+  aiChannelSwitching: false,
+  aiChannelWaitStartedAt: null,
+});
+
+function safeAiQueueProjection(source) {
+  if (!["PLANNING", "GENERATING"].includes(safeString(source.status))) return EMPTY_AI_QUEUE_PROJECTION;
+  const state = safeString(source.aiQueueState);
+  if (!["WAITING_FOR_AI_CHANNEL", "CALLING_AI", "SWITCHING_AI_CHANNEL"].includes(state)) {
+    return EMPTY_AI_QUEUE_PROJECTION;
+  }
+  const rawDisplayName = safeString(source.aiChannelDisplayName, 200);
+  const displayName = rawDisplayName && rawDisplayName.trim()
+    && !/[\u0000-\u001f\u007f]/u.test(rawDisplayName) ? rawDisplayName : null;
+  const switching = source.aiChannelSwitching === true;
+  const waitStartedAt = source.aiChannelWaitStartedAt === null
+    ? null : safeTimestamp(source.aiChannelWaitStartedAt);
+  const waitDate = waitStartedAt === null ? null : new Date(waitStartedAt);
+  const canonicalWaitStartedAt = waitDate && Number.isFinite(waitDate.getTime())
+    ? waitDate.toISOString() : null;
+  if (switching !== (state === "SWITCHING_AI_CHANNEL")
+    || (state === "CALLING_AI" && (!displayName || source.aiChannelWaitStartedAt !== null))
+    || (state !== "CALLING_AI" && !canonicalWaitStartedAt)) return EMPTY_AI_QUEUE_PROJECTION;
+  return Object.freeze({
+    aiQueueState: state,
+    aiChannelDisplayName: displayName,
+    aiChannelSwitching: switching,
+    aiChannelWaitStartedAt: state === "CALLING_AI" ? null : canonicalWaitStartedAt,
+  });
+}
+
+function safeUploadPreparation(value, status) {
+  try {
+    if (!["UPLOAD_QUEUED", "UPLOADING"].includes(status)
+      || !value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== 2 || !["published", "total"].every((key) =>
+      descriptors[key]?.enumerable === true && Object.hasOwn(descriptors[key], "value"))) return null;
+    const published = descriptors.published.value;
+    const total = descriptors.total.value;
+    if (!Number.isSafeInteger(published) || !Number.isSafeInteger(total)
+      || total < 1 || published < 0 || published > total) return null;
+    return Object.freeze({ published, total });
+  } catch {
+    return null;
+  }
 }
 
 function safeItem(item = {}, jobCreatedAt = null) {
   const source = item.source || item;
   const workflowProgress = safeWorkflowProgress(source.workflowProgress);
+  const aiQueueProjection = safeAiQueueProjection(source);
+  const status = safeString(source.status);
+  const uploadPreparation = safeUploadPreparation(source.uploadPreparation, status);
+  const failureCode = safeString(source.failureCode) || safeString(source.failure_code) || "";
+  const sourceImageFailure = safeSourceImageFailure(source.sourceImageFailure, failureCode);
   return {
     itemId: safeString(source.id) || safeString(source.itemId),
-    status: safeString(source.status),
+    status,
     ...(Number.isSafeInteger(source.statusVersion ?? source.status_version)
       && Number(source.statusVersion ?? source.status_version) > 0
       ? { statusVersion: Number(source.statusVersion ?? source.status_version) } : {}),
@@ -458,8 +567,11 @@ function safeItem(item = {}, jobCreatedAt = null) {
     jobCreatedAt,
     failureStage: failureStageFor(source),
     ...(safePrice(source.price) ? { price: safePrice(source.price) } : {}),
-    ...(safeString(source.failureCode) || safeString(source.failure_code) ? { failureCode: safeString(source.failureCode) || safeString(source.failure_code) } : {}),
+    ...(failureCode ? { failureCode } : {}),
+    ...(sourceImageFailure ? { sourceImageFailure } : {}),
     ...(workflowProgress ? { workflowProgress } : {}),
+    ...(uploadPreparation ? { uploadPreparation } : {}),
+    ...aiQueueProjection,
     actions: safeItemActions(source),
   };
 }
@@ -468,9 +580,15 @@ function safeWorkflowProgress(value) {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
-    const keys = ["phase", "state", "attemptCount", "updatedAt", "nextRetryAt"];
+    const legacyKeys = ["phase", "state", "attemptCount", "updatedAt", "nextRetryAt"];
+    const countedKeys = [
+      "phase", "state", "attemptCount", "completedUnits", "totalUnits", "updatedAt", "nextRetryAt",
+    ];
     const descriptors = Object.getOwnPropertyDescriptors(value);
-    if (Reflect.ownKeys(value).length !== keys.length || keys.some((key) =>
+    const ownKeys = Reflect.ownKeys(value);
+    const keys = ownKeys.length === legacyKeys.length ? legacyKeys
+      : ownKeys.length === countedKeys.length ? countedKeys : null;
+    if (!keys || keys.some((key) =>
       descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) return null;
     const phase = safeString(descriptors.phase.value);
     const state = descriptors.state.value;
@@ -482,10 +600,19 @@ function safeWorkflowProgress(value) {
       const parsed = new Date(candidate);
       return Number.isFinite(parsed.getTime()) && parsed.toISOString() === candidate;
     };
-    if (!["PLAN_CONTENT", "MATERIALIZE_SOURCE_ASSET", "FINALIZE_MATERIALIZED_PLAN", "GENERATE_IMAGE_SLOT", "GENERATE_RICH_CONTENT"].includes(phase)
+    if (!["MATERIALIZE_SOURCE_ASSET", "ANALYZE_SOURCE_IMAGE_BATCH", "RECONCILE_SOURCE_IMAGE_ANALYSIS",
+      "PLAN_CONTENT", "FINALIZE_MATERIALIZED_PLAN", "GENERATE_IMAGE_SLOT",
+      "CHECK_IMAGE_GROUP", "GENERATE_RICH_CONTENT"].includes(phase)
       || !["QUEUED", "RUNNING", "RETRY_WAIT", "COMPLETED", "FAILED"].includes(state)
       || !Number.isSafeInteger(attemptCount) || attemptCount < 0 || !canonicalTimestamp(updatedAt)
       || (state === "RETRY_WAIT" ? !canonicalTimestamp(nextRetryAt) : nextRetryAt !== null)) return null;
+    if (keys === countedKeys) {
+      const completedUnits = descriptors.completedUnits.value;
+      const totalUnits = descriptors.totalUnits.value;
+      if (!Number.isSafeInteger(completedUnits) || !Number.isSafeInteger(totalUnits)
+        || totalUnits < 1 || completedUnits < 0 || completedUnits > totalUnits) return null;
+      return { phase, state, attemptCount, completedUnits, totalUnits, updatedAt, nextRetryAt };
+    }
     return { phase, state, attemptCount, updatedAt, nextRetryAt };
   } catch {
     return null;
@@ -499,6 +626,8 @@ function safeJob(row = {}) {
     jobId: safeString(row.id) || safeString(row.jobId),
     sourceType: safeString(row.sourceType) || safeString(row.source_type) || "COLLECT_BOX",
     status: safeString(row.status) || "CREATED",
+    ...(typeof row.useCategoryStrategy === "boolean"
+      ? { useCategoryStrategy: row.useCategoryStrategy } : {}),
     correlationId: safeString(row.correlationId) || safeString(row.correlation_id),
     createdAt,
     updatedAt: safeTimestamp(row.updatedAt) || safeTimestamp(row.updated_at),
@@ -630,7 +759,7 @@ export function createAutoListingService({
       strategyVersionId: observation.strategyVersionId, scope: observation.scope,
       correlationId, outcome, startedAt });
   }
-  async function evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources,
+  async function evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources, useCategoryStrategy = true,
     correlationId = "category-strategy-required", startedAt = observationStartedAt() }) {
     let projectedSources;
     try {
@@ -642,9 +771,27 @@ export function createAutoListingService({
     if (projectedSources.length < 1) {
       throw error("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
     }
-    const uniqueScopes = [...new Map(projectedSources.map(({ scope }) => {
-      return [scopeKey(scope), scope];
+    const uniqueScopeSources = [...new Map(projectedSources.map(({ scope, authorization }) => {
+      return [scopeKey(scope), Object.freeze({ scope, sourceCollectItemId: authorization.collectItemId })];
     })).values()];
+    const uniqueScopes = uniqueScopeSources.map(({ scope }) => scope);
+    if (!useCategoryStrategy) {
+      let rawPublished;
+      try {
+        rawPublished = await storage.loadPublishedStrategy({ accountId });
+      } catch {
+        throw error("AUTO_LISTING_CATEGORY_STRATEGY_DATA_BOUNDARY", 500);
+      }
+      const published = projectPublishedBundle(rawPublished);
+      if (!published) throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
+      return Object.freeze({
+        published,
+        sources: Object.freeze(projectedSources.map(({ source }) => source)),
+        authorizations: Object.freeze(projectedSources.map(({ authorization }) => authorization)),
+        graph: undefined,
+        fallbackToGeneric: true,
+      });
+    }
     let rawControl;
     let rawPublished;
     try {
@@ -660,53 +807,67 @@ export function createAutoListingService({
         throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
       }
       return Object.freeze({
-        published,
+        published: Object.freeze({ ...published, rules: Object.freeze([]) }),
         sources: Object.freeze(projectedSources.map(({ source }) => source)),
         authorizations: Object.freeze(projectedSources.map(({ authorization }) => authorization)),
-        graph: Object.freeze({ mode: control.mode, policyVersion: control.version, scopes: Object.freeze([]) }),
+        graph: undefined,
+        fallbackToGeneric: true,
       });
     }
     if (!published) {
-      await observe({ metric: "category_strategy_required_total", accountId, draftId: null,
-        sessionId: null, attemptId: null, strategyVersionId: null, scope: uniqueScopes[0],
-        correlationId, outcome: "blocked",
-        startedAt });
-      throw strategyRequired({ scope: uniqueScopes[0], control, actor });
+      throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
     }
     const selectedScopes = [];
-    for (const scope of uniqueScopes) {
+    let usedGenericFallback = false;
+    for (const { scope } of uniqueScopeSources) {
       const resolved = resolveForExactScope(published, scope);
       const rawRule = findPublishedRule(published, resolved.ruleId);
       const accepted = resolved.matchedBy === "EXACT_CATEGORY_TYPE_V2"
         || (resolved.matchedBy === "EXACT_CATEGORY" && rawRule && exactV1TypeIdentity(rawRule, scope));
       if (!accepted) {
+        usedGenericFallback = true;
         await observe({ metric: "category_strategy_required_total", accountId, draftId: null,
           sessionId: null, attemptId: null, strategyVersionId: null, scope,
-          correlationId, outcome: "blocked",
+          correlationId, outcome: "fallback",
           startedAt });
-        throw strategyRequired({ scope, control, actor });
+        continue;
       }
       selectedScopes.push(Object.freeze({ ...scope, ruleId: resolved.ruleId }));
     }
+    const effectivePublished = usedGenericFallback ? Object.freeze({
+      ...published,
+      rules: Object.freeze([]),
+    }) : published;
     return Object.freeze({
-      published,
+      published: effectivePublished,
       sources: Object.freeze(projectedSources.map(({ source }) => source)),
       authorizations: Object.freeze(projectedSources.map(({ authorization }) => authorization)),
-      graph: Object.freeze({
+      graph: usedGenericFallback ? undefined : Object.freeze({
         mode: control.mode,
         policyVersion: control.version,
         scopes: Object.freeze(selectedScopes),
       }),
+      fallbackToGeneric: usedGenericFallback,
     });
   }
   async function createFromSources({
     accountId, actor, sourceType, sources, idempotencyKey, correlationId, config, configHash,
     targetStore: suppliedStore = null, categoryStrategyGate: suppliedCategoryStrategyGate = null,
+    blockedSharedCategoryIds = [],
   }) {
     const categoryStrategyGate = suppliedCategoryStrategyGate
       || await evaluateCategoryStrategyGate({ accountId, actor, sourceType, sources,
+        useCategoryStrategy: config.useCategoryStrategy !== false,
         correlationId, startedAt: observationStartedAt() });
     sources = categoryStrategyGate.sources;
+    if (categoryStrategyGate.fallbackToGeneric && config.useCategoryStrategy !== false) {
+      const frozenGenericConfig = normalizeAndHashAutoListingConfig({
+        ...config,
+        useCategoryStrategy: false,
+      });
+      config = frozenGenericConfig.config;
+      configHash = frozenGenericConfig.configHash;
+    }
     const store = suppliedStore || await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
     const targetStore = suppliedStore || validateTargetStoreRecord({ accountId, targetStoreId: config.targetStoreId, store });
     const targetStoreCurrency = normalizeAutoListingCurrency(targetStore.currencyCode);
@@ -756,9 +917,13 @@ export function createAutoListingService({
         uploadEnabled: uploadPolicyGates.uploadEnabled === true,
         listingPipelineEnabled: uploadPolicyGates.listingPipelineEnabled === true,
       });
+      const blockedSharedCategories = new Set(blockedSharedCategoryIds);
       const items = buildJobItems({
         accountId, sourceType, sources, targetStore, config, configHash, published, selectPlanningContract,
-      });
+      }).map((item, index) => item.status === "SOURCE_READY"
+        && blockedSharedCategories.has(sources[index]?.sharedCategory?.id)
+        ? { ...item, status: "BLOCKED", failureCode: "AUTO_LISTING_CATEGORY_NEEDS_REVIEW" }
+        : item);
       assertCategoryLeaseActive(signal);
       const preparedResults = await Promise.allSettled(items.map(async (item) => {
         if (item.status !== "SOURCE_READY") return item;
@@ -815,10 +980,17 @@ export function createAutoListingService({
           listingBaseTemplate,
         };
       }));
-      const preparationFailure = preparedResults.find((result) => result.status === "rejected");
       assertCategoryLeaseActive(signal);
-      if (preparationFailure) throw preparationFailure.reason;
-      const preparedItems = preparedResults.map((result) => result.value);
+      const preparedItems = preparedResults.map((result, index) => {
+        if (result.status === "fulfilled") return result.value;
+        const failureCode = isolatedListingBasePreparationFailure(result.reason);
+        if (!failureCode) throw result.reason;
+        return {
+          ...items[index],
+          status: "BLOCKED",
+          failureCode,
+        };
+      });
       const warehouseValidation = eligibility.fulfillmentType === "RFBS"
         ? await verifier.verifyRfbsWarehouse({
           accountId,
@@ -888,6 +1060,7 @@ export function createAutoListingService({
       let sources = await storage.loadCollectSources({ accountId, collectItemIds });
       let categoryStrategyGate = await evaluateCategoryStrategyGate({
         accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources, correlationId,
+        useCategoryStrategy: config.useCategoryStrategy !== false,
         startedAt: requestStartedAt,
       });
       sources = categoryStrategyGate.sources;
@@ -901,10 +1074,13 @@ export function createAutoListingService({
       if (!freshness || !["CURRENT", "REFRESHED"].includes(freshness.status)) {
         throw error("AUTO_LISTING_CATEGORY_REFRESH_REQUIRED", 409);
       }
+      const blockedSharedCategoryIds = Array.isArray(freshness.blockedSharedCategoryIds)
+        ? freshness.blockedSharedCategoryIds.map(text).filter(Boolean) : [];
       if (freshness.status === "REFRESHED") {
         sources = await storage.loadCollectSources({ accountId, collectItemIds });
         categoryStrategyGate = await evaluateCategoryStrategyGate({
           accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources, correlationId,
+          useCategoryStrategy: config.useCategoryStrategy !== false,
           startedAt: requestStartedAt,
         });
         sources = categoryStrategyGate.sources;
@@ -913,7 +1089,7 @@ export function createAutoListingService({
       }
       const created = await createFromSources({
         accountId, actor: input.actor, sourceType: "COLLECT_BOX", sources, idempotencyKey, correlationId,
-        config, configHash, categoryStrategyGate,
+        config, configHash, categoryStrategyGate, blockedSharedCategoryIds,
       });
       await observeContinue({ accountId, observation: strict, correlationId,
         outcome: "success", startedAt: strictStartedAt });
@@ -981,7 +1157,8 @@ export function createAutoListingService({
         throw error("AUTO_LISTING_IMPORT_NOT_FINALIZABLE", 409);
       }
       const categoryStrategyGate = await evaluateCategoryStrategyGate({ accountId, actor: input.actor,
-        sourceType: "EXCEL_SKU", sources, correlationId: file.correlationId, startedAt: requestStartedAt });
+        sourceType: "EXCEL_SKU", sources, useCategoryStrategy: frozen.config.useCategoryStrategy !== false,
+        correlationId: file.correlationId, startedAt: requestStartedAt });
       const strict = strictObservation(categoryStrategyGate);
       try {
         const created = await createFromSources({

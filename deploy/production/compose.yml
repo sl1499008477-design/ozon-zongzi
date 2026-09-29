@@ -1,0 +1,98 @@
+name: ozon-zongzi
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    command: ["postgres", "-c", "shared_buffers=32MB", "-c", "max_connections=40"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?}
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    volumes:
+      - production_database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 1024m
+    memswap_limit: 1207959552
+    logging: &logging
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  api:
+    image: ozon-zongzi-api:${RELEASE_TAG:-1.0.0-20260913.ai-runtime1}
+    build: &backend_build
+      context: ../..
+      dockerfile: Dockerfile
+      target: backend
+    restart: unless-stopped
+    env_file: ${PRODUCTION_ENV_FILE:-./production.env}
+    command: ["node", "server/index.mjs"]
+    ports:
+      - "127.0.0.1:38303:3001"
+    networks: [default, media]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/local/storage/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    mem_limit: 800m
+    mem_reservation: 192m
+    logging: *logging
+  worker:
+    image: ozon-zongzi-api:${RELEASE_TAG:-1.0.0-20260913.ai-runtime1}
+    build: *backend_build
+    restart: unless-stopped
+    env_file: ${PRODUCTION_ENV_FILE:-./production.env}
+    command: ["node", "server/listing-worker.mjs"]
+    networks: [default, media]
+    depends_on:
+      api: {condition: service_healthy}
+    mem_limit: 320m
+    mem_reservation: 96m
+    logging: *logging
+  ai-worker:
+    image: ozon-zongzi-api:${RELEASE_TAG:-1.0.0-20260913.ai-runtime1}
+    build: *backend_build
+    restart: unless-stopped
+    env_file: ${PRODUCTION_ENV_FILE:-./production.env}
+    environment:
+      POSTGRES_POOL_MAX: ${AI_WORKER_POSTGRES_POOL_MAX:-4}
+      AI_LISTING_CONCURRENCY: ${AI_LISTING_CONCURRENCY:-3}
+      AI_LISTING_REQUEST_CONCURRENCY: ${AI_LISTING_REQUEST_CONCURRENCY:-3}
+      AI_LISTING_LOCAL_CONCURRENCY: ${AI_LISTING_LOCAL_CONCURRENCY:-1}
+      AI_LISTING_RESULT_DIR: /srv/sonli/generated-results
+      OMP_THREAD_LIMIT: "1"
+      NODE_OPTIONS: --max-old-space-size=512
+    command: ["node", "server/ai-listing-worker.mjs"]
+    volumes:
+      - /opt/ozon 粽子/shared/generated-results:/srv/sonli/generated-results
+    networks: [default, media]
+    depends_on:
+      api: {condition: service_healthy}
+    stop_grace_period: 10m
+    mem_limit: 2g
+    mem_reservation: 256m
+    logging: *logging
+  web:
+    image: ozon-zongzi-web:${RELEASE_TAG:-1.0.0-20260913.ai-runtime1}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4173:80"
+    depends_on:
+      api: {condition: service_healthy}
+    mem_limit: 64m
+    logging: *logging
+volumes:
+  production_database:
+networks:
+  media:
+    external: true
+    name: ozon-zongzi-media

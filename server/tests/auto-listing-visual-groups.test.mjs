@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 import { buildVisualGroups } from "../auto-listing-visual-groups.mjs";
+import { SOURCE_IMAGE_INTELLIGENCE_CONTRACT_VERSION } from "../auto-listing-source-image-intelligence-contract.mjs";
 
 const image = (assetId, digit = "a") => ({ assetId, contentHash: digit.repeat(64) });
 const fact = (factId, kind, value) => ({ factId, kind, value });
@@ -66,6 +68,34 @@ function sourceCapture(variants) {
   });
 }
 
+const canonical = (value) => Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+
+function intelligenceSummary(overrides = {}) {
+  const value = {
+    contractVersion: SOURCE_IMAGE_INTELLIGENCE_CONTRACT_VERSION,
+    coverageMap: {
+      FRONT: { assetIds: ["front"], preciseViewpoints: ["FRONT"], tentativeAssetIds: [] },
+      BACK: { assetIds: ["back"], preciseViewpoints: ["BACK"], tentativeAssetIds: [] },
+      DETAIL: { assetIds: ["detail"], preciseViewpoints: ["DETAIL"], tentativeAssetIds: [] },
+      COMPLETE_PRODUCT: {
+        confirmedFamilyCount: 2,
+        confirmedFamilies: ["FRONT", "BACK"],
+        requiredFamilyCount: 2,
+        prohibitedViews: ["LEFT", "RIGHT", "TOP", "BOTTOM", "INTERIOR"],
+      },
+    },
+    factCandidates: [], markingDecisions: [],
+    eligibleAssetIds: ["front", "back", "detail"],
+    excludedAssetIds: ["text", "watermarked"], requiredConfirmations: [],
+    symmetryClass: "ASYMMETRIC", reasonCodes: [],
+    ...overrides,
+  };
+  return { ...value, summaryHash: digest(value) };
+}
+
 test("size-only variants with identical complete appearance facts share one stable visual group", () => {
   const red = [fact("fact.color.red", "COLOR", "red"), fact("fact.shape.round", "SHAPE", "round")];
   const capture = sourceCapture([
@@ -87,18 +117,20 @@ test("size-only variants with identical complete appearance facts share one stab
   assert.ok(first.groups[0].factEvidence.some((entry) => entry.factId === "fact.color.red"));
 });
 
-test("preserves captured media order so the first product image remains the primary anchor", () => {
+test("intelligent visual groups keep only appearance-eligible assets while all assessments remain in the run", () => {
   const capture = sourceCapture([
     {
       sku: "sku-1",
-      images: [image("z-primary", "a"), image("a-detail", "b")],
+      images: [image("front", "a"), image("text", "b"), image("back", "c"), image("watermarked", "d"), image("detail", "e")],
       evidence: evidence("variant-1", [fact("fact.color.black", "COLOR", "black")]),
     },
   ]);
+  const sourceImageIntelligence = intelligenceSummary();
 
-  const result = buildVisualGroups({ sourceCapture: capture });
+  const result = buildVisualGroups({ sourceCapture: capture, sourceImageIntelligence });
 
-  assert.deepEqual(result.groups[0].referenceImages.map(({ assetId }) => assetId), ["z-primary", "a-detail"]);
+  assert.deepEqual(result.groups[0].referenceImages.map(({ assetId }) => assetId), ["front", "back", "detail"]);
+  assert.deepEqual(sourceImageIntelligence.excludedAssetIds, ["text", "watermarked"]);
 });
 
 test("visible color, pattern, shape, or accessory-count differences always split groups", () => {
@@ -116,6 +148,47 @@ test("visible color, pattern, shape, or accessory-count differences always split
     assert.equal(result.groups.length, 2, kind);
     assert.ok(result.groups.every((group) => group.reasonCodes.includes("VISIBLE_APPEARANCE_DIFFERENCE")));
   }
+});
+
+test("three visibly different SKUs keep only their own source images in each visual group", () => {
+  const capture = sourceCapture([
+    { sku: "sku-purple", images: [image("purple-front", "a"), image("purple-back", "b")], evidence: evidence("variant-purple", [fact("fact.color.purple", "COLOR", "purple")]) },
+    { sku: "sku-blue", images: [image("blue-front", "c"), image("blue-back", "d")], evidence: evidence("variant-blue", [fact("fact.color.blue", "COLOR", "blue")]) },
+    { sku: "sku-gray", images: [image("gray-front", "e"), image("gray-back", "f")], evidence: evidence("variant-gray", [fact("fact.color.gray", "COLOR", "gray")]) },
+  ]);
+
+  const result = buildVisualGroups({ sourceCapture: capture });
+  const imagesBySku = Object.fromEntries(result.groups.map((group) => [
+    group.sourceSkus[0], group.referenceImages.map(({ assetId }) => assetId),
+  ]));
+
+  assert.equal(result.groups.length, 3);
+  assert.deepEqual(imagesBySku, {
+    "sku-blue": ["blue-front", "blue-back"],
+    "sku-gray": ["gray-front", "gray-back"],
+    "sku-purple": ["purple-front", "purple-back"],
+  });
+  assert.ok(result.groups.every((group) => group.sourceSkus.length === 1 && group.variantIds.length === 1));
+});
+
+test("captured Ozon color aspects become verified appearance evidence instead of ambiguous groups", () => {
+  const capture = sourceCapture([
+    { sku: "sku-blue", images: [image("blue", "a")], aspectValues: { "Цвет": "темно-синий" } },
+    { sku: "sku-gray", images: [image("gray", "b")], aspectValues: { "Цвет": "серый" } },
+  ]);
+
+  const result = buildVisualGroups({ sourceCapture: capture });
+
+  assert.equal(result.groups.length, 2);
+  assert.ok(result.groups.every((group) => group.reasonCodes.includes("VISIBLE_APPEARANCE_DIFFERENCE")));
+  assert.deepEqual(
+    result.groups.flatMap((group) => group.factEvidence.map(({ kind, value }) => ({ kind, value })))
+      .sort((left, right) => left.value.localeCompare(right.value, "ru")),
+    [
+      { kind: "COLOR", value: "серый" },
+      { kind: "COLOR", value: "темно-синий" },
+    ].sort((left, right) => left.value.localeCompare(right.value, "ru")),
+  );
 });
 
 test("missing or ambiguous appearance evidence is conservatively split and never inferred from names or logistics", () => {

@@ -7,10 +7,10 @@
  */
 (() => {
   const isTrustedCollectorAuthOrigin = (value) => {
-    if (value === 'https://qh.jizhangerp.com') return true;
+    if (value === 'https://www.ozonzongzi.com') return true;
     return [
       'http://localhost:3000',
-      'http://127.0.0.1:3000',
+      'https://www.ozonzongzi.com',
       'http://store.localhost:3000',
     ].includes(value);
   };

@@ -62,12 +62,12 @@ async function invoke(method, url, {
 const firstSource = {
   description_category_id: 17000001,
   type_id: 910001,
-  attributes: [{ key: "500", value: "Красный" }],
+  attributes: [{ key: "500", value: "Красный" }, { key: "10096", value: "old color", values: [{ value: "серый", dictionary_value_id: 61576 }, { dictionary_value_id: 61607 }] }],
 };
 const secondSource = {
   description_category_id: 17000002,
   type_id: 910002,
-  attributes: [{ key: "500", value: "Синий" }],
+  attributes: [{ key: "500", value: "Синий" }, { key: "4389", values: [{ dictionary_value_id: 90296 }] }],
 };
 const raw = {
   sku: "sku-red",

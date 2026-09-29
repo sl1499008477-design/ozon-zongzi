@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
+import { verifySourceImageIntelligenceSummary } from "./auto-listing-source-image-intelligence-contract.mjs";
 
 const INPUT_KEYS = new Set(["sourceCapture"]);
+const INTELLIGENT_INPUT_KEYS = new Set(["sourceCapture", "sourceImageIntelligence"]);
 const EVIDENCE_KEYS = new Set(["contractVersion", "variantId", "appearanceStatus", "appearanceFacts", "sizeFacts"]);
 const FACT_KEYS = new Set(["factId", "kind", "value"]);
 const IMAGE_KEYS = new Set(["assetId", "contentHash"]);
@@ -155,14 +157,15 @@ function normalizeEvidence(value, sku) {
   };
 }
 
-function normalizeVariants(snapshot) {
+function normalizeVariants(snapshot, eligibleAssetIds = null) {
   const seenVariantIds = new Set();
   const variants = snapshot.variants.map((variant) => {
     const sku = requiredText(variant.sku);
     const evidence = normalizeEvidence(variant.evidence, sku);
     if (seenVariantIds.has(evidence.variantId)) throw visualError();
     seenVariantIds.add(evidence.variantId);
-    const referenceImages = normalizeImages(variant.media);
+    const referenceImages = normalizeImages(variant.media)
+      .filter(({ assetId }) => eligibleAssetIds === null || eligibleAssetIds.has(assetId));
     const appearanceSignature = evidence.complete && evidence.appearanceFacts.length
       ? hash(evidence.appearanceFacts.map(({ kind, value }) => ({ kind, value })))
       : null;
@@ -232,13 +235,27 @@ function buildGroups(variants) {
 }
 
 export function buildVisualGroups(input = {}) {
-  if (!exactObject(input, INPUT_KEYS)) throw visualError();
+  const intelligent = exactObject(input, INTELLIGENT_INPUT_KEYS);
+  if (!intelligent && !exactObject(input, INPUT_KEYS)) throw visualError();
   const verified = verifyAutoListingSourceSnapshot(input.sourceCapture);
-  const groups = buildGroups(normalizeVariants(verified.snapshot));
+  let intelligence = null;
+  if (intelligent) {
+    try { intelligence = verifySourceImageIntelligenceSummary(input.sourceImageIntelligence); } catch { throw visualError(); }
+  }
+  const allAssetIds = new Set(normalizeVariants(verified.snapshot).flatMap((variant) =>
+    variant.referenceImages.map(({ assetId }) => assetId)));
+  if (intelligence && intelligence.eligibleAssetIds.some((assetId) => !allAssetIds.has(assetId))) throw visualError();
+  const groups = buildGroups(normalizeVariants(
+    verified.snapshot,
+    intelligence ? new Set(intelligence.eligibleAssetIds) : null,
+  )).filter((group) => intelligence === null || group.referenceImages.length > 0);
   const result = {
     sourceHash: verified.snapshotHash,
     groups,
-    reasonCodes: [...new Set(groups.flatMap((group) => group.reasonCodes))].sort(compareText),
+    reasonCodes: [...new Set([
+      ...groups.flatMap((group) => group.reasonCodes),
+      ...(intelligence ? ["SOURCE_IMAGE_INTELLIGENCE_APPEARANCE_FILTERED"] : []),
+    ])].sort(compareText),
   };
   return Object.freeze({ ...result, visualGroupsHash: hash(result) });
 }

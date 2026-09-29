@@ -1,4 +1,4 @@
-import "../env.mjs";
+import "./support/dedicated-postgres-test-environment.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -42,7 +42,7 @@ assert.deepEqual(safeProjection, {
   offer_id: "safe-offer",
   status: "FAILED",
   product_id: "",
-  errors: [{ code: "OZON_ITEM_RESULT", message: "Ozon 返回商品导入失败" }],
+  errors: [{ code: "ZONGZI_ITEM_RESULT", message: "Ozon 返回商品导入失败" }],
   errorEvidence: null,
 });
 assert.doesNotMatch(JSON.stringify(safeProjection), /raw-third-party-secret|credential/iu);
@@ -483,7 +483,7 @@ try {
   }]);
   await assert.rejects(persistSubmissionItems(
     foreignScopeJobId, crossAccountFailureItems, createdScope,
-  ), (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+  ), (error) => error?.code === "ZONGZI_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/cross-account-same-identity-secret/iu.test(error.message));
   assert.deepEqual((await pool.query(
     "SELECT status,product_id FROM submission_items WHERE id=$1", [foreignScopeItemId],
@@ -500,7 +500,7 @@ try {
   await assert.rejects(updateSubmissionItemsV3(created.job.id, [{
     offerId: "offer-1", status: "FAILED", productId: "",
     response: { message: "legacy-signature-secret" }, errorEvidence: null,
-  }]), (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+  }]), (error) => error?.code === "ZONGZI_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/legacy-signature-secret/iu.test(error.message));
   const wrongOfferItems = normalizedImportItems([{
     offer_id: "wrong-offer", sku: "source-sku", product_id: 0, status: "failed",
@@ -509,7 +509,7 @@ try {
   }]);
   await assert.rejects(persistSubmissionItems(
     created.job.id, wrongOfferItems, createdScope,
-  ), (error) => error?.code === "OZON_IMPORT_OFFER_IDENTITY_MISMATCH"
+  ), (error) => error?.code === "ZONGZI_IMPORT_OFFER_IDENTITY_MISMATCH"
     && error?.retryable === false && error?.cause === null
     && !/raw-third-party-secret|credential/iu.test(error.message));
   let persistedImportResult = await pool.query(
@@ -519,15 +519,15 @@ try {
   assert.equal(persistedImportResult.rows[0].status, "PENDING");
   await assert.rejects(persistSubmissionItems(created.job.id, crossAccountFailureItems,
     { ...createdScope, accountId: foreignAccountId }),
-  (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+  (error) => error?.code === "ZONGZI_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/foreign-scope-secret/iu.test(error.message));
   await assert.rejects(persistSubmissionItems(created.job.id, crossAccountFailureItems,
     { ...createdScope, ozonTaskId: `wrong-${createdOzonTaskId}` }),
-  (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+  (error) => error?.code === "ZONGZI_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/wrong-task-secret/iu.test(error.message));
   await assert.rejects(persistSubmissionItems(created.job.id, crossAccountFailureItems,
     { ...createdScope, snapshotId: foreignScopeSnapshotId }),
-  (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+  (error) => error?.code === "ZONGZI_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/wrong-snapshot-secret/iu.test(error.message));
   const afterForeignScope = await pool.query(
     `SELECT
@@ -565,7 +565,7 @@ try {
   await assert.rejects(persistSubmissionItems(created.job.id, normalizedImportItems([{
     offer_id: "offer-1", sku: "source-sku", product_id: 0, status: "processing",
     message: "stale-checking-secret", errors: [],
-  }]), createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
+  }]), createdScope), (error) => error?.code === "ZONGZI_IMPORT_RESULT_CONFLICT"
     && error?.retryable === false && error?.cause === null
     && !/stale-checking-secret/iu.test(error.message));
   persistedImportResult = await pool.query(
@@ -589,7 +589,7 @@ try {
     await assert.rejects(persistSubmissionItems(autoSubmission.job.id,
       normalizedImportItems([conflict]),
       { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 }),
-    (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
+    (error) => error?.code === "ZONGZI_IMPORT_RESULT_CONFLICT"
       && !/terminal-conflict-secret/iu.test(error.message));
   }
   const immutableSuccess = await pool.query(
@@ -688,7 +688,7 @@ try {
     for (const items of malformedClosedItems) {
       await assert.rejects(
         persistSubmissionItems(invalidSuccessSubmission.job.id, items, invalidSuccessScope),
-        (error) => error?.code === "OZON_IMPORT_RESULT_CONTRACT_INVALID"
+        (error) => error?.code === "ZONGZI_IMPORT_RESULT_CONTRACT_INVALID"
           && error?.retryable === false && error?.cause === null
           && !/contract-(?:secret|accessor)/iu.test(error.message),
       );
@@ -721,19 +721,19 @@ try {
     await assert.rejects(persistSubmissionItems(invalidSuccessSubmission.job.id, [
       invalidItem,
       validSuccessForTampering[1],
-    ], invalidSuccessScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONTRACT_INVALID"
+    ], invalidSuccessScope), (error) => error?.code === "ZONGZI_IMPORT_RESULT_CONTRACT_INVALID"
       && error?.retryable === false && error?.cause === null);
   }
   for (const status of ["CHECKING", "FAILED", "SKIPPED", "UNKNOWN_RESULT"]) {
     await assert.rejects(persistSubmissionItems(invalidSuccessSubmission.job.id, [
       { ...validClosedItems[0], status, productId: "123" },
       validClosedItems[1],
-    ], invalidSuccessScope), { code: "OZON_IMPORT_RESULT_CONTRACT_INVALID", retryable: false, cause: null });
+    ], invalidSuccessScope), { code: "ZONGZI_IMPORT_RESULT_CONTRACT_INVALID", retryable: false, cause: null });
   }
   await assert.rejects(persistSubmissionItems(invalidSuccessSubmission.job.id, [
     { ...validSuccessForTampering[0], unexpected: true },
     validSuccessForTampering[1],
-  ], invalidSuccessScope), { code: "OZON_IMPORT_RESULT_CONTRACT_INVALID", retryable: false, cause: null });
+  ], invalidSuccessScope), { code: "ZONGZI_IMPORT_RESULT_CONTRACT_INVALID", retryable: false, cause: null });
   const mixedInvalidSuccess = deriveOzonImportStatus({ result: { items: [
     { offer_id: "offer-invalid-a", status: "imported", product_id: 0 },
     { offer_id: "offer-invalid-b", status: "imported", product_id: 123456 },
@@ -788,7 +788,7 @@ try {
   await assert.rejects(persistSubmissionItems(batchSubmission.job.id, normalizedImportItems([
     { offer_id: "offer-batch-a", sku: "source-batch-a", product_id: 991102, status: "imported", errors: [] },
     { offer_id: "offer-batch-b", sku: "source-batch-b", product_id: 0, status: "failed", errors: [{ code: "UNKNOWN", field: "unknown" }] },
-  ]), batchScope), { code: "OZON_IMPORT_RESULT_CONFLICT", retryable: false, cause: null });
+  ]), batchScope), { code: "ZONGZI_IMPORT_RESULT_CONFLICT", retryable: false, cause: null });
   const atomicBatch = await pool.query(
     "SELECT offer_id,status,product_id FROM submission_items WHERE job_id=$1 ORDER BY offer_id",
     [batchSubmission.job.id],
@@ -813,7 +813,7 @@ try {
   await assert.rejects(persistSubmissionItems(created.job.id, normalizedImportItems([{
     offer_id: "offer-1", sku: "source-sku", product_id: 0, status: "failed",
     errors: [{ code: "UNKNOWN", field: "unknown", message: "stale-unknown-secret" }],
-  }]), createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
+  }]), createdScope), (error) => error?.code === "ZONGZI_IMPORT_RESULT_CONFLICT"
     && !/stale-unknown-secret/iu.test(error.message));
   const preservedHistoricalEvidence = await pool.query(
     "SELECT response->'errorEvidence' AS evidence FROM submission_items WHERE job_id=$1",

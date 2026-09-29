@@ -42,12 +42,23 @@ export const windowIpc = (win) => {
     ipcMain.on('quit-and-install-app', async () => {
         UpdaterManager.getInstance().quitAndInstall();
     });
-    ipcMain.on('open-url', async (event, data) => {
+    const openUrl = async (_event, data) => {
         if (!isTrustedExternalUrl(data, runtimeConfig)) {
-            win.webContents.send('window-notify', { type: 'account', message: '已拦截不受信任的外部链接' });
-            return;
+            return { code: 403, message: '已拦截不受信任的外部链接' };
         }
-        await shell.openExternal(String(data));
+        try {
+            await shell.openExternal(String(data));
+            return { code: 200 };
+        }
+        catch {
+            return { code: 500, message: '浏览器打开失败，请稍后重试' };
+        }
+    };
+    ipcMain.handle('open-url', openUrl);
+    ipcMain.on('open-url', async (event, data) => {
+        const result = await openUrl(event, data);
+        if (result.code !== 200)
+            win.webContents.send('window-notify', { type: 'account', message: result.message });
     });
     ipcMain.handle('get-config', async () => {
         return await getConfig();

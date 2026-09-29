@@ -273,6 +273,13 @@ const fetchRequests = [];
 globalThis.fetch = async (url) => {
   const href = String(url);
   fetchRequests.push(href);
+  if (href.endsWith("/v1/description-category/tree")) {
+    return new Response(JSON.stringify({result:[{
+      description_category_id:17028941,
+      category_name:"Target category",
+      children:[{type_id:91670,type_name:"Target type",children:[]}],
+    }]}), {status:200,headers:{"Content-Type":"application/json"}});
+  }
   if (href.endsWith("/v1/description-category/attribute")) {
     return new Response(JSON.stringify({
       result: [

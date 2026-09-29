@@ -69,14 +69,14 @@
       return pending;
     };
   };
-  const createSellerLoginOpener = ({ focusOwnedHelper, createTab } = {}) => {
+  const createSellerLoginOpener = ({ focusOwnedHelper, createTab, getSellerOrigin = () => root.JzActiveSellerRoute?.getOrigin() || 'https://seller.ozon.ru' } = {}) => {
     if (typeof focusOwnedHelper !== 'function' || typeof createTab !== 'function') {
       throw new TypeError('Seller login opener requires focusOwnedHelper and createTab');
     }
     return createSingleFlight(async () => {
       try {
         if (await focusOwnedHelper()) return { ok: true, data: { opened: true } };
-        await createTab({ url: 'https://seller.ozon.ru/app', active: true });
+        await createTab({ url: getSellerOrigin() + '/app', active: true });
         return { ok: true, data: { opened: true } };
       } catch {
         return { ok: false };

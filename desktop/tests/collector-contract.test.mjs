@@ -81,6 +81,13 @@ test('clamps task concurrency to 2-20 and defaults to 4', () => {
     assert.equal(toCollectorTaskPayload({ taskName: 'a', concurrency: 99 }).concurrency, 20);
 });
 
+test('new task payloads capture ALL while legacy task edits and explicit CURRENT preserve their scope', () => {
+    assert.equal(toCollectorTaskPayload({ taskName: 'New group task' }).configuration.captureScope, 'ALL');
+    assert.equal(toCollectorTaskPayload({ _id: 'legacy', taskName: 'Legacy edit' }).configuration.captureScope, 'CURRENT');
+    assert.equal(toCollectorTaskPayload({ taskName: 'Explicit current', captureScope: 'CURRENT' }).configuration.captureScope, 'CURRENT');
+    assert.equal(toCollectorTaskPayload({ _id: 'all', captureScope: 'ALL' }).configuration.captureScope, 'ALL');
+});
+
 test('builds a store-neutral task payload and omits retired authorization scope', () => {
     const legacyKey = ['isUse', 'Auto', 'Up', 'Goods'].join('');
     const payload = toCollectorTaskPayload({
@@ -134,4 +141,23 @@ test('does not recursively persist the previous server configuration', () => {
     assert.equal(Object.hasOwn(payload.configuration, 'configuration'), false);
     assert.equal(Object.hasOwn(payload.configuration, 'currentRunId'), false);
     assert.equal(Object.hasOwn(payload.configuration, 'statusVersion'), false);
+});
+
+test('maps real task/run dates and persisted counts without treating an edit as an execution', () => {
+    const task = normalizeCollectorTask({id:'task-history',status:'FAILED',createdAt:'2026-09-10T00:00:00Z',updatedAt:'2026-09-10T05:00:00Z',lastStartedAt:'2026-09-10T02:00:00Z',currentRun:{id:'run-history',startedAt:'2026-09-10T02:00:00Z',progress:{totalCount:7,processedCount:7,qualifiedCount:2,failedCount:5}}});
+    assert.equal(task.createTime, '2026-09-10T00:00:00Z');
+    assert.equal(task.lastRunningTime, '2026-09-10T02:00:00Z');
+    assert.deepEqual(task.progress,{current:0,total:7,totalCount:2,dedup:{collected:0,listed:0,collecting:0},outcomes:{skipped:0,failed:5}});
+    assert.equal(normalizeCollectorTask({id:'never',createdAt:'2026-09-10T00:00:00Z',updatedAt:'2026-09-10T05:00:00Z',lastStartedAt:null,currentRun:null}).lastRunningTime,null);
+    const config=toCollectorTaskPayload(task).configuration;
+    for(const key of ['currentRun','lastStartedAt','createTime','lastRunningTime','createdAt','updatedAt'])assert.equal(Object.hasOwn(config,key),false,key+' is read metadata');
+});
+
+
+test('server projection keeps saved product groups and SKU totals distinct across reloads',()=>{
+ const task=normalizeCollectorTask({id:'groups',configuration:{captureScope:'ALL'},currentRun:{id:'run',progress:{qualifiedCount:10,qualifiedSkuCount:22,totalCount:28}}});
+ assert.equal(task.progress.totalCount,10);
+ assert.equal(task.progress.skuCount,22);
+ const empty=normalizeCollectorTask({id:'empty',currentRun:{id:'run',progress:{qualifiedCount:0,qualifiedSkuCount:0}}});
+ assert.equal(empty.progress.skuCount,0);
 });

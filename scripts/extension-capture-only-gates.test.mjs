@@ -59,7 +59,7 @@ async function createCandidate(tmpDir, label, mutate) {
 
 function zipCandidate(candidateDir) {
   const candidateZip = `${candidateDir}.zip`;
-  const zipped = spawnSync("zip", ["-qr", candidateZip, "."], {
+  const zipped = spawnSync("zip", ["-qr", candidateZip, ".", "-x", "tests/*", "background/__tests__/*", "popup/__tests__/*"], {
     cwd: candidateDir,
     encoding: "utf8",
     shell: false,
@@ -171,12 +171,12 @@ test("permission omissions are allowed only while capture invariants remain", as
   }
 });
 
-test("ZIP smoke requires both packaged popup runtime tests", async () => {
+test("ZIP smoke rejects missing popup runtime files while tests remain outside the package", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "popup-zip-gates-"));
   try {
     for (const popupTest of [
-      "popup/__tests__/popup-collector-session.runtime.test.js",
-      "popup/__tests__/popup-routing.smoke.test.js",
+      "popup/popup.js",
+      "lib/collector-session.js",
     ]) {
       const candidateDir = path.join(
         tmpDir,

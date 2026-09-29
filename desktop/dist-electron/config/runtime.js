@@ -1,5 +1,8 @@
+import { createRequire } from 'node:module';
+
+const packagedDefaults = createRequire(import.meta.url)('../../package.json').sonliRuntime || {};
 const DEFAULT_SONLI_API_BASE = 'http://127.0.0.1:3001';
-const DEFAULT_SELLER_CENTER_URL = 'https://seller.ozon.ru/app/analytics/what-to-sell';
+const DEFAULT_SELLER_CENTER_URL = 'https://seller.ozonru.cn/app/analytics/what-to-sell';
 
 function argumentValue(name) {
     const prefix = `--${name}=`;
@@ -17,21 +20,22 @@ function normalizeBaseUrl(value, fallback) {
     return url.toString().replace(/\/$/, '');
 }
 
-function normalizeSellerUrl(value) {
+export function normalizeSellerUrl(value) {
     const normalized = normalizeBaseUrl(value, DEFAULT_SELLER_CENTER_URL);
-    if (new URL(normalized).hostname !== 'seller.ozon.ru')
-        throw new Error('Seller Center 地址必须属于 seller.ozon.ru');
+    const url = new URL(normalized);
+    if (!['https://seller.ozon.ru', 'https://seller.ozonru.cn'].includes(url.origin) || url.username || url.password)
+        throw new Error('Seller Center 地址仅允许 https://seller.ozon.ru 或 https://seller.ozonru.cn');
     return normalized;
 }
 
 export function getRuntimeConfig(env = process.env) {
     const sonliApiBase = normalizeBaseUrl(
         argumentValue('sonli-api-base') || env.SONLI_API_BASE,
-        DEFAULT_SONLI_API_BASE,
+        packagedDefaults.apiBase || DEFAULT_SONLI_API_BASE,
     );
     const sonliWebBase = normalizeBaseUrl(
         argumentValue('sonli-web-base') || env.SONLI_WEB_BASE,
-        sonliApiBase.replace(/:3001$/, ':3000'),
+        packagedDefaults.webBase || sonliApiBase.replace(/:3001$/, ':3000'),
     );
     const updateUrl = String(argumentValue('update-url') || env.SONLI_UPDATE_URL || '').trim();
     const configUrl = String(argumentValue('config-url') || env.SONLI_CONFIG_URL || '').trim();
@@ -57,8 +61,9 @@ export function isTrustedExternalUrl(value, config = getRuntimeConfig()) {
         }
         const configuredHosts = [config.sonliApiBase, config.sonliWebBase, config.sellerCenterUrl]
             .map((item) => new URL(item).hostname);
-        const allowedSuffixes = ['yuque.com', 'ozon.ru', '1688.com'];
-        return configuredHosts.includes(url.hostname)
+        const allowedSuffixes = ['yuque.com', 'ozon.ru'];
+        return (url.origin === 'https://seller.ozonru.cn' && !url.username && !url.password)
+            || configuredHosts.includes(url.hostname)
             || allowedSuffixes.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`));
     }
     catch {

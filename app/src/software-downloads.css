@@ -1,0 +1,125 @@
+.software-downloads-page {
+  display: grid;
+  gap: 24px;
+}
+
+.software-downloads-page .source-section-title {
+  margin-bottom: 0;
+}
+
+.software-download-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.software-download-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 48px;
+  height: 48px;
+  border-radius: 16px;
+  background: var(--prototype-primary-soft);
+  color: var(--prototype-primary);
+  font-size: 24px;
+}
+
+.software-downloads-page h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 6px;
+  color: var(--prototype-ink);
+  font-size: 20px;
+}
+
+.software-downloads-page h4 {
+  margin: 0 0 10px;
+  color: var(--prototype-ink);
+  font-size: 16px;
+}
+
+.software-downloads-page p {
+  color: var(--prototype-ink-secondary);
+  line-height: 1.8;
+}
+
+.software-download-heading p {
+  margin: 0;
+}
+
+.software-extension-content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.software-downloads-page .software-download-platform {
+  color: var(--prototype-ink);
+  font-weight: 600;
+}
+
+.software-install-guide,
+.software-platform-card {
+  padding: 22px;
+  border: 1px solid var(--prototype-border);
+  border-radius: 18px;
+  background: var(--prototype-surface-muted);
+}
+
+.software-install-guide ol {
+  padding-left: 20px;
+  margin: 0;
+  line-height: 1.9;
+  color: var(--prototype-ink-secondary);
+}
+
+.software-platform-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.software-platform-icon {
+  margin-bottom: 16px;
+  color: var(--prototype-primary);
+  font-size: 26px;
+}
+
+.software-download-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 12px 0;
+}
+
+.software-download-size,
+.software-package-note {
+  color: var(--prototype-ink-secondary);
+  font-size: 12px;
+}
+
+.software-desktop-notes {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--prototype-border);
+  font-size: 13px;
+}
+
+.software-desktop-notes p:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 800px) {
+  .software-extension-content {
+    grid-template-columns: 1fr;
+  }
+
+  .software-download-card > .ant-card-body {
+    padding: 20px;
+  }
+}

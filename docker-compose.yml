@@ -103,8 +103,13 @@ services:
       OZON_RICH_CONTENT_RULE_VERSION: ${OZON_RICH_CONTENT_RULE_VERSION:-2026-07-v1}
     expose:
       - "3001"
-    volumes:
-      - ${AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:-/dev/null}:/run/secrets/auto-listing-credential-master.key:ro
+    volumes: &credential-file-mount
+      - type: bind
+        source: ${AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:-/dev/null}
+        target: /run/secrets/auto-listing-credential-master.key
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,38 +131,12 @@ services:
     restart: unless-stopped
     command: ["node", "server/listing-worker.mjs"]
     environment: *application-environment
-    volumes:
-      - ${AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:-/dev/null}:/run/secrets/auto-listing-credential-master.key:ro
+    volumes: *credential-file-mount
     depends_on:
       postgres:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
-
-  auto-listing-ai-worker:
-    profiles: ["application", "auto-listing-ai"]
-    build:
-      context: .
-      target: backend
-    restart: on-failure
-    command: ["node", "server/auto-listing-ai-worker.mjs"]
-    environment:
-      <<: *application-environment
-      PG_BOSS_APPLICATION_NAME: sonli-auto-listing-ai-worker
-    volumes:
-      - ${AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:-/dev/null}:/run/secrets/auto-listing-credential-master.key:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
-    stop_grace_period: 5m
-    healthcheck:
-      test: ["CMD", "node", "-e", "process.kill(1, 0)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
 
   web:
     profiles: ["application"]

@@ -59,7 +59,7 @@ test("absent product ID falls back once to exact offer and never performs fuzzy 
 test("mismatch, authentication, network, malformed, and oversized responses fail closed", async () => {
   const failures = [
     [{ result: { id: 999, offer_id: "other", description_category_id: 1, type_id: 2 } }],
-    [Object.assign(new Error("raw credential error"), { status: 401, code: "OZON_HTTP_401" })],
+    [Object.assign(new Error("raw credential error"), { status: 401, code: "ZONGZI_HTTP_401" })],
     [Object.assign(new Error("socket ambiguity"), { code: "ECONNRESET" })],
     [{ unexpected: true }],
     [{ result: { id: 4862904234, offer_id: "offer-a", description_category_id: 1, type_id: 2, padding: "x".repeat(300_000) } }],
@@ -69,7 +69,7 @@ test("mismatch, authentication, network, malformed, and oversized responses fail
     const result = await lookup.lookup(input);
     assert.deepEqual(result, {
       status: "UNRESOLVED",
-      reasonCode: "OZON_SOURCE_LOOKUP_UNRESOLVED",
+      reasonCode: "ZONGZI_SOURCE_LOOKUP_UNRESOLVED",
     });
     assert.equal(JSON.stringify(result).includes("raw"), false);
     assert.equal(Object.isFrozen(result), true);
@@ -90,7 +90,7 @@ test("every non-empty requested identity and the attributes identity must match 
     const { lookup } = createLookup(responses);
     assert.deepEqual(await lookup.lookup(input), {
       status: "UNRESOLVED",
-      reasonCode: "OZON_SOURCE_LOOKUP_UNRESOLVED",
+      reasonCode: "ZONGZI_SOURCE_LOOKUP_UNRESOLVED",
     });
   }
 });

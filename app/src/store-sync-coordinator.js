@@ -1,8 +1,6 @@
 export const STORE_SYNC_TYPES = Object.freeze([
   "WAREHOUSES",
   "PRODUCTS",
-  "POSTINGS",
-  "PROMOTIONS",
 ]);
 
 const supportedTypes = new Set(STORE_SYNC_TYPES);
@@ -89,7 +87,6 @@ export async function runBackendStoreSync({
           storeId: normalizedStoreId,
           jobId: state.taskId,
           requestId,
-          ...(state.type === "POSTINGS" ? { postingsSinceDays: 30 } : {}),
         },
       });
       const result = response?.job && typeof response.job === "object"

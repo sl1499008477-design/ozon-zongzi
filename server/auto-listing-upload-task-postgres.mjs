@@ -206,7 +206,17 @@ export function createPostgresAutoListingUploadTaskRepository({ pool, randomUUID
               WHERE task.account_id=$1
                 AND ((task.state='PENDING' AND task.next_run_at<=NOW())
                   OR (task.state='LEASED' AND task.lease_expires_at<=NOW()))
-              ORDER BY task.next_run_at,task.created_at,task.id
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM auto_listing_job_items AS predecessor
+                   WHERE predecessor.account_id=item.account_id
+                     AND predecessor.job_id=item.job_id
+                     AND predecessor.source_order < item.source_order
+                     AND predecessor.status NOT IN (
+                       'SUCCEEDED','RETRYABLE_ERROR','BLOCKED','CANCELLED'
+                     )
+                )
+              ORDER BY task.next_run_at,item.source_order,task.created_at,task.id
               FOR UPDATE OF task SKIP LOCKED LIMIT 1
            ), leased AS (
              UPDATE auto_listing_upload_tasks AS task

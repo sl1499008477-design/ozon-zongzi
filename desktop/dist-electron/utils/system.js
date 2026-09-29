@@ -393,13 +393,15 @@ export class SysTemUtils {
                         const destPath = join(destination, entry.name);
                         if (entry.isDirectory()) {
                             // 递归复制子目录
-                            this.fileOperations.copyFolder(srcPath, destPath);
+                            if (!this.fileOperations.copyFolder(srcPath, destPath))
+                                return false;
                         }
                         else {
                             // 复制文件
                             copyFileSync(srcPath, destPath);
                         }
                     }
+                    return true;
                 }
                 else {
                     return false;
@@ -407,6 +409,7 @@ export class SysTemUtils {
             }
             catch (error) {
                 console.error('复制文件夹失败：', error);
+                return false;
             }
         },
     };

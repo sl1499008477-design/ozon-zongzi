@@ -19,7 +19,7 @@ try {
   await new Promise(r => setTimeout(r, 7000));
 
   // Extract product data from the loaded page
-  const data = await js(`(function() {
+  let data = await js(`(function() {
     var r = {};
 
     function visitJsonLd(node, cb) {
@@ -149,23 +149,198 @@ try {
       r.variants = [];
     }
 
-    // 5. Try to get images from data-state if JSON-LD didn't have them
-    if (!r.primaryImage) {
-      try {
-        var gallery = document.querySelector('[data-widget="webGallery"]');
-        if (gallery) {
+    // 4.2 Preserve the public PDP facts for current-category attribute mapping.
+    // The full widget uses semantic dl/dt/dd pairs and is more reliable than
+    // pairing arbitrary visible text nodes from the page.
+    try {
+      var sourceCharacteristics = [];
+      var seenCharacteristics = {};
+      function addCharacteristic(name, value) {
+        var cleanName = String(name || '').replace(/\s+/g, ' ').trim();
+        var cleanValue = String(value || '').replace(/\s+/g, ' ').trim();
+        if (!cleanName || !cleanValue) return;
+        var key = cleanName.toLocaleLowerCase('ru-RU') + '\u0000' + cleanValue.toLocaleLowerCase('ru-RU');
+        if (seenCharacteristics[key]) return;
+        seenCharacteristics[key] = true;
+        sourceCharacteristics.push({ name: cleanName, value: cleanValue });
+      }
+      document.querySelectorAll('[data-widget="webCharacteristics"] dl').forEach(function(row) {
+        var name = row.querySelector('dt');
+        var value = row.querySelector('dd');
+        if (name && value) addCharacteristic(name.textContent, value.textContent);
+      });
+      if (!sourceCharacteristics.length) {
+        document.querySelectorAll('[data-widget="webShortCharacteristics"] dl').forEach(function(row) {
+          var name = row.querySelector('dt');
+          var value = row.querySelector('dd');
+          if (name && value) addCharacteristic(name.textContent, value.textContent);
+        });
+      }
+      r.sourceCharacteristics = sourceCharacteristics;
+    } catch(e) {
+      r.sourceCharacteristics = [];
+    }
+
+    // 5. The JSON-LD usually exposes only the cover. Always read and prefer the
+    // complete gallery; having a cover must not suppress the remaining source
+    // images needed by downstream angle/text analysis.
+    try {
+      var galleryImages = [];
+      document.querySelectorAll('[data-widget="webGallery"], [id^="state-webGallery"]').forEach(function(gallery) {
+        try {
           var gs = JSON.parse(gallery.getAttribute('data-state') || '{}');
           var slides = gs.images || gs.slides || [];
-          r.images = slides.map(function(s) { return typeof s === 'string' ? s : (s.src || s.url || ''); }).filter(Boolean);
-          r.primaryImage = r.images[0] || '';
-        }
-      } catch(e) {}
-    }
+          slides.forEach(function(s) {
+            var image = typeof s === 'string'
+              ? s
+              : (s && (s.src || s.url || s.image || s.imageUrl || s.coverImage)) || '';
+            if (image) galleryImages.push(image);
+          });
+        } catch(e) {}
+      });
+      if (galleryImages.length) {
+        var seenImages = {};
+        r.images = galleryImages.concat(Array.isArray(r.images) ? r.images : []).filter(function(image) {
+          var cleanImage = String(image || '').trim();
+          if (!cleanImage || seenImages[cleanImage]) return false;
+          seenImages[cleanImage] = true;
+          return true;
+        });
+        r.primaryImage = r.images[0] || r.primaryImage || '';
+      }
+    } catch(e) {}
 
     return JSON.stringify(r);
   })()`);
 
-  if (data && data.length > 20) {
+  function hasProductData(value) {
+    try {
+      var parsed = JSON.parse(value || '');
+      return Boolean(parsed && (parsed.title || parsed.price || parsed.priceText || parsed.primaryImage));
+    } catch(e) {
+      return false;
+    }
+  }
+
+  // Ozon may replace the PDP with a temporary "no connection" page while its
+  // same-origin composer endpoint still serves the public product widgets.
+  // Read only the fields already collected from the DOM path; never retain
+  // response tokens or user/session metadata.
+  if (!hasProductData(data)) {
+    const composerData = await js(`(async function() {
+      var requestedSku = '${sku}';
+      try {
+        var response = await fetch(
+          '/api/composer-api.bx/page/json/v2?url=' + encodeURIComponent('/product/' + requestedSku + '/'),
+          { credentials: 'include' }
+        );
+        if (!response.ok) return '';
+        var payload = await response.json();
+        var states = {};
+        Object.keys(payload.widgetStates || {}).forEach(function(key) {
+          var value = payload.widgetStates[key];
+          try { states[key] = typeof value === 'string' ? JSON.parse(value) : value; }
+          catch(e) {}
+        });
+        function stateFor(name) {
+          var key = Object.keys(states).find(function(candidate) {
+            return candidate === name || candidate.indexOf(name + '-') === 0;
+          });
+          return key ? states[key] : {};
+        }
+        function richText(value) {
+          if (!value) return '';
+          if (typeof value === 'string') return value.trim();
+          var rows = Array.isArray(value) ? value : (value.textRs || []);
+          return rows.map(function(row) {
+            return row && (row.content || row.text) ? String(row.content || row.text) : '';
+          }).join('').replace(/\s+/g, ' ').trim();
+        }
+        var heading = stateFor('webProductHeading');
+        var gallery = stateFor('webGallery');
+        var price = stateFor('webPrice');
+        var shortCharacteristics = stateFor('webShortCharacteristics');
+        var main = stateFor('webProductMainWidget');
+        var images = (Array.isArray(gallery.images) ? gallery.images : []).map(function(image) {
+          return typeof image === 'string'
+            ? image
+            : (image && (image.src || image.url || image.image || image.imageUrl)) || '';
+        }).filter(Boolean);
+        if (gallery.coverImage && images.indexOf(gallery.coverImage) < 0) images.unshift(gallery.coverImage);
+        var sourceCharacteristics = (Array.isArray(shortCharacteristics.characteristics)
+          ? shortCharacteristics.characteristics : []).map(function(characteristic) {
+          var name = richText(characteristic && characteristic.title);
+          var values = Array.isArray(characteristic && characteristic.values)
+            ? characteristic.values.map(function(value) {
+              return richText(value && (value.text || value.title || value.textRs || value));
+            }).filter(Boolean)
+            : [];
+          return { name: name, value: values.join(', ') };
+        }).filter(function(characteristic) {
+          return characteristic.name && characteristic.value;
+        });
+        var meta = {};
+        try {
+          meta = typeof payload.layoutTrackingInfo === 'string'
+            ? JSON.parse(payload.layoutTrackingInfo) : (payload.layoutTrackingInfo || {});
+        } catch(e) {}
+        var variantMap = {};
+        function variantText(value) {
+          return richText(value && (value.textRs || (value.data && value.data.textRs)))
+            || String(value && value.data && (value.data.searchableText || value.data.title || value.data.text) || '').trim();
+        }
+        Object.values(states).forEach(function(state) {
+          if (!state || !Array.isArray(state.aspects)) return;
+          state.aspects.forEach(function(aspect) {
+            var aspectName = aspect.aspectName || aspect.title || aspect.name || '';
+            (aspect.variants || []).forEach(function(variant) {
+              var variantData = variant.data || {};
+              var variantSku = String(variant.sku || variantData.sku || variantData.id || '').trim();
+              if (!variantSku) return;
+              if (!variantMap[variantSku]) {
+                var image = variantData.coverImage || variantData.image || '';
+                variantMap[variantSku] = {
+                  sku: variantSku,
+                  title: variantData.title || variantData.name || variantText(variant),
+                  price: variantData.price || variantData.priceText || '',
+                  image: image,
+                  coverImage: image,
+                  link: variant.link ? new URL(variant.link, location.origin).href : '',
+                  availability: variant.availability || '',
+                  active: variant.active === true,
+                  aspectValues: {}
+                };
+              }
+              var text = variantText(variant);
+              if (aspectName && text) variantMap[variantSku].aspectValues[aspectName] = text;
+            });
+          });
+        });
+        var priceText = price.price || price.cardPrice || price.originalPrice || '';
+        var productUrl = main.url
+          ? new URL(main.url, location.origin).href
+          : 'https://www.ozon.ru/product/' + requestedSku + '/';
+        return JSON.stringify({
+          sku: String(main.sku || gallery.sku || requestedSku),
+          title: heading.title || '',
+          url: productUrl,
+          price: priceText,
+          priceText: priceText,
+          priceCurrency: /(?:¥|CNY)/i.test(priceText) ? 'CNY' : /(?:₽|RUB|руб)/i.test(priceText) ? 'RUB' : '',
+          primaryImage: gallery.coverImage || images[0] || '',
+          images: images,
+          variants: Object.keys(variantMap).map(function(key) { return variantMap[key]; }),
+          sourceCharacteristics: sourceCharacteristics,
+          categories: String(meta.hierarchy || '').split('/').map(function(value) { return value.trim(); }).filter(Boolean)
+        });
+      } catch(e) {
+        return '';
+      }
+    })()`);
+    if (hasProductData(composerData)) data = composerData;
+  }
+
+  if (hasProductData(data)) {
     cliLog(data);
   } else {
     await js('window.location.href = "https://www.ozon.ru/search/?text=' + sku + '"');

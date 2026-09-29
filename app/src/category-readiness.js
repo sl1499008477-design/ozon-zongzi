@@ -153,8 +153,8 @@ export function listingCategoryFields(
 }
 
 function confirmationError() {
-  const error = new Error("OZON_CATEGORY_CONFIRMATION_INVALID");
-  error.code = "OZON_CATEGORY_CONFIRMATION_INVALID";
+  const error = new Error("ZONGZI_CATEGORY_CONFIRMATION_INVALID");
+  error.code = "ZONGZI_CATEGORY_CONFIRMATION_INVALID";
   return error;
 }
 
@@ -259,7 +259,7 @@ export async function loadRealCategoryTrees({ readTree }) {
     return { zhTree, ruTree };
   } catch {
     const error = new Error(CATEGORY_DATA_ERROR_MESSAGE);
-    error.code = "OZON_CATEGORY_UI_UNAVAILABLE";
+    error.code = "ZONGZI_CATEGORY_UI_UNAVAILABLE";
     throw error;
   }
 }
@@ -281,7 +281,7 @@ export function requireCategoryReadiness(input) {
   const result = categoryReadiness(input);
   if (!result.ready) {
     const error = new Error(result.message);
-    error.code = "OZON_CATEGORY_UI_UNAVAILABLE";
+    error.code = "ZONGZI_CATEGORY_UI_UNAVAILABLE";
     throw error;
   }
   return true;

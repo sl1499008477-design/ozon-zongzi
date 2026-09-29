@@ -1,13 +1,15 @@
 {
-  "name": "sonli-ozon-local-clone",
-  "version": "0.13.46.27-local",
+  "name": "ozon-zongzi",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "test": "node scripts/test.mjs",
+    "dev": "node scripts/dev.mjs",
+    "compose": "node scripts/compose.mjs",
     "server": "node server/index.mjs",
     "worker": "node server/listing-worker.mjs",
-    "auto-listing-worker": "node server/auto-listing-ai-worker.mjs",
+    "worker:ai": "node server/ai-listing-worker.mjs",
     "sub2api:bootstrap": "node scripts/sub2api-local.mjs bootstrap",
     "sub2api:up": "node scripts/sub2api-local.mjs up",
     "sub2api:down": "node scripts/sub2api-local.mjs down",
@@ -21,14 +23,18 @@
     "test:account-shared-category-recovery-e2e": "node --test --test-concurrency=1 server/tests/account-shared-category-recovery-e2e.test.mjs",
     "test:auto-listing-configurable-skeleton-e2e": "node --test --test-concurrency=1 server/tests/auto-listing-configurable-skeleton-e2e.test.mjs",
     "test:auto-listing-category-strategy-e2e": "node --test --test-concurrency=1 server/tests/auto-listing-category-strategy-e2e.test.mjs",
+    "e2e:auto-listing:source-image-intelligence-trial": "node scripts/run-auto-listing-source-image-intelligence-trial.mjs",
     "db:migrate": "node server/db/migrate.mjs",
     "app": "pnpm --dir app dev",
     "build": "pnpm --dir app build",
     "package-extension": "node scripts/package-extension.mjs",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "verify:extension-upstream": "node scripts/verify-extension-upstream.mjs"
   },
   "dependencies": {
+    "@nodable/entities": "2.2.0",
     "ajv": "^8.20.0",
+    "cos-nodejs-sdk-v5": "3.0.0",
     "exceljs": "^4.4.0",
     "minio": "^8.0.6",
     "pg": "^8.16.3",
@@ -38,5 +44,6 @@
   "devDependencies": {
     "acorn": "^8.18.0",
     "playwright-core": "1.54.2"
-  }
+  },
+  "description": "ozon 粽子"
 }

@@ -953,7 +953,7 @@
       ? "平台"
       : "ozon 粽子";
     const displayName = runtime.displayName || displayNameFallback;
-    const webHost = runtime.webHost || (/__BRAND/.test('qh.jizhangerp.com') ? 'store.jizhangerp.com' : 'qh.jizhangerp.com');
+    const webHost = runtime.webHost || (/__BRAND/.test('www.ozonzongzi.com') ? 'www.ozonzongzi.com' : 'www.ozonzongzi.com');
     const primaryColor = runtime.primaryColor || '#2168ff';
     return { displayName, webHost, primaryColor, logoUrl: runtime.logoUrl || null };
   }
@@ -1401,7 +1401,7 @@
     const openResp = await sendRuntimeMessage({ action: 'openFrontend', path });
     if (openResp?.ok) return;
 
-    const frontendUrl = 'http://127.0.0.1:3000';
+    const frontendUrl = 'https://www.ozonzongzi.com';
     window.open(`${frontendUrl}${path}`, '_blank');
   }
 

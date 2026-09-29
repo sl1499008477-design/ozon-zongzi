@@ -3,10 +3,11 @@ import { types as utilTypes } from "node:util";
 export const AUTO_LISTING_PLANNING_CONTRACTS = Object.freeze({
   LEGACY: "LEGACY_FULL_PLAN_V3",
   FIXED: "FIXED_SKELETON_V1",
+  INTELLIGENT: "FIXED_SKELETON_SOURCE_IMAGE_V1",
 });
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
-const SELECTOR_KEYS = Object.freeze(["accountId", "sourceType", "collectItemId"]);
+const SELECTOR_KEYS = Object.freeze(["accountId", "sourceType", "collectItemId", "sourceImageIntelligenceEnabled"]);
 
 function exactDataObject(value, keys) {
   try {
@@ -26,11 +27,13 @@ function exactDataObject(value, keys) {
 export function selectAutoListingPlanningContract(raw = {}) {
   const input = exactDataObject(raw, SELECTOR_KEYS);
   if (!input) return AUTO_LISTING_PLANNING_CONTRACTS.LEGACY;
-  const { accountId, sourceType, collectItemId } = input;
+  const { accountId, sourceType, collectItemId, sourceImageIntelligenceEnabled } = input;
   if (!SAFE_ID.test(accountId) || !SAFE_ID.test(collectItemId)) {
     return AUTO_LISTING_PLANNING_CONTRACTS.LEGACY;
   }
-  return sourceType === "COLLECT_BOX"
-    ? AUTO_LISTING_PLANNING_CONTRACTS.FIXED
-    : AUTO_LISTING_PLANNING_CONTRACTS.LEGACY;
+  if (!["COLLECT_BOX", "EXCEL_SKU"].includes(sourceType) || typeof sourceImageIntelligenceEnabled !== "boolean") {
+    return AUTO_LISTING_PLANNING_CONTRACTS.LEGACY;
+  }
+  return sourceImageIntelligenceEnabled
+    ? AUTO_LISTING_PLANNING_CONTRACTS.INTELLIGENT : AUTO_LISTING_PLANNING_CONTRACTS.FIXED;
 }

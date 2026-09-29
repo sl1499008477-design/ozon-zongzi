@@ -1,0 +1,666 @@
+{
+  "provenance": "2026-09-24 same-task-30.json and same-task-tail.json: recorded totals, offsets, SKU and available filter fields only; detail responses are test fixtures.",
+  "pages": [
+    {
+      "offset": 0,
+      "response": {
+        "totals": "1000",
+        "items": [
+          {
+            "sku": "2032280055",
+            "avgPrice": 8388.858,
+            "avgGmv": 8388.858,
+            "soldCount": "691",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "1782030481",
+            "avgPrice": 8962.733,
+            "avgGmv": 8962.733,
+            "soldCount": "534",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3115356106",
+            "avgPrice": 372.15,
+            "avgGmv": 372.15,
+            "soldCount": "11770",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          },
+          {
+            "sku": "882366696",
+            "avgPrice": 22406.464,
+            "avgGmv": 22406.464,
+            "soldCount": "178",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "4281228872",
+            "avgPrice": 5764.945,
+            "avgGmv": 5764.945,
+            "soldCount": "579",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "162365898",
+            "avgPrice": 17101.807,
+            "avgGmv": 17101.807,
+            "soldCount": "193",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3115522169",
+            "avgPrice": 315.785,
+            "avgGmv": 315.785,
+            "soldCount": "9657",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          },
+          {
+            "sku": "4203363044",
+            "avgPrice": 543.865,
+            "avgGmv": 543.865,
+            "soldCount": "5202",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          },
+          {
+            "sku": "4281315943",
+            "avgPrice": 3979.302,
+            "avgGmv": 3979.302,
+            "soldCount": "671",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "1656069840",
+            "avgPrice": 21341.955,
+            "avgGmv": 21341.955,
+            "soldCount": "119",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "882367055",
+            "avgPrice": 22696.629,
+            "avgGmv": 22696.629,
+            "soldCount": "100",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "1663113574",
+            "avgPrice": 18886.977,
+            "avgGmv": 18886.977,
+            "soldCount": "117",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "5519885682",
+            "avgPrice": 5976.051,
+            "avgGmv": 5976.051,
+            "soldCount": "359",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "4827478181",
+            "avgPrice": 4472.465,
+            "avgGmv": 4472.465,
+            "soldCount": "476",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3388728104",
+            "avgPrice": 4926.081,
+            "avgGmv": 4926.081,
+            "soldCount": "426",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "1745058322",
+            "avgPrice": 23319.447,
+            "avgGmv": 23319.447,
+            "soldCount": "89",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "4101331372",
+            "avgPrice": 445.879,
+            "avgGmv": 445.879,
+            "soldCount": "4528",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          },
+          {
+            "sku": "2131300183",
+            "avgPrice": 185.576,
+            "avgGmv": 185.576,
+            "soldCount": "10753",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          },
+          {
+            "sku": "1725428041",
+            "avgPrice": 436.357,
+            "avgGmv": 436.357,
+            "soldCount": "4510",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          },
+          {
+            "sku": "4825211899",
+            "avgPrice": 11323.182,
+            "avgGmv": 11323.182,
+            "soldCount": "172",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3412262600",
+            "avgPrice": 9530.839,
+            "avgGmv": 9530.839,
+            "soldCount": "199",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "2099894613",
+            "avgPrice": 11967.221,
+            "avgGmv": 11967.221,
+            "soldCount": "158",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3227131946",
+            "avgPrice": 4027.398,
+            "avgGmv": 4027.398,
+            "soldCount": "464",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3338028951",
+            "avgPrice": 5048.382,
+            "avgGmv": 5048.382,
+            "soldCount": "367",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "1660771132",
+            "avgPrice": 12856.33,
+            "avgGmv": 12856.33,
+            "soldCount": "138",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3198406485",
+            "avgPrice": 532.489,
+            "avgGmv": 532.489,
+            "soldCount": "3308",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          },
+          {
+            "sku": "3931938552",
+            "avgPrice": 4745.245,
+            "avgGmv": 4745.245,
+            "soldCount": "363",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3020045773",
+            "avgPrice": 2679.08,
+            "avgGmv": 2679.08,
+            "soldCount": "633",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3199894003",
+            "avgPrice": 522.573,
+            "avgGmv": 522.573,
+            "soldCount": "3185",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          },
+          {
+            "sku": "5443710856",
+            "avgPrice": 7896.211,
+            "avgGmv": 7896.211,
+            "soldCount": "210",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          }
+        ]
+      }
+    },
+    {
+      "offset": 30,
+      "response": {
+        "totals": "1000",
+        "items": [
+          {
+            "sku": "799129253",
+            "avgPrice": 14924.013,
+            "avgGmv": 14924.013,
+            "soldCount": "110",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3822581590",
+            "avgPrice": 3119.056,
+            "avgGmv": 3119.056,
+            "soldCount": "522",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "799129249",
+            "avgPrice": 14001.157,
+            "avgGmv": 14001.157,
+            "soldCount": "116",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "2045356712",
+            "avgPrice": 12210.76,
+            "avgGmv": 12210.76,
+            "soldCount": "133",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3412260370",
+            "avgPrice": 9550.131,
+            "avgGmv": 9550.131,
+            "soldCount": "168",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "5155785545",
+            "avgPrice": 18714.274,
+            "avgGmv": 18714.274,
+            "soldCount": "85",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "2845909499",
+            "avgPrice": 232.649,
+            "avgGmv": 232.649,
+            "soldCount": "6835",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94631"
+          },
+          {
+            "sku": "3105940752",
+            "avgPrice": 4076.959,
+            "avgGmv": 4076.959,
+            "soldCount": "390",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3941197170",
+            "avgPrice": 8524.14,
+            "avgGmv": 8524.14,
+            "soldCount": "185",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "4350242324",
+            "avgPrice": 7717.184,
+            "avgGmv": 7717.184,
+            "soldCount": "204",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "4464574425",
+            "avgPrice": 6453.563,
+            "avgGmv": 6453.563,
+            "soldCount": "242",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "2053949151",
+            "avgPrice": 7553.498,
+            "avgGmv": 7553.498,
+            "soldCount": "206",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "1791027595",
+            "avgPrice": 16086.827,
+            "avgGmv": 16086.827,
+            "soldCount": "94",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3987165751",
+            "avgPrice": 8484.906,
+            "avgGmv": 8484.906,
+            "soldCount": "178",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3227398452",
+            "avgPrice": 4509.194,
+            "avgGmv": 4509.194,
+            "soldCount": "332",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "1663113261",
+            "avgPrice": 20774.429,
+            "avgGmv": 20774.429,
+            "soldCount": "72",
+            "salesSchema": "FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3486675371",
+            "avgPrice": 569.876,
+            "avgGmv": 569.876,
+            "soldCount": "2610",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          },
+          {
+            "sku": "3384900803",
+            "avgPrice": 6362.255,
+            "avgGmv": 6362.255,
+            "soldCount": "222",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "2339183765",
+            "avgPrice": 9651.96,
+            "avgGmv": 9651.96,
+            "soldCount": "143",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "2705740861",
+            "avgPrice": 2754.612,
+            "avgGmv": 2754.612,
+            "soldCount": "494",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "4434980030",
+            "avgPrice": 15253.801,
+            "avgGmv": 15253.801,
+            "soldCount": "89",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "4102965255",
+            "avgPrice": 11721.525,
+            "avgGmv": 11721.525,
+            "soldCount": "115",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "1586438115",
+            "avgPrice": 27467.299,
+            "avgGmv": 27467.299,
+            "soldCount": "49",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "3115735243",
+            "avgPrice": 556.83,
+            "avgGmv": 556.83,
+            "soldCount": "2402",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94631"
+          },
+          {
+            "sku": "3849697224",
+            "avgPrice": 2638.325,
+            "avgGmv": 2638.325,
+            "soldCount": "506",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "2483782317",
+            "avgPrice": 14632.644,
+            "avgGmv": 14632.644,
+            "soldCount": "91",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "2047364981",
+            "avgPrice": 9904.266,
+            "avgGmv": 9904.266,
+            "soldCount": "133",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "4920088958",
+            "avgPrice": 6794.595,
+            "avgGmv": 6794.595,
+            "soldCount": "192",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "570533176",
+            "avgPrice": 12858.972,
+            "avgGmv": 12858.972,
+            "soldCount": "101",
+            "salesSchema": "FBO,FBS",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94630"
+          },
+          {
+            "sku": "4261124509",
+            "avgPrice": 135.909,
+            "avgGmv": 135.909,
+            "soldCount": "9539",
+            "salesSchema": "FBO",
+            "category1Id": "17027482",
+            "category2Id": "64766017",
+            "category3Id": "94633"
+          }
+        ]
+      }
+    },
+    {
+      "offset": 990,
+      "response": {
+        "totals": "1000",
+        "items": [
+          {
+            "sku": "1768434684"
+          },
+          {
+            "sku": "278856061"
+          },
+          {
+            "sku": "5052557128"
+          },
+          {
+            "sku": "1529577706"
+          },
+          {
+            "sku": "5668143171"
+          },
+          {
+            "sku": "5234302116"
+          },
+          {
+            "sku": "1343160347"
+          },
+          {
+            "sku": "1057579794"
+          },
+          {
+            "sku": "318876932"
+          },
+          {
+            "sku": "346641525"
+          }
+        ]
+      }
+    },
+    {
+      "offset": 1000,
+      "response": {
+        "totals": "1000",
+        "items": []
+      }
+    }
+  ]
+}

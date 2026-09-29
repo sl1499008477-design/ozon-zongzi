@@ -1,0 +1,11 @@
+.ai-user-channel-table .ant-table-cell { vertical-align: top; overflow-wrap: anywhere; }
+.ai-user-channel-table .ai-user-channel-name { color: #005bff; text-decoration: none; }
+.ai-user-channel-table .ai-user-channel-name:hover { text-decoration: underline; }
+.ai-user-channel-table .ai-user-channel-name:focus-visible { outline: 2px solid #005bff; outline-offset: 3px; border-radius: 3px; }
+.ai-channel-money { display: flex; flex-direction: column; gap: 5px; font-variant-numeric: tabular-nums; }
+.ai-channel-money small, .ai-channel-muted, .ai-channel-pricing-editor p { color: #637493; }
+.ai-channel-pricing-editor { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,200px),1fr)); gap: 12px 16px; }
+.ai-channel-pricing-editor label { display: flex; flex-direction: column; gap: 6px; }
+.ai-channel-pricing-editor .ant-select { width: 100%; }
+.ai-channel-pricing-editor p { grid-column: 1 / -1; margin: 0; font-size: 12px; }
+.ai-user-channel-actions { display: grid; grid-template-columns: repeat(2,max-content); gap: 8px; }

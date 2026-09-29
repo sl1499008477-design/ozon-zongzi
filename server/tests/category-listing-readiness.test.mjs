@@ -28,6 +28,7 @@ const dataFile = path.join(dataDir, "local-state.json");
 const token = "category-readiness-token";
 const storeId = "category-readiness-store";
 let externalWriteCalls = 0;
+let treeCalls = 0;
 
 await writeFile(dataFile, JSON.stringify({
   token,
@@ -48,6 +49,7 @@ const originalFetch = globalThis.fetch;
 globalThis.fetch = async (url, options = {}) => {
   const href = String(url);
   if (href.endsWith("/v1/description-category/tree")) {
+    treeCalls += 1;
     return new Response(JSON.stringify({ result: [{
       description_category_id: 1,
       children: [{ type_id: 3, type_name: "Valid type", children: [] }],
@@ -98,7 +100,7 @@ try {
   const unavailable = await requestJson(handle, "/ozon/products/import/preview", { items: [item(2)] }, token, storeId);
   assert.notEqual(unavailable.status, 200, "category failures must fail preview closed");
   assert.equal(unavailable.body.ok, false);
-  assert.match(unavailable.body.code, /^OZON_CATEGORY_/);
+  assert.match(unavailable.body.code, /^ZONGZI_CATEGORY_/);
 
   const unresolved = await requestJson(handle, "/ozon/products/import/preview", {
     entry: "COLLECT_EDIT_AUTO_CATEGORY",
@@ -113,9 +115,19 @@ try {
 
   let createSubmissionCalls = 0;
   const finalState = JSON.parse(await readFile(dataFile, "utf8"));
+  const treeCallsBeforeSavedPreview = treeCalls;
+  const savedPreview = await testExports.previewOzonProductImport(
+    finalState,
+    { headers: { authorization: `Bearer ${token}`, "x-ozon-store-id": storeId } },
+    { items: [item(999)] },
+    { collectedSource: true },
+  );
+  assert.equal(savedPreview.items[0].type_id, 999, "saved preview must retain its stored category IDs");
+  assert.equal(treeCalls, treeCallsBeforeSavedPreview, "saved preview must not request the official category tree");
+
   const finalCategoryError = Object.assign(new Error("safe category failure"), {
     status: 503,
-    code: "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
+    code: "ZONGZI_CATEGORY_ATTRIBUTES_UNAVAILABLE",
     body: { operation: "ATTRIBUTES" },
     cause: null,
   });
@@ -131,7 +143,7 @@ try {
         createSubmissionV3: async () => { createSubmissionCalls += 1; },
       },
     ),
-    (error) => error === finalCategoryError && error.status === 503 && error.code === "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
+    (error) => error === finalCategoryError && error.status === 503 && error.code === "ZONGZI_CATEGORY_ATTRIBUTES_UNAVAILABLE",
   );
   assert.equal(createSubmissionCalls, 0, "final category failure must precede snapshot and job creation");
 
@@ -151,11 +163,12 @@ try {
       "PRODUCT_IMPORT",
       { categoryService: finalUnresolvedService, createSubmissionV3: async () => { createSubmissionCalls += 1; } },
     ),
-    (error) => error.status === 422 && error.code === "OZON_CATEGORY_DATA_INVALID" && error.cause === null,
+    (error) => error.status === 422 && error.code === "ZONGZI_CATEGORY_DATA_INVALID" && error.cause === null,
   );
   assert.equal(createSubmissionCalls, 0, "unresolved final dictionary value must precede snapshot and job creation");
 
   let prepareListingCalls = 0;
+  const preparedSavedSource = new Error('saved source reached snapshot preparation');
   await assert.rejects(
     () => testExports.queueCollectSubmissionV3(
       finalState,
@@ -174,19 +187,15 @@ try {
       {
         findListingPreparationReplayV3: async () => null,
         categoryService: {
-          getCategoryTree: async () => ({
-            items: [{ description_category_id: 1, children: [{ type_id: 3, type_name: "Valid type" }] }],
-          }),
+          getCategoryTree: async () => { throw new Error('saved collection must not recheck the official tree'); },
           getCategoryAttributes: async () => ({ items: [] }),
         },
-        prepareCollectItemForListing: async () => { prepareListingCalls += 1; },
+        prepareCollectItemForListing: async () => { prepareListingCalls += 1; throw preparedSavedSource; },
       },
     ),
-    (error) => error.status === 400
-      && error.body?.normalizedItemCount === 0
-      && /目标店铺类目待匹配/.test(error.message),
+    (error) => error === preparedSavedSource,
   );
-  assert.equal(prepareListingCalls, 0, "target-store category validation must precede listing snapshot creation");
+  assert.equal(prepareListingCalls, 1, "saved category IDs must reach snapshot preparation without a new official tree check");
 
   const state = JSON.parse(await readFile(dataFile, "utf8"));
   assert.deepEqual(state.jobs, {}, "category readiness failure must not create a listing job");

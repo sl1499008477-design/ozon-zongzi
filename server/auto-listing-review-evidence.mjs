@@ -12,3 +12,14 @@ export function hasCompleteReviewImageGroups({ visualGroups, images } = {}) {
     && groupImages.length <= 13
     && groupImages.filter((image) => image.role === "MAIN").length === 1);
 }
+
+export function isSourceImageConfirmationReviewEvidence(evidence = {}) {
+  const item = evidence?.item;
+  const analysis = evidence?.sourceImageAnalysis;
+  return item?.status === "BLOCKED"
+    && item.failureCode === "AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED"
+    && typeof item.currentSourceImageAnalysisRunId === "string"
+    && item.currentSourceImageAnalysisRunId.length > 0
+    && analysis?.analysisRunId === item.currentSourceImageAnalysisRunId
+    && analysis?.status === "CONFIRMATION_REQUIRED";
+}

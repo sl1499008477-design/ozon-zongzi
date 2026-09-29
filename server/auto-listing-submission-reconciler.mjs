@@ -67,7 +67,7 @@ function safeVariants(raw) {
 
 function richContentRejected(submission) {
   return safeVariants(submission?.items)
-    .some((item) => item.errorCode === "OZON_RICH_CONTENT_REJECTED");
+    .some((item) => ["ZONGZI_RICH_CONTENT_REJECTED", "OZON_RICH_CONTENT_REJECTED"].includes(item.errorCode));
 }
 
 function safeCategoryRecovery(value) {
@@ -170,7 +170,7 @@ function mapping(evidence) {
   if (IN_PROGRESS.has(status)) {
     if (evidence.submissionLinkStatus === "RECONCILING") return {
       itemStatus: "BLOCKED", linkStatus: "RECONCILING",
-      failureCode: "OZON_RECONCILIATION_REQUIRED",
+      failureCode: "ZONGZI_RECONCILIATION_REQUIRED",
       enqueueNextCheck: true, allowResubmission: false,
     };
     return {
@@ -180,7 +180,7 @@ function mapping(evidence) {
   }
   if (status === "SUCCEEDED" && richContentRejected(submission)) return {
     itemStatus: "BLOCKED", linkStatus: "BLOCKED",
-    failureCode: "OZON_RICH_CONTENT_REJECTED_REQUIRES_REVIEW",
+    failureCode: "ZONGZI_RICH_CONTENT_REJECTED_REQUIRES_REVIEW",
     enqueueNextCheck: false, allowResubmission: false,
   };
   if (status === "SUCCEEDED") return {
@@ -189,12 +189,12 @@ function mapping(evidence) {
   };
   if (status === "PARTIAL_SUCCESS") return {
     itemStatus: "BLOCKED", linkStatus: "BLOCKED",
-    failureCode: "OZON_PARTIAL_SUCCESS_REQUIRES_REVIEW",
+    failureCode: "ZONGZI_PARTIAL_SUCCESS_REQUIRES_REVIEW",
     enqueueNextCheck: false, allowResubmission: false,
   };
   if (status === "RECONCILING") return {
     itemStatus: "BLOCKED", linkStatus: "RECONCILING",
-    failureCode: "OZON_RECONCILIATION_REQUIRED",
+    failureCode: "ZONGZI_RECONCILIATION_REQUIRED",
     enqueueNextCheck: true, allowResubmission: false,
   };
   if (status === "FAILED") {
@@ -202,15 +202,15 @@ function mapping(evidence) {
     const errorCode = safeCode(submission?.errorCode ?? submission?.error_code);
     const provedNotSent = !taskId && errorCode === "SUBMISSION_NOT_SENT";
     return {
-      itemStatus: "BLOCKED", linkStatus: "BLOCKED", failureCode: "OZON_SUBMISSION_FAILED_REQUIRES_REVIEW",
+      itemStatus: "BLOCKED", linkStatus: "BLOCKED", failureCode: "ZONGZI_SUBMISSION_FAILED_REQUIRES_REVIEW",
       enqueueNextCheck: false, allowResubmission: false,
-      ...(provedNotSent ? { failureCode: "OZON_SUBMISSION_NOT_SENT_REQUIRES_ADMIN_RECOVERY" } : {}),
+      ...(provedNotSent ? { failureCode: "ZONGZI_SUBMISSION_NOT_SENT_REQUIRES_ADMIN_RECOVERY" } : {}),
     };
   }
   if (status === "CANCELLED") {
     const accepted = Boolean(safeText(submission?.ozonTaskId ?? submission?.ozon_task_id));
     return accepted ? {
-      itemStatus: "BLOCKED", linkStatus: "BLOCKED", failureCode: "OZON_RECONCILIATION_REQUIRED",
+      itemStatus: "BLOCKED", linkStatus: "BLOCKED", failureCode: "ZONGZI_RECONCILIATION_REQUIRED",
       enqueueNextCheck: false, allowResubmission: false,
     } : {
       itemStatus: "CANCELLED", linkStatus: "FAILED", failureCode: null,
@@ -258,7 +258,7 @@ export function createAutoListingSubmissionReconciler({ repository } = {}) {
         return duplicateResult(evidence);
       }
       const resolveReconciliationBlock = evidence.itemStatus === "BLOCKED"
-        && evidence.failureCode === "OZON_RECONCILIATION_REQUIRED" && next.itemStatus === "SUCCEEDED";
+        && ["ZONGZI_RECONCILIATION_REQUIRED", "OZON_RECONCILIATION_REQUIRED"].includes(evidence.failureCode) && next.itemStatus === "SUCCEEDED";
       return repository.applyReconciliation({
         ...request,
         jobId: evidence.jobId,

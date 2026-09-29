@@ -277,7 +277,7 @@
    * }} opts
    * @returns {Promise<{ sourceMap: Map<string, distilled>, failed: Array<{sku, error}> }>}
    */
-  async function collectBySkus(skus, opts = {}) {
+  async function collectBySkusImpl(skus, opts = {}) {
     const sourceMap = new Map();
     const failed = [];
     const total = skus.length;
@@ -452,7 +452,14 @@
     return { sourceMap, failed, antibotTripped, cooldownMs: antibotTripped ? ANTIBOT_COOLDOWN_MS : 0 };
   }
 
+  let activeCollections = 0;
+  async function collectBySkus(skus, opts = {}) {
+    activeCollections++;
+    try { return await collectBySkusImpl(skus, opts); } finally { activeCollections--; }
+  }
+
   root.JZSkuCollect = {
+    isBusy: () => activeCollections > 0,
     gateCheck,
     collectBySkus,
     pickItemForSku,

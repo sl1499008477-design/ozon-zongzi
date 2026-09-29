@@ -25,7 +25,7 @@
     'COLLECTOR_SESSION_CHANGED',
     'COLLECTOR_UPLOAD_FAILED',
     'COLLECT_REQUEST_FAILED',
-    'OZON_COLLECT_INCOMPLETE',
+    'ZONGZI_COLLECT_INCOMPLETE',
   ]);
   const PUBLIC_MISSING_FIELDS = new Set([
     'descriptionCategoryId',
@@ -58,7 +58,7 @@
     if (code === 'COLLECTOR_PERMISSION_DENIED' || code === 'COLLECTOR_SESSION_CHANGED') {
       return '请重新连接 Web 采集授权';
     }
-    if (code === 'OZON_COLLECT_INCOMPLETE') return '商品资料不完整，未写入采集箱';
+    if (code === 'ZONGZI_COLLECT_INCOMPLETE') return '商品资料不完整，未写入采集箱';
     return '采集上传失败，请稍后重试';
   }
 

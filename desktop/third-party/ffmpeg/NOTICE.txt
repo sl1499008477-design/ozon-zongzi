@@ -1,0 +1,23 @@
+FFmpeg / FFprobe 9.0.1 — @TARGET@
+
+These separately invoked command-line programs are FFmpeg GPL version 3 builds.
+FFmpeg is copyright the FFmpeg developers; see COPYING.GPLv3 and the bundled
+THIRD-PARTY-NOTICES.txt for the included components and their copyright notices.
+The application does not claim ownership of these programs.
+
+The corresponding source, dependency sources, patches and build instructions
+are distributed beside this application download in:
+  ffmpeg-source/@TARGET@/@SOURCE_ARCHIVE@
+SOURCE-RELEASE.json records the exact binary archives and source file hashes.
+BUILDING.md describes the corresponding build. The release download page must
+link this source archive alongside the installer / ZIP, without a login or fee.
+
+Built from FFmpeg 9.0.1 and x264 commit
+b35605ace3ddf7c1a5d67a2eb553f034aef41d55 using the included build instructions.
+There are no additional third-party multimedia libraries linked into this build.
+FFmpeg project: https://ffmpeg.org/
+x264 project: https://www.videolan.org/developers/x264.html
+
+manifest.json hashes describe the binaries before application signing.
+Application re-signing may change those bytes; the final application signature
+and installer / ZIP checksum cover the distributed result.

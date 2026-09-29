@@ -82,7 +82,10 @@
   function normalizeVideoUrl(raw) {
     const value = normalizeHttpUrl(raw);
     if (!value) return null;
-    if (!/\.mp4(?:[?#]|$)/i.test(value)) return null;
+    try {
+      const url = new URL(value);
+      if (/\s/u.test(value) || !['http:', 'https:'].includes(url.protocol) || !/\.mp4$/i.test(url.pathname)) return null;
+    } catch { return null; }
     return value;
   }
 

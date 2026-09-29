@@ -16,8 +16,13 @@ assert.match(
 );
 assert.equal(
   (devScript.match(/server\/auto-listing-ai-worker\.mjs/g) || []).length,
+  0,
+  "pnpm dev must not restart the retired auto-listing AI worker",
+);
+assert.equal(
+  (devScript.match(/server\/listing-worker\.mjs/g) || []).length,
   1,
-  "pnpm dev must start exactly one dedicated auto-listing AI worker",
+  "pnpm dev must keep the independent listing worker",
 );
 
 const host = "127.0.0.1";

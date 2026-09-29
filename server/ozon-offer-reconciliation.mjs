@@ -2,8 +2,8 @@ import { types } from "node:util";
 
 const MAX_TEXT = 2_000_000;
 const MAX_OFFERS = 100;
-const UNKNOWN_INVALID = Object.freeze({ status: "UNKNOWN", code: "OZON_OFFER_RECONCILIATION_INVALID" });
-const UNKNOWN_RESULT = Object.freeze({ status: "UNKNOWN", code: "OZON_OFFER_RECONCILIATION_UNKNOWN" });
+const UNKNOWN_INVALID = Object.freeze({ status: "UNKNOWN", code: "ZONGZI_OFFER_RECONCILIATION_INVALID" });
+const UNKNOWN_RESULT = Object.freeze({ status: "UNKNOWN", code: "ZONGZI_OFFER_RECONCILIATION_UNKNOWN" });
 const PRESENT = Object.freeze({ status: "PRESENT", code: "OZON_OFFER_PRESENT" });
 const ABSENT = Object.freeze({ status: "ABSENT", code: "OZON_OFFERS_CONFIRMED_ABSENT" });
 

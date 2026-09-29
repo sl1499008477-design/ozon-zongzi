@@ -36,7 +36,40 @@ export function postgresConfig() {
 export async function getPostgresPool() {
   if (!poolPromise) {
     const initialization = import("pg")
-      .then(({ Pool }) => new Pool(postgresConfig()))
+      .then(({ Pool, Query }) => {
+        const pool = new Pool({ ...postgresConfig(), max: Number(process.env.POSTGRES_POOL_MAX || 10) });
+        const connectionErrors = new WeakMap();
+        const onConnectionError = (error, client) => {
+          if (connectionErrors.has(client)) return;
+          connectionErrors.set(client, error);
+          // Do not log the Error/Client object: pg adds connection details to it.
+          console.error("[PostgreSQL] connection lost", { code: error.code, message: error.message });
+        };
+        pool.on("error", onConnectionError);
+        pool.on("connect", (client) => {
+          // pg removes its idle error listener while a client is checked out.
+          client.on("error", (error) => onConnectionError(error, client));
+          const query = client.query;
+          client.query = function (config, values, callback) {
+            const error = connectionErrors.get(client);
+            if (!error) return query.call(this, config, values, callback);
+            // A held transaction may lose its connection between queries. Return
+            // that original failure on COMMIT/ROLLBACK too, without sending SQL.
+            const failedQuery = typeof config?.submit === "function" ? config : new Query(config, values, callback);
+            if (!failedQuery.callback) {
+              failedQuery.callback = typeof values === "function" ? values : callback;
+            }
+            if (failedQuery.callback || failedQuery === config) {
+              process.nextTick(() => failedQuery.handleError(error, client.connection));
+              return failedQuery === config ? failedQuery : undefined;
+            }
+            return Promise.reject(error);
+          };
+          // pg marks errored clients non-queryable and discards them on release;
+          // idle clients are removed before the pool emits its error event.
+        });
+        return pool;
+      })
       .catch((error) => {
         throw new Error(`PostgreSQL 依赖未安装或不可用，请先执行 pnpm install。原始错误: ${error.message}`);
       });

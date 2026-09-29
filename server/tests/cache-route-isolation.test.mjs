@@ -256,10 +256,7 @@ try {
     ["/ozon/collect-box", ["collect_a"]],
     ["/ozon/favorites", ["favorite_a"]],
     ["/ozon/warehouses", ["warehouse_a"]],
-    ["/ozon/returns", ["return_a", "refund_a"]],
     ["/ozon/templates", ["product_template_a"]],
-    ["/ozon/message-templates", ["message_template_a"]],
-    ["/ozon/message-history", ["message_history_a"]],
   ];
   for (const [pathname, expectedIds] of reads) {
     const response = await requestJson(handle, "GET", pathname, undefined, "token_a", "store_a");
@@ -444,7 +441,8 @@ try {
     "token_a",
     "store_a",
   );
-  assert.equal(crossDelete.status, 404, "another account's template must not be deletable");
+  assert.equal(crossDelete.status, 410, "retired message templates must not be mutable");
+  assert.equal(crossDelete.body.code, "FEATURE_RETIRED");
 
   const crossCollectPatch = await requestJson(
     handle,
@@ -467,9 +465,9 @@ try {
   assert.deepEqual(firstId(importTasks.body), ["import_a"], "import task history must be account scoped");
 
   for (const [pathname, expectedCode] of [
-    ["/ozon/categories/tree", "OZON_CATEGORY_TREE_UNAVAILABLE"],
-    ["/ozon/description-category/20/attributes", "OZON_CATEGORY_TREE_UNAVAILABLE"],
-    ["/ozon/description-category/20/attributes/30/values", "OZON_CATEGORY_TREE_UNAVAILABLE"],
+    ["/ozon/categories/tree", "ZONGZI_CATEGORY_TREE_UNAVAILABLE"],
+    ["/ozon/description-category/20/attributes", "ZONGZI_CATEGORY_TREE_UNAVAILABLE"],
+    ["/ozon/description-category/20/attributes/30/values", "ZONGZI_CATEGORY_TREE_UNAVAILABLE"],
   ]) {
     const categoryResponse = await requestJson(
       handle,
@@ -503,9 +501,8 @@ try {
     "token_a",
     "store_a",
   );
-  assert.equal(createTemplate.status, 200);
-  assert.equal(createTemplate.body.item.accountId, "acct_a", "server must own the account scope");
-  assert.equal(createTemplate.body.item.storeId, "store_a", "server must own the store scope");
+  assert.equal(createTemplate.status, 410);
+  assert.equal(createTemplate.body.code, "FEATURE_RETIRED");
 
   const announcementWrite = await requestJson(
     handle,
@@ -551,11 +548,7 @@ try {
     assert.equal("dataCollectionStoreId" in item, false);
     assert.equal(findRetiredPublicScopePath(item.raw), "", `${id} nested raw data must not retain scope fields`);
   }
-  assert.ok(
-    persisted.caches.messageTemplates.some(
-      (item) => item.templateName === "Owned" && item.accountId === "acct_a" && item.storeId === "store_a",
-    ),
-  );
+  assert.ok(persisted.caches.messageTemplates.some((item) => item.id === "message_template_a"));
 
   console.log("cache route account isolation test passed");
 } finally {

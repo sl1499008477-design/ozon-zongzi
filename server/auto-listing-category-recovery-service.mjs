@@ -130,8 +130,8 @@ function absenceResult(raw) {
   const combinations = new Map([
     ["ABSENT", "OZON_OFFERS_CONFIRMED_ABSENT"],
     ["PRESENT", "OZON_OFFER_PRESENT"],
-    ["UNKNOWN", "OZON_OFFER_RECONCILIATION_INVALID"],
-    ["UNKNOWN", "OZON_OFFER_RECONCILIATION_UNKNOWN"],
+    ["UNKNOWN", "ZONGZI_OFFER_RECONCILIATION_INVALID"],
+    ["UNKNOWN", "ZONGZI_OFFER_RECONCILIATION_UNKNOWN"],
   ]);
   return value && combinations.get(value.status) === value.code ? value : null;
 }
@@ -394,7 +394,7 @@ export function createAutoListingCategoryRecoveryService({
         const invalidation = sharedTransition(await invalidateSharedCategory({
           accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
           expectedVersion: basis.oldSharedCategoryVersion,
-          safeFailureCode: "OZON_CATEGORY_INVALIDATED", transitionedAt: invalidatedAt,
+          safeFailureCode: "ZONGZI_CATEGORY_INVALIDATED", transitionedAt: invalidatedAt,
         }), currentSharedCategory, {
           accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
           status: "INVALIDATED", version: basis.oldSharedCategoryVersion + 1,
@@ -475,7 +475,7 @@ export function createAutoListingCategoryRecoveryService({
           const sharedReview = sharedTransition(await markSharedNeedsReview({
             accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
             expectedVersion: currentSharedCategoryVersion,
-            safeFailureCode: "OZON_CATEGORY_NEEDS_REVIEW", transitionedAt: reviewedAt,
+            safeFailureCode: "ZONGZI_CATEGORY_NEEDS_REVIEW", transitionedAt: reviewedAt,
           }), currentSharedCategory, {
             accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
             status: "NEEDS_REVIEW", version: currentSharedCategoryVersion + 1,

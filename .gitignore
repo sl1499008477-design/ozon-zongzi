@@ -12,4 +12,21 @@ app/dist/
 app/.vite/
 app/.npm-cache/
 server-data/
+app/public/downloads/collector/*.zip
+app/public/downloads/collector/*.exe
+outputs/software-downloads-*/
 .DS_Store
+
+# 当前品牌发布产物，源码与发布清单仍纳入版本管理
+outputs/ozon-zongzi-*/
+app/public/ozon 粽子-扩展-v*.zip
+
+# Local evidence, runtime data and distributable binaries are not source code.
+outputs/
+desktop/node_modules/
+desktop/release*/
+desktop/.cache/
+*.pyc
+__pycache__/
+*.pem
+*.key

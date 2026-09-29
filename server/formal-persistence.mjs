@@ -44,19 +44,12 @@ function dateOnlyOrNull(value) {
   return iso ? iso.slice(0, 10) : null;
 }
 
-function addDaysDateOnly(value, days) {
-  const dateOnly = dateOnlyOrNull(value);
-  if (!dateOnly) return null;
-  const [year, month, day] = dateOnly.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
-}
-
 function apiKeyCreatedAt(store = {}) {
   return dateOnlyOrNull(store.apiKeyCreatedAt || store.savedAt || store.createdAt || store.updatedAt);
 }
 
 function apiKeyExpiresAt(store = {}) {
-  return dateOnlyOrNull(store.apiKeyExpiresAt) || addDaysDateOnly(apiKeyCreatedAt(store), 180);
+  return dateOnlyOrNull(store.apiKeyExpiresAt);
 }
 
 function bool(value, fallback = false) {
@@ -499,24 +492,6 @@ function productIdentity(product = {}, state = {}) {
     sku,
     offerId,
   };
-}
-
-async function existingProductDbId(client, identity = {}) {
-  if (identity.storeId && identity.productId) {
-    const row = await client.query(
-      "SELECT id FROM products WHERE store_id = $1 AND product_id = $2 LIMIT 1",
-      [identity.storeId, identity.productId],
-    );
-    if (row.rows[0]?.id) return row.rows[0].id;
-  }
-  if (identity.storeId && identity.sku) {
-    const row = await client.query(
-      "SELECT id FROM products WHERE store_id = $1 AND sku = $2 LIMIT 1",
-      [identity.storeId, identity.sku],
-    );
-    if (row.rows[0]?.id) return row.rows[0].id;
-  }
-  return identity.id;
 }
 
 function warehouseIdentity(row = {}, storeId = "") {
@@ -1268,9 +1243,18 @@ async function mirrorProducts(client, state = {}) {
   const stores = storeById(state);
   const productIdsByStore = new Map();
   const warehouseIdsByStore = new Map();
+  const storeIds = [...new Set((state.caches?.products || []).map(row => productStoreId(row, state)).filter(Boolean))];
+  const existing = storeIds.length ? (await client.query(
+    'SELECT id, store_id, product_id, sku FROM products WHERE store_id=ANY($1::text[])', [storeIds],
+  )).rows : [];
+  const byProduct = new Map(existing.filter(row=>row.product_id).map(row=>[`${row.store_id}:${row.product_id}`,row.id]));
+  const bySku = new Map(existing.filter(row=>row.sku).map(row=>[`${row.store_id}:${row.sku}`,row.id]));
   for (const product of state.caches?.products || []) {
     const identity = productIdentity(product, state);
-    const productDbId = await existingProductDbId(client, identity);
+    const productDbId = byProduct.get(`${identity.storeId}:${identity.productId}`)
+      || bySku.get(`${identity.storeId}:${identity.sku}`) || identity.id;
+    if (identity.productId) byProduct.set(`${identity.storeId}:${identity.productId}`, productDbId);
+    if (identity.sku) bySku.set(`${identity.storeId}:${identity.sku}`, productDbId);
     if (!productIdsByStore.has(identity.storeId)) productIdsByStore.set(identity.storeId, new Set());
     productIdsByStore.get(identity.storeId).add(productDbId);
     const store = stores.get(identity.storeId) || {};
@@ -1463,24 +1447,31 @@ function mergeSnapshotIds(target, source) {
   return target;
 }
 
-async function pruneStoreCatalogSnapshots(client, state, productIdsByStore, warehouseIdsByStore) {
+async function pruneStoreCatalogSnapshots(client, state, productIdsByStore, warehouseIdsByStore, {
+  products = true,
+  warehouses = true,
+} = {}) {
   for (const store of state.stores || []) {
     const storeId = text(store.id, 160);
     if (!storeId) continue;
     const productIds = [...(productIdsByStore.get(storeId) || [])];
     const warehouseIds = [...(warehouseIdsByStore.get(storeId) || [])];
-    await client.query(
-      `DELETE FROM products
-       WHERE store_id=$1
-         AND NOT (id = ANY($2::text[]))`,
-      [storeId, productIds],
-    );
-    await client.query(
-      `DELETE FROM warehouses
-       WHERE store_id=$1
-         AND NOT (id = ANY($2::text[]))`,
-      [storeId, warehouseIds],
-    );
+    if (products) {
+      await client.query(
+        `DELETE FROM products
+         WHERE store_id=$1
+           AND NOT (id = ANY($2::text[]))`,
+        [storeId, productIds],
+      );
+    }
+    if (warehouses) {
+      await client.query(
+        `DELETE FROM warehouses
+         WHERE store_id=$1
+           AND NOT (id = ANY($2::text[]))`,
+        [storeId, warehouseIds],
+      );
+    }
   }
 }
 
@@ -1613,7 +1604,7 @@ async function mirrorAuditEvents(client, state = {}) {
   }
 }
 
-function hydratedProductRow(row = {}) {
+export function hydratedProductRow(row = {}) {
   const raw = row.raw && typeof row.raw === "object" ? row.raw : {};
   return {
     ...raw,
@@ -1681,24 +1672,102 @@ export async function hydrateStoreCatalogFromRelationalTables(pool, state = {}) 
   return state;
 }
 
-export async function mirrorStateToRelationalTablesInTransaction(client, state = {}) {
+// The compatibility JSON is still authoritative for these settings. Remember
+// their loaded values so saving one setting never replays an unrelated catalog.
+function formalMirrorSnapshot(state, { includeCatalog = true } = {}) {
+  const domains = {
+    accounts: [state.accounts, state.sessions, state.token, state.currentAccountId, state.sessionIssuedAt],
+    collector: [state.collectorAuthTickets, state.collectorSessions],
+    stores: [state.stores, state.currentStoreId, state.currentStoreIdsByAccount],
+    files: state.caches?.files,
+    orders: state.caches?.postings,
+    jobs: state.jobs,
+    audit: state.auditEvents,
+  };
+  let catalog = null;
+  if (includeCatalog) {
+    const byStore = new Map((state.stores || []).map(store => [String(store.id), { products: [], warehouses: [] }]));
+    for (const kind of ['products', 'warehouses']) {
+      for (const row of state.caches?.[kind] || []) {
+        const id = productStoreId(row, state);
+        if (!byStore.has(id)) byStore.set(id, { products: [], warehouses: [] });
+        byStore.get(id)[kind].push(row);
+      }
+    }
+    catalog = Object.fromEntries([...byStore].map(([id, value]) => [id, JSON.stringify(value)]));
+  }
+  return { domains: Object.fromEntries(Object.entries(domains).map(([key, value]) => [key, JSON.stringify(value)])),
+    catalog };
+}
+
+export function captureFormalMirrorBaseline(state, {
+  includeCatalog = state.__formalMirrorBaseline?.catalog !== null,
+} = {}) {
+  Object.defineProperty(state, '__formalMirrorBaseline', { value: formalMirrorSnapshot(state, { includeCatalog }),
+    enumerable: false, configurable: true, writable: true });
+  return state;
+}
+
+export async function mirrorStateToRelationalTablesInTransaction(client, state = {}, {
+  catalogMutation = null,
+} = {}) {
+  const baseline = state.__formalMirrorBaseline;
+  const current = baseline ? formalMirrorSnapshot(state, { includeCatalog: baseline.catalog !== null }) : null;
+  const changed = key => !baseline || baseline.domains[key] !== current.domains[key];
   const deletionResult = await deleteRemovedAccountScopes(client, state);
-  await mirrorAccounts(client, state);
-  await mirrorCollectorAuthState(client, state);
-  const storeResult = await mirrorStores(client, state);
-  await mirrorFiles(client, state);
-  const warehouseIdsByStore = await mirrorWarehouses(client, state);
-  const productSnapshot = await mirrorProducts(client, state);
-  mergeSnapshotIds(warehouseIdsByStore, productSnapshot.warehouseIdsByStore);
-  await pruneStoreCatalogSnapshots(
-    client,
-    state,
-    productSnapshot.productIdsByStore,
-    warehouseIdsByStore,
-  );
-  await mirrorOrders(client, state);
-  await mirrorJobs(client, state);
-  await mirrorAuditEvents(client, state);
+  if (changed('accounts')) await mirrorAccounts(client, state);
+  if (changed('collector')) await mirrorCollectorAuthState(client, state);
+  const storeResult = changed('stores') ? await mirrorStores(client, state) : {};
+  if (changed('files')) await mirrorFiles(client, state);
+  // A settings/account-only load never owns the relational catalog. In
+  // particular, changing currentStoreId must not remap unscoped legacy rows.
+  const mutationStoreId = text(catalogMutation?.storeId, 160);
+  const mutationKind = ['products', 'warehouses'].includes(catalogMutation?.kind)
+    ? catalogMutation.kind
+    : '';
+  if (mutationStoreId && mutationKind) {
+    const catalogState = { ...state,
+      stores: (state.stores || []).filter(store => String(store.id) === mutationStoreId),
+      caches: { ...state.caches,
+        products: mutationKind === 'products'
+          ? (state.caches?.products || []).filter(row => productStoreId(row, state) === mutationStoreId)
+          : [],
+        warehouses: mutationKind === 'warehouses'
+          ? (state.caches?.warehouses || []).filter(row => productStoreId(row, state) === mutationStoreId)
+          : [],
+      } };
+    if (mutationKind === 'products') {
+      const productSnapshot = await mirrorProducts(client, catalogState);
+      await pruneStoreCatalogSnapshots(
+        client, catalogState, productSnapshot.productIdsByStore, new Map(),
+        { products: true, warehouses: false },
+      );
+    } else {
+      const warehouseIdsByStore = await mirrorWarehouses(client, catalogState);
+      await pruneStoreCatalogSnapshots(
+        client, catalogState, new Map(), warehouseIdsByStore,
+        { products: false, warehouses: true },
+      );
+    }
+  } else {
+    const changedStores = baseline?.catalog === null ? new Set() : baseline ? new Set([...new Set([...Object.keys(baseline.catalog), ...Object.keys(current.catalog)])]
+      .filter(id => baseline.catalog[id] !== current.catalog[id])) : null;
+    if (!changedStores || changedStores.size) {
+      const catalogState = !changedStores ? state : { ...state,
+        stores: (state.stores || []).filter(store => changedStores.has(String(store.id))),
+        caches: { ...state.caches,
+          products: (state.caches?.products || []).filter(row => changedStores.has(productStoreId(row, state))),
+          warehouses: (state.caches?.warehouses || []).filter(row => changedStores.has(productStoreId(row, state))),
+        } };
+      const warehouseIdsByStore = await mirrorWarehouses(client, catalogState);
+      const productSnapshot = await mirrorProducts(client, catalogState);
+      mergeSnapshotIds(warehouseIdsByStore, productSnapshot.warehouseIdsByStore);
+      await pruneStoreCatalogSnapshots(client, catalogState, productSnapshot.productIdsByStore, warehouseIdsByStore);
+    }
+  }
+  if (changed('orders')) await mirrorOrders(client, state);
+  if (changed('jobs')) await mirrorJobs(client, state);
+  if (changed('audit')) await mirrorAuditEvents(client, state);
   return {
     ...deletionResult,
     persistedStateChanged: deletionResult.persistedStateChanged
@@ -1731,7 +1800,6 @@ export async function mirrorStateToRelationalTables(pool, state = {}) {
 }
 
 export async function formalPersistenceHealth(pool) {
-  await ensureFormalSchema(pool);
   const result = await pool.query(`
     SELECT
       (SELECT COUNT(*)::INT FROM accounts) AS accounts,

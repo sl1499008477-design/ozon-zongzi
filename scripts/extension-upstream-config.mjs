@@ -1,3 +1,5 @@
+export const UPSTREAM_PARITY_NOTICE = "未验证：原版扩展对照未纳入本次日常检查；如需验证，请提供原包目录并运行 pnpm verify:extension-upstream。";
+
 const extensionVersionParts = (value) => {
   const normalized = String(value || "").trim();
   if (!/^\d+(?:\.\d+){2,3}$/.test(normalized)) {

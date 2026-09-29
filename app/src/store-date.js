@@ -1,3 +1,16 @@
+const localDayFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+export const localDayKey = (value = new Date()) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return localDayFormatter.format(date);
+};
+
 export const dateInputValue = (value) => {
   if (!value) return "";
   const text = String(value).trim();
@@ -12,13 +25,6 @@ export const todayDateOnly = () => {
   return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())).toISOString().slice(0, 10);
 };
 
-const addDaysDateOnly = (value, days) => {
-  const dateOnly = dateInputValue(value);
-  if (!dateOnly) return "";
-  const [year, month, day] = dateOnly.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
-};
-
 const daysUntilDateOnly = (value) => {
   const dateOnly = dateInputValue(value);
   if (!dateOnly) return null;
@@ -29,26 +35,10 @@ const daysUntilDateOnly = (value) => {
   return Math.ceil((target - today) / 86400000);
 };
 
-const apiKeyCreatedDateForStore = (store = {}) => dateInputValue(
-  store.apiKeyCreatedAt
-  || store.apiKeyCreated_at
-  || store.savedAt
-  || store.createdAt
-  || store.updatedAt
-  || store.updated_at,
-);
-
 export const displayApiKeyDeadline = (store = {}) => {
-  const explicitCreatedAt = dateInputValue(store.apiKeyCreatedAt || store.apiKeyCreated_at);
-  const createdAt = explicitCreatedAt || apiKeyCreatedDateForStore(store);
-  const deadline = createdAt
-    ? addDaysDateOnly(createdAt, 180)
-    : dateInputValue(store.apiKeyExpiresAt || store.apiKeyExpires_at);
-  if (!deadline) return "未设置";
+  const deadline = dateInputValue(store.apiKeyExpiresAt || store.apiKeyExpires_at);
+  if (!deadline) return "未知";
   const days = daysUntilDateOnly(deadline);
   if (days === null) return deadline;
-  const suffix = createdAt && !explicitCreatedAt ? "（按新增日）" : "";
-  return days >= 0
-    ? `${deadline} · 剩 ${days} 天${suffix}`
-    : `${deadline} · 已过期 ${Math.abs(days)} 天${suffix}`;
+  return days >= 0 ? `${deadline} · 剩 ${days} 天` : `${deadline} · 已过期 ${Math.abs(days)} 天`;
 };

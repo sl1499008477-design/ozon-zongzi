@@ -70,6 +70,7 @@ function jsonHarness(body, {
   let saved = 0;
   const response = {};
   const handler = createJsonAccountScopedCollectionHandler({
+    checkAdmission: async ({item}) => item, // Official intake checks have their own focused boundary tests.
     authenticate: async () => ({ id: "json-account" }),
     readJson: async (request) => request?.bodyOverride ?? body,
     normalizeItem: (item) => {
@@ -157,7 +158,7 @@ test("PostgreSQL collection reuses its caller-owned transaction client without r
       refreshBundle: {},
       now: new Date("2026-08-03T00:00:00.000Z"),
     }),
-    (error) => error?.code === "OZON_ENRICHMENT_COLLECT_ITEM_NOT_FOUND",
+    (error) => error?.code === "ZONGZI_ENRICHMENT_COLLECT_ITEM_NOT_FOUND",
   );
   assert.equal(connectCalls, 0);
   assert.equal(statements.some((sql) => /^(BEGIN|COMMIT|ROLLBACK)/.test(sql)), false);
@@ -181,6 +182,27 @@ test("PostgreSQL collection returns the same enriched draft that it mirrors", ()
     descriptionCategoryId: "",
     typeId: "",
   });
+});
+
+test("public Ozon characteristics survive collection preparation into the listing draft", () => {
+  const sourceCharacteristics = [
+    { name: "Бренд в одежде и обуви", value: "New Balance" },
+    { name: "Пол", value: "Мужской" },
+  ];
+  const prepared = prepareCollectRequestV4({
+    authenticatedAccount: { id: "prepare-account" },
+    input: collectInput({
+      sourceSku: "characteristics-sku",
+      requestId: "characteristics-request",
+      payload: {
+        sku: "characteristics-sku",
+        name: "Кроссовки New Balance",
+        sourceCharacteristics,
+      },
+    }),
+  });
+
+  assert.deepEqual(buildCollectItemDraftV4(prepared.normalizedItem).sourceCharacteristics, sourceCharacteristics);
 });
 
 test("batch preflight accepts missing enrichment fields but rejects invalid payload shape", () => {
@@ -943,7 +965,7 @@ test("collection shape and identity validation remain fail closed", () => {
         payload: { sku: "strict-incomplete", name: "Public title" },
       }),
     }),
-    (error) => error?.status === 422 && error?.code === "OZON_COLLECT_INCOMPLETE",
+    (error) => error?.status === 422 && error?.code === "ZONGZI_COLLECT_INCOMPLETE",
   );
 });
 
@@ -1247,7 +1269,7 @@ if (!postgresEnabled()) {
           }),
         }),
         (error) => error?.status === 409
-          && error?.code === "OZON_ENRICHMENT_COLLECT_ITEM_CONFLICT",
+          && error?.code === "ZONGZI_ENRICHMENT_COLLECT_ITEM_CONFLICT",
       );
       const persisted = await pool.query(
         `SELECT

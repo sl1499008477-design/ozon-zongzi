@@ -8,7 +8,7 @@ const MAX_NODES = 10_000;
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const UNRESOLVED = Object.freeze({
   status: "UNRESOLVED",
-  reasonCode: "OZON_SOURCE_LOOKUP_UNRESOLVED",
+  reasonCode: "ZONGZI_SOURCE_LOOKUP_UNRESOLVED",
 });
 
 function positiveInteger(value) {
@@ -86,6 +86,7 @@ function safeStoreCredential(value) {
     ownerAccountId,
     clientId: safeText(read("clientId"), 500),
     apiKey: safeText(read("apiKey"), 4000),
+    ...(["CN","RU","LEGACY"].includes(read("ozonRoute"))?{ozonRoute:read("ozonRoute")}:{}),
   };
 }
 

@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
-import "../env.mjs";
+import "./support/dedicated-postgres-test-environment.mjs";
 import { closePostgresPool, getPostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
-import { getActivePricingConfig } from "../pricing-config-service.mjs";
 import {
   appendCollectorRunEvent,
   canTransitionCollectorRun,
@@ -28,8 +27,10 @@ import {
   updateCollectorExport,
   upsertCollectorCategoryMapping,
   upsertCollectorMarketSnapshot,
-  upsertCollectorRunItem,
+  upsertCollectorRunItem as saveCollectorRunItem,
 } from "../collector-desktop-service.mjs";
+// This suite exercises scope/lease/storage; official admission has its own fixture.
+const upsertCollectorRunItem = input => saveCollectorRunItem(input,{checkAdmission:async({item})=>item});
 
 assert.equal(canTransitionCollectorTask("NOT_STARTED", "QUEUED"), true);
 assert.equal(canTransitionCollectorTask("RUNNING", "COMPLETED"), true);
@@ -240,7 +241,6 @@ try {
   assert.deepEqual(task.configuration.nested, { rows: [{ keep: "task-row" }], keep: true });
   assert.equal(await getCollectorTaskForAccount(accountB, task.id), null);
 
-  await getActivePricingConfig({ accountId: accountA });
   await pool.query(
     `INSERT INTO collector_tasks (
        id,account_id,operating_store_id,data_collection_store_id,name,task_type,source,created_by
@@ -290,7 +290,10 @@ try {
   assert.equal(Object.hasOwn(queued.run, "dataCollectionStoreId"), false);
   assert.equal(Object.hasOwn(queued.run.configurationSnapshot, "sellerCompanyId"), false);
   assert.equal(Object.hasOwn(queued.run.configurationSnapshot, "dataCollectionStoreId"), false);
-  assert.ok(queued.run.pricingConfigVersionId);
+  assert.equal(queued.run.pricingConfigVersionId, "", "collection without pricing does not select or require a pricing configuration");
+  assert.equal((await pool.query(
+    'SELECT pricing_config_version_id FROM collector_task_runs WHERE id=$1', [queued.run.id],
+  )).rows[0].pricing_config_version_id, null);
 
   const duplicate = await queueCollectorTaskRun({
     accountId: accountA,

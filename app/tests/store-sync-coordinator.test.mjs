@@ -53,8 +53,6 @@ test("full sync calls each backend type once and emits only its state transition
     assert.deepEqual(STORE_SYNC_TYPES, [
       "WAREHOUSES",
       "PRODUCTS",
-      "POSTINGS",
-      "PROMOTIONS",
     ]);
     assert.deepEqual(
       calls.map((call) => call.path),
@@ -88,7 +86,7 @@ test("a failed type preserves successful results and reports a sanitized backend
   const calls = [];
   const states = await runBackendStoreSync({
     storeId: "store-a",
-    types: ["WAREHOUSES", "PRODUCTS", "POSTINGS"],
+    types: ["WAREHOUSES", "PRODUCTS"],
     request: async (path, options) => {
       calls.push(path);
       const type = path.split("/").at(-1);
@@ -103,7 +101,7 @@ test("a failed type preserves successful results and reports a sanitized backend
       }
       throw Object.assign(new Error("商品同步失败"), {
         status: 502,
-        code: "OZON_NETWORK_ERROR",
+        code: "ZONGZI_NETWORK_ERROR",
         body: {
           accountId: "account-a",
           storeId: "store-a",
@@ -111,7 +109,7 @@ test("a failed type preserves successful results and reports a sanitized backend
           timestamp: "2026-07-29T12:00:01.000Z",
           taskId: options.body.jobId,
           requestId: options.body.requestId,
-          code: "OZON_NETWORK_ERROR",
+          code: "ZONGZI_NETWORK_ERROR",
           message: "商品同步失败",
           details: {
             apiPath: "/v3/product/list",
@@ -125,7 +123,6 @@ test("a failed type preserves successful results and reports a sanitized backend
   assert.deepEqual(calls, [
     "/local/sync/WAREHOUSES",
     "/local/sync/PRODUCTS",
-    "/local/sync/POSTINGS",
   ]);
   assert.equal(states[0].status, "SUCCESS");
   assert.deepEqual(states[0].result, terminalReport("WAREHOUSES", {
@@ -140,14 +137,13 @@ test("a failed type preserves successful results and reports a sanitized backend
     timestamp: "2026-07-29T12:00:01.000Z",
     taskId: states[1].taskId,
     requestId: states[1].error.requestId,
-    code: "OZON_NETWORK_ERROR",
+    code: "ZONGZI_NETWORK_ERROR",
     message: "商品同步失败",
     details: {
       apiPath: "/v3/product/list",
       phase: "请求",
     },
   });
-  assert.equal(states[2].status, "SUCCESS");
 });
 
 test("single-type retry calls only the requested backend endpoint", async () => {
@@ -155,12 +151,12 @@ test("single-type retry calls only the requested backend endpoint", async () => 
   const snapshots = [];
   const states = await runBackendStoreSync({
     storeId: "store-a",
-    types: ["POSTINGS"],
+    types: ["PRODUCTS"],
     request: async (path, options) => {
       calls.push({ path, options });
       return {
         ok: true,
-        job: terminalReport("POSTINGS", {
+        job: terminalReport("PRODUCTS", {
           taskId: options.body.jobId,
           requestId: options.body.requestId,
         }),
@@ -171,11 +167,11 @@ test("single-type retry calls only the requested backend endpoint", async () => 
     },
   });
 
-  assert.deepEqual(calls.map((call) => call.path), ["/local/sync/POSTINGS"]);
+  assert.deepEqual(calls.map((call) => call.path), ["/local/sync/PRODUCTS"]);
   assert.equal(states.length, 1);
-  assert.equal(states[0].type, "POSTINGS");
+  assert.equal(states[0].type, "PRODUCTS");
   assert.equal(states[0].status, "SUCCESS");
-  assert.deepEqual(statusHistory(snapshots, "POSTINGS"), [
+  assert.deepEqual(statusHistory(snapshots, "PRODUCTS"), [
     "PENDING",
     "RUNNING",
     "SUCCESS",
@@ -185,7 +181,7 @@ test("single-type retry calls only the requested backend endpoint", async () => 
 test("a transport failure does not expose unstructured error text", async () => {
   const [state] = await runBackendStoreSync({
     storeId: "store-a",
-    types: ["PROMOTIONS"],
+    types: ["PRODUCTS"],
     request: async () => {
       throw Object.assign(new Error("Bearer transport-secret"), {
         code: "NETWORK_ERROR",
@@ -197,4 +193,16 @@ test("a transport failure does not expose unstructured error text", async () => 
   assert.equal(state.error.code, "NETWORK_ERROR");
   assert.equal(state.error.message, "店铺同步失败");
   assert.equal(JSON.stringify(state.error).includes("transport-secret"), false);
+});
+
+test("retired order and promotion syncs are rejected without a backend request", async () => {
+  for (const type of ["POSTINGS", "PROMOTIONS"]) {
+    let calls = 0;
+    await assert.rejects(runBackendStoreSync({
+      storeId: "store-a",
+      types: [type],
+      request: async () => { calls += 1; },
+    }), { code: "STORE_SYNC_TYPE_UNSUPPORTED" });
+    assert.equal(calls, 0);
+  }
 });

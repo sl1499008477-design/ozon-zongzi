@@ -162,7 +162,7 @@ test("accepts explicit empty items or data arrays and rejects malformed 2xx resp
   assert.deepEqual(rowsOf({ data: [] }), []);
   assert.throws(
     () => rowsOf({ ok: true }),
-    (error) => error?.code === "OZON_CATEGORY_UI_UNAVAILABLE"
+    (error) => error?.code === "ZONGZI_CATEGORY_UI_UNAVAILABLE"
       && error.message === CATEGORY_DICTIONARY_ERROR_MESSAGE,
   );
 });

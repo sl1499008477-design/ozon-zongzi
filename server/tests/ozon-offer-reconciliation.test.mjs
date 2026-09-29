@@ -80,7 +80,7 @@ test("hostile or oversized input fails closed before every port call", async () 
     let calls = 0;
     const service = createOzonOfferReconciliation({ callOzon: async () => { calls += 1; } });
     const result = await service.confirmOfferAbsent(candidate);
-    assert.deepEqual(result, { status: "UNKNOWN", code: "OZON_OFFER_RECONCILIATION_INVALID" });
+    assert.deepEqual(result, { status: "UNKNOWN", code: "ZONGZI_OFFER_RECONCILIATION_INVALID" });
     assert.equal(calls, 0);
   }
 });

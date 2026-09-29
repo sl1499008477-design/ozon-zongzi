@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 
 import {
@@ -19,6 +20,33 @@ function scriptedClient(steps) {
       return step;
     },
   };
+}
+
+const canonical = (value) => Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+const digest = (value) => crypto.createHash("sha256")
+  .update(JSON.stringify(canonical(value))).digest("hex");
+
+function cleanupAssessment(sourceAssetId = "source-a", overrides = {}) {
+  const value = {
+    contractVersion: "AUTO_LISTING_SOURCE_IMAGE_INTELLIGENCE_V2",
+    sourceAssetId, sourceOrdinal: 0, objectKey: "auto-listing/source/a.png",
+    contentHash: "a".repeat(64), parentSourceAssetId: null, terminalStatus: "ANALYZED",
+    contentKinds: ["PRODUCT_VIEW"],
+    viewpoints: [{ kind: "FRONT", confidence: "CONFIRMED", reasonCodes: [] }],
+    subjectBounds: { x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+    quality: { confidence: "CONFIRMED", usable: true, reasonCodes: [] },
+    ocrRegions: [], semanticTextRegions: [],
+    markings: [{
+      kind: "EXTERNAL_OVERLAY", region: { x: 0.02, y: 0.02, width: 0.2, height: 0.08 },
+      confidence: "CONFIRMED", reasonCodes: ["FIXED_CANVAS_POSITION"],
+    }],
+    perceptualDuplicateGroup: null, duplicateOfSourceAssetId: null,
+    eligibleUses: ["IDENTITY_ANCHOR", "TARGET_VIEW"], reasonCodes: [],
+    ...overrides,
+  };
+  return { ...value, assessmentHash: digest(value) };
 }
 
 test("stageInitialPlanWork atomically locks a frozen-profile item, transitions SOURCE_READY and writes closed audit+PLAN work", async () => {
@@ -50,7 +78,7 @@ test("stageInitialPlanWork atomically locks a frozen-profile item, transitions S
   const outboxValues = client.calls[3].values;
   const payload = JSON.parse(outboxValues.find((value) => typeof value === "string" && value.startsWith("{")));
   assert.deepEqual(payload, {
-    contractVersion: "V1", accountId: "account-a", itemId: "item-a", phase: "PLAN_CONTENT",
+    contractVersion: "V3", accountId: "account-a", itemId: "item-a", phase: "PLAN_CONTENT",
     expectedStatusVersion: 2, correlationId: "correlation-a",
   });
   assert.doesNotMatch(JSON.stringify(client.calls), /https?:|prompt|api.?key|secret|raw.?error/iu);
@@ -59,10 +87,290 @@ test("stageInitialPlanWork atomically locks a frozen-profile item, transitions S
 test("workflow factory is closed and exposes only the transaction stage port and transactional outcome port", () => {
   const pool = { async connect() {}, async query() {} };
   const workflow = createPostgresAutoListingAiWorkflow({ pool });
-  assert.deepEqual(Object.keys(workflow).sort(), ["applyPhaseOutcome", "stageInitialPlanWork"]);
+  assert.deepEqual(Object.keys(workflow).sort(), ["applyPhaseOutcome", "requeueChannelFailure", "stageInitialPlanWork"]);
   assert.throws(() => createPostgresAutoListingAiWorkflow({ pool, profileId: "global-profile" }), {
     code: "AUTO_LISTING_AI_WORKFLOW_INVALID",
   });
+});
+
+test("v3 reservation busy durably defers the exact generation while preserving item and fixed channel", async () => {
+  const client = scriptedClient([
+    {},
+    { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    {},
+  ]);
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...client, release() {} }; } },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const result = await workflow.applyPhaseOutcome({
+    message,
+    outcome: {
+      contractVersion: "V1", disposition: "RETRY", phase: "PLAN_CONTENT", outcome: "IN_PROGRESS",
+      retryable: true, failureCode: "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+      correlationId: "correlation-a", failureScope: "RESERVATION_BUSY",
+      deliveryState: null, retryAfterMs: 30_000,
+    },
+    execution: v3Execution(),
+  });
+
+  assert.deepEqual(result, { disposition: "DEFERRED", status: "PLANNING",
+    statusVersion: 2, enqueued: 0 });
+  assert.match(client.calls[3].sql, /execution_lease_owner=NULL/iu);
+  assert.doesNotMatch(client.calls[3].sql, /assigned_job_id=NULL/iu);
+  assert.match(client.calls[4].sql, /state='PENDING'[\s\S]*next_retry_at=NOW\(\)\+\(\$7 \* INTERVAL '1 millisecond'\)/iu);
+  assert.equal(client.calls[4].values[6], 30_000);
+  assert.equal(client.calls.some(({ sql }) => /UPDATE auto_listing_job_items/iu.test(sql)), false);
+});
+
+test("v3 reservation busy rejects a failure code belonging to another phase before PostgreSQL", async () => {
+  let connections = 0;
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: {
+      async query() {},
+      async connect() { connections += 1; throw new Error("must not connect"); },
+    },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  await assert.rejects(workflow.applyPhaseOutcome({
+    message,
+    outcome: {
+      contractVersion: "V1", disposition: "RETRY", phase: "PLAN_CONTENT", outcome: "IN_PROGRESS",
+      retryable: true, failureCode: "AUTO_LISTING_IMAGE_IN_PROGRESS",
+      correlationId: "correlation-a", failureScope: "RESERVATION_BUSY",
+      deliveryState: null, retryAfterMs: 30_000,
+    },
+    execution: v3Execution(),
+  }), { code: "AUTO_LISTING_AI_WORKFLOW_INVALID" });
+  assert.equal(connections, 0);
+});
+
+test("v3 factory outcome contract requires execution fencing and locks outbox item and channel before writes", async () => {
+  const calls = [];
+  const client = {
+    async query(sql, values = []) {
+      calls.push({ sql, values });
+      if (sql === "BEGIN") return {};
+      if (/set_config/iu.test(sql)) return { rowCount: 1, rows: [{}] };
+      if (/FOR UPDATE OF outbox,item,channel/iu.test(sql)) return { rowCount: 0, rows: [] };
+      if (sql === "COMMIT") return {};
+      throw new Error(`unexpected query: ${sql}`);
+    },
+    release() {},
+  };
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return client; } },
+  });
+  const message = {
+    contractVersion: "V1", accountId: "account-a", itemId: "item-a", phase: "PLAN_CONTENT",
+    expectedStatusVersion: 2, correlationId: "correlation-a",
+  };
+  const execution = {
+    outboxId: "outbox-a", dispatchGeneration: 2, channelId: "channel-a",
+    connectionId: "connection-a", connectionVersion: 3,
+    leaseOwner: "worker-a", leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+  const result = await workflow.applyPhaseOutcome({
+    message,
+    outcome: {
+      ...outcome("PLAN_CONTENT", "PLAN_READY"),
+      failureScope: null, deliveryState: null, retryAfterMs: null,
+    },
+    execution,
+  });
+
+  assert.equal(result.disposition, "STALE");
+  assert.match(calls[2].sql, /dispatch_generation[\s\S]*execution_lease_token[\s\S]*FOR UPDATE OF outbox,item,channel/iu);
+  assert.equal(calls.some(({ sql }) => /UPDATE auto_listing_job_items/iu.test(sql)), false);
+});
+
+function v3Execution() {
+  return {
+    outboxId: "outbox-a", dispatchGeneration: 2, channelId: "channel-a",
+    connectionId: "connection-a", connectionVersion: 3,
+    leaseOwner: "worker-a", leaseToken: "worker-token-a",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+}
+
+function channelOutcome(code, failureScope, deliveryState, retryAfterMs = null) {
+  return {
+    contractVersion: "V1", disposition: "RETRY", phase: "PLAN_CONTENT", outcome: "FAILED",
+    retryable: true, failureCode: code, correlationId: "correlation-a",
+    failureScope, deliveryState, retryAfterMs,
+  };
+}
+
+test("NOT_SENT channel revalidation cools and requeues atomically without consuming uncertainty", async () => {
+  const client = scriptedClient([
+    {},
+    { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    {},
+  ]);
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...client, release() {} }; } },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const result = await workflow.requeueChannelFailure({
+    message,
+    outcome: channelOutcome("AI_GATEWAY_UNAUTHORIZED", "CHANNEL_REVALIDATION", "NOT_SENT"),
+    execution: v3Execution(),
+  });
+
+  assert.deepEqual(result, { disposition: "REQUEUED", status: "PLANNING",
+    statusVersion: 2, enqueued: 0, uncertainResultCount: 0 });
+  assert.match(client.calls[2].sql, /FOR UPDATE OF outbox,item,channel/iu);
+  assert.match(client.calls[3].sql, /requires_revalidation=requires_revalidation OR \$9/iu);
+  assert.equal(client.calls[3].values[7], 60_000);
+  assert.equal(client.calls[3].values[8], true);
+  assert.match(client.calls[4].sql, /state='PENDING'[\s\S]*publication_id=NULL[\s\S]*next_retry_at=NOW\(\)/iu);
+  assert.equal(client.calls[4].values[6], 0);
+});
+
+test("POSSIBLY_SENT requeues below five bounded attempts, then the fifth uncertain result becomes a retryable item failure", async () => {
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const first = scriptedClient([
+    {}, { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] }, {},
+  ]);
+  const firstWorkflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...first, release() {} }; } },
+  });
+  assert.equal((await firstWorkflow.requeueChannelFailure({
+    message,
+    outcome: channelOutcome("AI_GATEWAY_UNEXPECTED_EOF", "CHANNEL_TRANSIENT", "POSSIBLY_SENT"),
+    execution: v3Execution(),
+  })).uncertainResultCount, 1);
+  assert.equal(first.calls[4].values[6], 1);
+
+  const fourth = scriptedClient([
+    {}, { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 3,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] }, {},
+  ]);
+  const fourthWorkflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...fourth, release() {} }; } },
+  });
+  assert.equal((await fourthWorkflow.requeueChannelFailure({
+    message,
+    outcome: channelOutcome("AI_GATEWAY_UNEXPECTED_EOF", "CHANNEL_TRANSIENT", "POSSIBLY_SENT"),
+    execution: v3Execution(),
+  })).uncertainResultCount, 4);
+  assert.equal(fourth.calls[4].values[6], 4);
+
+  const fifth = scriptedClient([
+    {}, { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 4,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ status: "PLANNING", status_version: 2,
+      active_content_plan_id: null, planning_contract: "FIXED_SKELETON_V1" }] },
+    { rowCount: 1, rows: [{ status: "RETRYABLE_ERROR", status_version: 3 }] },
+    { rowCount: 1, rows: [{ id: "event-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    {},
+  ]);
+  const fifthWorkflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...fifth, release() {} }; } },
+  });
+  const result = await fifthWorkflow.requeueChannelFailure({
+    message,
+    outcome: channelOutcome("INVALID_GATEWAY_RESPONSE", "CHANNEL_TRANSIENT", "POSSIBLY_SENT"),
+    execution: v3Execution(),
+  });
+  assert.deepEqual(result, { disposition: "APPLIED", status: "RETRYABLE_ERROR",
+    statusVersion: 3, enqueued: 0 });
+  assert.equal(fifth.calls[4].values.includes("AUTO_LISTING_AI_RESULT_UNCERTAIN"), true);
+  assert.match(fifth.calls[6].sql, /uncertain_result_count=\$7/iu);
+  assert.equal(fifth.calls[6].values[6], 5);
+  assert.match(fifth.calls[7].sql, /consecutive_failure_count=consecutive_failure_count\+1/iu);
+  assert.match(fifth.calls[9].sql, /assigned_job_id=CASE WHEN enabled AND \$8/iu);
+});
+
+test("a disabled busy channel finishes the accepted outcome then releases assignment and resets expired health", async () => {
+  const client = scriptedClient([
+    {}, { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: false }] },
+    { rowCount: 1, rows: [{ status: "PLANNING", status_version: 2,
+      active_content_plan_id: "plan-a", planning_contract: "FIXED_SKELETON_V1" }] },
+    { rowCount: 1, rows: [{ id: "plan-a", parent_plan_id: null,
+      derivation_kind: null, visual_groups: { groups: [] }, plan: {} }] },
+    { rowCount: 1, rows: [{ id: "event-a" }] },
+    { rowCount: 1, rows: [{ id: "next-outbox" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    {},
+  ]);
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...client, release() {} }; } },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "PLAN_CONTENT", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const result = await workflow.applyPhaseOutcome({
+    message,
+    outcome: outcome("PLAN_CONTENT", "PLAN_READY"),
+    execution: v3Execution(),
+  });
+  assert.deepEqual(result, { disposition: "APPLIED", status: "PLANNING",
+    statusVersion: 2, enqueued: 1 });
+  assert.match(client.calls[8].sql, /assigned_job_id=CASE WHEN enabled AND \$8[\s\S]*consecutive_failure_count=CASE WHEN \$9 THEN 0/iu);
+  assert.equal(client.calls[8].values[7], true, "AI phase would normally keep affinity");
+  assert.equal(client.calls[8].values[8], true, "ACK resets channel health");
+  assert.match(client.calls[7].sql, /state='COMPLETED'/iu);
+});
+
+test("an enabled busy channel advances its fixed assignment to the next phase status version", async () => {
+  const client = scriptedClient([
+    {}, { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a", uncertain_result_count: 0,
+      status: "PLANNING", status_version: 2, enabled: true }] },
+    { rowCount: 1, rows: [{ status: "PLANNING", status_version: 2,
+      active_content_plan_id: "plan-derived", planning_contract: "FIXED_SKELETON_V1" }] },
+    { rowCount: 1, rows: [{ id: "plan-derived", parent_plan_id: "plan-parent",
+      derivation_kind: "SOURCE_MATERIALIZATION", plan: { slots: [{ slotKey: "slot-main", role: "MAIN" }] } }] },
+    { rowCount: 1, rows: [{ status: "GENERATING", status_version: 3 }] },
+    { rowCount: 1, rows: [{ id: "event-a" }] },
+    { rowCount: 1, rows: [{ id: "next-outbox" }] },
+    { rowCount: 1, rows: [{ id: "outbox-a" }] },
+    { rowCount: 1, rows: [{ channel_id: "channel-a" }] },
+    {},
+  ]);
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...client, release() {} }; } },
+  });
+  const message = { contractVersion: "V1", accountId: "account-a", itemId: "item-a",
+    phase: "FINALIZE_MATERIALIZED_PLAN", expectedStatusVersion: 2, correlationId: "correlation-a" };
+  const result = await workflow.applyPhaseOutcome({
+    message,
+    outcome: { ...outcome("FINALIZE_MATERIALIZED_PLAN", "MATERIALIZED_PLAN_READY"),
+      failureScope: null, deliveryState: null, retryAfterMs: null },
+    execution: v3Execution(),
+  });
+
+  assert.equal(result.statusVersion, 3);
+  assert.match(client.calls[9].sql, /assigned_status_version=CASE WHEN enabled AND \$8 THEN \$10::INTEGER ELSE NULL END/iu);
+  assert.equal(client.calls[9].values[9], 3);
 });
 
 test("stageInitialPlanWork is idempotent only when the exact transition event and closed PLAN work already exist", async () => {
@@ -94,10 +402,12 @@ test("stageInitialPlanWork is idempotent only when the exact transition event an
 });
 
 function outcome(phase, value, overrides = {}) {
-  return {
+  const result = {
     contractVersion: "V1", disposition: "ACK", phase, outcome: value, retryable: false,
     failureCode: null, correlationId: "correlation-a", ...overrides,
   };
+  return { ...result, failureScope: result.disposition === "ACK" ? null : "BUSINESS",
+    deliveryState: null, retryAfterMs: null };
 }
 
 function applyInput(client, phase, value, overrides = {}) {
@@ -169,6 +479,157 @@ test("apply rejects RETRY before a database read and stale or cancelled final re
     assert.equal(result.disposition, row.status === "CANCELLED" ? "CANCELLED" : "STALE");
     assert.equal(client.calls.length, 1);
   }
+});
+
+test("reconcile blocks confirmation or unusable identity evidence without enqueuing paid downstream work", async () => {
+  for (const fixture of [
+    { run: { status: "CONFIRMATION_REQUIRED", summary: null, summary_hash: null },
+      failureCode: "AUTO_LISTING_SOURCE_IMAGE_CONFIRMATION_REQUIRED" },
+    { run: { status: "ACCEPTED", summary: { summaryHash: "6".repeat(64), eligibleAssetIds: [] }, summary_hash: "6".repeat(64) },
+      failureCode: "AUTO_LISTING_SOURCE_IMAGE_EVIDENCE_INSUFFICIENT" },
+  ]) {
+    const client = scriptedClient([
+      { rowCount: 1, rows: [{
+        status: "PLANNING", status_version: 2, active_content_plan_id: null,
+        planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+        current_source_image_analysis_run_id: "run-a",
+      }] },
+      { rowCount: 1, rows: [{ id: "run-a", expected_asset_count: 1, ...fixture.run }] },
+      { rowCount: 1, rows: [{ source_asset_id: "source-a", record_status: "ACCEPTED" }] },
+      { rowCount: 1, rows: [{ status: "BLOCKED", status_version: 3 }] },
+      { rowCount: 1, rows: [{ id: "blocked-event" }] },
+    ]);
+    const result = await applyAutoListingAiPhaseOutcome(applyInput(
+      client, "RECONCILE_SOURCE_IMAGE_ANALYSIS", "SOURCE_IMAGE_ANALYSIS_READY", { phaseTargetId: "run-a" },
+    ));
+    assert.deepEqual(result, { disposition: "APPLIED", status: "BLOCKED", statusVersion: 3, enqueued: 0 });
+    assert.equal(client.calls[3].values[6], fixture.failureCode);
+    assert.equal(client.calls.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/iu.test(sql)), false);
+  }
+});
+
+test("the last accepted V2 analysis batch skips new cleanup and enqueues reconciliation", async () => {
+  const assessment = cleanupAssessment();
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "PLANNING", status_version: 2, active_content_plan_id: null,
+      planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+      current_source_image_analysis_run_id: "run-a",
+    }] },
+    { rowCount: 1, rows: [{ id: "run-a", expected_asset_count: 1, status: "ANALYZING" }] },
+    { rowCount: 1, rows: [{
+      source_asset_id: "source-a", source_ordinal: 0, record_status: "ACCEPTED",
+      analysis_batch_id: "batch-a", assessment,
+    }] },
+    { rowCount: 1, rows: [{ id: "batch-audit" }] },
+    { rowCount: 1, rows: [{ id: "reconcile-outbox" }] },
+  ]);
+
+  const result = await applyAutoListingAiPhaseOutcome(applyInput(
+    client, "ANALYZE_SOURCE_IMAGE_BATCH", "SOURCE_IMAGE_BATCH_ACCEPTED", {
+      phaseTargetId: "batch-a",
+    },
+  ));
+
+  assert.deepEqual(result, { disposition: "APPLIED", status: "PLANNING", statusVersion: 2, enqueued: 1 });
+  assert.equal(client.calls.some(({ sql }) => /auto_listing_source_image_derivatives/iu.test(sql)), false);
+  const message = JSON.parse(client.calls[4].values[7]);
+  assert.deepEqual(Object.keys(message).sort(), [
+    "accountId", "analysisRunId", "contractVersion", "correlationId",
+    "expectedStatusVersion", "itemId", "phase",
+  ]);
+  assert.equal(message.phase, "RECONCILE_SOURCE_IMAGE_ANALYSIS");
+  assert.equal(message.analysisRunId, "run-a");
+});
+
+test("a stored cleanup candidate resumes at CHECK without reserving another paid image attempt", async () => {
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "PLANNING", status_version: 2, planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+      current_source_image_analysis_run_id: "run-a",
+    }] },
+    { rowCount: 1, rows: [{
+      derivative_attempt_id: "derivative-attempt-a", analysis_run_id: "run-a", source_asset_id: "source-a",
+      expected_status_version: 2, attempt_no: 1, status: "GENERATED",
+    }] },
+    { rowCount: 1, rows: [{ id: "generated-audit" }] },
+    { rowCount: 1, rows: [{ id: "check-outbox-a" }] },
+  ]);
+
+  const result = await applyAutoListingAiPhaseOutcome(applyInput(
+    client, "CLEAN_SOURCE_IMAGE_OVERLAY", "SOURCE_IMAGE_CLEANUP_GENERATED", {
+      phaseTargetId: "derivative-attempt-a",
+    },
+  ));
+  assert.equal(result.enqueued, 1);
+  assert.equal(client.calls.some(({ sql }) => /INSERT INTO auto_listing_source_image_derivatives/iu.test(sql)), false);
+  const message = JSON.parse(client.calls[3].values[7]);
+  assert.equal(message.phase, "CHECK_SOURCE_IMAGE_CLEANUP");
+  assert.equal(message.derivativeAttemptId, "derivative-attempt-a");
+  assert.equal(message.analysisRunId, "run-a");
+});
+
+test("a rejected cleanup check reserves only the next deterministic attempt and never starts planning", async () => {
+  const assessment = cleanupAssessment();
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "PLANNING", status_version: 2, planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+      current_source_image_analysis_run_id: "run-a",
+    }] },
+    { rowCount: 1, rows: [{
+      derivative_attempt_id: "derivative-attempt-a", analysis_run_id: "run-a", source_asset_id: "source-a",
+      expected_status_version: 2, attempt_no: 1, status: "REJECTED",
+      check_result: { reasonCodes: ["OVERLAY_REMAINS"] },
+    }] },
+    { rowCount: 1, rows: [{ assessment }] },
+    { rowCount: 1, rows: [{ id: "derivative-row-b" }] },
+    { rowCount: 1, rows: [{ id: "rejected-audit" }] },
+    { rowCount: 1, rows: [{ id: "retry-clean-outbox" }] },
+  ]);
+
+  const result = await applyAutoListingAiPhaseOutcome(applyInput(
+    client, "CHECK_SOURCE_IMAGE_CLEANUP", "SOURCE_IMAGE_CLEANUP_REJECTED", {
+      phaseTargetId: "derivative-attempt-a",
+    },
+  ));
+  assert.equal(result.enqueued, 1);
+  assert.match(client.calls[3].sql, /INSERT INTO auto_listing_source_image_derivatives/iu);
+  const message = JSON.parse(client.calls[5].values[7]);
+  assert.equal(message.phase, "CLEAN_SOURCE_IMAGE_OVERLAY");
+  assert.notEqual(message.derivativeAttemptId, "derivative-attempt-a");
+  assert.equal(client.calls.some(({ values }) => values.some?.((value) => typeof value === "string"
+    && value.includes("PLAN_CONTENT"))), false);
+});
+
+test("a third cleanup rejection is terminal for cleanup and proceeds to reviewable reconciliation", async () => {
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "PLANNING", status_version: 2, planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+      current_source_image_analysis_run_id: "run-a",
+    }] },
+    { rowCount: 1, rows: [{
+      derivative_attempt_id: "derivative-attempt-c", analysis_run_id: "run-a", source_asset_id: "source-a",
+      expected_status_version: 2, attempt_no: 3, status: "REJECTED",
+      check_result: { reasonCodes: ["PRODUCT_IDENTITY_CHANGED"] },
+    }] },
+    { rowCount: 1, rows: [{ id: "third-rejected-audit" }] },
+    { rowCount: 1, rows: [{
+      source_asset_id: "source-a", record_status: "ACCEPTED", assessment: cleanupAssessment(),
+      attempt_no: 3, derivative_status: "REJECTED",
+    }] },
+    { rowCount: 1, rows: [{ id: "reconcile-outbox" }] },
+  ]);
+
+  const result = await applyAutoListingAiPhaseOutcome(applyInput(
+    client, "CHECK_SOURCE_IMAGE_CLEANUP", "SOURCE_IMAGE_CLEANUP_REJECTED", {
+      phaseTargetId: "derivative-attempt-c",
+    },
+  ));
+  assert.deepEqual(result, { disposition: "APPLIED", status: "PLANNING", statusVersion: 2, enqueued: 1 });
+  assert.equal(client.calls.some(({ sql }) => /INSERT INTO auto_listing_source_image_derivatives/iu.test(sql)), false);
+  const message = JSON.parse(client.calls[4].values[7]);
+  assert.equal(message.phase, "RECONCILE_SOURCE_IMAGE_ANALYSIS");
+  assert.equal(message.analysisRunId, "run-a");
 });
 
 test("accepted materialization waits for every unique parent reference then enqueues FINALIZE exactly once", async () => {
@@ -247,10 +708,24 @@ test("image aggregation waits until every active-plan slot is terminal and then 
     "GENERATE_IMAGE_SLOT", "IMAGE_SLOT_ACCEPTED", { phaseTargetId: "slot-main", expectedStatusVersion: 3 }))).enqueued, 0);
   assert.match(waiting.calls[3].sql, /LEFT JOIN skipped s ON s\.slot_key=p\.slot_key/iu);
   assert.doesNotMatch(waiting.calls[3].sql, /LEFT JOIN skipped s USING\s*\(slot_key\)/iu);
-  assert.doesNotMatch(waiting.calls[3].sql, /accepted[\s\S]*expected_status_version/iu,
-    "accepted assets from the same active plan must survive a controlled retry version change");
-  assert.doesNotMatch(waiting.calls[3].sql, /skipped[\s\S]*correlation_id/iu,
-    "skipped slots from the same active plan must survive a controlled retry correlation change");
+  assert.match(waiting.calls[3].sql,
+    /SELECT DISTINCT ON \(asset\.slot_key\)[\s\S]*asset\.created_at[\s\S]*asset\.expected_status_version IS NULL OR asset\.expected_status_version<=\$5[\s\S]*asset\.expected_status_version DESC NULLS LAST,\s*asset\.created_at DESC/iu,
+    "the latest versioned accepted asset wins while legacy NULL-version evidence remains visible");
+  assert.match(waiting.calls[3].sql,
+    /latest_group_checks[\s\S]*status='REJECTED'[\s\S]*result->'retrySlotKeys' \? asset\.slot_key[\s\S]*COALESCE\(asset\.expected_status_version,0\)<=group_check\.expected_status_version/iu,
+    "a rejected group check must make its old accepted assets pending until newer replacements pass");
+  assert.match(waiting.calls[3].sql, /skipped[\s\S]*details->>'statusVersion'=\$5::TEXT/iu,
+    "a controlled retry must wait for every slot instead of inheriting an earlier run's skip");
+  assert.match(waiting.calls[3].sql,
+    /SELECT DISTINCT ON \(details->>'slotKey'\)[\s\S]*created_at[\s\S]*ORDER BY details->>'slotKey',created_at DESC,id DESC/iu,
+    "only the latest current-version skip participates in terminal aggregation");
+  assert.match(waiting.calls[3].sql,
+    /WHEN s\.slot_key IS NOT NULL AND \(a\.slot_key IS NULL OR s\.created_at>=a\.created_at\)\s+THEN 'SKIPPED'\s+WHEN a\.slot_key IS NOT NULL THEN 'ACCEPTED'/iu,
+    "a newer/equal skip supersedes historical acceptance but a later acceptance survives an earlier skip");
+  assert.match(waiting.calls[3].sql,
+    /plan\.prompt_template_version='AUTO_LISTING_CONTENT_PLAN_FILL_V6'[\s\S]*planned_slot->>'role'='MAIN'/iu,
+    "a V6 MAIN accepted with the required product title remains terminal even when it has no display claims");
+  assert.equal(waiting.calls[3].values[4], 3);
 
   const complete = scriptedClient([
     { rowCount: 1, rows: [{ status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived" }] },
@@ -297,6 +772,320 @@ test("image aggregation continues after optional slots are skipped when MAIN plu
   assert.equal(client.calls.some(({ sql }) => /UPDATE auto_listing_job_items/iu.test(sql)), false);
 });
 
+test("a rejected image-group check requeues only its returned completed slots", async () => {
+  const slots = ["group-a", "group-b"].flatMap((visualGroupKey) => Array.from({ length: 6 }, (_, index) => ({
+    slotKey: `${visualGroupKey}-slot-${index + 1}`,
+    role: index === 0 ? "MAIN" : "DETAIL",
+    visualGroupKey,
+  })));
+  const plan = {
+    ...imagePlan(),
+    visual_groups: { groups: [{ visualGroupKey: "group-a" }, { visualGroupKey: "group-b" }] },
+    plan: { slots },
+  };
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived",
+      planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    }] },
+    { rowCount: 1, rows: [plan] },
+    { rowCount: 1, rows: [{
+      id: "image-group-check-b", visual_group_key: "group-b", expected_status_version: 3, status: "REJECTED",
+      result: { retrySlotKeys: ["group-b-slot-2", "group-b-slot-4"] },
+    }] },
+    { rowCount: 2, rows: [
+      { slot_key: "group-b-slot-2", role: "DETAIL", attempt_count: 3 },
+      { slot_key: "group-b-slot-4", role: "DETAIL", attempt_count: 3 },
+    ] },
+    { rowCount: 1, rows: [{ status: "GENERATING", status_version: 4 }] },
+    { rowCount: 1, rows: [{ id: "group-retry-event" }] },
+    { rowCount: 1, rows: [{ id: "group-b-slot-2-outbox" }] },
+    { rowCount: 1, rows: [{ id: "group-b-slot-4-outbox" }] },
+  ]);
+
+  const result = await applyAutoListingAiPhaseOutcome(applyInput(
+    client, "CHECK_IMAGE_GROUP", "IMAGE_GROUP_RETRY_QUEUED", {
+      phaseTargetId: "group-b", expectedStatusVersion: 3,
+    },
+  ));
+
+  assert.deepEqual(result, { disposition: "APPLIED", status: "GENERATING", statusVersion: 4, enqueued: 2 });
+  assert.match(client.calls[3].sql, /JOIN ai_generation_assets/iu);
+  assert.match(client.calls[3].sql, /FILTER\s*\(WHERE asset\.status='ACCEPTED'\)/iu);
+  assert.deepEqual(client.calls[3].values, [
+    "account-a", "job-a", "item-a", "plan-derived", ["group-b-slot-2", "group-b-slot-4"],
+  ]);
+  assert.match(client.calls[4].sql, /UPDATE auto_listing_job_items[\s\S]*status_version=status_version\+1/iu);
+  assert.match(client.calls[5].sql, /INSERT INTO auto_listing_events/iu);
+  assert.equal(client.calls[5].values[7], "AI_IMAGE_GROUP_RETRY_QUEUED");
+  assert.equal(client.calls.slice(6).every(({ sql }) => /INSERT INTO auto_listing_ai_outbox/iu.test(sql)), true);
+  assert.deepEqual(client.calls.slice(6).map(({ values }) => [values[8], values[6]]), [
+    [4, "group-b-slot-2"], [4, "group-b-slot-4"],
+  ]);
+});
+
+test("an exhausted soft image-group replacement enters manual review with a warning instead of looping", async () => {
+  const slots = Array.from({ length: 6 }, (_, index) => ({
+    slotKey: `group-a-slot-${index + 1}`,
+    role: index === 0 ? "MAIN" : "DETAIL",
+    visualGroupKey: "group-a",
+  }));
+  const plan = {
+    ...imagePlan(),
+    visual_groups: { groups: [{ visualGroupKey: "group-a" }] },
+    plan: { slots },
+  };
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived",
+      planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    }] },
+    { rowCount: 1, rows: [plan] },
+    { rowCount: 1, rows: [{
+      id: "image-group-check-a", visual_group_key: "group-a", expected_status_version: 3,
+      status: "REJECTED", result: {
+        retrySlotKeys: ["group-a-slot-2"],
+        reasonCodes: ["IMAGE_GROUP_DUPLICATE_VIEW"],
+        identityMismatchSlotKeys: [],
+      },
+    }] },
+    { rowCount: 1, rows: [{ slot_key: "group-a-slot-2", role: "DETAIL", attempt_count: 4 }] },
+    { rowCount: 1, rows: [{ id: "warning-event" }] },
+    { rowCount: 1, rows: [{ id: "rich-outbox" }] },
+  ]);
+
+  const result = await applyAutoListingAiPhaseOutcome(applyInput(
+    client, "CHECK_IMAGE_GROUP", "IMAGE_GROUP_RETRY_QUEUED", {
+      phaseTargetId: "group-a", expectedStatusVersion: 3,
+    },
+  ));
+
+  assert.deepEqual(result, { disposition: "APPLIED", status: "GENERATING", statusVersion: 3, enqueued: 1 });
+  assert.match(client.calls[4].sql, /INSERT INTO auto_listing_events/iu);
+  assert.equal(client.calls[4].values[7], "AI_IMAGE_GROUP_RETRY_EXHAUSTED");
+  assert.deepEqual(JSON.parse(client.calls[4].values[9]), {
+    planId: "plan-derived",
+    visualGroupKey: "group-a",
+    retrySlotKeys: ["group-a-slot-2"],
+    reasonCodes: ["IMAGE_GROUP_DUPLICATE_VIEW"],
+  });
+  assert.equal(JSON.parse(client.calls[5].values[7]).phase, "GENERATE_RICH_CONTENT");
+  assert.equal(client.calls.some(({ sql }) => /UPDATE auto_listing_job_items/iu.test(sql)), false);
+});
+
+test("an exhausted hard image-group identity failure still blocks the item", async () => {
+  const slots = Array.from({ length: 6 }, (_, index) => ({
+    slotKey: `group-a-slot-${index + 1}`,
+    role: index === 0 ? "MAIN" : "DETAIL",
+    visualGroupKey: "group-a",
+  }));
+  const plan = {
+    ...imagePlan(),
+    visual_groups: { groups: [{ visualGroupKey: "group-a" }] },
+    plan: { slots },
+  };
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived",
+      planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    }] },
+    { rowCount: 1, rows: [plan] },
+    { rowCount: 1, rows: [{
+      id: "image-group-check-a", visual_group_key: "group-a", expected_status_version: 3,
+      status: "REJECTED", result: {
+        retrySlotKeys: ["group-a-slot-2"],
+        reasonCodes: ["IMAGE_GROUP_IDENTITY_MISMATCH"],
+        identityMismatchSlotKeys: ["group-a-slot-2"],
+      },
+    }] },
+    { rowCount: 1, rows: [{ slot_key: "group-a-slot-2", role: "DETAIL", attempt_count: 4 }] },
+    { rowCount: 1, rows: [{ status: "BLOCKED", status_version: 4 }] },
+    { rowCount: 1, rows: [{ id: "block-event" }] },
+  ]);
+
+  const result = await applyAutoListingAiPhaseOutcome(applyInput(
+    client, "CHECK_IMAGE_GROUP", "IMAGE_GROUP_RETRY_QUEUED", {
+      phaseTargetId: "group-a", expectedStatusVersion: 3,
+    },
+  ));
+
+  assert.deepEqual(result, { disposition: "APPLIED", status: "BLOCKED", statusVersion: 4, enqueued: 0 });
+  assert.match(client.calls[4].sql, /UPDATE auto_listing_job_items/iu);
+  assert.equal(client.calls[4].values[6], "AUTO_LISTING_IMAGE_GROUP_RETRY_LIMIT_REACHED");
+  assert.equal(client.calls.some(({ sql }) => /UPDATE auto_listing_ai_outbox/iu.test(sql)), false);
+});
+
+test("a persisted rejected group cannot requeue a sibling-group slot before conflict rollback", async () => {
+  const slots = ["group-a", "group-b"].flatMap((visualGroupKey) => Array.from({ length: 6 }, (_, index) => ({
+    slotKey: `${visualGroupKey}-slot-${index + 1}`,
+    role: index === 0 ? "MAIN" : "DETAIL",
+    visualGroupKey,
+  })));
+  const plan = {
+    id: "plan-derived",
+    parent_plan_id: "plan-parent",
+    derivation_kind: "SOURCE_MATERIALIZATION",
+    visual_groups: { groups: [{ visualGroupKey: "group-a" }, { visualGroupKey: "group-b" }] },
+    plan: { slots },
+  };
+  const client = scriptedClient([
+    {},
+    { rowCount: 1, rows: [{}] },
+    { rowCount: 1, rows: [{ job_id: "job-a" }] },
+    { rowCount: 1, rows: [{
+      status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived",
+      planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    }] },
+    { rowCount: 1, rows: [plan] },
+    { rowCount: 2, rows: [{
+      visual_group_key: "group-a", expected_status_version: 2, status: "ACCEPTED", result: {},
+    }, {
+      visual_group_key: "group-b", expected_status_version: 3, status: "REJECTED",
+      result: { retrySlotKeys: ["group-a-slot-2"] },
+    }] },
+    { rowCount: 1, rows: [{ id: "must-not-requeue" }] },
+    {},
+  ]);
+  const workflow = createPostgresAutoListingAiWorkflow({
+    pool: { async query() {}, async connect() { return { ...client, release() {} }; } },
+  });
+
+  await assert.rejects(workflow.applyPhaseOutcome({
+    message: {
+      contractVersion: "V3",
+      accountId: "account-a",
+      itemId: "item-a",
+      phase: "CHECK_IMAGE_GROUP",
+      visualGroupKey: "group-b",
+      expectedStatusVersion: 3,
+      correlationId: "correlation-a",
+    },
+    outcome: outcome("CHECK_IMAGE_GROUP", "IMAGE_GROUP_RETRY_QUEUED"),
+  }), { code: "AUTO_LISTING_AI_WORKFLOW_VERSION_CONFLICT", retryable: false });
+
+  assert.equal(client.calls.at(-1).sql, "ROLLBACK");
+  assert.equal(client.calls.some(({ sql }) => /UPDATE auto_listing_ai_outbox/iu.test(sql)), false);
+  assert.equal(client.calls.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/iu.test(sql)), false);
+});
+
+test("a retried group rechecks only itself without charging an already accepted sibling group", async () => {
+  const slots = ["group-a", "group-b"].flatMap((visualGroupKey) => Array.from({ length: 6 }, (_, index) => ({
+    slotKey: `${visualGroupKey}-${index}`, role: index === 0 ? "MAIN" : "DETAIL", visualGroupKey,
+  })));
+  const plan = {
+    id: "plan-derived", parent_plan_id: "plan-parent", derivation_kind: "SOURCE_MATERIALIZATION",
+    visual_groups: { groups: [
+      { visualGroupKey: "group-a" }, { visualGroupKey: "group-b" },
+    ] },
+    plan: { slots },
+  };
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived",
+      planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    }] },
+    { rowCount: 1, rows: [plan] },
+    { rowCount: 1, rows: [{ id: "audit" }] },
+    { rowCount: slots.length, rows: slots.map((slot) => ({
+      slot_key: slot.slotKey, role: slot.role, visual_group_key: slot.visualGroupKey,
+      terminal_status: "ACCEPTED",
+    })) },
+    (sql) => /FROM auto_listing_image_group_checks/iu.test(sql)
+      ? { rowCount: 2, rows: [
+        { visual_group_key: "group-a", status: "ACCEPTED" },
+        { visual_group_key: "group-b", status: "REJECTED" },
+      ] }
+      : { rowCount: 1, rows: [{ id: "unexpected-group-a-recheck" }] },
+    { rowCount: 0, rows: [] },
+    { rowCount: 1, rows: [{ id: "group-b-recheck" }] },
+  ]);
+
+  const result = await applyAutoListingAiPhaseOutcome(applyInput(
+    client, "GENERATE_IMAGE_SLOT", "IMAGE_SLOT_ACCEPTED", {
+      phaseTargetId: "group-b-2", expectedStatusVersion: 3,
+    },
+  ));
+
+  assert.deepEqual(result, { disposition: "APPLIED", status: "GENERATING", statusVersion: 3, enqueued: 1 });
+  const groupLookup = client.calls.find(({ sql }) => /FROM auto_listing_image_group_checks/iu.test(sql));
+  assert.match(groupLookup.sql, /plan_id=\$4[\s\S]*expected_status_version<=\$5/iu);
+  assert.match(groupLookup.sql, /ORDER BY visual_group_key,expected_status_version DESC/iu);
+  const rechecks = client.calls.filter(({ sql }) => /UPDATE auto_listing_ai_outbox/iu.test(sql));
+  assert.deepEqual(rechecks.map(({ values }) => values.at(-1)), ["group-b"]);
+});
+
+test("a retried group converges with the latest accepted sibling evidence from the same current plan", async () => {
+  const plan = {
+    id: "plan-derived", parent_plan_id: "plan-parent", derivation_kind: "SOURCE_MATERIALIZATION",
+    visual_groups: { groups: [{ visualGroupKey: "group-a" }, { visualGroupKey: "group-b" }] },
+    plan: { slots: [] },
+  };
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "GENERATING", status_version: 5, active_content_plan_id: "plan-derived",
+      planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    }] },
+    { rowCount: 1, rows: [plan] },
+    { rowCount: 2, rows: [
+        { plan_id: "plan-derived", visual_group_key: "group-a", expected_status_version: 4,
+          status: "ACCEPTED", result: {} },
+        { plan_id: "plan-derived", visual_group_key: "group-b", expected_status_version: 5,
+          status: "ACCEPTED", result: {} },
+      ] },
+    { rowCount: 1, rows: [{ id: "audit" }] },
+    { rowCount: 1, rows: [{ id: "rich-once" }] },
+  ]);
+
+  const result = await applyAutoListingAiPhaseOutcome(applyInput(
+    client, "CHECK_IMAGE_GROUP", "IMAGE_GROUP_ACCEPTED", {
+      phaseTargetId: "group-b", expectedStatusVersion: 5,
+    },
+  ));
+
+  assert.deepEqual(result, { disposition: "APPLIED", status: "GENERATING", statusVersion: 5, enqueued: 1 });
+  assert.match(client.calls[2].sql, /plan_id=\$4[\s\S]*expected_status_version<=\$5/iu);
+  assert.match(client.calls[2].sql, /ORDER BY visual_group_key,expected_status_version DESC/iu);
+  assert.deepEqual(client.calls[2].values, ["account-a", "job-a", "item-a", "plan-derived", 5]);
+  const outbox = client.calls.filter(({ sql }) => /INSERT INTO auto_listing_ai_outbox/iu.test(sql));
+  assert.equal(outbox.length, 1);
+  assert.equal(JSON.parse(outbox[0].values[7]).phase, "GENERATE_RICH_CONTENT");
+  assert.match(outbox[0].sql, /ON CONFLICT \(dedupe_key\) DO NOTHING[\s\S]*NOT EXISTS \(SELECT 1 FROM inserted\)/iu);
+  assert.equal(client.calls.some(({ values }) => values.some?.((value) => value === "group-a")), false);
+});
+
+test("group convergence excludes foreign or future evidence and lets newer non-accepted evidence supersede older acceptance", async () => {
+  const plan = {
+    id: "plan-derived", parent_plan_id: "plan-parent", derivation_kind: "SOURCE_MATERIALIZATION",
+    visual_groups: { groups: [{ visualGroupKey: "group-a" }, { visualGroupKey: "group-b" }] },
+    plan: { slots: [] },
+  };
+  const superseded = scriptedClient([
+    { rowCount: 1, rows: [{
+      status: "GENERATING", status_version: 5, active_content_plan_id: "plan-derived",
+      planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    }] },
+    { rowCount: 1, rows: [plan] },
+    { rowCount: 2, rows: [{
+      plan_id: "plan-derived", visual_group_key: "group-a", expected_status_version: 5,
+      status: "FAILED", result: null,
+    }, {
+      plan_id: "plan-derived", visual_group_key: "group-b", expected_status_version: 5,
+      status: "ACCEPTED", result: {},
+    }] },
+    { rowCount: 1, rows: [{ id: "audit" }] },
+    { rowCount: 0, rows: [] },
+  ]);
+  assert.deepEqual(await applyAutoListingAiPhaseOutcome(applyInput(
+    superseded, "CHECK_IMAGE_GROUP", "IMAGE_GROUP_ACCEPTED", {
+      phaseTargetId: "group-b", expectedStatusVersion: 5,
+    },
+  )), { disposition: "APPLIED", status: "GENERATING", statusVersion: 5, enqueued: 0 });
+  assert.match(superseded.calls[2].sql,
+    /account_id=\$1 AND job_id=\$2 AND item_id=\$3 AND plan_id=\$4[\s\S]*expected_status_version<=\$5/iu);
+  assert.match(superseded.calls[2].sql, /ORDER BY visual_group_key,expected_status_version DESC/iu);
+  assert.equal(superseded.calls.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/iu.test(sql)), false);
+});
+
 test("same-correlation image audits are target-bound across accepted, skipped, and exact duplicate slots", async () => {
   function auditFixture(terminalStatus, target = "slot-main") {
     return scriptedClient([
@@ -323,26 +1112,63 @@ test("same-correlation image audits are target-bound across accepted, skipped, a
   const duplicateId = duplicate.calls[2].values[0];
   assert.notEqual(acceptedId, skippedId);
   assert.equal(skippedId, duplicateId);
-  assert.deepEqual(JSON.parse(accepted.calls[2].values[9]), { planId: "plan-derived", slotKey: "slot-main" });
-  assert.deepEqual(JSON.parse(skipped.calls[2].values[9]), { planId: "plan-derived", slotKey: "slot-2" });
+  assert.deepEqual(JSON.parse(accepted.calls[2].values[9]), {
+    planId: "plan-derived", slotKey: "slot-main", statusVersion: 3,
+  });
+  assert.deepEqual(JSON.parse(skipped.calls[2].values[9]), {
+    planId: "plan-derived", slotKey: "slot-2", statusVersion: 3,
+  });
 });
 
-test("all-terminal insufficient image evidence closes safely as BLOCKED", async () => {
+test("all-terminal insufficient image evidence requeues only the skipped slot with a fresh quality lineage", async () => {
   const client = scriptedClient([
     { rowCount: 1, rows: [{ status: "GENERATING", status_version: 3, active_content_plan_id: "plan-derived" }] },
     { rowCount: 1, rows: [imagePlan()] },
     { rowCount: 1, rows: [{ id: "audit" }] },
     { rowCount: 6, rows: [
-      { slot_key: "slot-main", role: "MAIN", terminal_status: "SKIPPED" },
-      ...[2, 3, 4, 5, 6].map((n) => ({ slot_key: `slot-${n}`, role: "DETAIL", terminal_status: "ACCEPTED" })),
+      { slot_key: "slot-main", role: "MAIN", terminal_status: "ACCEPTED" },
+      ...[2, 3, 4, 5].map((n) => ({ slot_key: `slot-${n}`, role: "DETAIL", terminal_status: "ACCEPTED" })),
+      { slot_key: "slot-6", role: "DETAIL", terminal_status: "SKIPPED" },
     ] },
-    { rowCount: 1, rows: [{ status: "BLOCKED", status_version: 4 }] },
+    { rowCount: 1, rows: [{ slot_key: "slot-6", recovery_count: 0 }] },
+    { rowCount: 1, rows: [{ status: "GENERATING", status_version: 4 }] },
+    { rowCount: 1, rows: [{ id: "slot-recovery-event" }] },
+    { rowCount: 1, rows: [{ id: "slot-recovery-outbox" }] },
+  ]);
+  assert.deepEqual(await applyAutoListingAiPhaseOutcome(applyInput(client,
+    "GENERATE_IMAGE_SLOT", "IMAGE_SLOT_SKIPPED", { phaseTargetId: "slot-6", expectedStatusVersion: 3 })),
+  { disposition: "APPLIED", status: "GENERATING", statusVersion: 4, enqueued: 1 });
+  assert.match(client.calls[4].sql, /AI_IMAGE_SLOT_RECOVERY_QUEUED/iu);
+  assert.match(client.calls[5].sql, /status_version=status_version\+1/iu);
+  assert.deepEqual(JSON.parse(client.calls[6].values[9]), {
+    planId: "plan-derived", previousStatusVersion: 3, retrySlotKeys: ["slot-6"], recoveryRound: 1,
+  });
+  const outbox = client.calls.find(({ sql }) => /INSERT INTO auto_listing_ai_outbox/iu.test(sql));
+  assert.ok(outbox);
+  const message = JSON.parse(outbox.values[7]);
+  assert.equal(message.phase, "GENERATE_IMAGE_SLOT");
+  assert.equal(message.slotKey, "slot-6");
+  assert.equal(message.expectedStatusVersion, 4);
+});
+
+test("a skipped slot blocks only after two isolated recovery rounds are exhausted", async () => {
+  const client = scriptedClient([
+    { rowCount: 1, rows: [{ status: "GENERATING", status_version: 5, active_content_plan_id: "plan-derived" }] },
+    { rowCount: 1, rows: [imagePlan()] },
+    { rowCount: 1, rows: [{ id: "audit" }] },
+    { rowCount: 6, rows: [
+      { slot_key: "slot-main", role: "MAIN", terminal_status: "ACCEPTED" },
+      ...[2, 3, 4, 5].map((n) => ({ slot_key: `slot-${n}`, role: "DETAIL", terminal_status: "ACCEPTED" })),
+      { slot_key: "slot-6", role: "DETAIL", terminal_status: "SKIPPED" },
+    ] },
+    { rowCount: 1, rows: [{ slot_key: "slot-6", recovery_count: 2 }] },
+    { rowCount: 1, rows: [{ status: "BLOCKED", status_version: 6 }] },
     { rowCount: 1, rows: [{ id: "blocked-event" }] },
   ]);
   assert.deepEqual(await applyAutoListingAiPhaseOutcome(applyInput(client,
-    "GENERATE_IMAGE_SLOT", "IMAGE_SLOT_SKIPPED", { phaseTargetId: "slot-main", expectedStatusVersion: 3 })),
-  { disposition: "APPLIED", status: "BLOCKED", statusVersion: 4, enqueued: 0 });
-  assert.equal(client.calls.some(({ sql }) => /auto_listing_ai_outbox/iu.test(sql)), false);
+    "GENERATE_IMAGE_SLOT", "IMAGE_SLOT_SKIPPED", { phaseTargetId: "slot-6", expectedStatusVersion: 5 })),
+  { disposition: "APPLIED", status: "BLOCKED", statusVersion: 6, enqueued: 0 });
+  assert.equal(client.calls.some(({ sql }) => /INSERT INTO auto_listing_ai_outbox/iu.test(sql)), false);
 });
 
 test("latest accepted rich content per visual group enters READY_FOR_REVIEW while older accepted history remains auditable", async () => {

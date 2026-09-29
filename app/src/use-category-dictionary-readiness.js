@@ -7,7 +7,7 @@ export function dictionaryRowsOfResponse(response) {
   if (Array.isArray(response?.items)) return response.items;
   if (Array.isArray(response?.data)) return response.data;
   const error = new Error(CATEGORY_DICTIONARY_ERROR_MESSAGE);
-  error.code = "OZON_CATEGORY_UI_UNAVAILABLE";
+  error.code = "ZONGZI_CATEGORY_UI_UNAVAILABLE";
   throw error;
 }
 

@@ -1,5 +1,7 @@
 const stubs = {
+  'electron-updater': `export default { autoUpdater: {} };`,
   electron: `
+    import { EventEmitter } from 'node:events';
     const userData = process.env.DESKTOP_TEST_USER_DATA || process.cwd();
     export const app = {
       isPackaged: true,
@@ -9,24 +11,22 @@ const stubs = {
       getAppPath: () => process.cwd(),
       getAppMetrics: () => [],
     };
-    export class BrowserWindow {
+    export class BrowserWindow extends EventEmitter {
       constructor() {
-        this.webContents = {
+        super();
+        this.webContents = Object.assign(new EventEmitter(), {
           send() {},
           setWindowOpenHandler() {},
           setUserAgent() {},
-          on() {},
-          once() {},
           executeJavaScript: async () => ({}),
-        };
+        });
       }
-      isDestroyed() { return false; }
-      destroy() {}
+      isDestroyed() { return Boolean(this.destroyed); }
+      destroy() { if (!this.destroyed) { this.destroyed = true; this.emit('closed'); } }
+      show() {}
       loadURL() { return Promise.resolve(); }
-      once() {}
-      on() {}
     }
-    export const ipcMain = { handle() {}, on() {}, once() {}, removeAllListeners() {} };
+    export const ipcMain = { handle(channel, handler) { (globalThis.__DESKTOP_IPC_HANDLERS__ ||= new Map()).set(channel, handler); }, on() {}, once() {}, removeAllListeners() {} };
     export const session = {
       fromPartition: () => ({
         cookies: { get: async () => [], remove: async () => {} },
@@ -108,7 +108,9 @@ const stubs = {
     const capture = (config = {}) => {
       globalThis.__DESKTOP_AXIOS_REQUESTS__ ||= [];
       globalThis.__DESKTOP_AXIOS_REQUESTS__.push(structuredClone(config));
-      return responseFor(config);
+      return globalThis.__DESKTOP_AXIOS_HANDLER__
+        ? globalThis.__DESKTOP_AXIOS_HANDLER__(config)
+        : responseFor(config);
     };
     const responseFor = (config = {}) =>
       String(config.url || '').includes('/local/state') ? stateResponse : taskResponse;
@@ -127,18 +129,29 @@ const stubs = {
 };
 
 export async function resolve(specifier, context, nextResolve) {
+  if (process.env.DESKTOP_TEST_REAL_EXCEL === '1' && ['exceljs', 'sharp'].includes(specifier))
+    return nextResolve(specifier, context);
   if (specifier.endsWith('/seller-ozon.services.js') || specifier === '../seller-ozon.services.js') {
     const source = `
       export async function fetchSellerSkuAnalyticsBatch() {
         return structuredClone(globalThis.__SELLER_ANALYTICS_ITEMS__ || []);
       }
-      export async function fetchSellerLeaderboard() {
+      export async function fetchSellerCategoryTree() { return structuredClone(globalThis.__SELLER_CATEGORY_TREE__ || { result: {} }); }
+      export async function fetchSellerLeaderboard(options) {
+        if (globalThis.__SELLER_LEADERBOARD_HANDLER__) return globalThis.__SELLER_LEADERBOARD_HANDLER__(options);
         return { items: structuredClone(globalThis.__SELLER_ANALYTICS_ITEMS__ || []), total: 1 };
       }
-      export async function verifyCurrentSellerStore() { return {}; }
+      export async function getSellerSessionStatus() { return { loggedIn: true, verification: globalThis.__SELLER_CONTEXT__ || {} }; }
+      export async function verifyCurrentSellerStore() { return globalThis.__SELLER_CONTEXT__ || {}; }
+      export async function acquireSellerRoute() { return { origin: 'https://seller.ozonru.cn', release() {} }; }
+      export async function syncSellerRoute() { return { origin: 'https://seller.ozonru.cn', synced: true }; }
+      export function rememberSellerRunRoute() {}
+      export function getSellerRunRoute() { return 'https://seller.ozonru.cn'; }
+      export async function requestSellerProduct(path, body) { if (!globalThis.__SELLER_PRODUCT_REQUEST__) throw new Error('Seller fixture not configured'); return globalThis.__SELLER_PRODUCT_REQUEST__(path, body); }
       export async function getSellerContext() { return {}; }
       export async function openSellerAnalyticsWindow() { return {}; }
       export async function destroySellerAnalyticsWindow() {}
+      export async function destroySellerWindow() {}
     `;
     return {
       url: `data:text/javascript,${encodeURIComponent(source)}`,

@@ -37,13 +37,13 @@
   ]);
   const KNOWN_CODES = Object.freeze([
     ...AUTH_CODES,
-    'OZON_ENRICH_NOT_FOUND',
-    'OZON_ENRICH_INCOMPLETE',
-    'OZON_ENRICH_BUSY',
-    'OZON_ENRICH_REQUEST_EXPIRED',
-    'OZON_ENRICH_UPSTREAM_FAILED',
-    'OZON_ENRICH_CONTRACT_MISMATCH',
-    'OZON_COLLECT_INCOMPLETE',
+    'ZONGZI_ENRICH_NOT_FOUND',
+    'ZONGZI_ENRICH_INCOMPLETE',
+    'ZONGZI_ENRICH_BUSY',
+    'ZONGZI_ENRICH_REQUEST_EXPIRED',
+    'ZONGZI_ENRICH_UPSTREAM_FAILED',
+    'ZONGZI_ENRICH_CONTRACT_MISMATCH',
+    'ZONGZI_COLLECT_INCOMPLETE',
     'COLLECT_PAYLOAD_INVALID',
     'COLLECTOR_UPLOAD_FAILED',
     'NETWORK_ERROR',
@@ -197,23 +197,28 @@
       const missingLabels = MISSING_FIELDS
         .filter(([field]) => missingFields.includes(field))
         .map(([, label]) => label);
-      const sourceMessage = cleanText(error?.message || error?.error);
+      const sourceMessage = cleanText(error?.message || error?.error)
+        .replace(/(?:Collector|Bearer)\s+[^\s,;]+/gi, '[REDACTED]')
+        .replace(/(?:ctt|cst|csess)_[A-Za-z0-9_-]+/gi, '[REDACTED]')
+        .replace(/([?&](?:token|key|secret|signature|password)[^=\s]*=)[^&\s]+/gi, '$1[REDACTED]').slice(0,1000);
       let message;
       if (code === 'COLLECTOR_AUTH_REQUIRED' || code === 'WEB_AUTH_REQUIRED') {
         message = '请先登录 Web';
       } else if (code === 'COLLECTOR_PERMISSION_DENIED' || code === 'COLLECTOR_SESSION_CHANGED') {
         message = '请重新连接 Web 采集授权';
-      } else if (code === 'OZON_ENRICH_NOT_FOUND') {
+      } else if (code === 'ZONGZI_PRODUCT_RUSSIAN_REQUIRED') {
+        message = sourceMessage || '请将 Ozon 网站语言切换为俄语，刷新后重新采集';
+      } else if (code === 'ZONGZI_ENRICH_NOT_FOUND') {
         message = '未找到该商品的完整资料';
-      } else if (code === 'OZON_ENRICH_INCOMPLETE' || code === 'OZON_ENRICH_CONTRACT_MISMATCH') {
+      } else if (code === 'ZONGZI_ENRICH_INCOMPLETE' || code === 'ZONGZI_ENRICH_CONTRACT_MISMATCH') {
         message = missingLabels.length
           ? `缺少：${missingLabels.join('、')}`
           : '商品补全资料不完整';
-      } else if (code === 'OZON_ENRICH_BUSY') {
+      } else if (code === 'ZONGZI_ENRICH_BUSY') {
         message = '商品资料正在排队，请稍后重试';
-      } else if (code === 'OZON_ENRICH_UPSTREAM_FAILED' || code === 'OZON_ENRICH_REQUEST_EXPIRED') {
+      } else if (code === 'ZONGZI_ENRICH_UPSTREAM_FAILED' || code === 'ZONGZI_ENRICH_REQUEST_EXPIRED') {
         message = 'Ozon 商品资料暂时无法读取';
-      } else if (code === 'OZON_COLLECT_INCOMPLETE') {
+      } else if (code === 'ZONGZI_COLLECT_INCOMPLETE') {
         message = '商品补全资料不完整';
       } else if (code === 'COLLECT_PAYLOAD_INVALID') {
         message = '采集数据格式无效，请刷新页面后重试';
@@ -226,11 +231,13 @@
       } else {
         message = '采集失败，请稍后重试';
       }
+      if (!AUTH_CODES.has(code) && sourceMessage && sourceMessage !== message) message = `${message}；${sourceMessage}`;
       const next = Object.assign(new Error(message), {
         code,
         status: Number(error?.status) || 0,
         missingFields,
         retryable: error?.retryable === true,
+        ...(error?.diagnostic ? { diagnostic: error.diagnostic } : {}),
       });
       Object.defineProperty(next, '__jzOzonCollectMapped', { value: true });
       return next;
@@ -243,29 +250,13 @@
       return failure;
     };
 
-    const withTimeout = (operation, phase) => {
-      let timer;
-      const timeout = new Promise((_, reject) => {
-        timer = root.setTimeout(() => reject(Object.assign(
-          new Error(phase === 'enrich'
-            ? 'Ozon 商品资料补全请求超时'
-            : '采集上传超时'),
-          {
-            code: phase === 'enrich' ? 'OZON_ENRICH_UPSTREAM_FAILED' : 'NETWORK_ERROR',
-            status: 504,
-            retryable: true,
-          },
-        )), Number(timeoutMs));
-      });
-      return Promise.race([Promise.resolve(operation), timeout])
-        .finally(() => root.clearTimeout(timer));
-    };
+    const awaitOutcome = (operation) => Promise.resolve(operation);
 
     const normalizeServerResult = (value, sku) => {
       const result = contract.normalizeResult(value);
       if (result.sku !== sku) {
         throw Object.assign(new Error('Ozon 商品资料补全响应 SKU 不匹配'), {
-          code: 'OZON_ENRICH_UPSTREAM_FAILED',
+          code: 'ZONGZI_ENRICH_UPSTREAM_FAILED',
           status: 502,
           retryable: true,
         });
@@ -274,6 +265,7 @@
     };
 
     const startPrefetch = (entry) => {
+      entry.routeRequestId = entry.enrichmentRequestId;
       if (!entry.collectionStarted) {
         entry.status = 'PREFETCHING';
         entry.error = null;
@@ -288,7 +280,7 @@
       } catch (error) {
         operation = Promise.reject(error);
       }
-      promise = withTimeout(operation, 'enrich')
+      promise = awaitOutcome(operation, 'enrich')
         .then((value) => {
           const result = normalizeServerResult(value, entry.sku);
           entry.result = result;
@@ -335,6 +327,7 @@
         status: Number(value?.status) || 0,
         missingFields: Array.isArray(value?.missingFields) ? value.missingFields : [],
         retryable: value?.retryable === true,
+        ...(value?.diagnostic ? { diagnostic: value.diagnostic } : {}),
       },
     );
 
@@ -343,10 +336,10 @@
         requestId: chunk[0].enrichmentRequestId,
         skus: chunk.map(({ sku }) => sku),
       }));
-      const batchPromise = withTimeout(batchOperation, 'enrich').then((items) => {
+      const batchPromise = awaitOutcome(batchOperation, 'enrich').then((items) => {
         if (!Array.isArray(items) || items.length !== chunk.length) {
           throw Object.assign(new Error('Ozon 批量商品资料补全响应无效'), {
-            code: 'OZON_ENRICH_UPSTREAM_FAILED',
+            code: 'ZONGZI_ENRICH_UPSTREAM_FAILED',
             status: 502,
             retryable: true,
           });
@@ -355,6 +348,7 @@
       });
 
       chunk.forEach((entry, index) => {
+        entry.routeRequestId = chunk[0].enrichmentRequestId;
         if (!entry.collectionStarted) {
           entry.status = 'PREFETCHING';
           entry.error = null;
@@ -365,7 +359,7 @@
             const item = items[index];
             if (!plainObject(item) || cleanText(item.sku) !== entry.sku) {
               throw Object.assign(new Error('Ozon 批量商品资料补全响应 SKU 不匹配'), {
-                code: 'OZON_ENRICH_UPSTREAM_FAILED',
+                code: 'ZONGZI_ENRICH_UPSTREAM_FAILED',
                 status: 502,
                 retryable: true,
               });
@@ -373,7 +367,7 @@
             if (item.status === 'ERROR') throw batchItemError(item.error);
             if (item.status !== 'COMPLETE') {
               throw Object.assign(new Error('Ozon 批量商品资料补全响应无效'), {
-                code: 'OZON_ENRICH_UPSTREAM_FAILED',
+                code: 'ZONGZI_ENRICH_UPSTREAM_FAILED',
                 status: 502,
                 retryable: true,
               });
@@ -457,12 +451,13 @@
           });
         }
         entry.status = 'SAVING';
+        entry.routeRequestId = entry.requestId;
         entry.error = null;
         uploadOperation = sendMessage('pushSourceCollect', entry.finalizedUpload);
       } catch (error) {
         uploadOperation = Promise.reject(error);
       }
-      collectPromise = withTimeout(uploadOperation, 'collect')
+      collectPromise = awaitOutcome(uploadOperation, 'collect')
         .then((response) => {
           if (
             !exactKeys(response, ['dedupeHit', 'result'])
@@ -501,13 +496,25 @@
       };
     };
 
-    return Object.freeze({ prefetch, prefetchBatch, collect, getState });
+    const activeEntries = () => [...entries.values()].filter(entry => ['PREFETCHING', 'SAVING'].includes(entry.status));
+    return Object.freeze({ prefetch, prefetchBatch, collect, getState,
+      isBusy: excludeRequestId => activeEntries().some(entry => !excludeRequestId || entry.routeRequestId !== excludeRequestId),
+      ownsActiveRequest: requestId => Boolean(requestId && activeEntries().some(entry => entry.routeRequestId === requestId)),
+    });
   }
 
   const getPageCoordinator = (options) => {
     if (!pageCoordinator) pageCoordinator = create(options);
     return pageCoordinator;
   };
+
+  root.chrome?.runtime?.onMessage?.addListener((message, _sender, sendResponse) => {
+    if (message?.action !== 'getSellerRouteActivity') return false;
+    const ownRequest = pageCoordinator?.ownsActiveRequest(message.excludeRequestId);
+    sendResponse({ busy: Boolean(pageCoordinator?.isBusy(message.excludeRequestId)
+      || (!ownRequest && root.JZSkuCollect?.isBusy?.())) });
+    return false;
+  });
 
   const api = Object.freeze({ create, getPageCoordinator, STATES, matchesSku });
   root.JzOzonCollectCoordinator = api;

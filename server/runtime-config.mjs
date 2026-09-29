@@ -45,6 +45,15 @@ export function autoListingAiEnabled(env = process.env) {
   return value === "1" || value === "true";
 }
 
+export function autoListingSourceImageIntelligenceEnabled(env = process.env) {
+  const value = env?.AUTO_LISTING_SOURCE_IMAGE_INTELLIGENCE_V1_ENABLED;
+  if (value === undefined || value === null || String(value).trim() === "") return false;
+  if (typeof value === "boolean") return value;
+  if (String(value).trim() === "true") return true;
+  if (String(value).trim() === "false") return false;
+  throw aiConfigurationError("AUTO_LISTING_SOURCE_IMAGE_INTELLIGENCE_CONFIG_INVALID");
+}
+
 export function autoListingUploadEnabled(env = process.env) {
   const value = String(env?.AUTO_LISTING_UPLOAD_ENABLED || "").trim().toLowerCase();
   return value === "1" || value === "true";
@@ -52,6 +61,23 @@ export function autoListingUploadEnabled(env = process.env) {
 
 export function listingAssetPublicationConfig(env = process.env) {
   if (!autoListingUploadEnabled(env)) return null;
+  return listingAssetPublicationLocation(env);
+}
+
+export function listingMediaStorageConfig(env = process.env) {
+  const provider = String(env.LISTING_MEDIA_STORAGE || "minio").trim().toLowerCase();
+  if (!provider || provider === "minio") return Object.freeze({ provider: "minio" });
+  if (provider !== "cos") throw aiConfigurationError("LISTING_MEDIA_STORAGE_CONFIG_INVALID");
+  const bucket = String(env.LISTING_COS_BUCKET || "").trim();
+  const region = String(env.LISTING_COS_REGION || "").trim();
+  const secretId = String(env.LISTING_COS_SECRET_ID || "").trim();
+  const secretKey = String(env.LISTING_COS_SECRET_KEY || "").trim();
+  if (!bucket || !region || !secretId || !secretKey) throw aiConfigurationError("LISTING_MEDIA_STORAGE_CONFIG_INVALID");
+  return Object.freeze({ provider, bucket, region, secretId, secretKey });
+}
+
+// Shared storage location only; each independent workflow owns its upload policy.
+export function listingAssetPublicationLocation(env = process.env) {
   const rawBaseUrl = String(env?.LISTING_ASSET_PUBLIC_BASE_URL || "").trim();
   const prefix = String(env?.LISTING_ASSET_PUBLIC_PREFIX || "listing-media/v1").trim();
   const publicationVersion = String(env?.LISTING_ASSET_PUBLICATION_VERSION || "LISTING_MEDIA_V1").trim();

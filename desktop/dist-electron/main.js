@@ -1,10 +1,16 @@
+import './bootstrap-profile.js';
 import { app, BrowserWindow } from 'electron';
+import { chromeCompatibleUserAgent } from './browser-user-agent.core.js';
 import { createWindow } from './windows/main.window.js';
 import log, { initLogger } from './log/index.js';
 import { CloseProcessService } from './services/closeProcess.services.js';
 import { globalBroadcast } from './ipc/broadcast.js';
 import { operationStore } from './store/index.js';
 import { memoryMonitor } from './services/memory-monitor.services.js';
+import { enrichmentWorker } from './services/enrichment.services.js';
+// bootstrap-profile runs before store/window imports to migrate the profile and preserve login identity.
+// Keep document, worker and service-worker requests on the same browser identity.
+app.userAgentFallback = chromeCompatibleUserAgent();
 app.commandLine.appendSwitch('disable-logging');
 app.commandLine.appendSwitch('log-level', '3');
 // 重启相关常量
@@ -98,13 +104,7 @@ class ElectronApp {
      * 设置应用事件处理器
      */
     setupEventHandlers() {
-        // 进程锁
-        const gotTheLock = app.requestSingleInstanceLock();
-        if (!gotTheLock) {
-            log.info('应用已在运行，退出当前实例');
-            app.quit();
-            return;
-        }
+        // bootstrap-profile 已在初始化资料和日志之前取得进程锁。
         // 监听第二个实例尝试启动的事件
         app.on('second-instance', (event, commandLine, workingDirectory) => {
             log.info('检测到第二个实例尝试启动');
@@ -121,6 +121,8 @@ class ElectronApp {
          * 应用准备就绪
          */
         app.whenReady().then(() => {
+            // ready 前保留原内部名，让 Electron 的 Keychain/加密存储沿用旧登录身份。
+            app.setName('ozon 粽子');
             log.info('应用准备就绪，开始创建窗口');
             // 记录重启次数
             const restartCount = this.getRestartCount();
@@ -134,6 +136,7 @@ class ElectronApp {
                     new CloseProcessService().run();
                 operationStore.set('is-execute-close', false);
                 createWindow();
+                enrichmentWorker.start();
                 log.info('主窗口创建成功');
             }
             catch (error) {
@@ -169,6 +172,7 @@ class ElectronApp {
             event.preventDefault();
             try {
                 globalBroadcast.broadcast('app-ready-quit', '退出清理等待');
+                await enrichmentWorker.stop();
                 const closeProcessService = new CloseProcessService();
                 await closeProcessService.deleteFolder();
                 await closeProcessService.run();

@@ -155,3 +155,12 @@ test("unknown, cross-store, and internal warehouse IDs share a non-disclosing sc
     );
   }
 });
+
+test('direct V3 accepts fresh official RFBS evidence without retired auto-listing links',async()=>{
+ const warehouse=warehouseRecord({warehouse_type:'rfbs'});
+ const evidence={accountId:'acct-a',storeId:'store-a',warehouseRecordId:warehouse.id,platformWarehouseId:warehouse.warehouse_id,fulfillmentType:'RFBS',outcome:'PASSED',expiresAt:new Date(Date.now()+60000).toISOString()};
+ const input={accountId:'acct-a',storeId:'store-a',stocks:[{warehouse_id:warehouse.warehouse_id,stock:0}],directRfbsEvidence:[evidence],client:clientReturning([warehouse])};
+ assert.equal(await assertListingStocksBelongToTarget(input),true);
+ for(const patch of [{accountId:'other'},{storeId:'other'},{warehouseRecordId:'other'},{platformWarehouseId:'other'},{expiresAt:new Date(0).toISOString()}])
+  await assert.rejects(assertListingStocksBelongToTarget({...input,directRfbsEvidence:[{...evidence,...patch}]}),error=>error.code==='LISTING_WAREHOUSE_NOT_ELIGIBLE');
+});

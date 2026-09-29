@@ -51,13 +51,20 @@ function fakePool(handler) {
 }
 
 function reserveHandler(state = itemRow) {
-  return (sql) => {
+  return (sql, parameters) => {
     if (/FROM auto_listing_job_items AS item/i.test(sql)) return { rows: state ? [state] : [], rowCount: state ? 1 : 0 };
     if (/status='ACCEPTED'/i.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
     if (/status='GENERATING'.*lease_expires_at > NOW\(\)/isu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
     if (/SET status='FAILED'.*LEASE_EXPIRED/isu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED'/iu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
     if (/COALESCE\(MAX\(attempt_no\)/i.test(sql)) return { rows: [{ attempt_no: 0 }], rowCount: 1 };
-    if (/INSERT INTO ai_generation_assets/i.test(sql)) return { rows: [reservedRow()], rowCount: 1 };
+    if (/INSERT INTO ai_generation_assets/i.test(sql)) return {
+      rows: [reservedRow({
+        gateway_connection_id: parameters.at(-2) ?? null,
+        gateway_connection_version: parameters.at(-1) ?? null,
+      })],
+      rowCount: 1,
+    };
     throw new Error(`unexpected SQL: ${sql}`);
   };
 }
@@ -69,10 +76,12 @@ test("reservation locks the exact active plan and version before creating a data
   });
   const result = await repository.reserveGenerationAttempt({
     ...scope, attemptIdentityHash, generationSize, maxAttempts: 3,
+    gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9,
   });
   assert.deepEqual(result, {
     status: "RESERVED", attemptNo: 1, leaseToken: "lease-a:1", generationSize,
     leaseExpiresAt: "2026-08-04T00:01:00.000Z",
+    gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9,
   });
   const itemQuery = db.queries.find(({ text }) => /FROM auto_listing_job_items AS item/i.test(text));
   assert.match(itemQuery.text, /item\.active_content_plan_id/i);
@@ -81,6 +90,9 @@ test("reservation locks the exact active plan and version before creating a data
   assert.match(itemQuery.text, /FOR UPDATE OF item/i);
   const insert = db.queries.find(({ text }) => /INSERT INTO ai_generation_assets/i.test(text));
   assert.match(insert.text, /expected_status_version/i);
+  assert.match(insert.text, /gateway_connection_id.*gateway_connection_version/is);
+  assert.equal(insert.parameters.includes("connection-b"), true);
+  assert.equal(insert.parameters.includes(9), true);
   assert.match(insert.text, /NOW\(\)\+\(/i);
 });
 
@@ -141,6 +153,7 @@ test("reservation expires old leases with database time and never reuses the sta
     if (/status='ACCEPTED'/i.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
     if (/status='GENERATING'.*lease_expires_at > NOW\(\)/isu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
     if (/SET status='FAILED'.*LEASE_EXPIRED/isu.test(sql)) return { rows: [reservedRow({ status: "FAILED" })], rowCount: 1 };
+    if (/lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED'/iu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
     if (/COALESCE\(MAX\(attempt_no\)/i.test(sql)) return { rows: [{ attempt_no: 1 }], rowCount: 1 };
     if (/INSERT INTO ai_generation_assets/i.test(sql)) return { rows: [reservedRow({ id: "generation-b", attempt_no: 2, lease_token: "lease-new:2" })], rowCount: 1 };
     throw new Error(`unexpected SQL: ${sql}`);
@@ -214,8 +227,13 @@ test("owner transitions carry the full scope, active-plan, version, lease-token 
     sourceHash: "f".repeat(64), strategyHash: "1".repeat(64), configHash: "2".repeat(64),
     visualGroupsHash: "3".repeat(64), promptTemplateVersion: "image-v1",
     sourceAssetEvidence: completedRow.source_asset_evidence, regeneration: null,
+    gatewayConnectionId: null, gatewayConnectionVersion: null,
+    checkerConnectionId: "connection-b", checkerConnectionVersion: 9,
   });
   assert.equal(result.status, "ACCEPTED");
+  const completed = db.queries.find(({ text }) => /SET status='ACCEPTED'/i.test(text));
+  assert.match(completed.text, /gateway_connection_id IS NOT DISTINCT FROM \$\d+/i);
+  assert.match(completed.text, /checker_connection_id=\$\d+.*checker_connection_version=\$\d+/is);
   assert.equal(result.size, 123);
   assert.deepEqual(result.checkerEvidence, { accepted: true });
   const transition = db.queries.find(({ text }) => /SET status='ACCEPTED'/i.test(text));
@@ -308,6 +326,324 @@ test("binding a later PostgreSQL attempt recovers a specific checker-contract fa
   const recoveryQuery = db.queries.find(({ text }) => /id<>\$10/iu.test(text));
   assert.match(recoveryQuery.text, /CHECKER_RESPONSE_INVALID/iu);
   assert.match(recoveryQuery.text, /CHECKER_EVIDENCE_INVALID/iu);
+});
+
+test("binding a new retry version reuses an accepted image from the previous version", async () => {
+  const retryScope = { ...scope, expectedStatusVersion: 9 };
+  const retryItemRow = { ...itemRow, status_version: 9 };
+  const previousIdentityHash = "d".repeat(64);
+  const objectKey = buildGeneratedAssetObjectKey({
+    ...scope,
+    attemptIdentityHash: previousIdentityHash,
+    inputHash,
+    attemptNo: 1,
+    contentHash,
+  });
+  const ownedRow = reservedRow({
+    id: "generation-retry",
+    expected_status_version: 9,
+    attempt_identity_hash: attemptIdentityHash,
+    input_hash: attemptIdentityHash,
+    lease_token: "lease-retry:1",
+  });
+  const acceptedRow = reservedRow({
+    id: "generation-accepted",
+    expected_status_version: 7,
+    attempt_identity_hash: previousIdentityHash,
+    input_hash: inputHash,
+    status: "ACCEPTED",
+    lease_token: null,
+    lease_expires_at: null,
+    final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    accepted_at: new Date("2026-08-04T00:00:20.000Z"),
+    object_key_version: "ATTEMPT_V2",
+    object_key: objectKey,
+    content_hash: contentHash,
+    content_type: "image/png",
+    width: 768,
+    height: 1024,
+    size_bytes: 123,
+    gateway_request_id: "gateway-accepted",
+    checker_request_id: "checker-accepted",
+    prompt_hash: "e".repeat(64),
+    plan_hash: "f".repeat(64),
+    source_hash: "1".repeat(64),
+    strategy_hash: "2".repeat(64),
+    config_hash: "3".repeat(64),
+    visual_groups_hash: "4".repeat(64),
+    prompt_template_version: "image-v1",
+    source_asset_evidence: [{
+      assetId: "source-a",
+      contentHash: "5".repeat(64),
+      contentType: "image/png",
+      width: 10,
+      height: 20,
+      size: 30,
+    }],
+    checker_result: { accepted: true },
+    model_evidence: { requestedImageModel: "image-a" },
+    regeneration: null,
+  });
+  const db = fakePool((sql) => {
+    if (/FROM auto_listing_job_items AS item/iu.test(sql)) return { rows: [retryItemRow], rowCount: 1 };
+    if (/lease_token=\$12.*status='GENERATING'/isu.test(sql) && /^\s*SELECT/iu.test(sql)) {
+      return { rows: [ownedRow], rowCount: 1 };
+    }
+    if (/input_hash=\$7.*generation_size=\$8.*id<>\$9/isu.test(sql)) {
+      return { rows: [acceptedRow], rowCount: 1 };
+    }
+    if (/UPDATE ai_generation_assets SET status='FAILED'/iu.test(sql)) return { rows: [], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  const result = await repository.bindGenerationAttemptInput({
+    ...retryScope,
+    attemptIdentityHash,
+    inputHash,
+    generationSize,
+    attemptNo: 1,
+    leaseToken: "lease-retry:1",
+  });
+
+  assert.equal(result.status, "EXISTING_ACCEPTED");
+  assert.equal(result.record.expectedStatusVersion, 7);
+  assert.equal(result.record.inputHash, inputHash);
+  const conflictQuery = db.queries.find(({ text }) => /status='ACCEPTED'/iu.test(text)
+    && /final_input_bound_at IS NOT NULL/iu.test(text));
+  assert.doesNotMatch(conflictQuery.text, /expected_status_version/iu);
+  assert.deepEqual(conflictQuery.parameters, [
+    retryScope.accountId,
+    retryScope.jobId,
+    retryScope.itemId,
+    retryScope.planId,
+    retryScope.visualGroupKey,
+    retryScope.slotKey,
+    inputHash,
+    generationSize,
+    "generation-retry",
+  ]);
+});
+
+test("channel release keeps stored image evidence while clearing the exact owned lease", async () => {
+  const objectKey = buildGeneratedAssetObjectKey({
+    ...scope, attemptIdentityHash, inputHash, attemptNo: 1, contentHash,
+  });
+  const releasedRow = reservedRow({
+    input_hash: inputHash, status: "GENERATING", final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    lease_token: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED", lease_expires_at: new Date("2026-08-04T00:00:20.000Z"),
+    error_code: null, error_retryable: null,
+    object_key_version: "ATTEMPT_V2", object_key: objectKey, content_hash: contentHash,
+    content_type: "image/png", width: 768, height: 1024, size_bytes: 123,
+    gateway_request_id: "gateway-1", model_evidence: { requestedImageModel: "image-a" },
+    checker_request_id: "checker-b", checker_connection_id: "connection-b", checker_connection_version: 9,
+  });
+  const db = fakePool((sql) => {
+    if (/AUTO_LISTING_IMAGE_CHANNEL_RELEASED/iu.test(sql)) return { rows: [releasedRow], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  const released = await repository.releaseGenerationLease({
+    ...scope, attemptIdentityHash, inputHash, generationSize, attemptNo: 1, leaseToken: "lease-a:1",
+    errorCode: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED", role: "MAIN",
+    profileId: "profile-a", profileVersion: 1, modelName: "image-a", gatewayRequestId: "gateway-1",
+    checkerRequestId: "checker-b", modelEvidence: { requestedImageModel: "image-a" },
+    checkerConnectionId: "connection-b", checkerConnectionVersion: 9,
+  });
+
+  assert.equal(released.status, "GENERATING");
+  assert.equal(released.attemptNo, 1);
+  assert.equal(released.leaseToken, "AUTO_LISTING_IMAGE_CHANNEL_RELEASED");
+  assert.equal(released.objectKey, objectKey);
+  assert.equal(released.checkerConnectionId, "connection-b");
+  assert.equal(released.checkerConnectionVersion, 9);
+  const transition = db.queries.find(({ text }) => /AUTO_LISTING_IMAGE_CHANNEL_RELEASED/iu.test(text));
+  assert.match(transition.text, /account_id=\$1.*item_id=\$3.*attempt_no=\$11.*lease_token=\$12/isu);
+  assert.match(transition.text, /gateway_request_id=COALESCE/iu);
+  assert.match(transition.text, /model_evidence=COALESCE/iu);
+  assert.match(transition.text, /checker_connection_id=\$20,checker_connection_version=\$21/iu);
+});
+
+test("stored-evidence compensation clears only the exact generating owner before object cleanup", async () => {
+  const objectKey = buildGeneratedAssetObjectKey({
+    ...scope, attemptIdentityHash, inputHash, attemptNo: 1, contentHash,
+  });
+  const clearedRow = reservedRow({
+    input_hash: inputHash, final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    object_key_version: null, object_key: null, content_hash: null, content_type: null,
+    width: null, height: null, size_bytes: null,
+  });
+  const db = fakePool((sql) => {
+    if (/WITH reverted AS/iu.test(sql)) return { rows: [{ disposition: "REVERTED", ...clearedRow }], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+  const result = await repository.revertStoredGenerationAsset({
+    ...scope, attemptIdentityHash, inputHash, generationSize, attemptNo: 1, leaseToken: "lease-a:1",
+    objectKeyVersion: "ATTEMPT_V2", objectKey, contentHash, contentType: "image/png",
+    width: 768, height: 1024, size: 123,
+  });
+
+  assert.deepEqual(result, { disposition: "REVERTED" });
+  const query = db.queries[0];
+  assert.match(query.text, /object_key_version=NULL.*object_key=NULL.*content_hash=NULL/isu);
+  assert.match(query.text, /attempt_no=\$11.*lease_token=\$12.*status='GENERATING'/isu);
+  assert.match(query.text, /object_key_version=\$13.*object_key=\$14.*content_hash=\$15/isu);
+  assert.match(query.text, /item\.status='GENERATING'.*active_content_plan_id=attempt\.plan_id/isu);
+});
+
+test("reservation reclaims a channel-released row at the same attempt with a fresh token", async () => {
+  const releasedRow = reservedRow({
+    input_hash: inputHash, status: "GENERATING", final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    lease_token: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED", lease_expires_at: new Date("2026-08-04T00:00:20.000Z"),
+    error_code: null, error_retryable: null,
+  });
+  const reclaimedRow = reservedRow({
+    input_hash: inputHash, final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    lease_token: "lease-new:1", attempt_no: 1,
+    gateway_connection_id: "connection-b", gateway_connection_version: 9,
+  });
+  const db = fakePool((sql) => {
+    if (/FROM auto_listing_job_items AS item/iu.test(sql)) return { rows: [itemRow], rowCount: 1 };
+    if (/status='ACCEPTED'/iu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/status='GENERATING'.*lease_expires_at > NOW\(\)/isu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/SET status='FAILED'.*LEASE_EXPIRED/isu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED'/iu.test(sql) && /^\s*SELECT/iu.test(sql)) {
+      return { rows: [releasedRow], rowCount: 1 };
+    }
+    if (/SET status='GENERATING'.*lease_token/isu.test(sql)) return { rows: [reclaimedRow], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({
+    pool: db.pool, token: () => "lease-new", id: () => "unused-generation",
+  });
+
+  const reclaimed = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3,
+    gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9,
+  });
+
+  assert.equal(reclaimed.status, "RESERVED");
+  assert.equal(reclaimed.attemptNo, 1);
+  assert.equal(reclaimed.leaseToken, "lease-new:1");
+  assert.equal(reclaimed.gatewayConnectionId, "connection-b");
+  assert.equal(reclaimed.gatewayConnectionVersion, 9);
+  assert.equal(db.queries.some(({ text }) => /INSERT INTO ai_generation_assets/iu.test(text)), false);
+  assert.equal(db.queries.some(({ text }) => /COALESCE\(MAX\(attempt_no\)/iu.test(text)), false);
+});
+
+test("PostgreSQL reclaim keeps producer A when connection B reuses A's stored paid image", async () => {
+  const objectKey = buildGeneratedAssetObjectKey({ ...scope, attemptIdentityHash, inputHash, attemptNo: 1, contentHash });
+  const releasedRow = reservedRow({
+    input_hash: inputHash, final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    lease_token: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED", lease_expires_at: new Date("2026-08-04T00:00:20.000Z"),
+    gateway_connection_id: "connection-a", gateway_connection_version: 4,
+    gateway_request_id: "gateway-a", model_evidence: { requestedImageModel: "image-a" },
+    object_key_version: "ATTEMPT_V2", object_key: objectKey, content_hash: contentHash,
+    content_type: "image/png", width: 768, height: 1024, size_bytes: 123,
+  });
+  const reclaimedRow = { ...releasedRow, lease_token: "lease-b:1", lease_expires_at: new Date("2026-08-04T00:01:00.000Z") };
+  const db = fakePool((sql) => {
+    if (/FROM auto_listing_job_items AS item/iu.test(sql)) return { rows: [itemRow], rowCount: 1 };
+    if (/status='ACCEPTED'/iu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/status='GENERATING'.*lease_expires_at > NOW\(\)/isu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/SET status='FAILED'.*LEASE_EXPIRED/isu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED'/iu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [releasedRow], rowCount: 1 };
+    if (/SET status='GENERATING'.*lease_token/isu.test(sql)) return { rows: [reclaimedRow], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool, token: () => "lease-b" });
+  const result = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3,
+    gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9,
+  });
+
+  assert.equal(result.gatewayConnectionId, "connection-a");
+  assert.equal(result.gatewayConnectionVersion, 4);
+  const reclaim = db.queries.find(({ text }) => /SET status='GENERATING'.*lease_token/isu.test(text));
+  assert.match(reclaim.text, /gateway_connection_id=CASE WHEN \$6 THEN gateway_connection_id ELSE \$4 END/iu);
+  assert.equal(reclaim.parameters.at(-1), true);
+});
+
+test("PostgreSQL reclaim assigns producer B when A's stored image evidence is not reusable", async () => {
+  const releasedRow = reservedRow({
+    input_hash: inputHash, final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    lease_token: "AUTO_LISTING_IMAGE_CHANNEL_RELEASED", lease_expires_at: new Date("2026-08-04T00:00:20.000Z"),
+    gateway_connection_id: "connection-a", gateway_connection_version: 4,
+    gateway_request_id: "gateway-a", model_evidence: { requestedImageModel: "image-a" },
+    object_key_version: "ATTEMPT_V2", object_key: "invalid/object/key", content_hash: contentHash,
+    content_type: "image/png", width: 768, height: 1024, size_bytes: 123,
+  });
+  const reclaimedRow = {
+    ...releasedRow, lease_token: "lease-b:1", lease_expires_at: new Date("2026-08-04T00:01:00.000Z"),
+    gateway_connection_id: "connection-b", gateway_connection_version: 9,
+  };
+  const db = fakePool((sql) => {
+    if (/FROM auto_listing_job_items AS item/iu.test(sql)) return { rows: [itemRow], rowCount: 1 };
+    if (/status='ACCEPTED'/iu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/status='GENERATING'.*lease_expires_at > NOW\(\)/isu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/SET status='FAILED'.*LEASE_EXPIRED/isu.test(sql)) return { rows: [], rowCount: 0 };
+    if (/lease_token='AUTO_LISTING_IMAGE_CHANNEL_RELEASED'/iu.test(sql) && /^\s*SELECT/iu.test(sql)) return { rows: [releasedRow], rowCount: 1 };
+    if (/SET status='GENERATING'.*lease_token/isu.test(sql)) return { rows: [reclaimedRow], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool, token: () => "lease-b" });
+
+  const result = await repository.reserveGenerationAttempt({
+    ...scope, attemptIdentityHash, generationSize, maxAttempts: 3,
+    gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9,
+  });
+
+  assert.equal(result.gatewayConnectionId, "connection-b");
+  assert.equal(result.gatewayConnectionVersion, 9);
+  const reclaim = db.queries.find(({ text }) => /SET status='GENERATING'.*lease_token/isu.test(text));
+  assert.equal(reclaim.parameters.at(-1), false);
+});
+
+test("PostgreSQL atomically clears unusable evidence and hands the exact lease from A to B", async () => {
+  const updated = reservedRow({
+    input_hash: inputHash, final_input_bound_at: new Date("2026-08-04T00:00:10.000Z"),
+    lease_token: "lease-b:1", gateway_connection_id: "connection-b", gateway_connection_version: 9,
+  });
+  const db = fakePool((sql) => {
+    if (/SET object_key_version=NULL.*gateway_connection_id=/isu.test(sql)) return { rows: [updated], rowCount: 1 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  const result = await repository.replaceUnusableGenerationEvidence({
+    ...scope, attemptIdentityHash, inputHash, generationSize,
+    attemptNo: 1, leaseToken: "lease-b:1",
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+    replacementGatewayConnectionId: "connection-b", replacementGatewayConnectionVersion: 9,
+  });
+
+  assert.deepEqual(result, { gatewayConnectionId: "connection-b", gatewayConnectionVersion: 9 });
+  const update = db.queries[0];
+  assert.match(update.text, /FROM auto_listing_job_items AS item/iu);
+  assert.match(update.text, /item\.status='GENERATING'.*item\.status_version=attempt\.expected_status_version/isu);
+  assert.match(update.text, /attempt\.gateway_connection_id IS NOT DISTINCT FROM \$\d+/iu);
+  assert.match(update.text, /attempt\.lease_expires_at > NOW\(\)/iu);
+  assert.match(update.text, /object_key=NULL.*gateway_request_id=NULL.*model_evidence=NULL/isu);
+});
+
+test("stale PostgreSQL evidence replacement cannot partially hand producer A to B", async () => {
+  const db = fakePool((sql) => {
+    if (/SET object_key_version=NULL.*gateway_connection_id=/isu.test(sql)) return { rows: [], rowCount: 0 };
+    throw new Error(`unexpected SQL: ${sql}`);
+  });
+  const repository = createPostgresGenerationAttemptRepository({ pool: db.pool });
+
+  await assert.rejects(repository.replaceUnusableGenerationEvidence({
+    ...scope, attemptIdentityHash, inputHash, generationSize,
+    attemptNo: 1, leaseToken: "stale-lease",
+    gatewayConnectionId: "connection-a", gatewayConnectionVersion: 4,
+    replacementGatewayConnectionId: "connection-b", replacementGatewayConnectionVersion: 9,
+  }), { code: "AUTO_LISTING_IMAGE_ATTEMPT_CLAIM_REJECTED" });
+
+  assert.equal(db.queries.length, 1);
+  assert.match(db.queries[0].text, /attempt\.lease_token=\$12.*attempt\.lease_expires_at > NOW\(\)/isu);
 });
 
 test("a stale owner transition fails with a safe retryable claim error", async () => {

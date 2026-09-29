@@ -74,3 +74,34 @@ test("invalid scope and malformed or cross-tenant rows fail closed", async () =>
     { code: "AUTO_LISTING_PLAN_DIAGNOSTIC_REPOSITORY_FAILED" });
   assert.equal(getters, 0);
 });
+
+test("projects the migration-103 run and hash pair only for intelligent diagnostics", async () => {
+  const calls = [];
+  const intelligentRow = row({
+    attempt_id: null,
+    diagnostic_run_id: "diagnostic-a",
+    planning_contract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    source_image_analysis_run_id: "analysis-run-a",
+    source_image_intelligence_hash: "c".repeat(64),
+    response: { version: 1, language: "ru", fills: {} },
+    validation_status: "ACCEPTED",
+    issues: [],
+  });
+  const repository = createPostgresAutoListingPlanDiagnosticRepository({ pool: {
+    async query(sql) { calls.push(sql); return { rowCount: 1, rows: [intelligentRow] }; },
+  } });
+  const projected = await repository.loadLatest({ accountId: "account-a", jobId: "job-a", itemId: "item-a" });
+  assert.equal(projected.sourceImageAnalysisRunId, "analysis-run-a");
+  assert.equal(projected.sourceImageIntelligenceHash, "c".repeat(64));
+  assert.match(calls[0], /response\.source_image_analysis_run_id/u);
+  assert.match(calls[0], /response\.source_image_intelligence_hash/u);
+
+  const legacyRepository = createPostgresAutoListingPlanDiagnosticRepository({ pool: {
+    async query() { return { rowCount: 1, rows: [row({
+      source_image_analysis_run_id: null, source_image_intelligence_hash: null,
+    })] }; },
+  } });
+  const legacy = await legacyRepository.loadLatest({ accountId: "account-a", jobId: "job-a", itemId: "item-a" });
+  assert.equal(Object.hasOwn(legacy, "sourceImageAnalysisRunId"), false);
+  assert.equal(Object.hasOwn(legacy, "sourceImageIntelligenceHash"), false);
+});

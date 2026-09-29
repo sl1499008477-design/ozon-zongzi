@@ -1,0 +1,22 @@
+{
+  "status": "REVIEW_ONLY_NOT_APPLIED",
+  "bucket": "ozon-zongzi-media-hk-20260915-15028b9",
+  "region": "cn-hongkong",
+  "storageClass": "Standard",
+  "redundancy": "LRS",
+  "bucketAcl": "private",
+  "blockPublicAccess": false,
+  "publicReadPrefix": "listing-media/v1/",
+  "publicBaseUrl": "https://ozon-zongzi-media-hk-20260915-15028b9.oss-cn-hongkong.aliyuncs.com/",
+  "transferAcceleration": false,
+  "automaticObjectDeletion": false,
+  "ramRoleName": "ozon-zongzi-listing-media",
+  "ramPolicyName": "OzonZongziListingMediaReadWrite",
+  "ecs": {
+    "instanceId": "i-2zef66ffm756hzug481c",
+    "region": "cn-beijing",
+    "existingRoleObservation": "IMDSv2 role-name endpoint returned HTTP 404 on 2026-09-15; recheck before attaching",
+    "credentialsMode": "ecs_ram_role_imdsv2"
+  },
+  "scope": "Only media submitted for Ozon product publication. No credentials, database backups, collected account information, installers or deployment archives. Existing buckets and existing product media remain in place."
+}

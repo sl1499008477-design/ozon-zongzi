@@ -1,0 +1,167 @@
+{
+  "version": "1.0.29",
+  "artifacts": [
+    {
+      "target": "mac-arm64",
+      "version": "1.0.29",
+      "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.29/mac-arm64-93236fc5ff5e6eab/ozon-zongzi-v1.0.29-mac-arm64.zip",
+      "bytes": 164493330,
+      "sha256": "93236fc5ff5e6eab5e002b6ec178f4504842f0d077231b8942df6f7b5ffe5197"
+    },
+    {
+      "target": "mac-x64",
+      "version": "1.0.29",
+      "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.29/mac-x64-10c5bf66cf9014c7/ozon-zongzi-v1.0.29-mac-x64.zip",
+      "bytes": 174005881,
+      "sha256": "10c5bf66cf9014c704cc28fee671cc2ccdd044b7200eb05b9f1faee5ef4a7db1"
+    },
+    {
+      "target": "win-x64-setup",
+      "version": "1.0.29",
+      "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.29/win-x64-setup-78d547f14cd68413/ozon-zongzi-v1.0.29-win-x64-setup.exe",
+      "bytes": 150377607,
+      "sha256": "78d547f14cd68413408e67f0d0d02ee703df9c8c8bcd33fa9b91dcaaaafadf9e"
+    },
+    {
+      "target": "win-x64-portable",
+      "version": "1.0.29",
+      "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.29/win-x64-portable-f36494fa04d43c34/ozon-zongzi-v1.0.29-win-x64-portable.exe",
+      "bytes": 150147845,
+      "sha256": "f36494fa04d43c345f2239163b8a12c7ad02b724c9ee87a4471685d05a59c1f0"
+    }
+  ],
+  "sources": [
+    {
+      "target": "mac-arm64",
+      "ffmpegVersion": "9.0.1",
+      "binaryArchiveSha256": [
+        "bba507d2200a3b0b7a5f4d119a77e684d971065e73ec7d215965fc1021d4eece"
+      ],
+      "files": [
+        {
+          "kind": "source",
+          "name": "ffmpeg-9.0.1-mac-arm64-source.tar.xz",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-arm64/abe8e598604c507b/ffmpeg-9.0.1-mac-arm64-source.tar.xz",
+          "bytes": 14522576,
+          "sha256": "abe8e598604c507b622118977ab4a1cefa539ebbcabd1a396501a5c0446f867d"
+        },
+        {
+          "kind": "license",
+          "name": "COPYING.GPLv3",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-arm64/8ceb4b9ee5adedde/COPYING.GPLv3",
+          "bytes": 35147,
+          "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+        },
+        {
+          "kind": "license",
+          "name": "THIRD-PARTY-NOTICES.txt",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-arm64/402c39d6fcf27607/THIRD-PARTY-NOTICES.txt",
+          "bytes": 18357,
+          "sha256": "402c39d6fcf276073f61d1733a487ba6b288b9e724f9d72bd2e84a4ac5f210e2"
+        },
+        {
+          "kind": "building",
+          "name": "BUILDING.md",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-arm64/813a1abe72de6d33/BUILDING.md",
+          "bytes": 1815,
+          "sha256": "813a1abe72de6d33c0c41d9cebd880dec747ee59314e3a5371cd13da5f933f46"
+        },
+        {
+          "kind": "release",
+          "name": "SOURCE-RELEASE.json",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-arm64/67e900bfcbc63f15/SOURCE-RELEASE.json",
+          "bytes": 637,
+          "sha256": "67e900bfcbc63f15e7cf41bc5ef5be5cf6d6c92e7727931246cca896ea8c6dfd"
+        }
+      ]
+    },
+    {
+      "target": "mac-x64",
+      "ffmpegVersion": "9.0.1",
+      "binaryArchiveSha256": [
+        "9da7f9bd06af06a9ec7939a609898b73d5a8d8043588a2df0ecced29a9d2a033"
+      ],
+      "files": [
+        {
+          "kind": "source",
+          "name": "ffmpeg-9.0.1-mac-x64-source.tar.xz",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-x64/42750f0241c7905f/ffmpeg-9.0.1-mac-x64-source.tar.xz",
+          "bytes": 14522720,
+          "sha256": "42750f0241c7905f3b847e7ae3bf0b22913e88d012dc12794719142b4f5f5c77"
+        },
+        {
+          "kind": "license",
+          "name": "COPYING.GPLv3",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-x64/8ceb4b9ee5adedde/COPYING.GPLv3",
+          "bytes": 35147,
+          "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+        },
+        {
+          "kind": "license",
+          "name": "THIRD-PARTY-NOTICES.txt",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-x64/402c39d6fcf27607/THIRD-PARTY-NOTICES.txt",
+          "bytes": 18357,
+          "sha256": "402c39d6fcf276073f61d1733a487ba6b288b9e724f9d72bd2e84a4ac5f210e2"
+        },
+        {
+          "kind": "building",
+          "name": "BUILDING.md",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-x64/8a8fa975cef8923b/BUILDING.md",
+          "bytes": 1810,
+          "sha256": "8a8fa975cef8923b7e94cc6bfcd05749d677140535573b3887d573e141570661"
+        },
+        {
+          "kind": "release",
+          "name": "SOURCE-RELEASE.json",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/mac-x64/14e93f80b893d5db/SOURCE-RELEASE.json",
+          "bytes": 631,
+          "sha256": "14e93f80b893d5db3d2743aaeb59342bef40869fd0fd1784a8b87dba1898f826"
+        }
+      ]
+    },
+    {
+      "target": "win-x64",
+      "ffmpegVersion": "9.0.1",
+      "binaryArchiveSha256": [
+        "e0e1edc01cc9ca5baed7d6b38b5b0705d5b338f66f2d5179c3d338fc3710c1c3"
+      ],
+      "files": [
+        {
+          "kind": "source",
+          "name": "ffmpeg-9.0.1-win-x64-source.tar.xz",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/win-x64/956631c3c4625a52/ffmpeg-9.0.1-win-x64-source.tar.xz",
+          "bytes": 14519864,
+          "sha256": "956631c3c4625a5258ce9b2d7e49dc119ea751e71198a522c7d4c2dba491b096"
+        },
+        {
+          "kind": "license",
+          "name": "COPYING.GPLv3",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/win-x64/8ceb4b9ee5adedde/COPYING.GPLv3",
+          "bytes": 35147,
+          "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+        },
+        {
+          "kind": "license",
+          "name": "THIRD-PARTY-NOTICES.txt",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/win-x64/402c39d6fcf27607/THIRD-PARTY-NOTICES.txt",
+          "bytes": 18357,
+          "sha256": "402c39d6fcf276073f61d1733a487ba6b288b9e724f9d72bd2e84a4ac5f210e2"
+        },
+        {
+          "kind": "building",
+          "name": "BUILDING.md",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/win-x64/fb6c73a2d8a182a3/BUILDING.md",
+          "bytes": 1848,
+          "sha256": "fb6c73a2d8a182a302a6676a8edf3ec66c16b9daaeaf7388acd81dd7c8cb7ff9"
+        },
+        {
+          "kind": "release",
+          "name": "SOURCE-RELEASE.json",
+          "path": "https://assets.ozonzongzi.com/listing-media/v1/collector/1.0.24/ffmpeg-source/win-x64/91f80ad7d7b5eec8/SOURCE-RELEASE.json",
+          "bytes": 631,
+          "sha256": "91f80ad7d7b5eec861d5e3df69ed541a76b34b837617852c9887a2b9bdafd48c"
+        }
+      ]
+    }
+  ]
+}

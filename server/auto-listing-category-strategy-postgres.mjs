@@ -440,14 +440,10 @@ async function requireCurrentSource(client, { accountId, sourceCollectItemId, ex
          ON draft.collect_item_id=item.id AND draft.id=item.current_draft_id
        JOIN collect_ozon_category_current_sources pointer
          ON pointer.account_id=item.account_id AND pointer.collect_item_id=item.id
-        AND pointer.source_kind='PRODUCT_DRAFT' AND pointer.source_record_id=draft.id
-        AND pointer.source_version IN (draft.version::TEXT,'draft:' || draft.version::TEXT)
        JOIN collect_ozon_category_source_evidence evidence
          ON evidence.account_id=pointer.account_id AND evidence.id=pointer.source_evidence_id
-        AND evidence.collect_item_id=pointer.collect_item_id
-        AND evidence.source_kind=pointer.source_kind
-        AND evidence.source_record_id=pointer.source_record_id
-        AND evidence.source_version=pointer.source_version
+        AND evidence.collect_item_id=pointer.collect_item_id AND evidence.source_kind=pointer.source_kind
+        AND evidence.source_record_id=pointer.source_record_id AND evidence.source_version=pointer.source_version
        JOIN account_ozon_shared_categories shared
          ON shared.account_id=evidence.account_id
         AND shared.source_description_category_id=evidence.source_description_category_id
@@ -466,6 +462,7 @@ async function requireCurrentSource(client, { accountId, sourceCollectItemId, ex
 }
 
 async function requireDraftCurrentSource(client, row) {
+  if (row.source_snapshot) return; // Frozen source remains valid after collection cleanup.
   await requireCurrentSource(client, {
     accountId: row.account_id,
     sourceCollectItemId: row.source_collect_item_id,

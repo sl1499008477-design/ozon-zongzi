@@ -46,8 +46,8 @@ test("PostgreSQL queue scans all tenants, leases the real user role, drains stal
       VALUES ($1,$2,'COLLECT_BOX','CREATED',$3,'{}'::jsonb,$4,$2,$5)`,
       [ids.job, ids.account, `${name}-job-${suffix}`, "b".repeat(64), `${name}-corr-${suffix}`]);
     await admin.query(`INSERT INTO auto_listing_job_items
-      (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,1)`,
+      (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,source_order)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,1,1)`,
       [ids.item, ids.job, ids.account, ids.snapshot, ids.store, ids.warehouse, status]);
     if (enqueue) {
       await enqueueAutoListingUploadTask({ client: admin, accountId: ids.account, jobId: ids.job,
@@ -128,6 +128,144 @@ test("PostgreSQL queue scans all tenants, leases the real user role, drains stal
     assert.equal(Number((await pool.query(
       "SELECT COUNT(*)::int AS count FROM auto_listing_events WHERE account_id=$1 AND item_id=$2 AND event_type='UPLOAD_DISPATCH_DEAD'",
       [tenantA.account, tenantA.item])).rows[0].count), 1);
+  } finally {
+    await pool?.end();
+    try {
+      await admin.query("SET search_path TO public");
+      await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
+    } finally { admin.release(); await adminPool.end(); }
+  }
+});
+
+test("PostgreSQL upload claims preserve same-job source order without blocking independent jobs or later AI work", {
+  skip: !enabled, timeout: 60_000,
+}, async () => {
+  const { Pool } = await import("pg");
+  const adminPool = new Pool({ connectionString, max: 2 });
+  const admin = await adminPool.connect();
+  const suffix = crypto.randomUUID().replaceAll("-", "");
+  const schema = `auto_listing_upload_order_${suffix}`;
+  const accountId = `order-account-${suffix}`;
+  const storeId = `order-store-${suffix}`;
+  const warehouseId = `order-warehouse-${suffix}`;
+  let pool;
+  try {
+    await admin.query(`CREATE SCHEMA ${quote(schema)}`);
+    await admin.query(`SET search_path TO ${quote(schema)}, public`);
+    for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort()) {
+      await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+    }
+    pool = new Pool({ connectionString, max: 4, options: `-c search_path=${schema},public` });
+    await admin.query(
+      "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'user','active')",
+      [accountId, `order-${suffix}`],
+    );
+    await admin.query(
+      "INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,'Order','Order',$2,'active',$3)",
+      [storeId, `order-client-${suffix}`, accountId],
+    );
+    await admin.query(`INSERT INTO warehouses
+      (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived)
+      VALUES ($1,$2,$3,'FBS','active',TRUE,FALSE)`,
+    [warehouseId, storeId, `order-platform-${suffix}`]);
+
+    async function createJob(name, itemStatuses) {
+      const jobId = `${name}-job-${suffix}`;
+      await admin.query(`INSERT INTO auto_listing_jobs
+        (id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,created_by,correlation_id)
+        VALUES ($1,$2,'COLLECT_BOX','CREATED',$3,'{}'::jsonb,$4,$2,$5)`,
+      [jobId, accountId, `${name}-job-${suffix}`, "b".repeat(64), `${name}-corr-${suffix}`]);
+      const items = [];
+      for (const [index, status] of itemStatuses.entries()) {
+        const sourceOrder = index + 1;
+        const itemId = `${name}-item-${sourceOrder}-${suffix}`;
+        const snapshotId = `${name}-snapshot-${sourceOrder}-${suffix}`;
+        await admin.query(`INSERT INTO auto_listing_source_snapshots
+          (id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash)
+          VALUES ($1,$2,'COLLECT_BOX',$3,'1','{}'::jsonb,$4)`,
+        [snapshotId, accountId, `${name}-source-${sourceOrder}-${suffix}`, "a".repeat(64)]);
+        await admin.query(`INSERT INTO auto_listing_job_items
+          (id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,
+           status,status_version,source_order)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8)`,
+        [itemId, jobId, accountId, snapshotId, storeId, warehouseId, status, sourceOrder]);
+        items.push(itemId);
+      }
+      return { jobId, items };
+    }
+
+    async function enqueue(jobId, itemId, name) {
+      await enqueueAutoListingUploadTask({ client: admin, accountId, jobId, itemId,
+        actorAccountId: accountId, expectedStatusVersion: 1,
+        correlationId: `${name}-upload-${suffix}`, enqueueReason: "DIRECT_READY" });
+    }
+
+    const repository = createPostgresAutoListingUploadTaskRepository({ pool,
+      randomUUID: () => `order-${crypto.randomUUID()}` });
+    const lease = () => repository.leaseNext({ accountId, workerId: "order-worker", leaseMs: 30_000 });
+    const complete = (task) => repository.completeLease({ accountId, taskId: task.taskId,
+      leaseToken: task.leaseToken, correlationId: `${task.taskId}:${task.attemptCount}`,
+      evidence: { outcome: "STALE", code: "AUTO_LISTING_UPLOAD_TASK_STALE" } });
+
+    for (const predecessorStatus of ["READY_FOR_REVIEW", "UPLOADING", "UPLOAD_QUEUED"]) {
+      const name = `blocked-${predecessorStatus.toLowerCase()}`;
+      const { jobId, items } = await createJob(name, [predecessorStatus, "UPLOAD_QUEUED"]);
+      await enqueue(jobId, items[1], name);
+      assert.equal(await lease(), null, `${predecessorStatus} predecessor must hold the later upload`);
+    }
+
+    for (const predecessorStatus of ["SUCCEEDED", "RETRYABLE_ERROR", "BLOCKED", "CANCELLED"]) {
+      const name = `terminal-${predecessorStatus.toLowerCase()}`;
+      const { jobId, items } = await createJob(name, [predecessorStatus, "UPLOAD_QUEUED"]);
+      await enqueue(jobId, items[1], name);
+      const task = await lease();
+      assert.equal(task?.itemId, items[1], `${predecessorStatus} predecessor must release the later upload`);
+      await complete(task);
+    }
+
+    const blockedJob = await createJob("independent-blocked", ["READY_FOR_REVIEW", "UPLOAD_QUEUED"]);
+    await enqueue(blockedJob.jobId, blockedJob.items[1], "independent-blocked");
+    const independentJob = await createJob("independent-runnable", ["UPLOAD_QUEUED"]);
+    await enqueue(independentJob.jobId, independentJob.items[0], "independent-runnable");
+    const independentTask = await lease();
+    assert.equal(independentTask?.itemId, independentJob.items[0]);
+    await complete(independentTask);
+
+    const aiProgressJob = await createJob("ai-progress", ["UPLOADING", "GENERATING"]);
+    await admin.query(`UPDATE auto_listing_job_items
+      SET status='UPLOAD_QUEUED',updated_at=NOW() WHERE account_id=$1 AND job_id=$2 AND id=$3`,
+    [accountId, aiProgressJob.jobId, aiProgressJob.items[1]]);
+    await enqueue(aiProgressJob.jobId, aiProgressJob.items[1], "ai-progress");
+    assert.deepEqual((await pool.query(
+      "SELECT status FROM auto_listing_job_items WHERE account_id=$1 AND job_id=$2 AND id=$3",
+      [accountId, aiProgressJob.jobId, aiProgressJob.items[1]],
+    )).rows[0], { status: "UPLOAD_QUEUED" });
+    assert.equal(await lease(), null, "later AI completion must not overtake an uploading predecessor");
+
+    const orderedJob = await createJob("ordered", ["CANCELLED", "UPLOAD_QUEUED", "UPLOAD_QUEUED"]);
+    await admin.query("BEGIN");
+    try {
+      await enqueue(orderedJob.jobId, orderedJob.items[2], "ordered-third");
+      await enqueue(orderedJob.jobId, orderedJob.items[1], "ordered-second");
+      await admin.query("COMMIT");
+    } catch (error) {
+      await admin.query("ROLLBACK");
+      throw error;
+    }
+    const taskIdOrder = (await admin.query(`SELECT item_id
+      FROM auto_listing_upload_tasks WHERE account_id=$1 AND job_id=$2 ORDER BY id`,
+    [accountId, orderedJob.jobId])).rows.map((row) => row.item_id);
+    assert.equal(taskIdOrder.length, 2);
+    const expectedFirstItemId = taskIdOrder[1];
+    await admin.query(`UPDATE auto_listing_job_items
+      SET source_order=source_order+10 WHERE account_id=$1 AND job_id=$2 AND source_order IN (2,3)`,
+    [accountId, orderedJob.jobId]);
+    await admin.query(`UPDATE auto_listing_job_items
+      SET source_order=CASE id WHEN $3 THEN 2 ELSE 3 END
+      WHERE account_id=$1 AND job_id=$2 AND source_order IN (12,13)`,
+    [accountId, orderedJob.jobId, expectedFirstItemId]);
+    assert.equal((await lease())?.itemId, expectedFirstItemId,
+      "source_order must break equal schedule times before task creation order");
   } finally {
     await pool?.end();
     try {
@@ -235,7 +373,7 @@ test("standard pipeline retains product success as PARTIAL_SUCCESS when stock sy
     assert.deepEqual({ status: completed.status, task: completed.ozon_task_id,
       success: completed.success_count, failed: completed.failed_count, code: completed.error_code }, {
       status: "PARTIAL_SUCCESS", task: "123456", success: 1, failed: 0,
-      code: "OZON_STOCK_WRITE_FAILED",
+      code: "ZONGZI_STOCK_WRITE_FAILED",
     });
     assert.deepEqual(completed.result_summary, { success: 1, failed: 0, skipped: 0, stockCount: 1 });
     assert.equal(calls.filter((path) => path === "/v3/product/import").length, 1);
@@ -269,7 +407,7 @@ test("standard pipeline retains product success as PARTIAL_SUCCESS when stock sy
       "SELECT status,error_code FROM submission_jobs WHERE id=$1", [conflictJobId],
     )).rows[0];
     assert.deepEqual(reconciledConflict, {
-      status: "RECONCILING", error_code: "OZON_IMPORT_RESULT_CONFLICT",
+      status: "RECONCILING", error_code: "ZONGZI_IMPORT_RESULT_CONFLICT",
     });
     assert.deepEqual((await admin.query(
       "SELECT status,product_id FROM submission_items WHERE id=$1", [conflictItemId],

@@ -1,4 +1,5 @@
 import { sha256 } from "./auto-listing-asset-store.mjs";
+import { isAutoListingCreativeFact } from "./auto-listing-creative-facts.mjs";
 import { verifyAcceptedGeneratedAssetEnvelope } from "./auto-listing-image-generator.mjs";
 import { isCompatibleAiModelIdentity } from "./auto-listing-ai-model-identity.mjs";
 
@@ -6,7 +7,14 @@ const VERSION = "AUTO_LISTING_RICH_CONTENT_V1";
 const DETERMINISTIC_FALLBACK_PREFIX = "auto-listing-rich-fallback-";
 const MAX_PROMPT_BYTES = 256 * 1024;
 const HASH = /^[a-f0-9]{64}$/;
+const EXECUTION_LEASE_LOST = "AUTO_LISTING_AI_EXECUTION_LEASE_LOST";
+const TRANSIENT_RICH_FALLBACK_CODES = new Set([
+  "AI_GATEWAY_NETWORK_FAILED", "AI_GATEWAY_RATE_LIMITED", "AI_GATEWAY_IDLE_TIMEOUT",
+  "AI_GATEWAY_UNEXPECTED_EOF", "AI_GATEWAY_QUOTA_EXHAUSTED", "AI_GATEWAY_NO_CAPACITY",
+  "INVALID_GATEWAY_RESPONSE", "RETRYABLE_GATEWAY", "GATEWAY_TIMEOUT",
+]);
 const SCOPE_KEYS = ["accountId", "jobId", "itemId", "planId"];
+const GATEWAY_EXECUTION_KEYS = new Set(["channelId", "connectionId", "connectionVersion", "idleTimeoutMs"]);
 const FACT_EVIDENCE_KEYS = new Set(["factId", "field", "kind", "value", "numericValue", "unit", "sourcePath"]);
 const ASSET_EVIDENCE_KEYS = new Set([
   "assetId", "status", "accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "role",
@@ -34,9 +42,11 @@ const OUTPUT_RULES = Object.freeze({
 });
 const TECHNICAL_TOKENS = new Set(["usb", "usb-c", "led", "bpa", "ipx4", "ipx5", "ipx6", "ipx7", "ipx8", "wifi", "bluetooth"]);
 const wordPolicyRule = (source) => new RegExp(String.raw`(?:^|[^\p{L}\p{N}])(?:${source})`, "iu");
+const RUSSIAN_PHONE_RULE = /(?<![\p{L}\p{N}])(?:\+?7|8)[\s()-]*\d{3}[\s()-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?![\p{L}\p{N}])/u;
+const INTERNATIONAL_PHONE_RULE = /(?<![\p{L}\p{N}])(?:\+\d{1,3}|00\d{1,3})[\s().-]*\d(?:[\s().-]*\d){6,14}(?![\p{L}\p{N}])/u;
 const HARD_POLICY_RULES = [
   /https?:\/\//iu, /www\./iu, /\b[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[A-Za-z]{2,}\b/iu,
-  /(?:\+?7|8)[\s()-]*\d{3}[\s()-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/u,
+  RUSSIAN_PHONE_RULE,
   wordPolicyRule(String.raw`telegram|whatsapp|viber|телеграм|ватсап|позвон|пишите|свяжитесь|контакт[\p{L}-]*|телефон[\p{L}-]*|обрат[\p{L}-]*\s+к\s+продавц[\p{L}-]*`),
   wordPolicyRule(String.raw`остав(?:ьте|ить)\s+отзыв|оцените\s+(?:нас|товар)|отзыв`),
   wordPolicyRule(String.raw`(?:сертифицирован|сертификат|сертификац|лечебн|медицинск|исцел|гаранти|возврат|обмен)[\p{L}-]*`),
@@ -47,8 +57,8 @@ const PROMPT_PROJECTION_RULES = [
   /(?:https?|ftp|file|data):/iu,
   /www\./iu,
   /\b[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[A-Za-z]{2,}\b/iu,
-  /(?:\+?7|8)[\s()-]*\d{3}[\s()-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/u,
-  /(?:\+\d{1,3}|00\d{1,3})[\s().-]*\d(?:[\s().-]*\d){6,14}/u,
+  RUSSIAN_PHONE_RULE,
+  INTERNATIONAL_PHONE_RULE,
   /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|password|secret)\b\s*[:=]/iu,
   /\bbearer\b(?:\s+|\s*[:=]\s*)[A-Za-z0-9._~+/=-]{8,}/iu,
 ];
@@ -75,6 +85,22 @@ function richError(code, message = "富文本生成失败", retryable = false) {
   error.code = code;
   error.retryable = retryable;
   return error;
+}
+
+function assertLeaseActive(input) {
+  if (typeof input.assertLeaseActive === "function") input.assertLeaseActive();
+}
+
+async function leaseBound(input, operation) {
+  assertLeaseActive(input);
+  try {
+    const result = await operation();
+    assertLeaseActive(input);
+    return result;
+  } catch (cause) {
+    assertLeaseActive(input);
+    throw cause;
+  }
 }
 
 export const RICH_CONTENT_JSON_SCHEMA = Object.freeze({
@@ -104,10 +130,11 @@ const canonicalUnit = (value) => {
 const numericTokens = (value) => [...value.matchAll(/(?<![\p{L}\p{N}])(-?\d+(?:[.,]\d+)?)(?:\s*([\p{L}%°]{1,16}))?/gu)]
   .map((match) => ({ value: Number(match[1].replace(",", ".")), unit: match[2] ? canonicalUnit(match[2]) : null }));
 
-function normalizeFact(fact) {
+function normalizeFact(fact, { promptSafe = true } = {}) {
+  const projectedText = promptSafe ? safePromptProjection : clean;
   if (!plainObject(fact)
     || !safeInternalMetadata(fact.factId, 240)
-    || !safePromptProjection(fact.kind, 120) || !safePromptProjection(fact.value, 2048)
+    || !projectedText(fact.kind, 120) || !projectedText(fact.value, 2048)
     || !safeInternalMetadata(fact.sourcePath, 1024)) return null;
   const field = fact.field ?? fact.sourcePath;
   if (!safeInternalMetadata(field, 512)) return null;
@@ -131,7 +158,7 @@ function normalizeFact(fact) {
   }
   if (!((numericValue === null && unit === null)
     || (typeof numericValue === "number" && Number.isFinite(numericValue)
-      && (unit === null || safePromptProjection(unit, 64))))) return null;
+      && (unit === null || projectedText(unit, 64))))) return null;
   return { ...fact, field, numericValue, unit };
 }
 
@@ -167,9 +194,9 @@ function validCanonicalAssetEvidence(asset) {
     && (asset.regeneration === null || plainObject(asset.regeneration));
 }
 
-function validateFacts(facts) {
+function validateFacts(facts, options = undefined) {
   if (!Array.isArray(facts) || facts.length < 1 || facts.length > 256) return null;
-  const normalized = facts.map(normalizeFact);
+  const normalized = facts.map((fact) => normalizeFact(fact, options));
   if (normalized.some((fact) => fact === null)) return null;
   const byId = new Map(normalized.map((fact) => [fact.factId, fact]));
   return byId.size === normalized.length ? byId : null;
@@ -204,7 +231,7 @@ function validateAssets(assets, scope, plan, profile) {
 }
 
 function factsForAcceptedAssets(plan, assets, facts) {
-  const factsById = validateFacts(facts);
+  const factsById = validateFacts(facts, { promptSafe: false });
   const groupKeys = Array.isArray(assets) ? new Set(assets.map((asset) => asset?.visualGroupKey)) : new Set();
   if (!factsById || groupKeys.size !== 1 || !Array.isArray(plan?.factRegistry)) return null;
   const [visualGroupKey] = groupKeys;
@@ -213,8 +240,15 @@ function factsForAcceptedAssets(plan, assets, facts) {
       && (!fact.visualGroupKeys.length || fact.visualGroupKeys.includes(visualGroupKey)))
     .map((fact) => fact?.factId);
   if (factIds.length < 1 || factIds.length !== new Set(factIds).size) return null;
-  const selected = factIds.map((factId) => factsById.get(factId));
-  return selected.some((fact) => !fact) ? null : selected;
+  const selected = [];
+  for (const factId of factIds) {
+    const fact = factsById.get(factId);
+    if (!fact) return null;
+    if (!isAutoListingCreativeFact(fact)) continue;
+    const projected = normalizeFact(fact);
+    if (projected) selected.push(projected);
+  }
+  return selected.length ? selected : null;
 }
 
 function validatePlan(plan, scope, facts) {
@@ -222,7 +256,10 @@ function validatePlan(plan, scope, facts) {
     && plan.id === scope.planId && plan.planId === scope.planId
     && HASH.test(plan.planHash || "") && HASH.test(plan.sourceHash || "")
     && Array.isArray(plan.factRegistry)
-    && same(factEvidence(plan.factRegistry), factEvidence(facts));
+    && same(
+      factEvidence(plan.factRegistry, { promptSafe: false }),
+      factEvidence(facts, { promptSafe: false }),
+    );
 }
 
 function bindingMatchesFact(binding, fact) {
@@ -380,8 +417,8 @@ export function validateRichContent(input = {}) {
   });
 }
 
-function factEvidence(facts) {
-  const normalized = facts.map(normalizeFact);
+function factEvidence(facts, options = undefined) {
+  const normalized = facts.map((fact) => normalizeFact(fact, options));
   if (normalized.some((fact) => fact === null)) throw richError("AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
   return normalized.map(({ factId, field, kind, value, numericValue, unit, sourcePath }) => ({
     factId, field, kind, value, numericValue, unit, ...(sourcePath === undefined ? {} : { sourcePath }),
@@ -557,9 +594,19 @@ export function buildRichContentEvidenceIdentity(input = {}) {
   return Object.freeze({ prompt, factRegistryHash, assetHash, promptHash, inputHash });
 }
 
+export function buildRichContentAttemptInputHash(evidenceInputHash, expectedStatusVersion) {
+  if (!HASH.test(evidenceInputHash || "")
+    || !Number.isInteger(expectedStatusVersion) || expectedStatusVersion < 1
+    || expectedStatusVersion > 2_147_483_647) {
+    throw richError("AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
+  }
+  return sha256({ evidenceInputHash, expectedStatusVersion });
+}
+
 export function buildRichContentPrompt(input = {}) {
   const scope = Object.fromEntries(SCOPE_KEYS.map((key) => [key, input[key]]));
-  if (!SCOPE_KEYS.every((key) => clean(scope[key], 240)) || !validateFacts(input.factRegistry)
+  if (!SCOPE_KEYS.every((key) => clean(scope[key], 240))
+    || !validateFacts(input.factRegistry, { promptSafe: false })
     || !validatePlan(input.plan, scope, input.factRegistry)
     || input.planHash !== input.plan.planHash || input.sourceHash !== input.plan.sourceHash
     || !validateAssets(input.acceptedAssets, scope, input.plan, input.profile)
@@ -592,6 +639,7 @@ function repositoryPort(repository) {
     complete: choose("completeRichContentAttempt", "completeRichContent"),
     reject: choose("rejectRichContentAttempt", "rejectRichContent"),
     fail: choose("failRichContentAttempt", "failRichContent"),
+    release: choose("releaseRichContentAttempt", "releaseRichContent"),
   };
   if (Object.values(port).some((method) => typeof method !== "function" || method.length < 1)) {
     throw richError("AUTO_LISTING_RICH_CONTENT_REPOSITORY_FAILED", "Хранилище недоступно", true);
@@ -664,11 +712,14 @@ function deterministicRichContent(facts, acceptedAssets) {
 
 function assertGenerationInput(input) {
   const scope = Object.fromEntries(SCOPE_KEYS.map((key) => [key, input[key]]));
-  if (!SCOPE_KEYS.every((key) => clean(scope[key], 240)) || !plainObject(input.profile)
+  if (!SCOPE_KEYS.every((key) => clean(scope[key], 240))
+    || !Number.isInteger(input.expectedStatusVersion) || input.expectedStatusVersion < 1
+    || input.expectedStatusVersion > 2_147_483_647 || !plainObject(input.profile)
     || !clean(input.profile.id, 240) || input.profile.accountId !== input.accountId
     || !Number.isInteger(input.profile.configVersion) || input.profile.configVersion < 1
     || !clean(input.profile.textModel, 240) || !clean(input.promptTemplateVersion, 240)
-    || !validateFacts(input.factRegistry) || !validatePlan(input.plan, scope, input.factRegistry)
+    || !validateFacts(input.factRegistry, { promptSafe: false })
+    || !validatePlan(input.plan, scope, input.factRegistry)
     || input.planHash !== input.plan.planHash || input.sourceHash !== input.plan.sourceHash
     || !validateAssets(input.acceptedAssets, scope, input.plan, input.profile)) {
     throw richError("AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
@@ -709,14 +760,27 @@ function assertExistingAccepted(record, input, hashes) {
 
 export async function generateRichContent(input = {}) {
   const scope = assertGenerationInput(input);
+  const gatewayExecution = input.gatewayExecution ?? null;
+  if (!(gatewayExecution === null || (exactObject(gatewayExecution, GATEWAY_EXECUTION_KEYS)
+    && clean(gatewayExecution.channelId, 240) && clean(gatewayExecution.connectionId, 240)
+    && Number.isInteger(gatewayExecution.connectionVersion) && gatewayExecution.connectionVersion >= 1
+    && gatewayExecution.idleTimeoutMs === 300_000))) {
+    throw richError("AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
+  }
+  assertLeaseActive(input);
   const port = repositoryPort(input.repository);
-  const hashes = buildRichContentPrompt(input);
+  const evidence = buildRichContentPrompt(input);
+  const hashes = {
+    ...evidence,
+    inputHash: buildRichContentAttemptInputHash(evidence.inputHash, input.expectedStatusVersion),
+  };
   const selectedFacts = factsForAcceptedAssets(input.plan, input.acceptedAssets, input.factRegistry);
   if (!selectedFacts) throw richError("AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
   const facts = factEvidence(selectedFacts);
   const assets = assetEvidence(input.acceptedAssets);
   const reservationInput = {
     ...scope, ...hashes,
+    expectedStatusVersion: input.expectedStatusVersion,
     profileId: input.profile.id,
     profileVersion: input.profile.configVersion,
     modelName: input.profile.textModel,
@@ -726,6 +790,8 @@ export async function generateRichContent(input = {}) {
     requestEvidence: { requestKey: `auto-listing-rich-${hashes.inputHash}`, schemaVersion: VERSION },
     maxAttempts: input.maxAttempts ?? 5,
     leaseOwner: input.leaseOwner ?? "rich-content-generator",
+    gatewayConnectionId: gatewayExecution?.connectionId ?? null,
+    gatewayConnectionVersion: gatewayExecution?.connectionVersion ?? null,
   };
   const reservation = await port.reserve(reservationInput);
   if (reservation?.status === "EXISTING_ACCEPTED") return assertExistingAccepted(reservation.record, input, hashes);
@@ -745,7 +811,7 @@ export async function generateRichContent(input = {}) {
   const fallback = (reason) => {
     const richContent = deterministicRichContent(selectedFacts, input.acceptedAssets);
     if (!richContent) return null;
-    const checked = validateRichContent({ richContent, ...input, factRegistry: selectedFacts });
+    const checked = validateRichContent({ ...input, richContent });
     if (!checked.valid) return null;
     return {
       richContent,
@@ -763,19 +829,32 @@ export async function generateRichContent(input = {}) {
   let completion = null;
   try {
     if (typeof input.gateway?.createTextResponse !== "function") throw richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED", "Шлюз недоступен", true);
+    assertLeaseActive(input);
     response = await input.gateway.createTextResponse({
       profile: input.profile,
       model: input.profile.textModel,
       correlationId: input.correlationId,
       requestKey: reservationInput.requestEvidence.requestKey,
+      idleTimeoutMs: gatewayExecution?.idleTimeoutMs ?? 300_000,
       prompt: hashes.prompt,
       jsonSchema: RICH_CONTENT_JSON_SCHEMA,
     });
+    assertLeaseActive(input);
   } catch (cause) {
+    assertLeaseActive(input);
+    if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
+    if (!TRANSIENT_RICH_FALLBACK_CODES.has(cause?.code)) {
+      await leaseBound(input, () => port.release({
+        ...reservationInput, ...lease,
+        errorCode: "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED",
+      }));
+      throw cause;
+    }
     completion = fallback("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED");
     if (!completion) {
       const gatewayFailure = richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED", "Шлюз генерации недоступен", cause?.retryable !== false);
-      await port.fail({ ...reservationInput, ...lease, errorCode: gatewayFailure.code, errorRetryable: gatewayFailure.retryable });
+      assertLeaseActive(input);
+      await leaseBound(input, () => port.fail({ ...reservationInput, ...lease, errorCode: gatewayFailure.code, errorRetryable: gatewayFailure.retryable }));
       throw gatewayFailure;
     }
   }
@@ -784,7 +863,8 @@ export async function generateRichContent(input = {}) {
     completion = fallback("AUTO_LISTING_RICH_CONTENT_GATEWAY_EVIDENCE_INVALID");
     if (!completion) {
       const invalidEvidence = richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_EVIDENCE_INVALID", "Шлюз не подтвердил запрос и модель", true);
-      await port.fail({ ...reservationInput, ...lease, errorCode: invalidEvidence.code, errorRetryable: true });
+      assertLeaseActive(input);
+      await leaseBound(input, () => port.fail({ ...reservationInput, ...lease, errorCode: invalidEvidence.code, errorRetryable: true }));
       throw invalidEvidence;
     }
   }
@@ -794,14 +874,16 @@ export async function generateRichContent(input = {}) {
     if (!checked.valid) {
       const policy = checked.checkerResult.code === "POLICY_REJECTED";
       if (policy) {
-        await port.reject({ ...reservationInput, ...lease,
-          errorCode: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED", errorRetryable: false });
+        assertLeaseActive(input);
+        await leaseBound(input, () => port.reject({ ...reservationInput, ...lease,
+          errorCode: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED", errorRetryable: false }));
         throw richError("AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED", "Модель вернула недопустимый документ", false);
       }
       completion = fallback("AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID");
       if (!completion) {
-        await port.fail({ ...reservationInput, ...lease,
-          errorCode: "AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID", errorRetryable: true });
+        assertLeaseActive(input);
+        await leaseBound(input, () => port.fail({ ...reservationInput, ...lease,
+          errorCode: "AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID", errorRetryable: true }));
         throw richError("AUTO_LISTING_RICH_CONTENT_OUTPUT_INVALID", "Модель вернула недопустимый документ", true);
       }
     } else {
@@ -824,7 +906,8 @@ export async function generateRichContent(input = {}) {
     usage: clone(completion.usage),
   };
   try {
-    const accepted = await port.complete(complete);
+    assertLeaseActive(input);
+    const accepted = await leaseBound(input, () => port.complete(complete));
     if (!plainObject(accepted) || !clean(accepted.id, 240) || accepted.status !== "ACCEPTED"
       || accepted.attemptNo !== complete.attemptNo
       || !(accepted.acceptedAt instanceof Date || Number.isFinite(accepted.acceptedAt)
@@ -845,7 +928,18 @@ export async function generateRichContent(input = {}) {
     }
     return accepted;
   } catch (cause) {
-    try { await port.fail({ ...reservationInput, ...lease, errorCode: "AUTO_LISTING_RICH_CONTENT_COMPLETE_FAILED", errorRetryable: true }); } catch {}
+    assertLeaseActive(input);
+    if (cause?.code === EXECUTION_LEASE_LOST) throw cause;
+    try {
+      await leaseBound(input, () => port.fail({
+        ...reservationInput, ...lease,
+        errorCode: "AUTO_LISTING_RICH_CONTENT_COMPLETE_FAILED",
+        errorRetryable: true,
+      }));
+    } catch (failureCause) {
+      assertLeaseActive(input);
+      if (failureCause?.code === EXECUTION_LEASE_LOST) throw failureCause;
+    }
     throw cause;
   }
 }

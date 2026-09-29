@@ -1,11 +1,14 @@
 import crypto from "node:crypto";
-import { verifyAutoListingFrozenConfig } from "./auto-listing-contract.mjs";
+import {
+  normalizeAndHashAutoListingConfig,
+  verifyAutoListingFrozenConfig,
+} from "./auto-listing-contract.mjs";
 import { listingWarehouseEligibility } from "./listing-warehouse-eligibility.mjs";
 import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const BRAND_MODES = new Set(["PREFER_SOURCE", "FORCE_NO_BRAND"]);
-const CURRENT_IMAGE_DEFAULTS_VERSION = 2;
+const CURRENT_IMAGE_DEFAULTS_VERSION = 3;
 
 function preferenceError(code, status = 422, retryable = false) {
   const error = new Error(code === "AUTO_LISTING_PREFERENCES_PERSIST_FAILED"
@@ -26,7 +29,7 @@ function fromRow(row) {
   if (!row) return null;
   const storedImage = row.image_config && typeof row.image_config === "object" && !Array.isArray(row.image_config)
     ? row.image_config : {};
-  const { brandMode, defaultsVersion, ...image } = storedImage;
+  const { brandMode, useCategoryStrategy, defaultsVersion, ...image } = storedImage;
   return Object.freeze({
     accountId: row.account_id,
     targetStoreId: row.target_store_id,
@@ -38,6 +41,7 @@ function fromRow(row) {
     imageDefaultsVersion: Number.isInteger(defaultsVersion) && defaultsVersion > 0
       ? defaultsVersion : null,
     ...(BRAND_MODES.has(brandMode) ? { brandMode } : {}),
+    ...(typeof useCategoryStrategy === "boolean" ? { useCategoryStrategy } : {}),
     configVersion: Number(row.config_version),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -46,6 +50,24 @@ function fromRow(row) {
 
 function hash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
+}
+
+function comparableConfigHash(config) {
+  try {
+    return normalizeAndHashAutoListingConfig({
+      targetStoreId: config.targetStoreId,
+      targetWarehouseId: config.targetWarehouseId,
+      stock: config.stock,
+      priceAdjustmentKopecks: config.priceAdjustmentKopecks,
+      priceMultiplierMicros: config.priceMultiplierMicros ?? "1000000",
+      image: config.image,
+      ...(config.brandMode ? { brandMode: config.brandMode } : {}),
+      ...(typeof config.useCategoryStrategy === "boolean"
+        ? { useCategoryStrategy: config.useCategoryStrategy } : {}),
+    }).configHash;
+  } catch {
+    return null;
+  }
 }
 
 function eventId(accountId, idempotencyKey) {
@@ -184,7 +206,30 @@ export function createPostgresAutoListingPreferencesRepository({ pool } = {}) {
         const current = fromRow(currentResult.rows?.[0]);
         const currentVersion = current?.configVersion ?? 0;
         if (currentVersion !== input.expectedVersion) {
-          throw preferenceError("AUTO_LISTING_PREFERENCES_VERSION_CONFLICT", 409);
+          const alreadyCurrent = current
+            && comparableConfigHash(current) === comparableConfigHash(input.config);
+          if (!alreadyCurrent) throw preferenceError("AUTO_LISTING_PREFERENCES_VERSION_CONFLICT", 409);
+          const metadata = {
+            requestHash,
+            configHash: input.configHash,
+            configVersion: currentVersion,
+            config: input.config,
+          };
+          const insertedAudit = await client.query(
+            `INSERT INTO audit_events (
+               event_id,account_id,store_id,action,status,actor_type,actor_id,device_id,source,
+               entity_type,entity_id,correlation_id,metadata,occurred_at,created_at
+             ) VALUES ($1,$2,$3,'AUTO_LISTING_PREFERENCES_SAVE','SUCCESS','account',$2,'','auto-listing-user',
+               'auto_listing_preferences',$2,$4,$5::JSONB,NOW(),NOW())
+             ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING RETURNING event_id`,
+            [auditId, input.accountId, input.config.targetStoreId, input.correlationId, JSON.stringify(metadata)],
+          );
+          if (insertedAudit.rowCount !== 1) {
+            throw preferenceError("AUTO_LISTING_PREFERENCES_IDEMPOTENCY_CONFLICT", 409);
+          }
+          await client.query("COMMIT");
+          committed = true;
+          return Object.freeze({ accountId: input.accountId, ...input.config, configVersion: currentVersion });
         }
         const target = await client.query(
           `SELECT s.id AS store_id,s.owner_account_id,s.status AS store_status,s.client_id,
@@ -210,6 +255,8 @@ export function createPostgresAutoListingPreferencesRepository({ pool } = {}) {
         const storedImage = JSON.stringify({
           ...input.config.image,
           ...(input.config.brandMode ? { brandMode: input.config.brandMode } : {}),
+          ...(typeof input.config.useCategoryStrategy === "boolean"
+            ? { useCategoryStrategy: input.config.useCategoryStrategy } : {}),
           defaultsVersion: CURRENT_IMAGE_DEFAULTS_VERSION,
         });
         const savedResult = current ? await client.query(

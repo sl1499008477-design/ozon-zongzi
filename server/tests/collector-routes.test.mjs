@@ -17,6 +17,8 @@ const responses = {
   getCollectorRunForAccount: { id: "run-get" },
   claimCollectorRun: { run: { id: "run-claim" }, leaseToken: "lease-new", reclaimed: false },
   heartbeatCollectorRun: { run: { id: "run-heartbeat" }, cancelRequested: false },
+  claimCollectorRunSkus: { items: [{ sku: "123", state: "CLAIMED" }] },
+  releaseCollectorRunSkus: { releasedCount: 1 },
   requestCollectorRunCancellation: { id: "run-cancel-request" },
   completeCollectorRun: { id: "run-complete", status: "COMPLETED" },
   failCollectorRun: { id: "run-fail", status: "FAILED" },
@@ -182,7 +184,7 @@ assert.deepEqual(lastCall("queueCollectorTaskRun").args[0], {
 });
 
 await invoke("GET", "/collector/runs/run-1");
-assert.deepEqual(lastCall("getCollectorRunForAccount").args, ["account-auth", "run-1"]);
+assert.deepEqual(lastCall("getCollectorRunForAccount").args, ["account-auth", "run-1", { includeSkuCount: true }]);
 assert.equal(requiredPermissions.at(-1), "collector.job.read");
 await invoke("POST", "/collector/runs/run-1/claim", {
   accountId: "account-evil",
@@ -372,3 +374,19 @@ assert.equal(permissionDenied.res.statusCode, 403);
 assert.equal(permissionDenied.res.body.code, "COLLECTOR_PERMISSION_DENIED");
 
 console.log("collector routes tests passed");
+
+for (const action of ['claim', 'release']) {
+  const result = await invoke('POST', `/collector/runs/owned-run/skus/${action}`, {
+    accountId: 'foreign-account', runId: 'foreign-run', deviceId: 'owned-device', leaseToken: 'owned-lease', skus: ['123'],
+  });
+  assert.equal(result.res.statusCode, 200);
+  assert.deepEqual(lastCall(action === 'claim' ? 'claimCollectorRunSkus' : 'releaseCollectorRunSkus').args[0], {
+    accountId: 'account-auth', runId: 'owned-run', deviceId: 'owned-device', leaseToken: 'owned-lease', skus: ['123'],
+  });
+  assert.equal(requiredPermissions.at(-1), 'collector.upload');
+}
+await invoke('GET', '/collector/runs/owned-run/events?eventType=SKU_DUPLICATES&afterId=10');
+assert.equal(lastCall('listCollectorRunEvents').args[0].eventType, 'SKU_DUPLICATES');
+
+await invoke("GET", "/collector/runs/run-a/items?view=identity&status=QUALIFIED");
+assert.equal(lastCall("listCollectorRunItems").args[0].view, "identity");

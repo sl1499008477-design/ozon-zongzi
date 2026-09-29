@@ -1,3 +1,5 @@
+import {assertOzonRouteScope} from './account-ozon-route.mjs';
+import { createCollectorAccountStatusRoutes } from "./collector-account-status-routes.mjs";
 import * as defaultCollectorService from "./collector-desktop-service.mjs";
 
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
@@ -74,7 +76,7 @@ function withoutKeys(value, keys) {
 
 function authenticatedAccount(value) {
   const account = value?.account || value;
-  if (!account?.id) throw routeError("请先登录 sonli", 401, "COLLECTOR_AUTH_REQUIRED");
+  if (!account?.id) throw routeError("请先登录 ozon 粽子", 401, "COLLECTOR_AUTH_REQUIRED");
   return account;
 }
 
@@ -99,9 +101,13 @@ function requiredPermission(method, pathname) {
   if (
     method === "GET"
     && (
-      /^\/collector\/health\/?$/.test(pathname)
+      /^\/collector\/ozon-route\/?$/.test(pathname)
+      || /^\/collector\/health\/?$/.test(pathname)
+      || /^\/collector\/capabilities\/?$/.test(pathname)
+      || /^\/collector\/sale-pricing\/?$/.test(pathname)
       || /^\/collector\/market-snapshots\/?$/.test(pathname)
       || /^\/collector\/category-mappings\/?$/.test(pathname)
+      || /^\/collector\/fx\/probes\/active\/?$/.test(pathname)
     )
   ) {
     return permissionByAction.readConfig;
@@ -113,6 +119,9 @@ function requiredPermission(method, pathname) {
 export function createCollectorHttpHandler({
   authenticate,
   service = defaultCollectorService,
+  readAccountCounts,
+  ozonRouteService,
+  fxService,
   readJson = defaultReadJson,
   sendJson = defaultSendJson,
 } = {}) {
@@ -121,6 +130,15 @@ export function createCollectorHttpHandler({
   }
 
   const routes = [
+    compile(/^\/collector\/ozon-route\/?$/, { GET:async({account,url,req})=>{assertOzonRouteScope(url,req);return ozonRouteService.read(account.id);} }),
+    ...createCollectorAccountStatusRoutes({ readAccountCounts, fxService }),
+    compile(/^\/collector\/sale-pricing\/?$/, {
+      GET:async({account})=>({accountId:account.id,items:await service.listCollectorSalePricing(account.id)}),
+    }),
+    compile(/^\/collector\/capabilities\/?$/, {
+      GET: async () => ({ capabilities: { exportDataFromRaw: true, eventBatch: true, durableHandoff: true,
+        ...await service.collectorMediaCapabilities?.() } }),
+    }),
     compile(/^\/collector\/health\/?$/, {
       GET: async ({ account }) => ({
         status: 200,
@@ -194,10 +212,17 @@ export function createCollectorHttpHandler({
     }),
     compile(/^\/collector\/runs\/([^/]+)\/?$/, {
       GET: async ({ account, match }) => {
-        const run = await service.getCollectorRunForAccount(account.id, decodeURIComponent(match[1]));
+        const run = await service.getCollectorRunForAccount(account.id, decodeURIComponent(match[1]), { includeSkuCount: true });
         if (!run) throw routeError("任务运行不存在", 404, "COLLECTOR_RUN_NOT_FOUND");
         return { run };
       },
+    }),
+    compile(/^\/collector\/runs\/([^/]+)\/results\/?$/, {
+      GET:async({account,match,url})=>service.listCollectorRunResults({accountId:account.id,runId:decodeURIComponent(match[1]),
+        limit:toNumber(url.searchParams.get('limit'))??50,offset:toNumber(url.searchParams.get('offset'))??0}),
+    }),
+    compile(/^\/collector\/runs\/([^/]+)\/resume\/?$/, {
+      POST:async({account,match})=>({run:await service.resumeCollectorRun({accountId:account.id,runId:decodeURIComponent(match[1])})}),
     }),
     compile(/^\/collector\/runs\/([^/]+)\/claim\/?$/, {
       POST: async ({ account, match, body }) => ({
@@ -220,6 +245,26 @@ export function createCollectorHttpHandler({
         progress: body.progress || {},
       }),
     }),
+    compile(/^\/collector\/runs\/([^/]+)\/skus\/(claim|release)\/?$/, {
+      POST: async ({ account, match, body }) => {
+        const action = match[2] === "claim" ? service.claimCollectorRunSkus : service.releaseCollectorRunSkus;
+        return action({ accountId: account.id, runId: decodeURIComponent(match[1]),
+          deviceId: body.deviceId, leaseToken: body.leaseToken, skus: body.skus });
+      },
+    }),
+    compile(/^\/collector\/runs\/([^/]+)\/product-groups\/claim\/?$/, {
+      POST: async ({ account, match, body }) => service.claimCollectorRunProductGroup({
+        accountId: account.id, runId: decodeURIComponent(match[1]), deviceId: body.deviceId,
+        leaseToken: body.leaseToken, anchorSku: body.anchorSku, skus: body.skus,
+      }),
+    }),
+    compile(/^\/collector\/runs\/([^/]+)\/product-groups\/([^/]+)\/(variants|release)\/?$/, {
+      POST: async ({ account, match, body }) => {
+        const action = match[3] === 'variants' ? service.saveCollectorRunGroupVariant : service.releaseCollectorRunProductGroup;
+        return action({ accountId: account.id, runId: decodeURIComponent(match[1]), groupId: decodeURIComponent(match[2]),
+          deviceId: body.deviceId, leaseToken: body.leaseToken, anchorSku: body.anchorSku, variant: body.variant });
+      },
+    }),
     compile(/^\/collector\/runs\/([^/]+)\/cancel-request\/?$/, {
       POST: async ({ account, match }) => ({
         run: await service.requestCollectorRunCancellation({
@@ -232,9 +277,30 @@ export function createCollectorHttpHandler({
     compile(/^\/collector\/runs\/([^/]+)\/(complete|fail|cancel)\/?$/, {
       POST: finishRun,
     }),
+    compile(/^\/collector\/runs\/([^/]+)\/handoff\/retry\/?$/, {
+      POST: async ({ account, match }) => ({ handoff: await service.retryCollectorRunHandoff({
+        accountId: account.id, runId: decodeURIComponent(match[1]),
+      }) }),
+    }),
+    compile(/^\/collector\/runs\/([^/]+)\/media-uploads\/?$/, {
+      POST: async ({account,match,body}) => service.issueCollectorRunMediaUpload({
+        ...withoutKeys(body,RETIRED_SCOPE_FIELDS),accountId:account.id,runId:decodeURIComponent(match[1]),
+      }),
+    }),
+    compile(/^\/collector\/runs\/([^/]+)\/media-uploads\/([^/]+)\/confirm\/?$/, {
+      POST: async ({account,match,body,res}) => {
+        const controller=new AbortController(),abort=()=>{if(!res.writableEnded)controller.abort();};
+        res.once?.('close',abort);
+        try{return await service.confirmCollectorRunMediaUpload({
+          accountId:account.id,runId:decodeURIComponent(match[1]),uploadId:decodeURIComponent(match[2]),
+          deviceId:body.deviceId,leaseToken:body.leaseToken,signal:controller.signal,
+        });}finally{res.removeListener?.('close',abort);}
+      },
+    }),
     compile(/^\/collector\/runs\/([^/]+)\/items\/?$/, {
       GET: async ({ account, match, url }) => ({
         items: await service.listCollectorRunItems({
+          view: url.searchParams.get("view") === "identity" ? "identity" : "full",
           accountId: account.id,
           runId: decodeURIComponent(match[1]),
           status: url.searchParams.get("status") || "",
@@ -252,10 +318,22 @@ export function createCollectorHttpHandler({
           runId: decodeURIComponent(match[1]),
           afterId: toNumber(url.searchParams.get("afterId")) ?? 0,
           limit: toNumber(url.searchParams.get("limit")) ?? 500,
+          eventType: url.searchParams.get("eventType") || "",
         }),
       }),
-      POST: async ({ account, match, body }) => ({
-        event: await service.appendCollectorRunEvent({
+      POST: async ({ account, match, body }) => {
+        if (body.events !== undefined) {
+          if (!Array.isArray(body.events) || !body.events.length || body.events.length > 50
+            || body.events.some(event => !event || typeof event !== 'object' || Array.isArray(event))) {
+            throw routeError('每批日志必须包含 1–50 个事件', 422, 'COLLECTOR_EVENT_BATCH_INVALID');
+          }
+          return { events: await service.appendCollectorRunEvents({ accountId: account.id,
+            runId: decodeURIComponent(match[1]), actorType: 'account', actorId: account.id,
+            events: body.events.map(event => ({ eventType: event.eventType, level: event.level || 'INFO',
+              message: event.message || '', payload: event.payload || {} })),
+          }) };
+        }
+        return { event: await service.appendCollectorRunEvent({
           accountId: account.id,
           runId: decodeURIComponent(match[1]),
           eventType: body.eventType,
@@ -264,8 +342,8 @@ export function createCollectorHttpHandler({
           actorType: "account",
           actorId: account.id,
           payload: body.payload || {},
-        }),
-      }),
+        }) };
+      },
     }),
     compile(/^\/collector\/runs\/([^/]+)\/(exports|export)\/?$/, {
       GET: async ({ account, match }) => ({
@@ -402,8 +480,11 @@ export function createCollectorHttpHandler({
       );
       const body = ["POST", "PUT", "PATCH"].includes(method) ? await readJson(req) : {};
       const result = await action({ account, body, match: route.match, req, res, url });
-      const status = Number(result?.status || 200);
-      const payload = result?.payload && typeof result.payload === "object"
+      // Only an explicit response envelope carries an HTTP status; domain results
+      // also use status for states such as CLAIMED, COLLECTING and COLLECTED.
+      const hasPayload = result?.payload && typeof result.payload === "object";
+      const status = hasPayload ? Number(result.status || 200) : 200;
+      const payload = hasPayload
         ? result.payload
         : (result && typeof result === "object" ? result : {});
       sendJson(res, status, { ok: true, ...payload });

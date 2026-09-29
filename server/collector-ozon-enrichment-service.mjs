@@ -1,3 +1,5 @@
+import {mergeSkuEnrichment,skuEnrichmentSummary} from "./collect-enrichment-recovery.mjs";
+import {admitCollectedItem} from './collection-admission.mjs';
 import crypto from "node:crypto";
 import {
   OZON_ENRICHMENT_CONTRACT_VERSION,
@@ -5,7 +7,6 @@ import {
 } from "./collector-ozon-enrichment-contract.mjs";
 import { sanitizeCollectorText } from "./collector-auth-service.mjs";
 import {
-  assertOzonListingReady,
   mergeOzonEnrichmentResult,
 } from "./collect-enrichment-policy.mjs";
 
@@ -13,11 +14,8 @@ const SOURCE = "ozon";
 const COMPLETE_TTL_MS = 6 * 60 * 60 * 1000;
 const NEGATIVE_TTL_MS = 60 * 1000;
 const DEADLINE_MS = 20 * 1000;
-// Seller capture performs two sequential portal calls (each capped at six
-// seconds) and still needs time to commit the result. Keep a five-second recovery
-// window inside the public deadline so another live Collector can retry a dead
-// executor without invalidating a healthy capture midway through its work.
-const CLAIM_TTL_MS = 15 * 1000;
+// A lease tracks executor liveness; it is not a capture deadline.
+const CLAIM_TTL_MS = 30 * 1000;
 const POLL_MS = 250;
 const BATCH_CONCURRENCY = 4;
 const MERGE_MAX_ATTEMPTS = 4;
@@ -31,31 +29,34 @@ const REQUIRED_MISSING_FIELDS = new Set([
 ]);
 
 const EXECUTOR_FAILURES = Object.freeze({
-  OZON_ENRICH_NOT_FOUND: Object.freeze({
+  ZONGZI_PRODUCT_RUSSIAN_REQUIRED: Object.freeze({status:422,message:"商品资料含中文，请切换俄语原文后重新采集",retryable:false,disposition:"NEEDS_ATTENTION"}),
+  ZONGZI_ENRICH_DATA_CONFLICT: Object.freeze({status:422,message:'来源包装参数冲突，请核实',retryable:false,disposition:'NEEDS_ATTENTION'}),
+  ZONGZI_ENRICH_BUNDLE_UNCERTAIN: Object.freeze({status:422,message:'上次商品包创建结果未确认，停止重复创建',retryable:false,disposition:'NEEDS_ATTENTION'}),
+  ZONGZI_ENRICH_NOT_FOUND: Object.freeze({
     status: 404,
     message: "未找到 Ozon 商品资料",
     retryable: false,
     disposition: "NEEDS_ATTENTION",
   }),
-  OZON_ENRICH_INCOMPLETE: Object.freeze({
+  ZONGZI_ENRICH_INCOMPLETE: Object.freeze({
     status: 422,
     message: "Ozon 商品资料不完整",
     retryable: false,
     disposition: "NEEDS_ATTENTION",
   }),
-  OZON_ENRICH_BUSY: Object.freeze({
+  ZONGZI_ENRICH_BUSY: Object.freeze({
     status: 429,
     message: "Ozon 商品资料正在排队，请稍后重试",
     retryable: true,
     disposition: "RETRYING",
   }),
-  OZON_ENRICH_UPSTREAM_FAILED: Object.freeze({
+  ZONGZI_ENRICH_UPSTREAM_FAILED: Object.freeze({
     status: 502,
     message: "Ozon 商品资料暂时无法读取",
     retryable: true,
     disposition: "RETRYING",
   }),
-  OZON_ENRICH_RETRY_EXHAUSTED: Object.freeze({
+  ZONGZI_ENRICH_RETRY_EXHAUSTED: Object.freeze({
     status: 422,
     message: "Ozon 商品资料连续 5 次读取失败",
     retryable: false,
@@ -76,27 +77,30 @@ const EXECUTOR_FAILURES = Object.freeze({
 });
 
 const PUBLIC_SERVICE_FAILURES = Object.freeze({
-  OZON_ENRICH_BUSY: Object.freeze({
+  ZONGZI_PRODUCT_RUSSIAN_REQUIRED: Object.freeze({status:422,message:"商品资料含中文，请切换俄语原文后重新采集",retryable:false}),
+  ZONGZI_ENRICH_BUSY: Object.freeze({
     status: 429,
     message: "Ozon 商品资料正在排队，请稍后重试",
     retryable: true,
   }),
-  OZON_ENRICH_REQUEST_EXPIRED: Object.freeze({
+  ZONGZI_ENRICH_REQUEST_EXPIRED: Object.freeze({
     status: 409,
     message: "该补全请求已过期，请使用新的 requestId 重试",
     retryable: false,
   }),
-  OZON_ENRICHMENT_JOB_NOT_FOUND: Object.freeze({
+  ZONGZI_ENRICHMENT_JOB_NOT_FOUND: Object.freeze({
     status: 404,
     message: "Ozon 商品补全任务不存在",
     retryable: false,
   }),
-  OZON_ENRICHMENT_JOB_OWNERSHIP: Object.freeze({
+  ZONGZI_ENRICHMENT_TASK_NOT_FOUND: Object.freeze({ status: 404, message: 'Ozon 商品补全任务分组不存在', retryable: false }),
+  ZONGZI_ENRICHMENT_TASK_CANCELLED: Object.freeze({ status: 409, message: '已取消的补全任务不能恢复或暂停', retryable: false }),
+  ZONGZI_ENRICHMENT_JOB_OWNERSHIP: Object.freeze({
     status: 409,
     message: "Collector 会话不拥有该 Ozon 商品补全任务",
     retryable: false,
   }),
-  OZON_ENRICH_UPSTREAM_FAILED: Object.freeze({
+  ZONGZI_ENRICH_UPSTREAM_FAILED: Object.freeze({
     status: 502,
     message: "Ozon 商品资料暂时无法读取",
     retryable: true,
@@ -120,7 +124,7 @@ function cleanText(value, max = 240) {
 function instant(value) {
   const date = value instanceof Date ? new Date(value) : new Date(value);
   if (Number.isNaN(date.getTime())) {
-    throw enrichmentError(500, "OZON_ENRICH_UPSTREAM_FAILED", "Ozon 商品资料时间无效");
+    throw enrichmentError(500, "ZONGZI_ENRICH_UPSTREAM_FAILED", "Ozon 商品资料时间无效");
   }
   return date;
 }
@@ -202,39 +206,83 @@ function cachedResult(record, hit) {
 }
 
 function executorFailureCode(code) {
-  const normalized = String(code || "").trim().toUpperCase();
+  const normalized = String(code || "").trim().toUpperCase().replace(/^OZON_(ENRICH(?:MENT)?_|PRODUCT_RUSSIAN_REQUIRED$)/, "ZONGZI_$1");
   if (Object.hasOwn(EXECUTOR_FAILURES, normalized)) return normalized;
-  if (normalized === "HTTP_429") return "OZON_ENRICH_BUSY";
+  if (normalized === "HTTP_429") return "ZONGZI_ENRICH_BUSY";
   if (
     normalized === "NETWORK_ERROR"
     || normalized === "TIMEOUT"
     || normalized === "ETIMEDOUT"
     || /^HTTP_5\d\d$/.test(normalized)
-  ) return "OZON_ENRICH_UPSTREAM_FAILED";
+  ) return "ZONGZI_ENRICH_UPSTREAM_FAILED";
   if (
-    normalized === "OZON_ENRICH_INVALID"
+    normalized === "ZONGZI_ENRICH_INVALID"
     || normalized === "COLLECT_ENRICHMENT_INCOMPLETE"
-  ) return "OZON_ENRICH_INCOMPLETE";
-  return "OZON_ENRICH_UPSTREAM_FAILED";
+  ) return "ZONGZI_ENRICH_INCOMPLETE";
+  return "ZONGZI_ENRICH_UPSTREAM_FAILED";
 }
 
-function stableExecutorError(code, missingFields = []) {
+function stableExecutorError(code, missingFields = [], details = {}) {
   const stableCode = executorFailureCode(code);
   const policy = EXECUTOR_FAILURES[stableCode];
   return {
     status: policy.status,
     code: stableCode,
-    message: policy.message,
+    message: details.message || policy.message,
+    ...(details.diagnostic ? { diagnostic: details.diagnostic } : {}),
+    ...(details.collectionAdmissionFailure ? {collectionAdmissionFailure:true} : {}),
     missingFields: stableMissingFields(missingFields),
     retryable: policy.retryable,
     disposition: policy.disposition,
   };
 }
 
+// The executor report enters through failClaim. Validate and redact it once here;
+// persisted diagnostics are trusted projections on later reads.
+function failureReport({ code, message, diagnostic }) {
+  const invalid = () => enrichmentError(400, "ZONGZI_ENRICH_REQUEST_INVALID", "Ozon 商品补全失败诊断格式无效", { retryable: false });
+  if (typeof code !== "string" || !code.trim() || (message !== undefined && typeof message !== "string")) throw invalid();
+  function safeText(value, max) {
+    return sanitizeCollectorText(value
+      .replace(/\b(?:Bearer|Basic|Collector)\s+[^\s,;"']+/gi, "[REDACTED]")
+      .replace(/\b(?:csess|cst|ctt)_[A-Za-z0-9_-]+/gi, "[REDACTED]")
+      .replace(/https?:\/\/[^\s<>"']+/gi, url => url
+        .replace(/^(https?:\/\/)[^/@]+@/i, "$1[REDACTED]@")
+        .replace(/[?#].*$/, "?[REDACTED]"))
+      .replace(/\b(?:set-cookie|cookie)["']?\s*[:=]\s*[^\r\n]*/gi, "Cookie: [REDACTED]")
+      .replace(/\b(?:authorization|auth|jwt|session|sessionid|sid|password|passwd|passphrase|credential|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s,;&}]+)/gi, "[REDACTED]")
+      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+      .replace(/[\u0000-\u001f\u007f]+/g, " "), { max });
+  }
+  let savedDiagnostic;
+  if (diagnostic !== undefined) {
+    if (!diagnostic || typeof diagnostic !== "object" || Array.isArray(diagnostic)) throw invalid();
+    savedDiagnostic = {};
+    for (const [key, value] of Object.entries(diagnostic)) {
+      if (["stage", "upstreamCode", "extensionVersion"].includes(key)) {
+        if (typeof value !== "string" || !value.trim()) throw invalid();
+        savedDiagnostic[key] = safeText(value, 80);
+      } else if (key === "upstreamStatus") {
+        if (!Number.isInteger(value) || value < 100 || value > 599) throw invalid();
+        savedDiagnostic[key] = value;
+      } else if (key === "requestSent") {
+        if (typeof value !== "boolean") throw invalid();
+        savedDiagnostic[key] = value;
+      } else throw invalid();
+    }
+  }
+  return {
+    code: safeText(code, 120),
+    ...(message === undefined ? {} : { message: safeText(message, 1000) }),
+    ...(savedDiagnostic ? { diagnostic: savedDiagnostic } : {}),
+  };
+}
+
 function errorPayload(error) {
   return {
-    code: String(error?.code || "OZON_ENRICH_UPSTREAM_FAILED"),
-    message: cleanText(error?.message || "Ozon 商品资料暂时无法读取"),
+    code: String(error?.code || "ZONGZI_ENRICH_UPSTREAM_FAILED"),
+    message: cleanText(error?.message || "Ozon 商品资料暂时无法读取", 1000),
+    ...(error?.diagnostic ? { diagnostic: error.diagnostic } : {}),
     missingFields: stableMissingFields(error?.missingFields),
     retryable: error?.retryable !== false,
   };
@@ -245,6 +293,7 @@ function batchError(error) {
   return {
     code: stable.code,
     message: stable.message,
+    ...(stable.diagnostic ? { diagnostic: stable.diagnostic } : {}),
     missingFields: stableMissingFields(stable.missingFields),
     retryable: stable.retryable,
   };
@@ -257,33 +306,36 @@ function auditStatus(error) {
 function enrichmentError(status, code, message, details = {}) {
   const missingFields = stableMissingFields(details.missingFields);
   const retryable = details.retryable ?? (status === 429 || status >= 500);
-  return Object.assign(new Error(cleanText(message || "Ozon 商品资料补全失败")), {
+  return Object.assign(new Error(cleanText(message || "Ozon 商品资料补全失败", 1000)), {
     status,
-    code: String(code || "OZON_ENRICH_UPSTREAM_FAILED"),
+    code: String(code || "ZONGZI_ENRICH_UPSTREAM_FAILED"),
     missingFields,
     retryable: Boolean(retryable),
     isPublicOzonEnrichmentError: true,
+    ...(details.diagnostic ? { diagnostic: details.diagnostic } : {}),
   });
 }
 
 function publicServiceError(error) {
   if (error?.isPublicOzonEnrichmentError === true) return error;
   const repositoryCode = String(error?.code || "");
-  let code = "OZON_ENRICH_UPSTREAM_FAILED";
-  if (repositoryCode === "OZON_ENRICH_BUSY") {
+  let code = "ZONGZI_ENRICH_UPSTREAM_FAILED";
+  if (repositoryCode === "ZONGZI_ENRICH_BUSY") {
     code = repositoryCode;
-  } else if (repositoryCode === "OZON_ENRICHMENT_JOB_NOT_FOUND") {
+  } else if (repositoryCode === "ZONGZI_ENRICHMENT_JOB_NOT_FOUND") {
     code = repositoryCode;
   } else if (repositoryCode === "COLLECT_ITEM_NOT_FOUND") {
     code = repositoryCode;
   } else if (repositoryCode === "SELLER_CONTEXT_CHANGED") {
     code = repositoryCode;
+  } else if (['ZONGZI_ENRICHMENT_TASK_NOT_FOUND', 'ZONGZI_ENRICHMENT_TASK_CANCELLED'].includes(repositoryCode)) {
+    code = repositoryCode;
   } else if ([
-    "OZON_ENRICHMENT_JOB_OWNERSHIP",
-    "OZON_ENRICHMENT_JOB_TERMINAL",
-    "OZON_ENRICHMENT_SESSION_SCOPE",
+    "ZONGZI_ENRICHMENT_JOB_OWNERSHIP",
+    "ZONGZI_ENRICHMENT_JOB_TERMINAL",
+    "ZONGZI_ENRICHMENT_SESSION_SCOPE",
   ].includes(repositoryCode)) {
-    code = "OZON_ENRICHMENT_JOB_OWNERSHIP";
+    code = "ZONGZI_ENRICHMENT_JOB_OWNERSHIP";
   }
   const policy = PUBLIC_SERVICE_FAILURES[code];
   return enrichmentError(policy.status, code, policy.message, {
@@ -293,14 +345,14 @@ function publicServiceError(error) {
 
 function errorFromJob(job = {}) {
   const error = job?.error && typeof job.error === "object" ? job.error : {};
-  const stable = stableExecutorError(String(error.code || ""), error.missingFields);
+  const stable = stableExecutorError(String(error.code || ""), error.missingFields, error);
   return enrichmentError(
     Number.isInteger(error.status) && error.status >= 400 && error.status <= 599
       ? error.status
       : stable.status,
     stable.code,
     stable.message,
-    { missingFields: stable.missingFields, retryable: stable.retryable },
+    { missingFields: stable.missingFields, retryable: stable.retryable, diagnostic: stable.diagnostic },
   );
 }
 
@@ -312,8 +364,8 @@ export function createCollectorOzonEnrichmentService({
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   audit = async () => {},
   onAuditError = (event) => console.error("collector Ozon enrichment audit failed", event),
-  assertListingReady = assertOzonListingReady,
   categoryEvidencePort = null,
+  checkAdmission = admitCollectedItem,
 } = {}) {
   const repositoryMethods = [
     "readCache",
@@ -354,7 +406,6 @@ export function createCollectorOzonEnrichmentService({
     || typeof sleep !== "function"
     || typeof audit !== "function"
     || typeof onAuditError !== "function"
-    || typeof assertListingReady !== "function"
     || (categoryEvidencePort !== null
       && typeof categoryEvidencePort?.recordCollectionResult !== "function")
   ) {
@@ -382,19 +433,13 @@ export function createCollectorOzonEnrichmentService({
       const current = await repository.readJob({ accountId, jobId });
       if (current?.status === "SUCCESS") return current.result;
       if (current?.status === "FAILED") throw errorFromJob(current);
-      await sleep(POLL_MS);
+      const remaining = deadlineAt.getTime() - instant(now()).getTime();
+      if (remaining > 0) await sleep(Math.min(POLL_MS, remaining));
     }
-    await repository.expireUnlinkedJob({
-      accountId,
-      jobId,
-      now: instant(now()),
-    });
-    throw enrichmentError(
-      504,
-      "OZON_ENRICH_UPSTREAM_FAILED",
-      "Ozon 商品资料读取超时",
-      { retryable: true },
-    );
+    const current = await repository.readJob({ accountId, jobId });
+    if (current?.status === "SUCCESS") return current.result;
+    if (current?.status === "FAILED") throw errorFromJob(current);
+    return { status: "PENDING" };
   }
 
   async function waitForSharedCacheOrLease({ key, leaseOwner, deadlineAt }) {
@@ -413,26 +458,22 @@ export function createCollectorOzonEnrichmentService({
         maxActiveLeases: BATCH_CONCURRENCY,
       });
       if (lease) return { acquired: true };
-      await sleep(POLL_MS);
+      const remaining = deadlineAt.getTime() - instant(now()).getTime();
+      if (remaining > 0) await sleep(Math.min(POLL_MS, remaining));
     }
-    throw enrichmentError(
-      504,
-      "OZON_ENRICH_UPSTREAM_FAILED",
-      "Ozon 商品资料读取超时",
-      { retryable: true },
-    );
+    return { acquired: false, result: { status: "PENDING" } };
   }
 
-  async function enrichOne({ session, requestId, sku } = {}) {
+  async function enrichOne({ session, requestId, sku, waitDeadlineAt } = {}) {
     const scoped = sessionScope(session);
     const normalizedRequestId = requiredText(
       requestId,
-      "OZON_ENRICH_REQUEST_ID_REQUIRED",
+      "ZONGZI_ENRICH_REQUEST_ID_REQUIRED",
       "补全请求缺少 requestId",
     );
-    const normalizedSku = requiredText(sku, "OZON_ENRICH_SKU_REQUIRED", "补全请求缺少 SKU");
+    const normalizedSku = requiredText(sku, "ZONGZI_ENRICH_SKU_REQUIRED", "补全请求缺少 SKU");
     const startedAt = instant(now());
-    const deadlineAt = new Date(startedAt.getTime() + DEADLINE_MS);
+    const deadlineAt = waitDeadlineAt || new Date(startedAt.getTime() + DEADLINE_MS);
     const key = cacheKey(scoped.accountId, normalizedSku);
     let jobId = "";
     let leaseOwner = "";
@@ -459,7 +500,7 @@ export function createCollectorOzonEnrichmentService({
       });
       leaseOwner = requiredText(
         randomUUID(),
-        "OZON_ENRICH_UPSTREAM_FAILED",
+        "ZONGZI_ENRICH_UPSTREAM_FAILED",
         "无法创建 Ozon 商品补全任务",
         502,
       );
@@ -471,12 +512,8 @@ export function createCollectorOzonEnrichmentService({
       const acquiredAt = instant(now());
       if (acquiredAt.getTime() >= deadlineAt.getTime()) {
         await repository.releaseCacheLease({ key, leaseOwner });
-        throw enrichmentError(
-          504,
-          "OZON_ENRICH_UPSTREAM_FAILED",
-          "Ozon 商品资料读取超时",
-          { retryable: true },
-        );
+        result = { status: "PENDING" };
+        return result;
       }
 
       let job;
@@ -500,9 +537,11 @@ export function createCollectorOzonEnrichmentService({
       jobId = String(job.id);
       if (job.status === "SUCCESS" || job.status === "FAILED") {
         await repository.releaseCacheLease({ key, leaseOwner });
+        if (job.status === "SUCCESS" && job.result) { result = job.result; return result; }
+        if (job.status === "FAILED" && job.error) throw errorFromJob(job);
         throw enrichmentError(
           409,
-          "OZON_ENRICH_REQUEST_EXPIRED",
+          "ZONGZI_ENRICH_REQUEST_EXPIRED",
           "该补全请求已过期，请使用新的 requestId 重试",
           { retryable: false },
         );
@@ -517,22 +556,24 @@ export function createCollectorOzonEnrichmentService({
       failure = publicServiceError(error);
       throw failure;
     } finally {
-      const finishedAt = instant(now());
-      const responseHash = responseSha256(result || errorPayload(failure));
-      await writeAudit({
-        action: "collector.ozon.enrich",
-        requestId: normalizedRequestId,
-        accountId: scoped.accountId,
-        sku: normalizedSku,
-        jobId,
-        collectorSessionId: scoped.collectorSessionId,
-        cacheHit,
-        durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
-        status: auditStatus(failure),
-        code: String(failure?.code || ""),
-        missingFields: stableMissingFields(failure?.missingFields),
-        responseHash,
-      });
+      if (result?.status !== "PENDING") {
+        const finishedAt = instant(now());
+        const responseHash = responseSha256(result || errorPayload(failure));
+        await writeAudit({
+          action: "collector.ozon.enrich",
+          requestId: normalizedRequestId,
+          accountId: scoped.accountId,
+          sku: normalizedSku,
+          jobId,
+          collectorSessionId: scoped.collectorSessionId,
+          cacheHit,
+          durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
+          status: auditStatus(failure),
+          code: String(failure?.code || ""),
+          missingFields: stableMissingFields(failure?.missingFields),
+          responseHash,
+        });
+      }
     }
   }
 
@@ -540,22 +581,23 @@ export function createCollectorOzonEnrichmentService({
     const scoped = sessionScope(session);
     const normalizedRequestId = requiredText(
       requestId,
-      "OZON_ENRICH_REQUEST_ID_REQUIRED",
+      "ZONGZI_ENRICH_REQUEST_ID_REQUIRED",
       "补全请求缺少 requestId",
     );
     if (!Array.isArray(skus) || !skus.length) {
       throw enrichmentError(
         400,
-        "OZON_ENRICH_BATCH_SKUS_REQUIRED",
+        "ZONGZI_ENRICH_BATCH_SKUS_REQUIRED",
         "补全请求缺少 SKU 列表",
         { retryable: false },
       );
     }
     const normalizedSkus = skus.map((sku) => requiredText(
       sku,
-      "OZON_ENRICH_SKU_REQUIRED",
+      "ZONGZI_ENRICH_SKU_REQUIRED",
       "补全请求缺少 SKU",
     ));
+    const waitDeadlineAt = new Date(instant(now()).getTime() + DEADLINE_MS);
     const output = new Array(normalizedSkus.length);
     let nextIndex = 0;
     async function worker() {
@@ -565,11 +607,10 @@ export function createCollectorOzonEnrichmentService({
         if (index >= normalizedSkus.length) return;
         const sku = normalizedSkus[index];
         try {
-          output[index] = {
-            sku,
-            status: "COMPLETE",
-            result: await enrichOne({ session: scoped, requestId: normalizedRequestId, sku }),
-          };
+          const result = await enrichOne({ session: scoped, requestId: normalizedRequestId, sku, waitDeadlineAt });
+          output[index] = result?.status === "PENDING"
+            ? { sku, status: "PENDING" }
+            : { sku, status: "COMPLETE", result };
         } catch (error) {
           output[index] = { sku, status: "ERROR", error: batchError(error) };
         }
@@ -608,12 +649,30 @@ export function createCollectorOzonEnrichmentService({
     }
   }
 
+  function publicTask(task) {
+    return { ...task, name: cleanText(task.name, 240), errorMessage: cleanText(task.errorMessage, 1000) };
+  }
+
+  async function listTasks({ session } = {}) {
+    const { accountId } = sessionScope(session);
+    try {
+      return (await repository.listTasks({ accountId })).map(publicTask);
+    } catch (error) { throw publicServiceError(error); }
+  }
+
+  async function controlTask({ session, taskKey, action } = {}) {
+    const { accountId } = sessionScope(session);
+    try {
+      return publicTask(await repository.controlTask({ accountId, taskKey, action, now: instant(now()) }));
+    } catch (error) { throw publicServiceError(error); }
+  }
+
   async function claimNext({ session, captureContext = null } = {}) {
     const scoped = sessionScope(session);
     const claimedAt = instant(now());
     const claimFence = requiredText(
       randomUUID(),
-      "OZON_ENRICH_UPSTREAM_FAILED",
+      "ZONGZI_ENRICH_UPSTREAM_FAILED",
       "Ozon 商品资料任务围栏无效",
       500,
     );
@@ -652,6 +711,7 @@ export function createCollectorOzonEnrichmentService({
       sku: String(job.sku),
       refreshBundle: job.refreshBundle === true,
       claimFence: String(job.claimFence || claimFence),
+      taskKey: String(job.taskGroupKey || (job.collectItemId ? `collect:${job.collectItemId}` : `request:${job.requestId}`)),
     };
     await writeAudit({
       action: "collector.ozon.enrichment.claim",
@@ -669,20 +729,35 @@ export function createCollectorOzonEnrichmentService({
     return exposed;
   }
 
-  function assertClaimOwnership(job, scoped, at) {
+  async function progressClaim({ session, jobId, claimFence, captureContext } = {}) {
+    const scoped = sessionScope(session);
+    const at = instant(now());
+    try {
+      // Targeted renewal uses the existing runtime repository forwarding contract.
+      const job = await repository.claimNextJob({
+        ...scoped,
+        jobId: requiredText(jobId, "ZONGZI_ENRICHMENT_JOB_NOT_FOUND", "Ozon 商品补全任务不存在", 404),
+        claimFence,
+        captureContext,
+        now: at,
+        claimExpiresAt: new Date(at.getTime() + CLAIM_TTL_MS),
+      });
+      return { claimExpiresAt: job.claimExpiresAt };
+    } catch (error) {
+      throw publicServiceError(error);
+    }
+  }
+
+  function assertClaimOwnership(job, scoped) {
     if (
       !job
       || job.accountId !== scoped.accountId
       || job.status !== "PROCESSING"
       || job.claimedSessionId !== scoped.collectorSessionId
-      || !job.claimExpiresAt
-      || new Date(job.claimExpiresAt).getTime() <= at.getTime()
-      || !job.deadlineAt
-      || new Date(job.deadlineAt).getTime() <= at.getTime()
     ) {
       throw enrichmentError(
         409,
-        "OZON_ENRICHMENT_JOB_OWNERSHIP",
+        "ZONGZI_ENRICHMENT_JOB_OWNERSHIP",
         "Collector 会话不拥有该 Ozon 商品补全任务",
         { retryable: false },
       );
@@ -713,8 +788,8 @@ export function createCollectorOzonEnrichmentService({
   }
 
   function failurePersistence({ scoped, job, at, error, captureContext, claimFence }) {
-    const stable = stableExecutorError(String(error?.code || ""), error?.missingFields);
-    const persistedError = { status: stable.status, code: stable.code };
+    const stable = stableExecutorError(String(error?.code || ""), error?.missingFields, error);
+    const persistedError = { status: stable.status, ...errorPayload(stable) };
     const requestedTtl = Number(error?.retryAfterMs);
     const negativeTtl = Number.isFinite(requestedTtl) && requestedTtl > 0
       ? Math.min(NEGATIVE_TTL_MS, requestedTtl)
@@ -774,13 +849,13 @@ export function createCollectorOzonEnrichmentService({
     captureContext = undefined,
     claimFence = undefined,
   }) {
-    let stable = stableExecutorError(String(error?.code || ""), error?.missingFields);
+    let stable = stableExecutorError(String(error?.code || ""), error?.missingFields, error);
     if (
       stable.retryable
       && job.collectItemId
       && Number(job.attemptCount || 0) + 1 >= MAX_AUTOMATIC_ATTEMPTS
     ) {
-      stable = stableExecutorError("OZON_ENRICH_RETRY_EXHAUSTED", stable.missingFields);
+      stable = stableExecutorError("ZONGZI_ENRICH_RETRY_EXHAUSTED", stable.missingFields, stable);
     }
     if (stable.retryable && job.collectItemId) {
       const deferred = await collectItemPort.defer({
@@ -843,22 +918,29 @@ export function createCollectorOzonEnrichmentService({
         collectItemId: job.collectItemId,
       });
       if (!current) throw collectItemMissing();
-      const listingDraft = mergeOzonEnrichmentResult(current.listingDraft || {}, result);
-      assertListingReady(listingDraft);
+      let listingDraft = mergeSkuEnrichment(current.listingDraft || {}, result);
+      const summary = skuEnrichmentSummary(listingDraft);
+      summary.missingSkus = [...new Set([...summary.missingSkus,
+        ...(current.enrichment?.missingSkus || []).filter(sku => String(sku) !== String(job.sku)),
+      ])];
+      if (summary.missingSkus.length && summary.status === 'COMPLETE') summary.status = 'PENDING_ENRICHMENT';
+      if (result.status === 'PARTIAL' && summary.missingFields.length) summary.status = 'NEEDS_ATTENTION';
+      if (summary.status === 'COMPLETE') listingDraft = await checkAdmission({accountId:job.accountId,item:listingDraft,requireComplete:true,
+        trustedAdmission:current.listingDraft?.collectionAdmission});
       try {
         const saved = await collectItemPort.complete({
           accountId: job.accountId,
           collectItemId: job.collectItemId,
           expectedVersion: Number(current.draftVersion || 0),
           listingDraft,
-          status: "COMPLETE",
-          enrichment: linkedSummary({
-            status: "COMPLETE",
-            job,
-            capturedAt: completedAt.toISOString(),
-          }),
+          status: summary.status,
+          enrichment: {...linkedSummary({status: summary.status, job,
+            capturedAt: completedAt.toISOString()}), missingFields:summary.missingFields,
+            ...(summary.packagingConflicts ? {packagingConflicts:summary.packagingConflicts,lastErrorCode:'ZONGZI_ENRICH_DATA_CONFLICT'} : {}),
+            ...(result.status === 'PARTIAL' && summary.missingFields.length ? {lastErrorCode:'ZONGZI_ENRICH_INCOMPLETE'} : {}),
+            ...(summary.missingSkus.length ? {missingSkus:summary.missingSkus} : {})},
           completion,
-          ...(categoryEvidencePort ? { categoryEvidence: { result, completedAt } } : {}),
+          ...(categoryEvidencePort && (!current.listingDraft?.sku || String(current.listingDraft.sku) === String(result.sku)) ? { categoryEvidence: { result, completedAt } } : {}),
         });
         if (!saved) throw collectItemMissing();
         return saved;
@@ -871,7 +953,7 @@ export function createCollectorOzonEnrichmentService({
     }
     throw lastConflict || enrichmentError(
       409,
-      "OZON_ENRICH_UPSTREAM_FAILED",
+      "ZONGZI_ENRICH_UPSTREAM_FAILED",
       "采集草稿并发更新失败",
       { retryable: true },
     );
@@ -887,7 +969,7 @@ export function createCollectorOzonEnrichmentService({
     const scoped = sessionScope(session);
     const normalizedJobId = requiredText(
       jobId,
-      "OZON_ENRICHMENT_JOB_NOT_FOUND",
+      "ZONGZI_ENRICHMENT_JOB_NOT_FOUND",
       "Ozon 商品补全任务不存在",
       404,
     );
@@ -896,7 +978,7 @@ export function createCollectorOzonEnrichmentService({
     let responseHash = "";
     try {
       job = await repository.readJob({ accountId: scoped.accountId, jobId: normalizedJobId });
-      assertClaimOwnership(job, scoped, completedAt);
+      assertClaimOwnership(job, scoped);
       const fencedCaptureContext = captureContext === undefined
         ? (job.captureContext ?? null)
         : captureContext;
@@ -946,12 +1028,14 @@ export function createCollectorOzonEnrichmentService({
         try {
           await mergeLinkedCollectItem({ job, result, completedAt, completion });
         } catch (error) {
-          if (error?.code !== "COLLECT_ENRICHMENT_INCOMPLETE") throw error;
+          if (error?.code !== "COLLECT_ENRICHMENT_INCOMPLETE" && !error?.collectionAdmissionFailure) throw error;
+          const failure = error.collectionAdmissionFailure ? {...error,
+            code:error.retryable ? 'ZONGZI_ENRICH_UPSTREAM_FAILED' : 'ZONGZI_ENRICH_INCOMPLETE',message:error.message} : error;
           const { stable } = await applyExecutorFailure({
             scoped,
             job,
             at: completedAt,
-            error,
+            error:failure,
             captureContext: fencedCaptureContext,
             claimFence: fencedClaim,
           });
@@ -971,7 +1055,7 @@ export function createCollectorOzonEnrichmentService({
         durationMs: Math.max(0, completedAt.getTime() - new Date(job.createdAt).getTime()),
         status: "SUCCESS",
         code: "",
-        missingFields: [],
+        missingFields: result.missingFields || [],
         responseHash,
         captureContext: fencedCaptureContext,
       });
@@ -1003,21 +1087,24 @@ export function createCollectorOzonEnrichmentService({
     session,
     jobId,
     code,
+    message,
+    diagnostic,
     captureContext = undefined,
     claimFence = undefined,
   } = {}) {
     const scoped = sessionScope(session);
     const normalizedJobId = requiredText(
       jobId,
-      "OZON_ENRICHMENT_JOB_NOT_FOUND",
+      "ZONGZI_ENRICHMENT_JOB_NOT_FOUND",
       "Ozon 商品补全任务不存在",
       404,
     );
+    const report = failureReport({ code, message, diagnostic });
     const failedAt = instant(now());
     let job = null;
     try {
       job = await repository.readJob({ accountId: scoped.accountId, jobId: normalizedJobId });
-      assertClaimOwnership(job, scoped, failedAt);
+      assertClaimOwnership(job, scoped);
       const fencedCaptureContext = captureContext === undefined
         ? (job.captureContext ?? null)
         : captureContext;
@@ -1029,7 +1116,7 @@ export function createCollectorOzonEnrichmentService({
         scoped,
         job,
         at: failedAt,
-        error: { code: String(code || "") },
+        error: report,
         captureContext: fencedCaptureContext,
         claimFence: fencedClaim,
       });
@@ -1045,6 +1132,8 @@ export function createCollectorOzonEnrichmentService({
         status: "FAILED",
         code: stable.code,
         missingFields: stable.missingFields,
+        message: stable.message,
+        ...(stable.diagnostic ? { diagnostic: stable.diagnostic } : {}),
         responseHash: responseSha256(stable),
       });
       return { id: job.id, status: persistedJob.status };
@@ -1138,6 +1227,9 @@ export function createCollectorOzonEnrichmentService({
     observeSellerContext,
     hasAvailableJob,
     claimNext,
+    listTasks,
+    controlTask,
+    progressClaim,
     completeClaim,
     failClaim,
     retryCollectItem,

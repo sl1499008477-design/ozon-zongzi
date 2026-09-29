@@ -1,7 +1,12 @@
+import { assertOzonRussianProductText } from "./ozon-product-language.mjs";
+import {collectCaptureSkus} from './collect-enrichment-recovery.mjs';
+import {findCollectedSku, findOzonCollectedSkuSources} from "./collection-sku-rules.mjs";
+import {admitCollectedItem} from "./collection-admission.mjs";
 import crypto from "node:crypto";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
 import { buildCollectItemDraftV4, mirrorCollectItemV3 } from "./listing-pipeline.mjs";
+import {consumeCollectorMediaObjects} from './collector-media-upload.mjs';
 import {
   findRetiredCollectorScopePath,
   findServerOwnedCategoryResolutionPath,
@@ -125,6 +130,7 @@ export function prepareCollectRequestV4({
   const payload = input.payload;
   assertCollectedPublicEvidenceSafe(payload);
   const sanitizedPayload = sanitizeCollectedPublicEvidence(payload);
+  if (sourceId === "ozon") assertOzonRussianProductText(sanitizedPayload, { sku: sourceSku, operation: "采集" });
   const publicPayload = sourceId === "ozon"
     ? normalizeOzonCollectedSourceEvidence(sanitizedPayload)
     : sanitizedPayload;
@@ -302,10 +308,10 @@ export async function ingestCollectRequestV4(options = {}) {
   const {
     identity,
     idempotencyKey: resolvedIdempotencyKey,
-    identityKey,
+    identityKey: proposedIdentityKey,
     contentHash,
     requestHash,
-    collectId,
+    collectId: proposedCollectId,
     persistedRequestId: requestId,
     normalizedItem: preparedItem,
   } = prepared;
@@ -318,16 +324,37 @@ export async function ingestCollectRequestV4(options = {}) {
   const enrichment = sourceId === "ozon"
     ? buildOzonEnrichmentSummary(preparedItem)
     : null;
-  const incomingNormalizedItem = enrichment
+  let incomingNormalizedItem = enrichment
     ? { ...preparedItem, enrichment }
     : preparedItem;
 
+  const admissionPool = await poolReady();
   try {
+    // Do not hold the account write lock while calling the official category API.
+    // Existing saved goods retain their original admission and are not rechecked.
+    const saved = sourceId === 'ozon' ? await findCollectedSku(admissionPool,accountId,sourceSku,collectCaptureSkus(incomingNormalizedItem)) : null;
+    if (!saved) incomingNormalizedItem = await (options.checkAdmission || admitCollectedItem)({accountId,item:incomingNormalizedItem},{pool:admissionPool});
     const collected = await transaction(async (client) => {
+      let collectId = proposedCollectId;
+      let identityKey = proposedIdentityKey;
       await client.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-        [`collect-identity:${accountId}:${sourceId}:${sourceSku}`],
+        [sourceId === 'ozon' ? `collect-identity:${accountId}:${sourceId}` : `collect-identity:${accountId}:${sourceId}:${sourceSku}`],
       );
+      let already = sourceId === "ozon" ? await findCollectedSku(client,accountId,sourceSku,collectCaptureSkus(incomingNormalizedItem)) : null;
+      if (already && (already.id?.startsWith('listed:') || already.previouslyDeleted)) {
+        const activeSources = await findOzonCollectedSkuSources(client, accountId, collectCaptureSkus(incomingNormalizedItem));
+        const activeSku = activeSources.keys().next().value;
+        if (activeSku) already = await findCollectedSku(client, accountId, activeSku);
+      }
+      if(already) {
+        await consumeCollectorMediaObjects(client, {
+          accountId, runId: incomingNormalizedItem.collectorRunId, itemId: incomingNormalizedItem.collectorItemId,
+          payload: incomingNormalizedItem,
+        });
+        return {duplicate:true,action:"skipped",item:already,collectItemId:already.id,requestId:"",code:"COLLECT_SKU_ALREADY_EXISTS"};
+      }
+      if(saved)throw collectorError('已有采集记录已变化，请重试保存',409,'COLLECT_ADMISSION_RETRY');
       const inserted = await client.query(
         `INSERT INTO collect_requests (
            id,idempotency_key,account_id,store_id,data_collection_store_id,
@@ -355,7 +382,11 @@ export async function ingestCollectRequestV4(options = {}) {
             "COLLECT_REQUEST_CONFLICT",
           );
         }
-        if (row?.status === "SUCCEEDED") {
+        const stillPresent = row?.collect_item_id ? (await client.query(
+          'SELECT id FROM collect_items WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL',
+          [row.collect_item_id, accountId],
+        )).rowCount > 0 : false;
+        if (row?.status === "SUCCEEDED" && stillPresent) {
           const storedResponse = row.response && typeof row.response === "object"
             ? row.response
             : { item: incomingNormalizedItem, collectItemId: row.collect_item_id };
@@ -396,11 +427,26 @@ export async function ingestCollectRequestV4(options = {}) {
               WHERE r.collect_item_id=c.id AND r.account_id=c.account_id
               ORDER BY r.created_at DESC,r.id DESC LIMIT 1
            ) raw ON TRUE
-          WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+          WHERE c.account_id=$2 AND c.deleted_at IS NULL AND (
+            c.id=$1 OR ($3='ozon' AND c.source='ozon' AND (
+              c.source_sku=ANY($4::text[]) OR d.data->'variants' @> ANY($5::jsonb[])
+            ))
+          )
+          ORDER BY c.created_at,c.id LIMIT 1
           FOR UPDATE OF c`,
-        [collectId, accountId],
+        [collectId, accountId, sourceId, collectCaptureSkus(incomingNormalizedItem),
+          collectCaptureSkus(incomingNormalizedItem).flatMap(sku => [JSON.stringify([{sku}]),
+            ...(/^\d+$/.test(sku) && Number.isSafeInteger(Number(sku)) ? [JSON.stringify([{sku:Number(sku)}])] : [])])],
       );
       const canonicalRow = canonicalResult.rows[0];
+      if (canonicalRow) {
+        collectId = canonicalRow.id;
+        identityKey = canonicalRow.identity_key || proposedIdentityKey;
+      }
+      incomingNormalizedItem = await consumeCollectorMediaObjects(client, {
+        accountId, runId: incomingNormalizedItem.collectorRunId, itemId: incomingNormalizedItem.collectorItemId,
+        collectItemId: collectId, payload: incomingNormalizedItem,
+      });
       const canonicalRaw = canonicalRow?.raw_payload && typeof canonicalRow.raw_payload === "object"
         ? canonicalRow.raw_payload
         : {};
@@ -428,15 +474,53 @@ export async function ingestCollectRequestV4(options = {}) {
       let normalizedItem = canonicalItem
         ? mergeCollectedItemPublicEvidence(canonicalItem, incomingNormalizedItem)
         : incomingNormalizedItem;
+      if (canonicalItem && incomingNormalizedItem.mediaObjects?.length) {
+        normalizedItem.mediaObjects = [...new Map([...(canonicalItem.mediaObjects || []), ...incomingNormalizedItem.mediaObjects]
+          .map(ref => [JSON.stringify([ref.sourceSku, ref.purpose, ref.index]), ref])).values()];
+      }
+      if (canonicalItem && sourceId === 'ozon') {
+        const knownSkus = new Set(collectCaptureSkus(canonicalItem));
+        const incomingVariants = incomingNormalizedItem.variantData?.variants || incomingNormalizedItem.variants || [];
+        const existingSources = await findOzonCollectedSkuSources(client, accountId, incomingVariants.map(v => v.sku).filter(Boolean));
+        const additions = incomingVariants.filter(variant => {
+          const sku = String(variant?.sku || '').trim();
+          if (!sku || knownSkus.has(sku)) return false;
+          if (existingSources.has(sku) && existingSources.get(sku) !== canonicalItem.id) return false;
+          knownSkus.add(sku);
+          return true;
+        });
+        if (additions.length) {
+          // Only newly discovered siblings may extend the group. Existing draft
+          // rows and source SKUs removed by the user must retain their meaning.
+          const oldDraft = normalizedItem.listingDraft;
+          const oldRows = oldDraft.variants?.length ? oldDraft.variants : [{ ...oldDraft, sku: oldDraft.sku || canonicalItem.sku || canonicalItem.sourceSku }];
+          normalizedItem.listingDraft = { ...oldDraft, variants: [...oldRows, ...structuredClone(additions)] };
+          const sourceRows = normalizedItem.variantData?.variants || normalizedItem.variants || [];
+          const sourceSkus = new Set();
+          normalizedItem.variants = [...sourceRows, ...structuredClone(additions)].filter(variant => {
+            const sku = String(variant?.sku || '').trim();
+            if (sku && sourceSkus.has(sku)) return false;
+            if (sku) sourceSkus.add(sku);
+            return true;
+          });
+          if (normalizedItem.variantData) normalizedItem.variantData.variants = structuredClone(normalizedItem.variants);
+        }
+      }
       if (sourceId === "ozon") {
         normalizedItem = normalizeOzonCollectedSourceEvidence(normalizedItem);
       }
       const effectiveEnrichment = sourceId === "ozon"
         ? reconcileOzonEnrichmentSummary(normalizedItem, canonicalEnrichment)
         : null;
+      const captureSkus = collectCaptureSkus(normalizedItem);
+      if (effectiveEnrichment && captureSkus.length > 1) {
+        effectiveEnrichment.status = 'PENDING_ENRICHMENT';
+        effectiveEnrichment.missingSkus = captureSkus;
+      }
       if (effectiveEnrichment) normalizedItem.enrichment = structuredClone(effectiveEnrichment);
       if (effectiveEnrichment?.status === "COMPLETE") normalizedItem.status = "COMPLETE";
       normalizedItem = prepareCollectedItemForMirror(normalizedItem);
+      if(incomingNormalizedItem.collectionAdmission) normalizedItem.listingDraft.collectionAdmission=incomingNormalizedItem.collectionAdmission;
       const mirrored = await mirrorCollectItemV3(normalizedItem, {
         client,
         collectId,
@@ -467,11 +551,11 @@ export async function ingestCollectRequestV4(options = {}) {
       if (effectiveEnrichment) {
         const repository = createCollectorEnrichmentRepositoryForTransaction(client);
         if (effectiveEnrichment.status === "PENDING_ENRICHMENT") {
-          await repository.enqueueForCollect({
+          for (const captureSku of captureSkus) await repository.enqueueForCollect({
             accountId,
             collectItemId: collectId,
             requestId: sourceRequestId,
-            sku: sourceSku,
+            sku: captureSku,
             refreshBundle: {},
             now: new Date(),
           });

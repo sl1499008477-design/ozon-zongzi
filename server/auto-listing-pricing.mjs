@@ -110,3 +110,18 @@ export function calculateAutoListingActualPrice(input = {}) {
     facts: { sourcePriceKopecks: String(sourcePriceKopecks) },
   });
 }
+
+export function calculateAutoListingPriceFromEvidence(input = {}) {
+  if (input?.greenKopecks === null
+    && typeof input.blackKopecks === "string"
+    && /^\d{1,19}$/u.test(input.blackKopecks)
+    && BigInt(input.blackKopecks) >= 8_000n) {
+    return calculateAutoListingActualPrice({
+      currency: input.currency,
+      sourcePriceKopecks: input.blackKopecks,
+      adjustmentKopecks: input.adjustmentKopecks,
+      priceMultiplierMicros: input.priceMultiplierMicros,
+    });
+  }
+  return calculateAutoListingPrice(input);
+}

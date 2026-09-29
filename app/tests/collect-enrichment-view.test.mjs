@@ -91,7 +91,7 @@ test("pending enrichment maps to a blocked Chinese collection status", () => {
     missingFields: ["weightG"],
   }), {
     tone: "processing",
-    label: "资料补全中",
+    label: "商品资料采集中",
     detail: "缺少：包装重量",
     retryable: false,
     listingBlocked: true,
@@ -315,4 +315,113 @@ test("five-second polling prevents overlap, recovers after refresh failure, and 
   await tick();
   assert.equal(refreshCalls, 2, "cleanup must prevent a stale scheduled callback from refreshing");
   assert.equal(clearedTimer, "poll-timer");
+});
+
+test('enrichment failure details show a safe cause and retry schedule', () => {
+  const view = collectEnrichmentView({status:'RETRYING',attemptCount:3,lastErrorCode:'ZONGZI_ENRICH_UPSTREAM_FAILED',nextAttemptAt:'2026-09-09T15:34:17.059Z'});
+  assert.match(view.detail, /已尝试 3 次/);
+  assert.match(view.detail, /下次重试/);
+  assert.match(view.detail, /读取失败/);
+  assert.match(collectEnrichmentView({status:'NEEDS_ATTENTION',lastErrorCode:'ZONGZI_ENRICH_INCOMPLETE'}).detail, /来源资料缺失/);
+});
+
+test('captured conflicting SKU shows both candidates without a misleading retry or missing-category prompt',()=>{
+ const view=collectEnrichmentView({status:'NEEDS_ATTENTION',completedSkus:2,totalSkus:2,missingFields:['weightG','lengthMm','widthMm','heightMm'],missingSkus:['3025087772'],packagingConflicts:[{sku:'3025087772',candidates:[{weightG:105,lengthMm:140,widthMm:60,heightMm:50},{weightG:125,lengthMm:143,widthMm:63,heightMm:54}]}]});
+ assert.equal(view.label,'已采集，包装参数待核实');assert.equal(view.retryable,false);
+ assert.match(view.detail,/2\/2/);assert.match(view.detail,/105g/);assert.match(view.detail,/125g/);
+ assert.doesNotMatch(view.detail,/缺少|待补全/);assert.equal(view.listingBlocked,true);
+});
+
+test('mixed SKU failures show every original cause even under a legacy pending summary',()=>{
+ const summary={status:'PENDING_ENRICHMENT',executionState:'PENDING',hasActiveJobs:true,completedSkus:40,totalSkus:43,failures:[
+  {sku:'2102713588',status:'FAILED',code:'ZONGZI_ENRICH_UPSTREAM_FAILED',message:'Seller /api/v1/search: net::ERR_CONNECTION_RESET',diagnostic:{stage:'seller_search',upstreamCode:'NETWORK_ERROR',requestSent:true,extensionVersion:'1.0.5'}},
+  {sku:'2102713769',status:'FAILED',code:'ZONGZI_ENRICH_UPSTREAM_FAILED',message:'Seller response: Too Many Requests',diagnostic:{stage:'bundle_create',upstreamCode:'HTTP_429',upstreamStatus:429,requestSent:true}},
+  {sku:'2102714396',status:'PENDING',code:'SELLER_CONTEXT_REQUIRED',message:'Seller tab is unavailable',diagnostic:{stage:'seller_context',requestSent:false}},
+ ]};
+ const before=structuredClone(summary);
+ const view=collectEnrichmentView(summary);
+ assert.equal(view.tone,'danger');
+ assert.equal(view.label,'资料补全需处理');
+ assert.equal(view.retryable,true);
+ assert.match(view.detail,/40\/43/);
+ assert.match(view.detail,/2102713588.*seller_search.*NETWORK_ERROR.*ERR_CONNECTION_RESET/);
+ assert.match(view.detail,/2102713769.*bundle_create.*HTTP_429.*429.*Too Many Requests/);
+ assert.match(view.detail,/2102714396.*seller_context.*未发送请求.*Seller tab is unavailable/);
+ assert.doesNotMatch(view.detail,/HTTP 502/);
+ assert.deepEqual(summary,before);
+});
+
+test('terminal failures with active siblings keep polling until the remaining jobs finish',()=>{
+ assert.equal(collectEnrichmentNeedsPolling({status:'NEEDS_ATTENTION',executionState:'FAILED',hasActiveJobs:true}),true);
+ assert.equal(collectEnrichmentListNeedsPolling([{enrichment:{status:'NEEDS_ATTENTION',hasActiveJobs:true}}]),true);
+ assert.equal(collectEnrichmentNeedsPolling({status:'NEEDS_ATTENTION',hasActiveJobs:false}),false);
+});
+
+test('new recovery and legacy timed-out execution states say waiting without asserting failure',()=>{
+ for(const executionState of ['WAITING_FOR_EXTENSION','TIMED_OUT']){
+  const summary={status:'PENDING_ENRICHMENT',executionState,lastErrorCode:'ZONGZI_ENRICH_UPSTREAM_FAILED',attemptCount:5};
+  const view=collectEnrichmentView(summary);
+  assert.equal(view.label,'等待扩展恢复');
+  assert.equal(view.tone,'warning');
+  assert.equal(view.retryable,false);
+  assert.equal(view.listingBlocked,true);
+  assert.doesNotMatch(view.detail,/失败|超时|已尝试/);
+  assert.equal(collectEnrichmentNeedsPolling(summary),true);
+ }
+});
+
+test('a recovery wait cannot cover a different SKU with a known failure',()=>{
+ const view=collectEnrichmentView({status:'PENDING_ENRICHMENT',executionState:'WAITING_FOR_EXTENSION',failures:[{sku:'2102713588',status:'FAILED',code:'NETWORK_ERROR',message:'net::ERR_CONNECTION_RESET',diagnostic:{stage:'seller_search',requestSent:true}}]});
+ assert.equal(view.tone,'danger');
+ assert.match(view.detail,/2102713588.*ERR_CONNECTION_RESET/);
+});
+
+test('older summaries retain raw messages and honestly identify missing diagnostics',()=>{
+ const view=collectEnrichmentView({status:'NEEDS_ATTENTION',lastErrorCode:'NETWORK_ERROR',lastErrorMessage:'net::ERR_CONNECTION_RESET',lastErrorDiagnostic:{stage:'seller_search',requestSent:true}});
+ assert.match(view.detail,/seller_search.*NETWORK_ERROR.*ERR_CONNECTION_RESET/);
+ const legacy=collectEnrichmentView({status:'NEEDS_ATTENTION',failures:[{sku:'2102713769',status:'FAILED',code:'ZONGZI_ENRICH_NOT_FOUND',message:''}]});
+ assert.match(legacy.detail,/2102713769.*阶段未记录.*来源未找到该 SKU/);
+});
+
+test('a complete category/package summary does not imply all media are present',()=>{
+ const view=collectEnrichmentView({status:'COMPLETE',completedSkus:43,totalSkus:43,failures:[{sku:'old',status:'FAILED',message:'old failure'}]});
+ assert.equal(view.label,'类目与包装已补全');
+ assert.equal(view.tone,'success');
+ assert.equal(view.listingBlocked,false);
+ assert.match(view.detail,/43\/43/);
+ assert.doesNotMatch(view.detail,/old failure|媒体齐全|全部资料|抓取成功/);
+});
+
+// Shape verified from the affected production SKU, without reclassifying normal legacy data.
+test("failed link placeholder is a collection failure, not an unknown category", () => {
+  const item = {id:"2965603212",sku:"2965603212",name:"SKU 2965603212",status:"待处理",
+    raw:{sku:"2965603212",error:"scrape_failed"},listingDraft:{images:[],price:""}};
+  const summary = collectEnrichmentEffectiveSummary(item);
+  const view = collectEnrichmentView(summary);
+  assert.equal(collectWorkflowStatus(item), "失败");
+  assert.equal(view.label, "商品抓取失败");
+  assert.equal(view.listingBlocked, true);
+  assert.equal(view.retryable, false);
+  assert.equal(collectEnrichmentNeedsPolling(summary), false);
+  assert.match(view.detail, /采集助手/);
+  const normal = {id:"old", listingDraft:{images:[]}};
+  assert.equal(collectEnrichmentEffectiveSummary(normal), undefined);
+  const repaired = {...item, listingDraft:{images:["https://cdn.example/product.jpg"]},enrichment:{status:"COMPLETE"}};
+  assert.equal(collectEnrichmentView(collectEnrichmentEffectiveSummary(repaired)).listingBlocked, false);
+});
+
+test('historical local error prefixes keep recovery guidance without rewriting upstream evidence', () => {
+  for (const [suffix, detail] of [
+    ['SKU_SCRAPE_EMPTY', '上次链接抓取失败'],
+    ['ENRICH_INCOMPLETE', '来源资料缺失'],
+    ['ENRICH_RETRY_EXHAUSTED', '自动重试已用尽'],
+  ]) for (const prefix of ['OZON', 'ZONGZI']) {
+    const code = `${prefix}_${suffix}`;
+    const summary = {status: 'NEEDS_ATTENTION', lastErrorCode: code, lastErrorDiagnostic: {upstreamCode: 'OZON_PLATFORM_ORIGINAL'}};
+    const view = collectEnrichmentView(summary);
+    assert.ok(view.detail.includes(detail));
+    assert.ok(view.detail.includes(code));
+    assert.ok(view.detail.includes('OZON_PLATFORM_ORIGINAL'));
+    assert.equal(summary.lastErrorCode, code);
+  }
 });

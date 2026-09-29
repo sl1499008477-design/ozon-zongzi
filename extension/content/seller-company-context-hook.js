@@ -5,7 +5,7 @@
     !context
     || globalThis.__JZ_SELLER_COMPANY_CONTEXT_HOOK__
     || window.top !== window
-    || window.location.origin !== 'https://seller.ozon.ru'
+    || !['https://seller.ozon.ru', 'https://seller.ozonru.cn'].includes(window.location.origin)
   ) return;
   globalThis.__JZ_SELLER_COMPANY_CONTEXT_HOOK__ = true;
 

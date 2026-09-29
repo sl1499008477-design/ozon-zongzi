@@ -1,43 +1,76 @@
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import {
   AUTO_LISTING_AI_QUEUE,
   AUTO_LISTING_AI_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+  AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+  AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS,
+  AUTO_LISTING_AI_WORK_QUEUE,
+  AUTO_LISTING_AI_WORK_QUEUE_OPTIONS,
 } from "./auto-listing-ai-queue.mjs";
 import {
   AUTO_LISTING_AI_PHASES,
   isSafeAutoListingAiIdentifier,
   normalizeAutoListingAiMessage,
 } from "./auto-listing-ai-message.mjs";
+import {
+  normalizeAutoListingAiWorkMessage,
+} from "./auto-listing-ai-work-message.mjs";
 const FACTORY_KEYS = new Set([
-  "enabled", "bossFactory", "loadContext", "orchestrate", "workflow", "logger", "phasePolicies", "timers",
+  "enabled", "bossFactory", "executionRepository", "loadContext", "orchestrate", "workflow", "sourceImageAnalyzer",
+  "logger", "phasePolicies", "timers",
 ]);
 const WORKFLOW_KEYS = new Set(["applyOutcome"]);
+const EXECUTION_REPOSITORY_KEYS = new Set(["adopt", "renew", "requeueChannelFailure"]);
 const POLICY_KEYS = new Set(["concurrency", "retryLimit", "retryDelayMs"]);
 const CONTEXT_KEYS = new Set([
   "accountId", "jobId", "itemId", "status", "statusVersion", "activeContentPlanId", "phaseInput",
 ]);
 const ORCHESTRATOR_OUTCOME_KEYS = new Set([
   "contractVersion", "disposition", "phase", "outcome", "retryable", "failureCode", "correlationId",
+  "failureScope", "deliveryState", "retryAfterMs",
 ]);
 const OUTCOME_DISPOSITIONS = new Set(["ACK", "RETRY", "FAIL"]);
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
 const SENSITIVE_CODE_FRAGMENT = /(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|CREDENTIAL|AUTHORIZATION|BEARER|COOKIE|SESSION_?ID|PRIVATE_?KEY)/u;
 const MAX_CONCURRENCY = 16;
-const MAX_RETRY_LIMIT = 2;
+const MAX_RETRY_LIMIT = 4;
 const MAX_RETRY_DELAY_MS = 60_000;
 const STOP_TIMEOUT_MS = 300_000;
+const EXECUTION_LEASE_MS = 30_000;
+const HEARTBEAT_INTERVAL_MS = Math.floor(EXECUTION_LEASE_MS / 3);
 const RETRY_AFTER_EXTERNAL_ACTION = new Set(["AI_GATEWAY_RATE_LIMITED"]);
+const FAILURE_SCOPES = new Set([
+  null, "BUSINESS", "CHANNEL_TRANSIENT", "CHANNEL_REVALIDATION", "RESERVATION_BUSY",
+]);
+const RESERVATION_BUSY_CODE = Object.freeze({
+  PLAN_CONTENT: "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS",
+  ANALYZE_SOURCE_IMAGE_BATCH: "AUTO_LISTING_SOURCE_IMAGE_ANALYSIS_IN_PROGRESS",
+  CLEAN_SOURCE_IMAGE_OVERLAY: "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_IN_PROGRESS",
+  CHECK_SOURCE_IMAGE_CLEANUP: "AUTO_LISTING_SOURCE_IMAGE_CLEANUP_CHECK_IN_PROGRESS",
+  GENERATE_IMAGE_SLOT: "AUTO_LISTING_IMAGE_IN_PROGRESS",
+  CHECK_IMAGE_GROUP: "AUTO_LISTING_IMAGE_GROUP_CHECK_IN_PROGRESS",
+  GENERATE_RICH_CONTENT: "AUTO_LISTING_RICH_CONTENT_IN_PROGRESS",
+});
+const DELIVERY_STATES = new Set([null, "NOT_SENT", "POSSIBLY_SENT"]);
 
 export const AUTO_LISTING_AI_PHASE_POLICIES = Object.freeze({
-  PLAN_CONTENT: Object.freeze({ concurrency: 2, retryLimit: 2, retryDelayMs: 1_000 }),
+  PLAN_CONTENT: Object.freeze({ concurrency: 2, retryLimit: 4, retryDelayMs: 1_000 }),
   MATERIALIZE_SOURCE_ASSET: Object.freeze({ concurrency: 4, retryLimit: 2, retryDelayMs: 500 }),
+  ANALYZE_SOURCE_IMAGE_BATCH: Object.freeze({ concurrency: 1, retryLimit: 4, retryDelayMs: 1_000 }),
+  CLEAN_SOURCE_IMAGE_OVERLAY: Object.freeze({ concurrency: 16, retryLimit: 4, retryDelayMs: 1_000 }),
+  CHECK_SOURCE_IMAGE_CLEANUP: Object.freeze({ concurrency: 16, retryLimit: 4, retryDelayMs: 1_000 }),
+  RECONCILE_SOURCE_IMAGE_ANALYSIS: Object.freeze({ concurrency: 2, retryLimit: 2, retryDelayMs: 500 }),
   FINALIZE_MATERIALIZED_PLAN: Object.freeze({ concurrency: 2, retryLimit: 2, retryDelayMs: 500 }),
-  GENERATE_IMAGE_SLOT: Object.freeze({ concurrency: 1, retryLimit: 0, retryDelayMs: 2_000 }),
+  GENERATE_IMAGE_SLOT: Object.freeze({ concurrency: 1, retryLimit: 2, retryDelayMs: 2_000 }),
+  CHECK_IMAGE_GROUP: Object.freeze({ concurrency: 1, retryLimit: 4, retryDelayMs: 1_000 }),
   GENERATE_RICH_CONTENT: Object.freeze({
     concurrency: 2,
-    retryLimit: 2,
+    retryLimit: 4,
     retryDelayMs: 1_000,
   }),
 });
@@ -52,6 +85,9 @@ function failureOutcome(message, error) {
     retryable: safeErrorRetryable(error),
     failureCode,
     correlationId: message.correlationId,
+    failureScope: "BUSINESS",
+    deliveryState: null,
+    retryAfterMs: null,
   });
 }
 
@@ -181,6 +217,17 @@ function normalizeOrchestratorOutcome(value, message) {
     || value.correlationId !== message.correlationId || !ERROR_CODE.test(value.outcome || "")
     || typeof value.retryable !== "boolean"
     || !(value.failureCode === null || ERROR_CODE.test(value.failureCode || ""))
+    || !FAILURE_SCOPES.has(value.failureScope) || !DELIVERY_STATES.has(value.deliveryState)
+    || !(value.retryAfterMs === null || (Number.isInteger(value.retryAfterMs)
+      && value.retryAfterMs >= 0 && value.retryAfterMs <= 86_400_000))
+    || (value.disposition === "ACK" && (value.failureScope !== null
+      || value.deliveryState !== null || value.retryAfterMs !== null))
+    || (value.failureScope === "BUSINESS" && (value.deliveryState !== null || value.retryAfterMs !== null))
+    || (value.failureScope === "RESERVATION_BUSY" && (value.disposition !== "RETRY"
+      || value.deliveryState !== null || !Number.isInteger(value.retryAfterMs) || value.retryAfterMs < 1
+      || value.failureCode !== RESERVATION_BUSY_CODE[message.phase]))
+    || (typeof value.failureScope === "string" && value.failureScope.startsWith("CHANNEL_")
+      && value.deliveryState === null)
     || (value.disposition === "ACK" && value.retryable)
     || (value.disposition === "RETRY" && (!value.retryable || value.failureCode === null))
     || (value.disposition === "FAIL" && value.failureCode === null)) {
@@ -198,6 +245,9 @@ function terminalizeRetryOutcome(outcome) {
     retryable: true,
     failureCode: outcome.failureCode,
     correlationId: outcome.correlationId,
+    failureScope: outcome.failureScope,
+    deliveryState: outcome.deliveryState,
+    retryAfterMs: outcome.retryAfterMs,
   });
 }
 
@@ -207,6 +257,19 @@ function validWorkflow(value) {
     const descriptor = Object.getOwnPropertyDescriptor(value, "applyOutcome");
     return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value")
       && typeof descriptor.value === "function";
+  } catch {
+    return false;
+  }
+}
+
+function validExecutionRepository(value) {
+  if (!exactKeys(value, EXECUTION_REPOSITORY_KEYS)) return false;
+  try {
+    return [...EXECUTION_REPOSITORY_KEYS].every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value")
+        && typeof descriptor.value === "function";
+    });
   } catch {
     return false;
   }
@@ -231,19 +294,26 @@ export function createAutoListingAiWorker(config = {}) {
     return Object.freeze({ async start() { return false; }, async stop() {} });
   }
   const bossFactory = config.bossFactory;
+  const executionRepository = config.executionRepository;
   const loadContext = config.loadContext;
   const orchestrate = config.orchestrate;
   const workflow = config.workflow;
+  const sourceImageAnalyzer = config.sourceImageAnalyzer;
   const logger = config.logger || { log(record) { console.log(JSON.stringify(record)); } };
   const timers = config.timers || { setTimeout, clearTimeout };
   const policies = normalizePolicies(config.phasePolicies || AUTO_LISTING_AI_PHASE_POLICIES);
   if (typeof bossFactory !== "function" || typeof loadContext !== "function" || typeof orchestrate !== "function"
-    || !validWorkflow(workflow)
+    || !validWorkflow(workflow) || !validExecutionRepository(executionRepository)
+    || (sourceImageAnalyzer !== undefined && typeof sourceImageAnalyzer !== "function")
     || typeof logger?.log !== "function" || typeof timers?.setTimeout !== "function"
     || typeof timers?.clearTimeout !== "function") throw workerError("AUTO_LISTING_AI_WORKER_INVALID");
 
   const limiters = Object.fromEntries(AUTO_LISTING_AI_PHASES.map((phase) => [
     phase, createLimiter(policies[phase].concurrency),
+  ]));
+  const connectedLimiters = Object.fromEntries(AUTO_LISTING_AI_PHASES.map((phase) => [
+    phase,
+    createLimiter(phase === "GENERATE_IMAGE_SLOT" ? MAX_CONCURRENCY : policies[phase].concurrency),
   ]));
   const inFlight = new Set();
   let boss = null;
@@ -260,8 +330,26 @@ export function createAutoListingAiWorker(config = {}) {
     } catch {}
   }
 
-  async function executePhaseAttempt(message, finalAttempt) {
-    const loaded = await loadContext(message);
+  async function executePhaseAttempt(message, attemptNo, maxAttempts, execution = null) {
+    if (execution?.lost()) {
+      return Object.freeze({
+        persist: false,
+        outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
+      });
+    }
+    const loaded = await loadContext(Object.freeze({
+      message,
+      execution: execution ? execution.current() : null,
+      ...(message.phase === "MATERIALIZE_SOURCE_ASSET" ? {
+        phaseAttempt: Object.freeze({ attemptNo, maxAttempts }),
+      } : {}),
+    }));
+    if (execution?.lost()) {
+      return Object.freeze({
+        persist: false,
+        outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
+      });
+    }
     const context = normalizeContext(loaded, message);
     if (!context || context.statusVersion !== message.expectedStatusVersion) {
       return Object.freeze({
@@ -276,9 +364,26 @@ export function createAutoListingAiWorker(config = {}) {
       });
     }
     assertCurrentPhaseInput(context);
-    const outcome = await orchestrate({ message, context });
+    const outcome = await orchestrate(execution
+      ? { message, context, assertLeaseActive: () => {
+          if (execution.lost()) throw workerError("AUTO_LISTING_AI_EXECUTION_LEASE_LOST");
+        } }
+      : { message, context });
+    if (execution?.lost()) {
+      return Object.freeze({
+        persist: false,
+        outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
+      });
+    }
     let normalized = normalizeOrchestratorOutcome(outcome, message);
-    if (normalized.disposition === "RETRY" && !finalAttempt
+    if (execution && typeof normalized.failureScope === "string"
+      && normalized.failureScope.startsWith("CHANNEL_")) {
+      return Object.freeze({ persist: true, outcome: normalized });
+    }
+    if (execution && normalized.failureScope === "RESERVATION_BUSY") {
+      return Object.freeze({ persist: true, outcome: normalized });
+    }
+    if (normalized.disposition === "RETRY" && attemptNo < maxAttempts
       && !RETRY_AFTER_EXTERNAL_ACTION.has(normalized.failureCode)) {
       return Object.freeze({ persist: false, outcome: normalized });
     }
@@ -286,35 +391,48 @@ export function createAutoListingAiWorker(config = {}) {
     return Object.freeze({ persist: true, outcome: normalized });
   }
 
-  async function persistOutcome(message, outcome) {
-    return workflow.applyOutcome(message, outcome);
+  async function persistOutcome(message, outcome, execution) {
+    if (execution && typeof outcome.failureScope === "string" && outcome.failureScope.startsWith("CHANNEL_")) {
+      return executionRepository.requeueChannelFailure({ message, outcome, execution });
+    }
+    return workflow.applyOutcome({ message, outcome, execution });
   }
 
-  async function processJob(job) {
-    let message;
-    try { message = normalizeAutoListingAiMessage(job?.data); } catch {
-      const output = Object.freeze({ disposition: "FAILED", code: "AUTO_LISTING_AI_MESSAGE_INVALID" });
-      log(null, output.code);
-      return { id: safeJobId(job), status: "failed", output };
-    }
+  async function runMessage(job, message, execution = null) {
     const policy = policies[message.phase];
     try {
-      const outcome = await limiters[message.phase](async () => {
+      const limiter = execution ? connectedLimiters[message.phase] : limiters[message.phase];
+      const outcome = await limiter(async () => {
         let attempt = 0;
         let terminal = null;
         while (attempt <= policy.retryLimit) {
           attempt += 1;
           try {
-            const result = await executePhaseAttempt(message, attempt > policy.retryLimit);
-            if (result.outcome.disposition !== "RETRY") {
+            const result = await executePhaseAttempt(message, attempt, policy.retryLimit + 1, execution);
+            if (result.outcome.disposition !== "RETRY"
+              || (execution && typeof result.outcome.failureScope === "string"
+                && (result.outcome.failureScope.startsWith("CHANNEL_")
+                  || result.outcome.failureScope === "RESERVATION_BUSY"))) {
               terminal = result;
               break;
             }
+            if (stopping) throw workerError("AUTO_LISTING_AI_WORKER_STOPPED", true);
             log(message, result.outcome.failureCode);
             await waitBeforeRetry(policy, attempt, timers);
           } catch (error) {
+            if (stopping && error?.code === "AUTO_LISTING_AI_WORKER_STOPPED") throw error;
+            if (execution?.lost()) {
+              terminal = Object.freeze({
+                persist: false,
+                outcome: Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" }),
+              });
+              break;
+            }
             const errorCode = safeErrorCode(error);
             const retryable = safeErrorRetryable(error);
+            if (stopping && retryable && attempt <= policy.retryLimit) {
+              throw workerError("AUTO_LISTING_AI_WORKER_STOPPED", true);
+            }
             if (!retryable || attempt > policy.retryLimit) {
               terminal = Object.freeze({ persist: true, outcome: failureOutcome(message, error) });
               break;
@@ -324,7 +442,10 @@ export function createAutoListingAiWorker(config = {}) {
           }
         }
         if (!terminal) throw workerError("AUTO_LISTING_AI_PHASE_FAILED");
-        if (terminal.persist) await persistOutcome(message, terminal.outcome);
+        if (execution?.lost()) {
+          return Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" });
+        }
+        if (terminal.persist) await persistOutcome(message, terminal.outcome, execution?.current() ?? null);
         return terminal.outcome;
       });
       const output = safeOutcome(outcome);
@@ -337,7 +458,120 @@ export function createAutoListingAiWorker(config = {}) {
     }
   }
 
-  async function handler(jobs) {
+  async function processLegacyJob(job) {
+    let message;
+    try { message = normalizeAutoListingAiMessage(job?.data); } catch {
+      const output = Object.freeze({ disposition: "FAILED", code: "AUTO_LISTING_AI_MESSAGE_INVALID" });
+      log(null, output.code);
+      return { id: safeJobId(job), status: "failed", output };
+    }
+    return runMessage(job, message);
+  }
+
+  function adoptedExecution(message, value) {
+    try {
+      return normalizeAutoListingAiWorkMessage({
+        workContractVersion: "CHANNEL_WORK_V1",
+        message,
+        execution: value,
+      }).execution;
+    } catch {
+      return null;
+    }
+  }
+
+  function startHeartbeat(message, execution) {
+    let active = true;
+    let lost = false;
+    let currentExecution = execution;
+    let handle = null;
+    let running = null;
+    const now = typeof timers.now === "function" ? () => timers.now() : () => performance.now();
+    let nextBeatAt = now() + HEARTBEAT_INTERVAL_MS;
+    const schedule = () => {
+      if (active) handle = timers.setTimeout(beat, Math.max(0, nextBeatAt - now()));
+    };
+    const markLost = () => {
+      lost = true;
+      active = false;
+      if (handle !== null) timers.clearTimeout(handle);
+      handle = null;
+      running = null;
+    };
+    const beat = () => {
+      if (!active) return;
+      handle = null;
+      if (running !== null) {
+        markLost();
+        return;
+      }
+      nextBeatAt += HEARTBEAT_INTERVAL_MS;
+      schedule();
+      const renewal = Promise.resolve().then(() => executionRepository.renew({
+        message, execution: currentExecution, leaseMs: EXECUTION_LEASE_MS,
+      })).then((value) => {
+        const renewed = adoptedExecution(message, value);
+        if (!renewed) throw workerError("AUTO_LISTING_AI_OUTBOX_CLAIM_REJECTED");
+        if (!active || running !== renewal) return;
+        currentExecution = renewed;
+      }).catch(() => {
+        if (active && running === renewal) markLost();
+      }).finally(() => {
+        if (running === renewal) running = null;
+      });
+      running = renewal;
+    };
+    schedule();
+    return Object.freeze({
+      lost: () => lost,
+      current: () => currentExecution,
+      async stop() {
+        active = false;
+        if (handle !== null) timers.clearTimeout(handle);
+        handle = null;
+        running = null;
+      },
+    });
+  }
+
+  async function processWorkJob(job) {
+    let work;
+    try { work = normalizeAutoListingAiWorkMessage(job?.data); } catch (error) {
+      if (error?.code === "AUTO_LISTING_AI_WORK_MESSAGE_EXPIRED") {
+        const output = Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" });
+        log(null, output.code);
+        return { id: safeJobId(job), status: "completed", output };
+      }
+      const output = Object.freeze({ disposition: "FAILED", code: "AUTO_LISTING_AI_MESSAGE_INVALID" });
+      log(null, output.code);
+      return { id: safeJobId(job), status: "failed", output };
+    }
+    let execution;
+    try {
+      execution = adoptedExecution(work.message, await executionRepository.adopt({
+        message: work.message,
+        execution: work.execution,
+        workerId: "auto-listing-ai-worker-v3",
+        leaseToken: crypto.randomUUID(),
+        leaseMs: EXECUTION_LEASE_MS,
+      }));
+    } catch {
+      execution = null;
+    }
+    if (!execution) {
+      const output = Object.freeze({ disposition: "ACK", code: "AUTO_LISTING_AI_MESSAGE_STALE" });
+      log(work.message, output.code);
+      return { id: safeJobId(job), status: "completed", output };
+    }
+    const heartbeat = startHeartbeat(work.message, execution);
+    try {
+      return await runMessage(job, work.message, heartbeat);
+    } finally {
+      await heartbeat.stop();
+    }
+  }
+
+  async function handler(jobs, processJob) {
     if (!Array.isArray(jobs)) throw workerError("AUTO_LISTING_AI_WORKER_INVALID");
     const tasks = jobs.map((job) => {
       const task = processJob(job);
@@ -361,13 +595,43 @@ export function createAutoListingAiWorker(config = {}) {
           candidate.on?.("warning", () => log(null, "AUTO_LISTING_AI_QUEUE_WARNING"));
           await candidate.start();
           await candidate.createQueue(AUTO_LISTING_AI_QUEUE, AUTO_LISTING_AI_QUEUE_OPTIONS);
+          await candidate.createQueue(AUTO_LISTING_AI_WORK_QUEUE, AUTO_LISTING_AI_WORK_QUEUE_OPTIONS);
+          await candidate.createQueue(
+            AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE,
+            AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE_OPTIONS,
+          );
+          await candidate.createQueue(
+            AUTO_LISTING_AI_CURRENT_WORK_QUEUE,
+            AUTO_LISTING_AI_CURRENT_WORK_QUEUE_OPTIONS,
+          );
           await candidate.work(AUTO_LISTING_AI_QUEUE, {
             batchSize: 1,
             localConcurrency: Object.values(policies).reduce((sum, policy) => sum + policy.concurrency, 0),
             pollingIntervalSeconds: 1,
             heartbeatRefreshSeconds: 10,
             perJobResults: true,
-          }, handler);
+          }, (jobs) => handler(jobs, processLegacyJob));
+          await candidate.work(AUTO_LISTING_AI_WORK_QUEUE, {
+            batchSize: 1,
+            localConcurrency: Object.values(policies).reduce((sum, policy) => sum + policy.concurrency, 0),
+            pollingIntervalSeconds: 1,
+            heartbeatRefreshSeconds: 10,
+            perJobResults: true,
+          }, (jobs) => handler(jobs, processWorkJob));
+          await candidate.work(AUTO_LISTING_AI_CURRENT_LEGACY_QUEUE, {
+            batchSize: 1,
+            localConcurrency: Object.values(policies).reduce((sum, policy) => sum + policy.concurrency, 0),
+            pollingIntervalSeconds: 1,
+            heartbeatRefreshSeconds: 10,
+            perJobResults: true,
+          }, (jobs) => handler(jobs, processLegacyJob));
+          await candidate.work(AUTO_LISTING_AI_CURRENT_WORK_QUEUE, {
+            batchSize: 1,
+            localConcurrency: Object.values(policies).reduce((sum, policy) => sum + policy.concurrency, 0),
+            pollingIntervalSeconds: 1,
+            heartbeatRefreshSeconds: 10,
+            perJobResults: true,
+          }, (jobs) => handler(jobs, processWorkJob));
           boss = candidate;
           log(null, "AUTO_LISTING_AI_WORKER_STARTED");
           return true;
@@ -431,9 +695,7 @@ async function runDirect() {
 }
 
 const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isDirectRun) runDirect().catch((error) => {
-  console.error(JSON.stringify({
-    correlationId: "startup", phase: "STARTUP", code: safeErrorCode(error, "AUTO_LISTING_AI_WORKER_START_FAILED"),
-  }));
+if (isDirectRun) {
+  console.error("自动上架功能已移除，旧 worker 不再启动。");
   process.exitCode = 1;
-});
+}

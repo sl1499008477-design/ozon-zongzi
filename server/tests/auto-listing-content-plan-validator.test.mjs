@@ -5,7 +5,7 @@ import { diagnoseContentPlan, validateContentPlan } from "../auto-listing-conten
 
 const PROHIBITED = ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"];
 const roles = {
-  MAIN: 1, SELLING_POINT: 2, DETAIL: 1, SCENE: 1, SPECIFICATION: 0, INFOGRAPHIC: 1,
+  MAIN: 1, SELLING_POINT: 1, INFOGRAPHIC: 1, SCENE: 1, DETAIL: 1, SPECIFICATION: 1,
 };
 const densities = {
   MAIN: "NONE", SELLING_POINT: "LIGHT", DETAIL: "LIGHT", SCENE: "LIGHT",
@@ -51,9 +51,9 @@ function validPlan() {
     version: 1, language: "ru", slots: [
       slot("MAIN", 1, 1),
       slot("SELLING_POINT", 2, 1, [{ text: "Красный", claimType: "COLOR", sourceFactIds: ["fact-color"] }]),
-      slot("SELLING_POINT", 3, 2),
-      slot("DETAIL", 4, 1),
-      slot("SCENE", 5, 1),
+      slot("DETAIL", 3, 1),
+      slot("SCENE", 4, 1),
+      slot("SPECIFICATION", 5, 1),
       slot("INFOGRAPHIC", 6, 1, [{ text: "Высота 10 см", claimType: "DIMENSION_HEIGHT", sourceFactIds: ["fact-height"] }]),
     ],
   };
@@ -69,6 +69,18 @@ test("validator accepts both historical V1 slots and closed V2 role metadata", (
     substitutionReasonCode: null,
   }));
   assert.doesNotThrow(() => validateContentPlan({ plan, plannerContext }));
+});
+
+test("V6 uses its fixed image order without changing historical planner order", () => {
+  const context = structuredClone(plannerContext);
+  context.plannerInput.promptTemplateVersion = "AUTO_LISTING_CONTENT_PLAN_FILL_V6";
+  const plan = validPlan();
+  const order = ["MAIN", "SELLING_POINT", "INFOGRAPHIC", "SCENE", "DETAIL", "SPECIFICATION"];
+  plan.slots = order.map((role, index) => ({
+    ...plan.slots.find((entry) => entry.role === role), order: index + 1,
+  }));
+  assert.equal(diagnoseContentPlan({ plan, plannerContext: context }).status, "ACCEPTED");
+  assert.equal(diagnoseContentPlan({ plan, plannerContext }).status, "REJECTED");
 });
 
 const mutated = (change) => {
@@ -146,8 +158,8 @@ test("accepts an exact cited alphanumeric model fact but rejects a changed model
     visualGroupKeys: ["group-a"],
   });
   const plan = validPlan();
-  plan.slots[3].sourceFactIds.push("fact-model");
-  plan.slots[3].claims = [{
+  plan.slots[2].sourceFactIds.push("fact-model");
+  plan.slots[2].claims = [{
     text: "Название модели (для объединения в одну карточку): F404020A",
     claimType: "ATTRIBUTE:model",
     sourceFactIds: ["fact-model"],
@@ -155,7 +167,7 @@ test("accepts an exact cited alphanumeric model fact but rejects a changed model
 
   assert.equal(diagnoseContentPlan({ plan, plannerContext: context }).status, "ACCEPTED");
 
-  plan.slots[3].claims[0].text = "Название модели (для объединения в одну карточку): F404021A";
+  plan.slots[2].claims[0].text = "Название модели (для объединения в одну карточку): F404021A";
   assert.equal(diagnoseContentPlan({ plan, plannerContext: context }).status, "REJECTED");
 });
 

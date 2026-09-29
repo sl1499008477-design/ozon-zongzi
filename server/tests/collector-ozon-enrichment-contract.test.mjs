@@ -380,7 +380,7 @@ test("normalization exposes additive source category evidence", () => {
     variantData: completeVariantData({
       description_category_id: 17039736,
       categories: [
-        { id: 17000000, level: 2, title: "家用电器" },
+        { id: 17000000, level: 2, title: "Бытовая техника" },
         { id: 17039736, level: 3, name: "Заварочный чайник" },
       ],
       attributes: [
@@ -397,7 +397,7 @@ test("normalization exposes additive source category evidence", () => {
     descriptionCategoryId: 17039736,
     typeName: "Заварочный чайник",
     typeIdCandidate: 123456,
-    path: ["家用电器", "Заварочный чайник"],
+    path: ["Бытовая техника", "Заварочный чайник"],
     attributes: [
       { key: "8229", value: "Заварочный чайник", dictionary_value_id: 123456 },
       { key: "4497", value: "500" },
@@ -453,7 +453,7 @@ test("user draft replacement preserves authoritative Seller source evidence", ()
   assert.equal(next.typeId, 990001);
 });
 
-test("normalization rejects zero, negative, and non-finite required values", async (t) => {
+test("normalization rejects missing category but preserves evidence when source packaging is unusable", async (t) => {
   const cases = [
     ["zero category", completeVariantData({ description_category_id: 0 }), ["descriptionCategoryId"]],
     ["negative weight", completeVariantData({ attributes: [
@@ -471,10 +471,17 @@ test("normalization rejects zero, negative, and non-finite required values", asy
   ];
   for (const [name, variantData, missingFields] of cases) {
     await t.test(name, () => {
+      if (!missingFields.includes('descriptionCategoryId')) {
+        const result=normalizeOzonAgentResult({sku:'4862904234',variantData});
+        assert.equal(result.status,'PARTIAL');
+        assert.deepEqual(result.missingFields,missingFields);
+        for(const field of missingFields) assert.equal(result.logistics[field],null);
+        return;
+      }
       assert.throws(
         () => normalizeOzonAgentResult({ sku: "4862904234", variantData }),
         (error) => error?.status === 422
-          && error?.code === "OZON_ENRICH_INCOMPLETE"
+          && error?.code === "ZONGZI_ENRICH_INCOMPLETE"
           && assert.deepEqual(error.missingFields, missingFields) === undefined,
       );
     });
@@ -491,7 +498,7 @@ test("completeness gate uses stable missing-field keys and only applies to Ozon"
   assert.throws(
     () => assertCompleteOzonCollectPayload("OZON", incomplete),
     (error) => error?.status === 422
-      && error?.code === "OZON_COLLECT_INCOMPLETE"
+      && error?.code === "ZONGZI_COLLECT_INCOMPLETE"
       && assert.deepEqual(error.missingFields, ["weightG", "widthMm", "heightMm"]) === undefined,
   );
 });
@@ -518,7 +525,7 @@ test("collection ingress promotes the extension source category before the stric
   };
   assert.throws(
     () => assertCompleteOzonCollectPayload("ozon", rawPayload),
-    (error) => error?.code === "OZON_COLLECT_INCOMPLETE"
+    (error) => error?.code === "ZONGZI_COLLECT_INCOMPLETE"
       && assert.deepEqual(error.missingFields, ["descriptionCategoryId"]) === undefined,
   );
   assert.doesNotThrow(() => assertCompleteOzonCollectPayload(
@@ -553,7 +560,7 @@ test("single enrichment requests accept only requestId and sku", () => {
   ]) {
     assert.throws(
       () => parseOzonEnrichmentRequest(body),
-      (error) => error?.status === 400 && /^OZON_ENRICH_/.test(error?.code || ""),
+      (error) => error?.status === 400 && /^ZONGZI_ENRICH_/.test(error?.code || ""),
     );
   }
 });
@@ -576,11 +583,11 @@ test("batch enrichment requests preserve first-seen SKUs and cap unique values a
       requestId: "batch-2",
       skus: Array.from({ length: 21 }, (_, index) => String(index + 1)),
     }),
-    (error) => error?.status === 400 && error?.code === "OZON_ENRICH_BATCH_LIMIT",
+    (error) => error?.status === 400 && error?.code === "ZONGZI_ENRICH_BATCH_LIMIT",
   );
   assert.throws(
     () => parseOzonBatchEnrichmentRequest({ skus: ["4862904234"] }),
-    (error) => error?.status === 400 && /^OZON_ENRICH_/.test(error?.code || ""),
+    (error) => error?.status === 400 && /^ZONGZI_ENRICH_/.test(error?.code || ""),
   );
 });
 
@@ -598,4 +605,65 @@ test("enrichment request parsers reject every retired collector scope-field spel
       );
     });
   }
+});
+
+
+test('partial capture preserves category and attributes, records missing logistics, and is not listing-ready', () => {
+  const result=normalizeOzonAgentResult({sku:'partial-sku',source:'EXTENSION_SELLER_CAPTURE',capturedAt:'2026-09-10T00:00:00.000Z',
+    variantData:{description_category_id:123,weight:500,depth:300,width:200,height:null,attributes:[{key:'8229',value:'Kettle'}]}});
+  assert.equal(result.status,'PARTIAL');
+  assert.deepEqual(result.missingFields,['heightMm']);
+  assert.equal(result.logistics.heightMm,null);
+  const draft=mergeOzonEnrichmentResult({logistics:{weightG:777}},result);
+  assert.equal(draft.logistics.weightG,777);
+  assert.equal(draft.logistics.lengthMm,300);
+  assert.equal(draft.logistics.heightMm,undefined);
+  assert.equal(draft.sourceCategory.descriptionCategoryId,123);
+  assert.equal(draft.sourceCategory.attributes[0].value,'Kettle');
+  assert.throws(()=>assertOzonListingReady(draft),{code:'COLLECT_ENRICHMENT_INCOMPLETE'});
+});
+
+
+test('partial candidate one cannot borrow missing dimensions from conflicting candidate two', () => {
+  const candidates=[{weightG:500,lengthMm:300,widthMm:200,heightMm:null},{weightG:550,lengthMm:310,widthMm:210,heightMm:120}];
+  const result=normalizeOzonAgentResult({sku:'candidate-sku',source:'EXTENSION_SELLER_CAPTURE',capturedAt:'2026-09-10T00:00:00.000Z',
+    variantData:{...completeVariantData(),packagingCandidates:candidates}});
+  assert.equal(result.status,'PARTIAL');
+  assert.deepEqual(result.missingFields,['heightMm']);
+  assert.equal(result.logistics.heightMm,null);
+  const draft=mergeOzonEnrichmentResult({logistics:{weightG:777}},result);
+  assert.deepEqual(draft.packagingCandidates,candidates);
+  assert.deepEqual(draft.logistics,{weightG:777,lengthMm:300,widthMm:200});
+});
+
+
+test("structured attribute values and legacy collections retain every dictionary ID in source evidence", () => {
+  const supplied = [
+    { key: "8229", value: "Старый тип", dictionary_value_id: 1, values: [{ value: "Бра", dictionary_value_id: 91647 }] },
+    { key: "10096", value: "серый; черно-серый", values: [{ value: "серый", dictionary_value_id: 61576 }, { value: "черно-серый", dictionary_value_id: 61607 }] },
+    { key: "4389", values: [{ dictionary_value_id: 90296 }] },
+    { key: "6317", value: "old flattened", collection: [{ value: "Светодиодная", dictionary_value_id: 1896 }, { dictionary_value_id: 1897 }] },
+    { key: "9048", value: "Legacy text" },
+    { key: "9454", value: 999, values: [{ value: 350 }] },
+  ];
+  const normalized = normalizeOzonAgentResult({ sku: "structured", variantData: completeVariantData({ attributes: [...completeVariantData().attributes.filter(row => row.key !== "9454"), ...supplied] }) });
+  for (const row of supplied) {
+    const projected = normalized.sourceCategory.attributes.find(attribute => attribute.key === row.key);
+    if (row.values) assert.deepEqual(projected.values, row.values);
+    if (row.collection) assert.deepEqual(projected.collection, row.collection);
+  }
+  assert.equal(normalized.sourceCategory.typeIdCandidate, 91647);
+  assert.equal(normalized.sourceCategory.typeName, "Бра");
+  assert.equal(normalized.logistics.lengthMm, 350);
+  const ingress = normalizeOzonCollectedSourceEvidence({ variantData: { description_category_id: 123, attributes: supplied } });
+  assert.equal(ingress.sourceCategory.typeIdCandidate, 91647);
+  assert.equal(ingress.sourceCategory.typeName, "Бра");
+});
+
+test("existing structured values are authoritative over other legacy source carriers", () => {
+  const normalized = normalizeOzonCollectedSourceEvidence({
+    sourceCategory: { descriptionCategoryId: 123, attributes: [{ key: "10096", values: [] }] },
+    variantData: { description_category_id: 123, attributes: [{ key: "10096", value: "старый", values: [{ value: "старый", dictionary_value_id: 1 }] }] },
+  });
+  assert.deepEqual(normalized.sourceCategory.attributes[0].values, []);
 });

@@ -21,6 +21,9 @@ const storage = () => ({
   remove: async () => {},
 });
 const event = { addListener() {}, removeListener() {} };
+const runtimeStartupListeners = [];
+const runtimeInstalledListeners = [];
+const runtimeMessageListeners = [];
 const chrome = {
   alarms: {
     async clear() { return true; },
@@ -30,9 +33,14 @@ const chrome = {
   contextMenus: { removeAll(callback) { callback?.(); }, create() {}, onClicked: event },
   cookies: { getAll: async () => [] },
   notifications: { create() {}, clear() {}, onClicked: event },
-  runtime: { getURL: (value) => `chrome-extension://packaged/${value}` },
-  storage: { local: storage(), session: storage(), sync: storage() },
-  tabs: { query: async () => [], reload() {} },
+  runtime: {
+    getURL: (value) => `chrome-extension://packaged/${value}`,
+    onStartup: { addListener: (listener) => runtimeStartupListeners.push(listener) },
+    onInstalled: { addListener: (listener) => runtimeInstalledListeners.push(listener) },
+    onMessage: { addListener: (listener) => runtimeMessageListeners.push(listener) },
+  },
+  storage: { local: storage(), session: storage(), sync: storage(), onChanged: event },
+  tabs: { query: async () => [], reload() {}, onUpdated: event },
 };
 const context = vm.createContext({
   AbortController,
@@ -64,4 +72,7 @@ context.importScripts = (...entries) => {
 vm.runInContext(controlledWorkerSource, context, { filename: workerPath });
 assert.equal(context.__packagedCollectorStarted, true);
 assert.equal(typeof context.JzCollectorSession?.createCollectorSessionManager, "function");
+assert.equal(runtimeStartupListeners.length, 1);
+assert.equal(runtimeInstalledListeners.length, 1);
+assert.equal(runtimeMessageListeners.length, 1);
 console.log(`packaged collector service-worker startup passed: ${unpackedDir}`);

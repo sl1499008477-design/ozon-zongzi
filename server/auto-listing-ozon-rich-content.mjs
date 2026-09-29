@@ -33,7 +33,7 @@ const TEMPORARY_QUERY = /(?:^|[?&])(?:x-amz-(?:algorithm|credential|date|expires
 
 function invalid() {
   const error = new Error("Ozon 富文本转换输入无效");
-  error.code = "AUTO_LISTING_OZON_RICH_CONTENT_INVALID";
+  error.code = "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID";
   error.retryable = false;
   return error;
 }

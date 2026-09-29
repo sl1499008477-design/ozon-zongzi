@@ -26,6 +26,17 @@ export function normalizeSellerAnalyticsItem(value) {
     const item = { ...value, ...nested };
     const sku = firstValue(item, 'sku', 'Sku', 'goods_id', 'goodsId', 'productId', 'id', '_id');
     const id = sku == null ? '' : String(sku);
+    const averagePrice = firstValue(item, 'sellerAnalyticsPriceRub', 'avgPrice', 'AvgPrice', 'AvgGmv', 'avgGmv', 'avg_price')
+        ?? (!item.currencyCode || item.currencyCode === 'RUB' ? firstValue(item, 'price', 'Price') : undefined);
+    const brand = firstValue(item, 'brand', 'Brand');
+    const views = firstValue(item, 'views', 'Views');
+    const cardViews = firstValue(item, 'qtyViewPdp', 'QtyViewPdp', 'qty_view_pdp', 'sessionCount', 'SessionCount', 'session_count');
+    const redemptionRate = firstValue(item, 'nullableRedemptionRate', 'NullableRedemptionRate', 'nullable_redemption_rate', 'redemptionRate', 'redemption_rate');
+    const createDate = firstValue(item, 'nullableCreateDate', 'NullableCreateDate', 'createDate', 'CreateDate');
+    const created = createDate ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(createDate)) ? `${createDate}T00:00:00` : createDate) : null;
+    const today = new Date();
+    const dayNumber = date => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000;
+    const numeric = value => (typeof value === 'number' || (typeof value === 'string' && value.trim())) && Number.isFinite(Number(value));
     return {
         ...item,
         id,
@@ -34,8 +45,8 @@ export function normalizeSellerAnalyticsItem(value) {
         goods_id: id,
         productId: id,
         nameLabel: firstValue(item, 'nameLabel', 'Name', 'name', 'title', 'Title'),
-        cover: firstValue(item, 'cover', 'Cover', 'image', 'Image', 'imageUrl', 'ImageUrl'),
-        brand: firstValue(item, 'brand', 'Brand'),
+        cover: firstValue(item, 'cover', 'Cover', 'image', 'Image', 'imageUrl', 'ImageUrl', 'photo'),
+        brand: typeof brand === 'string' ? (/^без бренда$/i.test(brand.trim()) ? '' : brand.trim()) : brand,
         category1: firstValue(item, 'category1', 'Category1'),
         category1Id: firstValue(item, 'category1Id', 'Category1Id', 'category_1_id'),
         category2: firstValue(item, 'category2', 'Category2'),
@@ -46,8 +57,10 @@ export function normalizeSellerAnalyticsItem(value) {
         category4Id: firstValue(item, 'category4Id', 'Category4Id', 'category_4_id'),
         soldCount: firstValue(item, 'soldCount', 'SoldCount', 'sold_count', 'sales', 'Sales'),
         gmvSum: firstValue(item, 'gmvSum', 'GmvSum', 'gmv_sum', 'revenue', 'Revenue'),
-        avgPrice: firstValue(item, 'avgPrice', 'AvgPrice', 'AvgGmv', 'avgGmv', 'avg_price', 'price', 'Price'),
-        price: firstValue(item, 'price', 'Price', 'avgPrice', 'AvgPrice', 'AvgGmv', 'avgGmv'),
+        avgPrice: averagePrice,
+        price: averagePrice,
+        sellerAnalyticsPriceRub: averagePrice,
+        analyticsCurrency: 'RUB',
         salesDynamics: firstValue(item, 'salesDynamics', 'SalesDynamics', 'sales_dynamics'),
         drr: firstValue(item, 'drr', 'Drr', 'DRR'),
         avgOrdersOnAccDays: firstValue(item, 'avgOrdersOnAccDays', 'AvgOrdersOnAccDays', 'avg_orders_on_acc_days'),
@@ -56,19 +69,28 @@ export function normalizeSellerAnalyticsItem(value) {
         discount: firstValue(item, 'discount', 'Discount'),
         promoRevenueShare: firstValue(item, 'promoRevenueShare', 'PromoRevenueShare', 'promo_revenue_share'),
         daysWithTrafarets: firstValue(item, 'daysWithTrafarets', 'DaysWithTrafarets', 'days_with_trafarets'),
-        qtyViewPdp: firstValue(item, 'qtyViewPdp', 'QtyViewPdp', 'qty_view_pdp'),
-        sessionCount: firstValue(item, 'sessionCount', 'SessionCount', 'session_count', 'views', 'Views'),
+        qtyViewPdp: cardViews,
+        sessionCount: firstValue(item, 'sessionCount', 'SessionCount', 'session_count') ?? cardViews,
         sessionCountSearch: firstValue(item, 'sessionCountSearch', 'SessionCountSearch', 'session_count_search'),
         pdpToCartConversion: firstValue(item, 'pdpToCartConversion', 'PdpToCartConversion', 'pdp_to_cart_conversion'),
-        convToCartPdp: firstValue(item, 'convToCartPdp', 'ConvToCartPdp', 'conv_to_cart_pdp'),
+        convToCartPdp: firstValue(item, 'convToCartPdp', 'ConvToCartPdp', 'conv_to_cart_pdp', 'pdpToCartConversion', 'PdpToCartConversion', 'pdp_to_cart_conversion'),
         convToCartSearch: firstValue(item, 'convToCartSearch', 'ConvToCartSearch', 'conv_to_cart_search'),
         convViewToOrder: firstValue(item, 'convViewToOrder', 'ConvViewToOrder', 'conv_view_to_order'),
-        views: firstValue(item, 'views', 'Views', 'sessionCount', 'SessionCount'),
+        views,
+        clickRate: firstValue(item, 'clickRate', 'ClickRate', 'click_rate')
+            ?? (numeric(cardViews) && numeric(views) && Number(views) > 0 ? Number(cardViews) / Number(views) * 100 : undefined),
         stock: firstValue(item, 'stock', 'Stock', 'balance', 'Balance'),
         salesSchema: firstValue(item, 'salesSchema', 'SalesSchema', 'sales_schema'),
-        nullableRedemptionRate: firstValue(item, 'nullableRedemptionRate', 'NullableRedemptionRate', 'redemptionRate'),
-        nullableCreateDate: firstValue(item, 'nullableCreateDate', 'NullableCreateDate', 'createDate', 'CreateDate'),
-        returnCancelRate: firstValue(item, 'returnCancelRate', 'ReturnCancelRate', 'return_cancel_rate'),
+        nullableRedemptionRate: redemptionRate,
+        nullableCreateDate: createDate,
+        releaseDate: created && Number.isFinite(created.getTime()) ? dayNumber(today) - dayNumber(created) : item.releaseDate,
+        // Ozon defines redemption share as ordered units that were neither cancelled nor returned.
+        returnCancelRate: firstValue(item, 'returnCancelRate', 'ReturnCancelRate', 'return_cancel_rate')
+            ?? (numeric(redemptionRate) ? Number((100 - Number(redemptionRate)).toFixed(10)) : undefined),
+        weight: firstValue(item, 'weight', 'Weight'),
+        length: firstValue(item, 'length', 'Length'),
+        width: firstValue(item, 'width', 'Width'),
+        height: firstValue(item, 'height', 'Height'),
     };
 }
 
@@ -78,10 +100,14 @@ export function normalizeSellerAnalyticsResponse(payload) {
     const normalizedItems = Array.isArray(items)
         ? items.map(normalizeSellerAnalyticsItem).filter(Boolean)
         : [];
-    const totals = source.totals || source.data?.totals || {};
+    const totals = source.totals ?? source.data?.totals ?? {};
+    const rawTotal = source.total ?? totals.total ?? source.data?.total
+        ?? (typeof totals === 'number' || typeof totals === 'string' ? totals : undefined);
+    const parsedTotal = (typeof rawTotal === 'number' || (typeof rawTotal === 'string' && rawTotal.trim()))
+        ? Number(rawTotal) : NaN;
     return {
         items: normalizedItems,
-        total: Number(source.total ?? totals.total ?? source.data?.total ?? normalizedItems.length),
+        total: Number.isSafeInteger(parsedTotal) && parsedTotal >= 0 ? parsedTotal : null,
         totals,
         updateDate: source.updateDate || source.data?.updateDate || null,
         benchmark: source.benchmark || source.data?.benchmark || null,
@@ -137,13 +163,16 @@ export function assertSellerRunContext(actual = {}, expected = {}) {
     const actualContext = {
         accountId: String(actual.accountId || ''),
         sourceIdentity: String(actual.sourceIdentity || ''),
+        sellerOrigin: String(actual.sellerOrigin || ''),
     };
     const expectedContext = {
         accountId: String(expected.accountId || ''),
         sourceIdentity: String(expected.sourceIdentity || ''),
+        sellerOrigin: String(expected.sellerOrigin || ''),
     };
     if ((expectedContext.accountId && actualContext.accountId !== expectedContext.accountId)
-        || (expectedContext.sourceIdentity && actualContext.sourceIdentity !== expectedContext.sourceIdentity)) {
+        || (expectedContext.sourceIdentity && actualContext.sourceIdentity !== expectedContext.sourceIdentity)
+        || (expectedContext.sellerOrigin && actualContext.sellerOrigin !== expectedContext.sellerOrigin)) {
         const error = new Error('运行中的账号或 Seller 来源页面已发生变化，任务已停止以防数据混入');
         error.code = 'SELLER_SOURCE_CONTEXT_CHANGED';
         error.expected = expectedContext;

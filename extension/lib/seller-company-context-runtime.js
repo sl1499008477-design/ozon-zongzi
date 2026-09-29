@@ -4,6 +4,7 @@
   const STORAGE_PREFIX = 'sonliSellerCompanyContext:';
   const CURRENT_STORAGE_KEY = `${STORAGE_PREFIX}current`;
   const PREVIOUS_STORAGE_KEY = `${STORAGE_PREFIX}previous`;
+  const ROUTE_REVISION_KEY = `${STORAGE_PREFIX}routeRevision`;
   const DEFAULT_TTL_MS = 10 * 60 * 1000;
   const DEFAULT_STABILIZATION_WINDOW_MS = 1_000;
   const DEFAULT_CONTEXT_SYNC_TIMEOUT_MS = 5_000;
@@ -59,6 +60,9 @@
             );
           }),
         ]);
+      } catch (error) {
+        if (/^(?:SELLER_CONTEXT_SYNC_|COLLECTOR_)/.test(error?.code || '')) throw error;
+        throw contextError('SELLER_CONTEXT_SYNC_FAILED');
       } finally {
         if (timeoutId != null) clearTimeout(timeoutId);
       }
@@ -93,14 +97,14 @@
       observationEpoch += 1;
       const intentEpoch = observationEpoch;
       const write = observationWrites.catch(() => {}).then(async () => {
-        const stored = await chromeApi.storage.session.get(CURRENT_STORAGE_KEY);
+        const stored = await chromeApi.storage.session.get([CURRENT_STORAGE_KEY, ROUTE_REVISION_KEY]);
         const current = normalizeStored(stored?.[CURRENT_STORAGE_KEY]);
         const observation = {
           companyId,
           observedAt: now(),
           revision: current
             ? current.revision + (current.companyId === companyId ? 0 : 1)
-            : 1,
+            : (Number(stored?.[ROUTE_REVISION_KEY]) || 0) + 1,
           tabId: Number(tab.id),
         };
         const values = {
@@ -151,11 +155,11 @@
         || typeof policy.resolveTrustedSellerCompanyContext !== 'function'
       ) return null;
       const sellerTabs = (await chromeApi.tabs.query({
-        url: 'https://seller.ozon.ru/*',
+        url: policy.getSellerOrigin() + '/*',
       })).filter((tab) => policy.isTrustedSellerTab(tab));
       if (!sellerTabs.length) return null;
       const cookies = await chromeApi.cookies.getAll({
-        url: 'https://seller.ozon.ru/',
+        url: policy.getSellerOrigin() + '/',
         name: 'sc_company_id',
       });
       const identity = policy.resolveTrustedSellerCompanyContext({
@@ -172,6 +176,7 @@
     };
 
     const snapshotCurrent = async () => {
+      await root.JzActiveSellerRoute?.ready;
       await observationWrites;
       let stored = await chromeApi.storage.session.get([
         CURRENT_STORAGE_KEY,
@@ -184,7 +189,13 @@
         || current.observedAt > currentTime + 5_000
         || currentTime - current.observedAt > safeTtlMs
       ) {
-        await recoverFromTrustedBrowserState();
+        try {
+          await recoverFromTrustedBrowserState();
+        } catch (error) {
+          // A trusted observation is still usable for read-only status when its
+          // backend receipt is unavailable. Execution separately requires sync.
+          if (!/^(?:SELLER_CONTEXT_SYNC_|COLLECTOR_)/.test(error?.code || '')) throw error;
+        }
         stored = await chromeApi.storage.session.get([
           CURRENT_STORAGE_KEY,
           PREVIOUS_STORAGE_KEY,
@@ -223,9 +234,25 @@
       sleep,
     });
 
-    const acquireCurrentWithRecovery = (options) => recovery.acquireCurrentWithRecovery(options);
+    const acquireCurrentWithRecovery = async (options) => {
+      const lease = await recovery.acquireCurrentWithRecovery(options);
+      try {
+        if (lease.snapshot?.status === 'READY'
+          && !(await submitIfCurrent(lease.snapshot, () => true))) {
+          throw contextError('SELLER_CONTEXT_CHANGED');
+        }
+        return lease;
+      } catch (error) {
+        await lease.release();
+        throw error;
+      }
+    };
     const resolveCurrent = snapshotCurrent;
-    const resolveCurrentWithRecovery = (options) => recovery.resolveCurrentWithRecovery(options);
+    const resolveCurrentWithRecovery = async (options) => {
+      const snapshot = await recovery.resolveCurrentWithRecovery(options);
+      if (snapshot?.status !== 'READY') return snapshot;
+      return await submitIfCurrent(snapshot, () => snapshot) || { status: 'RECOVERING' };
+    };
     const releaseSnapshot = (snapshot) => recovery.releaseOwnedSnapshot(snapshot);
     const isSnapshotCurrent = async (snapshot) => {
       try {
@@ -237,6 +264,27 @@
       }
     };
 
+    const resynchronizeIfCurrent = (snapshot, epoch) => {
+      const write = observationWrites.catch(() => {}).then(async () => {
+        if (epoch !== observationEpoch) return;
+        const stored = await chromeApi.storage.session.get([CURRENT_STORAGE_KEY, ROUTE_REVISION_KEY]);
+        const current = normalizeStored(stored?.[CURRENT_STORAGE_KEY]);
+        if (current?.companyId !== policy.normalizeCompanyId(snapshot?.companyId)
+          || current?.revision !== Number(snapshot?.revision)
+          || epoch !== observationEpoch
+          || synchronizedEpoch === epoch) return;
+        await synchronizeContext(Object.freeze({
+          companyId: current.companyId,
+          revision: current.revision,
+          observedAt: current.observedAt,
+          sellerTabId: current.tabId,
+        }));
+        synchronizedEpoch = epoch;
+      });
+      observationWrites = write.catch(() => {});
+      return write;
+    };
+
     const submitIfCurrent = async (snapshot, submit) => {
       if (typeof submit !== 'function') {
         throw new TypeError('Seller context submission callback is required');
@@ -246,9 +294,12 @@
         const writes = observationWrites;
         await writes;
         if (epoch !== observationEpoch || writes !== observationWrites) continue;
-        if (synchronizedEpoch !== epoch) return false;
         if (!(await isSnapshotCurrent(snapshot))) return false;
         if (epoch !== observationEpoch || writes !== observationWrites) continue;
+        if (synchronizedEpoch !== epoch) {
+          await resynchronizeIfCurrent(snapshot, epoch);
+          continue;
+        }
 
         // There is no await between the final epoch check and invoking submit.
         // A later switch races only with the in-flight server request, where the
@@ -257,7 +308,17 @@
       }
     };
 
+    const resetForRouteChange = async () => {
+      observationEpoch++;
+      await observationWrites;
+      const stored = await chromeApi.storage.session.get(null);
+      const revision = Math.max(Number(stored?.[CURRENT_STORAGE_KEY]?.revision) || 0, Number(stored?.[ROUTE_REVISION_KEY]) || 0);
+      await chromeApi.storage.session.remove(Object.keys(stored || {}).filter(key => key.startsWith(STORAGE_PREFIX) || key === recoveryTab.HELPER_STORAGE_KEY));
+      await chromeApi.storage.session.set({ [ROUTE_REVISION_KEY]: revision });
+    };
+
     return Object.freeze({
+      resetForRouteChange,
       acquireCurrentWithRecovery,
       focusLoginHelper: recovery.focusLoginHelper,
       isSnapshotCurrent,

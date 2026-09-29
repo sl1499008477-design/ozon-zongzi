@@ -176,6 +176,7 @@ test("binds independent frozen price evidence to each normalized variant", async
       }),
     },
   })));
+  assert.deepEqual(result.variants.map((variant) => variant.item.price), ["100.00", "250.00"]);
 });
 
 test("projects source values with current Ozon labels for content planning", async () => {
@@ -205,6 +206,144 @@ test("projects source values with current Ozon labels for content planning", asy
   assert.deepEqual(result.contentAttributes, [
     { id: 8145, name: "Мощность, Вт", value: "80", values: ["80"], required: false, dictionaryId: 0, multiple: false },
     { id: 22315, name: "Количество светодиодов", value: "20", values: ["20"], required: false, dictionaryId: 0, multiple: false },
+  ]);
+});
+
+test("maps captured Ozon characteristics and variant aspects to current required category attributes", async () => {
+  const sourceInput = source();
+  sourceInput.collectItem.listingDraft = {
+    sku: "1576021356",
+    brand: "New Balance",
+    sourceCharacteristics: [
+      { name: "Бренд в одежде и обуви", value: "New Balance" },
+      { name: "Цвет", value: "Серебристый" },
+      { name: "Пол", value: "Мужской" },
+      { name: "Российский размер", value: "38,5" },
+    ],
+    variants: [
+      {
+        sku: "1576021356",
+        offer_id: "offer-38-5",
+        name: "New Balance 38,5",
+        aspectValues: { "Размер": "38,5 RU / EU 39,5 стопа (24.5CM)" },
+      },
+      {
+        sku: "1576021357",
+        offer_id: "offer-39",
+        name: "New Balance 39",
+        aspectValues: { "Размер": "39 RU / EU 40 стопа (25CM)" },
+      },
+    ],
+  };
+  const dictionary = new Map([
+    [31, [{ id: 3101, value: "New Balance" }]],
+    [4298, [{ id: 429801, value: "38,5" }, { id: 429802, value: "39" }]],
+    [10096, [{ id: 1009601, value: "Серебристый" }]],
+    [9163, [{ id: 916301, value: "Мужской" }]],
+    [8229, [{ id: 999, value: "Кроссовки" }]],
+  ]);
+  const result = await createAutoListingListingBasePreparer(dependencies({
+    normalizeItems: undefined,
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 31, name: "Бренд в одежде и обуви", dictionary_id: 31_000, is_required: true },
+          { id: 8292, name: "Объединить на одной карточке", is_required: true },
+          { id: 4298, name: "Российский размер", dictionary_id: 4_298_000, is_required: true },
+          { id: 10096, name: "Цвет товара", dictionary_id: 10_096_000, is_required: true },
+          { id: 9163, name: "Пол", dictionary_id: 9_163_000, is_required: true },
+          { id: 8229, name: "Тип", dictionary_id: 8_229_000, is_required: true },
+        ] };
+      },
+      async getCategoryAttributeValues({ attributeId }) {
+        return { items: dictionary.get(attributeId) || [] };
+      },
+    },
+  }))({
+    accountId: "account-a",
+    source: sourceInput,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+
+  const attributesById = result.variants.map(({ item }) => new Map(
+    item.attributes.map((attribute) => [attribute.id, attribute.values]),
+  ));
+  assert.deepEqual(attributesById.map((attributes) => attributes.get(31)), [
+    [{ value: "New Balance", dictionary_value_id: 3101 }],
+    [{ value: "New Balance", dictionary_value_id: 3101 }],
+  ]);
+  assert.deepEqual(attributesById.map((attributes) => attributes.get(4298)), [
+    [{ value: "38,5", dictionary_value_id: 429801 }],
+    [{ value: "39", dictionary_value_id: 429802 }],
+  ]);
+  assert.deepEqual(attributesById.map((attributes) => attributes.get(10096)), [
+    [{ value: "Серебристый", dictionary_value_id: 1009601 }],
+    [{ value: "Серебристый", dictionary_value_id: 1009601 }],
+  ]);
+  assert.deepEqual(attributesById.map((attributes) => attributes.get(9163)), [
+    [{ value: "Мужской", dictionary_value_id: 916301 }],
+    [{ value: "Мужской", dictionary_value_id: 916301 }],
+  ]);
+  assert.deepEqual(attributesById.map((attributes) => attributes.get(8292)), [
+    [{ value: "source-1576021356" }],
+    [{ value: "source-1576021356" }],
+  ]);
+});
+
+test("splits a captured multi-select characteristic into current Ozon dictionary values", async () => {
+  const sourceInput = source();
+  sourceInput.collectItem.listingDraft = {
+    sku: "1751382709",
+    sourceCharacteristics: [{ name: "Пол", value: "Женский, Мужской" }],
+    variants: [{ sku: "1751382709", offer_id: "offer-cosmetic-bag", name: "Косметичка" }],
+  };
+  const dictionary = new Map([
+    [85, [{ id: 126745801, value: "Нет бренда" }]],
+    [9163, [{ id: 916301, value: "Женский" }, { id: 916302, value: "Мужской" }]],
+    [8229, [{ id: 999, value: "Косметичка" }]],
+  ]);
+  const prepare = createAutoListingListingBasePreparer(dependencies({
+    normalizeItems: undefined,
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, name: "Бренд", dictionary_id: 85_000, is_required: true },
+          { id: 9163, name: "Пол", dictionary_id: 9_163_000, is_required: true, is_collection: true },
+          { id: 8229, name: "Тип", dictionary_id: 8_229_000, is_required: true },
+        ] };
+      },
+      async getCategoryAttributeValues({ attributeId }) {
+        return { items: dictionary.get(attributeId) || [] };
+      },
+    },
+  }));
+  const input = {
+    accountId: "account-a",
+    source: sourceInput,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  };
+  const result = await prepare(input);
+
+  const values = result.variants[0].item.attributes
+    .find((attribute) => attribute.id === 9163)?.values;
+  assert.deepEqual(values, [
+    { value: "Женский", dictionary_value_id: 916301 },
+    { value: "Мужской", dictionary_value_id: 916302 },
+  ]);
+
+  dictionary.set(9163, [
+    { id: 916399, value: "Женский, Мужской" },
+    { id: 916301, value: "Женский" },
+    { id: 916302, value: "Мужской" },
+  ]);
+  const wholeValue = (await prepare(input)).variants[0].item.attributes
+    .find((attribute) => attribute.id === 9163)?.values;
+  assert.deepEqual(wholeValue, [
+    { value: "Женский, Мужской", dictionary_value_id: 916399 },
   ]);
 });
 
@@ -517,6 +656,49 @@ test("preserves an existing brand and injects no-brand only into a missing sibli
   ]);
 });
 
+test("falls back to the current Ozon no-brand option when a collected brand is not in the dictionary", async () => {
+  const itemSource = source();
+  itemSource.collectItem.listingDraft.variants = itemSource.collectItem.listingDraft.variants.map((variant) => ({
+    ...variant,
+    brand: "Aromance",
+    sourceCategory: { attributes: [{ key: "85", value: "Aromance" }] },
+  }));
+  const reads = [];
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 85, name: "Бренд", dictionary_id: 28732849, is_required: true },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues(input) {
+        reads.push(input.matchCandidates);
+        return { items: [{ id: 987654321, value: "Нет бренда" }] };
+      },
+    },
+  });
+
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a",
+    brandMode: "PREFER_SOURCE",
+    source: itemSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+
+  assert.deepEqual(reads, [[
+    { value: "Aromance" },
+    { id: 126745801, value: "Нет бренда" },
+  ]]);
+  assert.deepEqual(result.variants.map(({ item }) =>
+    item.attributes.find(({ id }) => id === 85)?.values), [
+    [{ value: "Нет бренда", dictionary_value_id: 987654321 }],
+    [{ value: "Нет бренда", dictionary_value_id: 987654321 }],
+  ]);
+});
+
 test("force-no-brand replaces every collected brand with the one exact current Ozon dictionary option", async () => {
   const itemSource = source();
   itemSource.collectItem.listingDraft.variants = itemSource.collectItem.listingDraft.variants.map((variant) => ({
@@ -715,7 +897,10 @@ test("does not replace a non-empty top-level brand with no-brand", async () => {
     targetCategory: frozenTargetCategory(),
     pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
   }), { code: "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE" });
-  assert.deepEqual(reads, [undefined]);
+  assert.deepEqual(reads, [[
+    { value: "Brand X" },
+    { id: 126745801, value: "Нет бренда" },
+  ]]);
 });
 
 test("does not activate no-brand fallback for an optional brand attribute", async () => {
@@ -747,7 +932,7 @@ test("does not activate no-brand fallback for an optional brand attribute", asyn
     item.attributes.every(({ id }) => id !== 85)), true);
 });
 
-test("resolves legacy source category dictionary text by an exact current Ozon option", async () => {
+test("rebases a stale source type attribute to the current target Ozon type", async () => {
   const itemSource = source();
   itemSource.collectItem.listingDraft.sourceCategory = {
     attributes: [
@@ -769,7 +954,7 @@ test("resolves legacy source category dictionary text by an exact current Ozon o
       },
       async getCategoryAttributeValues(input) {
         reads.push({ attributeId: input.attributeId, matchCandidates: input.matchCandidates });
-        if (input.attributeId === 8229) return { items: [{ id: 94453, value: "Target type" }] };
+        if (input.attributeId === 8229) return { items: [{ id: 999, value: "Target type" }] };
         if (input.attributeId === 85) return { items: [{ id: 972053798, value: "MQOUO" }] };
         return { items: [] };
       },
@@ -784,8 +969,16 @@ test("resolves legacy source category dictionary text by an exact current Ozon o
     pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
   });
   assert.deepEqual(reads, [
-    { attributeId: 85, matchCandidates: [{ value: "MQOUO" }] },
-    { attributeId: 8229, matchCandidates: [{ id: 94453, value: "Source type" }] },
+    { attributeId: 85, matchCandidates: [
+      { value: "MQOUO" },
+      { id: 126745801, value: "Нет бренда" },
+    ] },
+    { attributeId: 8229, matchCandidates: [{ id: 999 }] },
+  ]);
+  assert.deepEqual(result.variants.map((variant) =>
+    variant.item.attributes.find((attribute) => attribute.id === 8229)?.values), [
+    [{ value: "Target type", dictionary_value_id: 999 }],
+    [{ value: "Target type", dictionary_value_id: 999 }],
   ]);
   assert.deepEqual(result.variants.map((variant) =>
     variant.item.attributes.find((attribute) => attribute.id === 85)?.values), [

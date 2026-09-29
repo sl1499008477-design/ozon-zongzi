@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import test from "node:test";
 import sharp from "sharp";
 import { PRODUCT_BRAND } from "../src/brand.js";
@@ -18,6 +17,7 @@ const brandFiles = [
 
 test("product brand exposes the approved display contract", () => {
   assert.deepEqual(PRODUCT_BRAND, {
+    version: "1.0.0",
     displayName: "ozon 粽子",
     productName: "ozon 粽子",
     primaryColor: "#1268FF",
@@ -27,30 +27,29 @@ test("product brand exposes the approved display contract", () => {
   });
 });
 
-test("brand generator copies the supplied SVGs and creates correctly sized PNG icons", async () => {
-  const generated = spawnSync(process.execPath, ["scripts/generate-brand-assets.mjs"], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  });
-  assert.equal(generated.status, 0, generated.stderr || generated.stdout);
-
+test("checked-in brand assets retain the approved Web and extension variants", async () => {
   for (const file of brandFiles) {
     const supplied = await readFile(path.join(sourceAssets, file));
-    for (const destination of [
-      path.join(repositoryRoot, "brand-assets/ozon-zongzi", file),
-      path.join(repositoryRoot, "app/public/brand", file),
-      path.join(repositoryRoot, "extension/icons", file),
-    ]) {
-      await access(destination);
-      assert.deepEqual(await readFile(destination), supplied, destination);
+    const webAsset = path.join(repositoryRoot, "app/public/brand", file);
+    assert.deepEqual(await readFile(webAsset), supplied, webAsset);
+
+    const extensionAsset = path.join(repositoryRoot, "extension/icons", file);
+    const extensionBytes = await readFile(extensionAsset);
+    if (file === "ozon-zongzi-symbol.svg") {
+      assert.match(
+        extensionBytes.toString("utf8"),
+        /<rect width="512" height="512" fill="#fff"\/><g fill="#1268FF">/,
+      );
+    } else {
+      assert.deepEqual(extensionBytes, supplied, extensionAsset);
     }
   }
 
   for (const size of [16, 48, 128]) {
     const safePadding = Math.max(2, Math.round(size / 8));
-    for (const destination of [
-      path.join(repositoryRoot, "app/public/icons", `icon${size}.png`),
-      path.join(repositoryRoot, "extension/icons", `icon${size}.png`),
+    for (const [surface, destination] of [
+      ["web", path.join(repositoryRoot, "app/public/icons", `icon${size}.png`)],
+      ["extension", path.join(repositoryRoot, "extension/icons", `icon${size}.png`)],
     ]) {
       const metadata = await sharp(destination).metadata();
       assert.equal(metadata.format, "png", destination);
@@ -71,27 +70,53 @@ test("brand generator copies the supplied SVGs and creates correctly sized PNG i
         for (let x = 0; x < info.width; x += 1) {
           const offset = (y * info.width + x) * info.channels;
           const [red, green, blue, alpha] = data.subarray(offset, offset + 4);
-          if (alpha === 0) continue;
-          minX = Math.min(minX, x);
-          minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x);
-          maxY = Math.max(maxY, y);
-          if (alpha >= 240) {
+          const isBrandBlue = alpha >= 240
+            && Math.abs(red - 0x12) <= 2
+            && Math.abs(green - 0x68) <= 2
+            && Math.abs(blue - 0xff) <= 2;
+          if (surface === "web" && alpha !== 0) {
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+          }
+          if (isBrandBlue) {
+            if (surface === "extension") {
+              minX = Math.min(minX, x);
+              minY = Math.min(minY, y);
+              maxX = Math.max(maxX, x);
+              maxY = Math.max(maxY, y);
+            }
+            solidBluePixels += 1;
+          } else if (surface === "web" && alpha >= 240) {
             assert.ok(
-              Math.abs(red - 0x12) <= 2
-                && Math.abs(green - 0x68) <= 2
-                && Math.abs(blue - 0xff) <= 2,
+              isBrandBlue,
               `${destination} must render opaque symbol pixels in brand blue #1268FF`,
             );
-            solidBluePixels += 1;
           }
         }
       }
       assert.ok(solidBluePixels > 0, `${destination} must contain an opaque brand symbol`);
-      assert.ok(minX >= safePadding, `${destination} must keep left alpha padding`);
-      assert.ok(minY >= safePadding, `${destination} must keep top alpha padding`);
-      assert.ok(maxX <= size - safePadding - 1, `${destination} must keep right alpha padding`);
-      assert.ok(maxY <= size - safePadding - 1, `${destination} must keep bottom alpha padding`);
+      const paddingKind = surface === "web" ? "alpha" : "blue symbol";
+      assert.ok(minX >= safePadding, `${destination} must keep left ${paddingKind} padding`);
+      assert.ok(minY >= safePadding, `${destination} must keep top ${paddingKind} padding`);
+      assert.ok(maxX <= size - safePadding - 1, `${destination} must keep right ${paddingKind} padding`);
+      assert.ok(maxY <= size - safePadding - 1, `${destination} must keep bottom ${paddingKind} padding`);
+      if (surface === "extension") {
+        const corners = [
+          0,
+          (info.width - 1) * info.channels,
+          (info.height - 1) * info.width * info.channels,
+          ((info.height * info.width) - 1) * info.channels,
+        ];
+        for (const offset of corners) {
+          const [red, green, blue, alpha] = data.subarray(offset, offset + 4);
+          assert.ok(
+            alpha >= 240 && red >= 253 && green >= 253 && blue >= 253,
+            `${destination} must keep an opaque white background`,
+          );
+        }
+      }
     }
   }
 });

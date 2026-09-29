@@ -58,6 +58,21 @@ function job(status) {
       status,
       statusVersion: status === "PLANNING" ? 2 : 3,
       failureCode: status === "BLOCKED" ? "AUTO_LISTING_CONTENT_PLAN_FAILED" : "",
+      ...(status === "PLANNING" ? {
+        aiQueueState: "WAITING_FOR_AI_CHANNEL",
+        aiChannelDisplayName: null,
+        aiChannelSwitching: false,
+        aiChannelWaitStartedAt: "2026-08-18T08:08:40.000Z",
+        workflowProgress: {
+          phase: "PLAN_CONTENT", state: "QUEUED", attemptCount: 0,
+          updatedAt: "2026-08-18T08:08:40.000Z", nextRetryAt: null,
+        },
+      } : {
+        aiQueueState: null,
+        aiChannelDisplayName: null,
+        aiChannelSwitching: false,
+        aiChannelWaitStartedAt: null,
+      }),
       actions: {
         review: false, approve: false, retry: false, regenerate: false, cancel: status === "PLANNING",
       },
@@ -65,7 +80,7 @@ function job(status) {
   }];
 }
 
-test("an active automatic-listing task refreshes to its terminal backend state without manual reload", async () => {
+test("a task waiting for an AI channel preserves progress and refreshes without manual reload", async () => {
   let vite;
   let browser;
   let jobReads = 0;
@@ -126,14 +141,17 @@ test("an active automatic-listing task refreshes to its terminal backend state w
     await brandSwitch.waitFor();
     assert.equal(await brandSwitch.getAttribute("aria-checked"), "false");
     await page.getByRole("tab", { name: "任务中心" }).click();
-    await page.getByText("正在规划图片内容", { exact: true }).waitFor();
+    await page.getByText("等待可用 AI 通道", { exact: true }).waitFor({ timeout: 2_000 });
+    const waitingRow = page.getByRole("row").filter({ hasText: "轮询商品" });
+    assert.equal(await waitingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "30");
+    assert.equal(await page.getByText("正在规划图片内容", { exact: true }).count(), 0);
     const initialJobReads = jobReads;
     terminalStatus = true;
     await page.evaluate(() => window.__runIntervalsForTest(3_000));
     await page.getByText("需要处理问题", { exact: true }).waitFor();
 
     assert.equal(jobReads, initialJobReads + 1);
-    assert.equal(await page.getByText("正在规划图片内容", { exact: true }).count(), 0);
+    assert.equal(await page.getByText("等待可用 AI 通道", { exact: true }).count(), 0);
     assert.deepEqual(pageErrors, []);
     await context.close();
   } finally {
@@ -145,6 +163,8 @@ test("missing category strategy opens its configuration dialog while preserving 
   let vite;
   let browser;
   let context;
+  let creationRequests = 0;
+  const submittedConfigs = [];
   try {
     vite = await createServer({
       root: appRoot,
@@ -192,6 +212,12 @@ test("missing category strategy opens its configuration dialog while preserving 
         return;
       }
       if (url.pathname === "/api/auto-listing/jobs/from-collect-box" && request.method() === "POST") {
+        creationRequests += 1;
+        submittedConfigs.push(request.postDataJSON().config);
+        if (creationRequests > 1) {
+          await route.fulfill({ status: 200, json: { ok: true, data: { jobId: "job-created" } } });
+          return;
+        }
         await route.fulfill({ status: 409, json: {
           ok: false,
           code: "AUTO_LISTING_CATEGORY_STRATEGY_REQUIRED",
@@ -199,6 +225,7 @@ test("missing category strategy opens its configuration dialog while preserving 
           correlationId: "correlation-required",
           details: {
             scope: { taxonomyScope: "OZON:DEFAULT", descriptionCategoryId: 88265327, typeId: 95402 },
+            sourceCollectItemId: "collect-poll",
             status: "NOT_CONFIGURED",
             canManage: true,
             draftId: "draft-required",
@@ -213,6 +240,12 @@ test("missing category strategy opens its configuration dialog while preserving 
     const brandSwitch = page.getByRole("switch", { name: "使用采集品牌" });
     await brandSwitch.waitFor();
     assert.equal(await brandSwitch.getAttribute("aria-checked"), "false");
+    const uploadSwitch = page.getByRole("switch", { name: "自动上传到 Ozon" });
+    const strategySwitch = page.getByRole("switch", { name: "使用类目策略" });
+    assert.equal(await strategySwitch.count(), 1);
+    assert.equal(await strategySwitch.getAttribute("aria-checked"), "true");
+    const [uploadBox, strategyBox] = await Promise.all([uploadSwitch.boundingBox(), strategySwitch.boundingBox()]);
+    assert.ok(uploadBox && strategyBox && strategyBox.x > uploadBox.x);
     await page.getByRole("button", { name: "创建生成任务" }).click();
     await page.getByText("需要先配置类目图片策略", { exact: true }).waitFor();
 
@@ -220,8 +253,17 @@ test("missing category strategy opens its configuration dialog while preserving 
       "zongzi:auto-listing:category-strategy-resume:v1:account-poll",
     )));
     assert.equal(resume.form.useCollectedBrand, false);
+    assert.equal(resume.form.useCategoryStrategy, true);
     assert.equal(resume.form.priceMultiplier, "1");
     assert.equal(await page.getByText("类目策略配置资料无效，请刷新后重试", { exact: true }).count(), 0);
+    await page.getByRole("button", { name: "暂不处理" }).click();
+    await strategySwitch.click();
+    assert.equal(await strategySwitch.getAttribute("aria-checked"), "false");
+    await page.getByRole("button", { name: "创建生成任务" }).click();
+    await page.getByText("任务已创建", { exact: true }).waitFor();
+    assert.equal(creationRequests, 2);
+    assert.equal(submittedConfigs[0].useCategoryStrategy, true);
+    assert.equal(submittedConfigs[1].useCategoryStrategy, false);
     assert.deepEqual(pageErrors, []);
   } finally {
     await context?.close();

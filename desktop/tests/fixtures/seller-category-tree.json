@@ -1,0 +1,51 @@
+{
+  "result": {
+    "15621031": {
+      "descriptionCategoryId": "15621031",
+      "descriptionCategoryName": "服装",
+      "descriptionTypeId": "0",
+      "descriptionTypeName": "",
+      "disabled": false,
+      "nodes": {
+        "41777465": {
+          "descriptionCategoryId": "41777465",
+          "descriptionCategoryName": "配饰",
+          "descriptionTypeId": "0",
+          "descriptionTypeName": "",
+          "disabled": false,
+          "nodes": {
+            "93037": {
+              "descriptionCategoryId": "41777693",
+              "descriptionCategoryName": "领结",
+              "descriptionTypeId": "93037",
+              "descriptionTypeName": "蝴蝶",
+              "disabled": false,
+              "nodes": {},
+              "isWeight": false
+            },
+            "93093": {
+              "descriptionCategoryId": "41777728",
+              "descriptionCategoryName": "鸭舌帽",
+              "descriptionTypeId": "93093",
+              "descriptionTypeName": "鸭舌帽",
+              "disabled": false,
+              "nodes": {},
+              "isWeight": false
+            },
+            "93099": {
+              "descriptionCategoryId": "41777728",
+              "descriptionCategoryName": "鸭舌帽",
+              "descriptionTypeId": "93099",
+              "descriptionTypeName": "帽舌",
+              "disabled": false,
+              "nodes": {},
+              "isWeight": false
+            }
+          },
+          "isWeight": false
+        }
+      },
+      "isWeight": false
+    }
+  }
+}

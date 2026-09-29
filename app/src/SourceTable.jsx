@@ -3,8 +3,8 @@ import {
   Card,
   Empty,
   Space,
-  Table,
 } from "antd";
+import Table from "./PagedTable.jsx";
 
 export function SourceMetricStrip({ items, className = "" }) {
   return (
@@ -27,6 +27,7 @@ export function SourceSectionTitle({ title, subtitle, actions }) {
   return (
     <div className="source-section-title">
       <div>
+        <span className="workspace-eyebrow">OZON SELLER WORKSPACE</span>
         <h2>{title}</h2>
         {subtitle ? <p>{subtitle}</p> : null}
       </div>
@@ -49,10 +50,9 @@ export default function SourceTable({
   onSelectionChange,
   scrollX = 1100,
   loading = false,
-  pageSize = 20,
-  paginate = true,
-  showPageSizeText = false,
-  pageSizeControl = null,
+  expandable,
+  pagination,
+  preserveSelectedRowKeys = false,
 }) {
   const resolvedEmpty = sourceEmpty
     ? (empty === false ? null : empty)
@@ -89,15 +89,8 @@ export default function SourceTable({
       ellipsis: column.ellipsis ?? true,
     };
   };
-  const showPagination = paginate && rows.length > pageSize;
-  const showPageSize = showPagination || showPageSizeText || pageSizeControl;
-  const wrapClassName = [
-    "source-table-wrap",
-    showPagination ? "has-pagination" : "",
-    showPageSize ? "has-page-size-label" : "",
-  ].filter(Boolean).join(" ");
   return (
-    <div className={wrapClassName}>
+    <div className="source-table-wrap">
       <Table
         rowKey="id"
         className="source-table"
@@ -105,15 +98,13 @@ export default function SourceTable({
         rowSelection={rowSelection ? {
           selectedRowKeys,
           onChange: onSelectionChange,
+          preserveSelectedRowKeys,
+          ...(typeof rowSelection === 'object' ? rowSelection : {}),
         } : undefined}
         loading={loading}
+        expandable={expandable}
         columns={columns.map(resolveColumn)}
-        pagination={showPagination ? {
-          pageSize,
-          showSizeChanger: false,
-          showQuickJumper: false,
-          size: "small",
-        } : false}
+        pagination={pagination}
         scroll={{ x: scrollX }}
         tableLayout="fixed"
         locale={{
@@ -122,8 +113,6 @@ export default function SourceTable({
             : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={resolvedEmpty} />,
         }}
       />
-      {pageSizeControl ? <div className="source-table-page-size-control">{pageSizeControl}</div> : null}
-      {!pageSizeControl && showPageSize ? <span className="source-table-page-size">{pageSize} 条/页</span> : null}
     </div>
   );
 }

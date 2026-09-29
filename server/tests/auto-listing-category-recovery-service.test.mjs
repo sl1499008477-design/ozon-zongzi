@@ -124,7 +124,7 @@ test("present or unknown offer state becomes NEEDS_REVIEW with zero category or 
   for (const status of ["PRESENT", "UNKNOWN"]) {
     const { service, calls } = harness({
       confirmOfferAbsent: async () => { calls.push("absence"); return {
-        status, code: status === "PRESENT" ? "OZON_OFFER_PRESENT" : "OZON_OFFER_RECONCILIATION_UNKNOWN",
+        status, code: status === "PRESENT" ? "OZON_OFFER_PRESENT" : "ZONGZI_OFFER_RECONCILIATION_UNKNOWN",
       }; },
     });
     assert.deepEqual(await service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
@@ -134,7 +134,7 @@ test("present or unknown offer state becomes NEEDS_REVIEW with zero category or 
 
 test("stale/ambiguous/missing-attribute failures stop with review before scheduling", async () => {
   const cases = [
-    { invalidateSharedCategory: async () => { throw Object.assign(new Error("raw"), { code: "OZON_CATEGORY_SHARED_VERSION_CONFLICT" }); } },
+    { invalidateSharedCategory: async () => { throw Object.assign(new Error("raw"), { code: "ZONGZI_CATEGORY_SHARED_VERSION_CONFLICT" }); } },
     { refreshCategory: async () => ({ kind: "NEEDS_REVIEW" }) },
     { rebuildItems: async () => { throw Object.assign(new Error("raw"), { code: "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE" }); } },
   ];

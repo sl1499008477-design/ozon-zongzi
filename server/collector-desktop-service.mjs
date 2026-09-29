@@ -1,8 +1,18 @@
 import crypto from "node:crypto";
+import {createSalePricingProfiles} from "./sale-pricing-profiles.mjs";
+export async function listCollectorSalePricing(accountId){const profile=await createSalePricingProfiles(await poolReady()).defaultReal(accountId);return [{...profile,salePriceFormula:'真实售价'}];}
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
-import { getActivePricingConfig } from "./pricing-config-service.mjs";
 import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
+import { findCollectorSkuHistory } from "./collector-sku-history.mjs";
+import {admitCollectedItem} from './collection-admission.mjs';
+import { createAiListingRepository } from './ai-listing-repository.mjs';
+import { findOzonCollectedSkuSources } from './collection-sku-rules.mjs';
+import { handoffSummary } from './collector-run-handoff.mjs';
+import {createCollectorMediaUploads,consumeCollectorMediaObjects,collectorMediaCapabilities} from './collector-media-upload.mjs';
+export {collectorMediaCapabilities};
+import { collectorGroupHistory, claimProductGroup, saveProductGroupVariant, releaseProductGroup,
+  assertProductGroupComplete, completeProductGroup } from './collector-product-groups.mjs';
 
 export const COLLECTOR_TASK_STATUSES = Object.freeze([
   "NOT_STARTED",
@@ -201,6 +211,7 @@ function mapRun(row = {}) {
     qualifiedCount: Number(row.qualified_count || 0),
     filteredCount: Number(row.filtered_count || 0),
     failedCount: Number(row.failed_count || 0),
+    ...(row.qualified_sku_count == null ? {} : { qualifiedSkuCount: Number(row.qualified_sku_count) }),
   };
   const legacyScope = readOnlyLegacyScope(row);
   return {
@@ -226,6 +237,7 @@ function mapRun(row = {}) {
     errorCode: row.error_code || "",
     errorMessage: row.error_message || "",
     resultSummary: withoutCollectorScope(row.result_summary || {}),
+    handoff: row.result_summary?.handoff || null,
     queuedAt: row.queued_at || null,
     startedAt: row.started_at || null,
     completedAt: row.completed_at || null,
@@ -274,7 +286,7 @@ function mapItem(row = {}) {
     sourcing: withoutCollectorScope(row.sourcing || {}),
     pricing: withoutCollectorScope(row.pricing || {}),
     filterResult: withoutCollectorScope(row.filter_result || {}),
-    exportData: withoutCollectorScope(row.export_data || {}),
+    exportData: withoutCollectorScope(row.export_data_from_raw ? (row.raw_payload || {}) : (row.export_data || {})),
     errorCode: row.error_code || "",
     errorMessage: row.error_message || "",
     firstSeenAt: row.first_seen_at || null,
@@ -461,9 +473,11 @@ async function insertEvent(client, {
 }
 
 async function ensureRunScope(client, accountId, runId, { lock = false } = {}) {
+  // State writers do not change run identity. Keep them serialized while
+  // allowing event/item/export foreign keys to take KEY SHARE on this run.
   const result = await client.query(
     `SELECT * FROM collector_task_runs
-     WHERE id=$1 AND account_id=$2${lock ? " FOR UPDATE" : ""}`,
+     WHERE id=$1 AND account_id=$2${lock ? " FOR NO KEY UPDATE" : ""}`,
     [required(runId, "运行 ID"), required(accountId, "账号 ID")],
   );
   if (!result.rowCount) throw serviceError("任务运行不存在", 404, "COLLECTOR_RUN_NOT_FOUND");
@@ -534,6 +548,22 @@ async function assertLeaseWithClient(client, run, accountId, deviceId, leaseToke
   return device;
 }
 
+const withCollectorMediaLease = (input, work) => transaction(async client => {
+  const run = await ensureRunScope(client, input.accountId, input.runId, { lock: true });
+  const device = await assertLeaseWithClient(client, run, input.accountId, input.deviceId, input.leaseToken);
+  if (run.cancel_requested_at) throw serviceError('任务已请求取消', 409, 'COLLECTOR_RUN_CANCELLING');
+  return work(client, { accountId: input.accountId, runId: run.id, deviceId: device.id, leaseHash: run.lease_token_hash,
+    retryFromRunId: run.configuration_snapshot?.configuration?.retryFromRunId || null });
+});
+let mediaUploads;
+export const createCollectorRunMediaUploads = options => createCollectorMediaUploads({ ...options, withLease: withCollectorMediaLease });
+async function collectorMediaUploadService() {
+  if (!(await collectorMediaCapabilities()).mediaDirectUploadV1) throw serviceError('直传素材准备尚未启用', 409, 'COLLECTOR_MEDIA_DISABLED');
+  return mediaUploads ||= createCollectorRunMediaUploads();
+}
+export const issueCollectorRunMediaUpload = async input => (await collectorMediaUploadService()).issue(input);
+export const confirmCollectorRunMediaUpload = async input => (await collectorMediaUploadService()).confirm(input);
+
 export async function registerCollectorDevice(accountId, input = {}) {
   return transaction(async (client) => mapDevice(await ensureDeviceWithClient(client, accountId, input)));
 }
@@ -560,6 +590,17 @@ export async function revokeCollectorDevice(accountId, deviceIdOrKey) {
   });
 }
 
+async function freezeCollectorConfiguration(client,accountId,configuration){
+  if(configuration.retryFromRunId){
+    const run=(await client.query('SELECT id,status,configuration_snapshot FROM collector_task_runs WHERE id=$1 AND account_id=$2',
+      [required(configuration.retryFromRunId,'原运行 ID'),accountId])).rows[0];
+    if(!run)throw serviceError('原采集运行不存在',404,'COLLECTOR_RUN_NOT_FOUND');
+    if(!TERMINAL_RUN_STATUSES.has(run.status))throw serviceError('原采集运行尚未结束，请稍后重试',409,'COLLECTOR_RUN_ACTIVE');
+    return {...withoutCollectorScope(run.configuration_snapshot?.configuration||{}),retryFromRunId:run.id};
+  }
+  return createSalePricingProfiles(client).freezeCollectorConfiguration(accountId,configuration);
+}
+
 export async function createCollectorTask({
   accountId,
   name = "",
@@ -574,6 +615,7 @@ export async function createCollectorTask({
   const normalizedConfiguration = withoutCollectorScope(jsonObject(configuration, "任务配置"));
   return transaction(async (client) => {
     await validateAccountWithClient(client, accountId);
+    const frozenConfiguration=await freezeCollectorConfiguration(client,accountId,normalizedConfiguration);
     const id = randomId("coltask");
     const result = await client.query(
       `INSERT INTO collector_tasks (
@@ -584,7 +626,7 @@ export async function createCollectorTask({
         id, accountId, null, null,
         clean(name || `采集任务 ${new Date().toLocaleString("zh-CN")}`, 240), normalizedType,
         clean(source || "ozon", 80).toLowerCase(), normalizedConcurrency,
-        JSON.stringify(normalizedConfiguration), createdBy || accountId,
+        JSON.stringify(frozenConfiguration), createdBy || accountId,
       ],
     );
     await insertEvent(client, {
@@ -600,14 +642,57 @@ export async function createCollectorTask({
   });
 }
 
+async function mapRunsWithSkuCount(pool, accountId, rows) {
+  if (!rows.length) return [];
+  const counts = await pool.query(`SELECT run_id,SUM(CASE
+      WHEN jsonb_typeof(raw_payload#>'{variantData,variants}')='array'
+        THEN GREATEST(jsonb_array_length(raw_payload#>'{variantData,variants}'),1)
+      WHEN jsonb_typeof(raw_payload->'variants')='array'
+        THEN GREATEST(jsonb_array_length(raw_payload->'variants'),1)
+      ELSE 1 END)::int AS qualified_sku_count
+    FROM collector_task_items WHERE account_id=$1 AND run_id=ANY($2::text[]) AND status='QUALIFIED'
+    GROUP BY run_id`, [accountId, rows.map(row => row.id)]);
+  const byRun = new Map(counts.rows.map(row => [row.run_id, row.qualified_sku_count]));
+  return rows.map(row => mapRun({ ...row, qualified_sku_count: byRun.get(row.id) || 0 }));
+}
+
+async function mapTasksWithRuns(pool, accountId, rows) {
+  if (!rows.length) return [];
+  const result = await pool.query(
+    `WITH last_started AS (
+       SELECT task_id,MAX(started_at) AS last_started_at
+       FROM collector_task_runs
+       WHERE account_id=$1 AND task_id=ANY($2::text[]) AND started_at IS NOT NULL
+       GROUP BY task_id
+     )
+     SELECT page.task_id AS projection_task_id,last_started.last_started_at,current_run.*
+     FROM unnest($2::text[],$3::text[]) AS page(task_id,run_id)
+     LEFT JOIN last_started ON last_started.task_id=page.task_id
+     LEFT JOIN collector_task_runs current_run
+       ON current_run.id=page.run_id AND current_run.account_id=$1 AND current_run.task_id=page.task_id`,
+    [accountId, rows.map(row => row.id), rows.map(row => row.current_run_id)],
+  );
+  const runsByTask = new Map(result.rows.map(row => [row.projection_task_id, row]));
+  const projectedRuns = new Map((await mapRunsWithSkuCount(pool, accountId, result.rows.filter(row => row.id))).map(run => [run.id, run]));
+  return rows.map(row => {
+    const run = runsByTask.get(row.id);
+    return {
+      ...mapTask(row),
+      lastStartedAt: run?.last_started_at || null,
+      currentRun: run?.id ? projectedRuns.get(run.id) : null,
+    };
+  });
+}
+
 export async function getCollectorTaskForAccount(accountId, taskId, { includeDeleted = false } = {}) {
   const pool = await poolReady();
+  const normalizedAccountId = required(accountId, "账号 ID");
   const result = await pool.query(
     `SELECT * FROM collector_tasks
      WHERE id=$1 AND account_id=$2 AND ($3::boolean OR deleted_at IS NULL) LIMIT 1`,
-    [required(taskId, "任务 ID"), required(accountId, "账号 ID"), Boolean(includeDeleted)],
+    [required(taskId, "任务 ID"), normalizedAccountId, Boolean(includeDeleted)],
   );
-  return result.rows[0] ? mapTask(result.rows[0]) : null;
+  return (await mapTasksWithRuns(pool, normalizedAccountId, result.rows))[0] || null;
 }
 
 export async function listCollectorTasksForAccount({
@@ -620,6 +705,7 @@ export async function listCollectorTasksForAccount({
   offset = 0,
 } = {}) {
   const pool = await poolReady();
+  const normalizedAccountId = required(accountId, "账号 ID");
   const normalizedStatus = status ? normalizeStatus(status, COLLECTOR_TASK_STATUSES, "任务状态") : "";
   const normalizedQuery = clean(query || name, 240);
   const result = await pool.query(
@@ -630,12 +716,12 @@ export async function listCollectorTasksForAccount({
        AND ($4::boolean OR deleted_at IS NULL)
      ORDER BY updated_at DESC,id DESC LIMIT $5 OFFSET $6`,
     [
-      required(accountId, "账号 ID"), normalizedStatus, normalizedQuery, Boolean(includeDeleted),
+      normalizedAccountId, normalizedStatus, normalizedQuery, Boolean(includeDeleted),
       boundedInteger(limit, { label: "分页数量", min: 1, max: 500, fallback: 200 }),
       boundedInteger(offset, { label: "分页偏移", min: 0, max: 10_000_000, fallback: 0 }),
     ],
   );
-  return result.rows.map(mapTask);
+  return mapTasksWithRuns(pool, normalizedAccountId, result.rows);
 }
 
 export async function listCollectorTasksPageForAccount({
@@ -701,7 +787,7 @@ export async function updateCollectorTask({ accountId, taskId, patch = {}, expec
       throw serviceError("排队或执行中的任务不能修改", 409, "COLLECTOR_TASK_ACTIVE");
     }
     const configuration = hasOwn(patch, "configuration")
-      ? withoutCollectorScope(jsonObject(patch.configuration, "任务配置"))
+      ? await freezeCollectorConfiguration(client,accountId,withoutCollectorScope(jsonObject(patch.configuration, "任务配置")))
       : row.configuration;
     const concurrency = hasOwn(patch, "concurrency")
       ? boundedInteger(patch.concurrency, { label: "并发数", min: 2, max: 20 })
@@ -765,8 +851,8 @@ export async function softDeleteCollectorTask(accountId, taskId) {
 async function resolvePricingVersionWithClient(client, {
   accountId,
   requestedVersionId = "",
-  fallbackVersionId = "",
 }) {
+  if (!requestedVersionId) return null;
   if (requestedVersionId) {
     const requested = await client.query(
       `SELECT id,status,effective_from,effective_to FROM pricing_config_versions
@@ -788,37 +874,6 @@ async function resolvePricingVersionWithClient(client, {
     }
     return row.id;
   }
-  const active = await client.query(
-    `SELECT id FROM pricing_config_versions
-     WHERE status IN ('ACTIVE','SCHEDULED')
-       AND (effective_from IS NULL OR effective_from <= NOW())
-       AND (effective_to IS NULL OR effective_to > NOW())
-       AND (
-         (scope_type='account' AND scope_id=$1)
-         OR scope_type='global'
-       )
-     ORDER BY CASE scope_type WHEN 'store' THEN 1 WHEN 'account' THEN 2 ELSE 3 END,
-              effective_from DESC NULLS LAST,version_no DESC
-     LIMIT 1`,
-    [accountId],
-  );
-  if (active.rowCount) return active.rows[0].id;
-  const fallback = clean(fallbackVersionId, 240);
-  if (fallback) {
-    const found = await client.query(
-      `SELECT id FROM pricing_config_versions
-       WHERE id=$1 AND status IN ('ACTIVE','SCHEDULED')
-         AND (effective_from IS NULL OR effective_from <= NOW())
-         AND (effective_to IS NULL OR effective_to > NOW())
-         AND (
-           scope_type='global'
-           OR (scope_type='account' AND scope_id=$2)
-         )`,
-      [fallback, accountId],
-    );
-    if (found.rowCount) return fallback;
-  }
-  throw serviceError("没有可用的算价配置", 409, "COLLECTOR_PRICING_CONFIG_UNAVAILABLE");
 }
 
 export async function queueCollectorTaskRun({
@@ -828,11 +883,6 @@ export async function queueCollectorTaskRun({
   pricingConfigVersionId = "",
   requestedBy = "",
 } = {}) {
-  const task = await getCollectorTaskForAccount(accountId, taskId);
-  if (!task) throw serviceError("采集任务不存在", 404, "COLLECTOR_TASK_NOT_FOUND");
-  const activePricingConfig = await getActivePricingConfig({
-    accountId,
-  });
   return transaction(async (client) => {
     const locked = await client.query(
       `SELECT * FROM collector_tasks
@@ -872,7 +922,6 @@ export async function queueCollectorTaskRun({
     const resolvedPricingVersionId = await resolvePricingVersionWithClient(client, {
       accountId,
       requestedVersionId: clean(pricingConfigVersionId, 240),
-      fallbackVersionId: activePricingConfig?.id || "",
     });
     const runId = randomId("colrun");
     const configurationSnapshot = {
@@ -918,13 +967,13 @@ export async function queueCollectorTaskRun({
   });
 }
 
-export async function getCollectorRunForAccount(accountId, runId) {
+export async function getCollectorRunForAccount(accountId, runId, { includeSkuCount = false } = {}) {
   const pool = await poolReady();
   const result = await pool.query(
     `SELECT * FROM collector_task_runs WHERE id=$1 AND account_id=$2 LIMIT 1`,
     [required(runId, "运行 ID"), required(accountId, "账号 ID")],
   );
-  return result.rows[0] ? mapRun(result.rows[0]) : null;
+  return includeSkuCount ? (await mapRunsWithSkuCount(pool, accountId, result.rows))[0] || null : result.rows[0] ? mapRun(result.rows[0]) : null;
 }
 
 export async function listCollectorRunsForTask({ accountId, taskId, limit = 100, offset = 0 } = {}) {
@@ -939,7 +988,33 @@ export async function listCollectorRunsForTask({ accountId, taskId, limit = 100,
       boundedInteger(offset, { label: "分页偏移", min: 0, max: 10_000_000, fallback: 0 }),
     ],
   );
-  return result.rows.map(mapRun);
+  return mapRunsWithSkuCount(pool, accountId, result.rows);
+}
+
+// An explicit user action reopens the same run; ordinary claims never reopen a terminal run.
+export async function resumeCollectorRun({accountId,runId}={}) {
+  return transaction(async client => {
+    const run=await ensureRunScope(client,accountId,runId,{lock:true});
+    await validateAccountWithClient(client,accountId);
+    const task=(await client.query('SELECT * FROM collector_tasks WHERE id=$1 AND account_id=$2 FOR UPDATE',[run.task_id,accountId])).rows[0];
+    if(!task || task.deleted_at || task.current_run_id!==runId)
+      throw serviceError('任务当前运行已发生变化',409,'COLLECTOR_TASK_RUN_CHANGED');
+    if(['COMPLETED','CANCELLED'].includes(run.status))throw serviceError('已完成或已取消的运行不能继续',409,'COLLECTOR_RUN_TERMINAL');
+    if(run.lock_expires_at && new Date(run.lock_expires_at).getTime()>Date.now())
+      throw serviceError('任务运行正在被其他执行器处理',409,'COLLECTOR_RUN_LEASE_ACTIVE');
+    if(run.cancel_requested_at)throw serviceError('任务运行已请求取消',409,'COLLECTOR_RUN_CANCEL_REQUESTED');
+    if(run.status!=='FAILED'){
+      if(run.result_summary?.resumeRequested===true)return mapRun(run);
+      return mapRun((await client.query("UPDATE collector_task_runs SET result_summary=jsonb_set(result_summary,'{resumeRequested}','true'),updated_at=NOW() WHERE id=$1 AND account_id=$2 RETURNING *",[runId,accountId])).rows[0]);
+    }
+    const updated=await client.query(`UPDATE collector_task_runs SET status='QUEUED',status_version=status_version+1,
+      lease_token_hash='',claimed_by_device_id=NULL,lock_expires_at=NULL,heartbeat_at=NULL,
+      completed_at=NULL,error_code='',error_message='',result_summary=jsonb_set(result_summary,'{resumeRequested}','true'),updated_at=NOW() WHERE id=$1 AND account_id=$2 RETURNING *`,[runId,accountId]);
+    await client.query("UPDATE collector_tasks SET status='QUEUED',status_version=status_version+1,last_error_code='',last_error_message='',updated_at=NOW() WHERE id=$1 AND account_id=$2",[run.task_id,accountId]);
+    await insertEvent(client,{taskId:run.task_id,runId,accountId,fromStatus:run.status,toStatus:'QUEUED',
+      eventType:'RUN_RESUMED',actorType:'account',actorId:accountId,payload:{previousErrorCode:run.error_code||''}});
+    return mapRun(updated.rows[0]);
+  });
 }
 
 export async function claimCollectorRun({
@@ -1058,15 +1133,23 @@ export async function heartbeatCollectorRun({
     const run = await ensureRunScope(client, accountId, runId, { lock: true });
     const device = await assertLeaseWithClient(client, run, accountId, deviceId, leaseToken);
     const next = mergedProgress(run, jsonObject(progress, "任务进度"));
+    const summary = { ...run.result_summary };
+    if (hasOwn(progress, "dedup")) {
+      const dedup = jsonObject(progress.dedup, "去重进度");
+      summary.dedup = Object.fromEntries(["collected", "listed", "collecting"].map(key => [key,
+        Math.max(Number(summary.dedup?.[key] || 0), boundedInteger(dedup[key], { label: key, min: 0, max: 100_000_000, fallback: 0 })),
+      ]));
+    }
     const updated = await client.query(
       `UPDATE collector_task_runs SET
          total_count=$3,processed_count=$4,qualified_count=$5,filtered_count=$6,failed_count=$7,
-         heartbeat_at=NOW(),lock_expires_at=$8,updated_at=NOW()
+         heartbeat_at=NOW(),lock_expires_at=$8,result_summary=$9::jsonb,updated_at=NOW()
        WHERE id=$1 AND account_id=$2 RETURNING *`,
       [
         runId, accountId, next.totalCount, next.processedCount, next.qualifiedCount,
         next.filteredCount, next.failedCount,
         new Date(Date.now() + normalizedLeaseSeconds * 1000),
+        JSON.stringify(summary),
       ],
     );
     await client.query(
@@ -1172,14 +1255,21 @@ async function finishCollectorRun({
     assertTaskTransition(task.rows[0].status, targetStatus);
     const normalizedErrorCode = targetStatus === "FAILED" ? clean(errorCode || "COLLECTOR_RUN_FAILED", 120) : "";
     const normalizedErrorMessage = targetStatus === "FAILED" ? clean(errorMessage, 2000) : "";
+    const summary = withoutCollectorScope(jsonObject(resultSummary, '运行结果'));
+    delete summary.handoff;
+    if (targetStatus === 'COMPLETED' && run.configuration_snapshot?.configuration?.autoSendToAiListing === true) {
+      const handoff = await client.query(`INSERT INTO collector_run_handoffs (run_id,account_id,status)
+        VALUES ($1,$2,'PENDING') ON CONFLICT (run_id) DO NOTHING RETURNING body,status`, [runId, accountId]);
+      if (handoff.rows[0]) summary.handoff = handoffSummary(handoff.rows[0].body, handoff.rows[0].status);
+    }
     const updated = await client.query(
       `UPDATE collector_task_runs SET
-         status=$3,status_version=status_version+1,result_summary=$4::jsonb,
+         status=$3,status_version=status_version+1,result_summary=result_summary || $4::jsonb,
          error_code=$5,error_message=$6,lock_expires_at=NULL,lease_token_hash='',
          completed_at=NOW(),heartbeat_at=NOW(),updated_at=NOW()
        WHERE id=$1 AND account_id=$2 RETURNING *`,
       [
-        runId, accountId, targetStatus, JSON.stringify(withoutCollectorScope(jsonObject(resultSummary, "运行结果"))),
+        runId, accountId, targetStatus, JSON.stringify(summary),
         normalizedErrorCode, normalizedErrorMessage,
       ],
     );
@@ -1203,6 +1293,7 @@ async function finishCollectorRun({
       actorId: device.id,
       payload: withoutCollectorScope(jsonObject(resultSummary, "运行结果")),
     });
+    await client.query('DELETE FROM collector_sku_claims WHERE account_id=$1 AND run_id=$2', [accountId, runId]);
     return mapRun(updated.rows[0]);
   });
 }
@@ -1219,16 +1310,139 @@ export function cancelCollectorRun(input = {}) {
   return finishCollectorRun({ ...input, status: "CANCELLED" });
 }
 
+export async function retryCollectorRunHandoff({ accountId, runId } = {}) {
+  return transaction(async client => {
+    const run = await ensureRunScope(client, accountId, runId);
+    if (run.status !== 'COMPLETED' || run.configuration_snapshot?.configuration?.autoSendToAiListing !== true) {
+      throw serviceError('仅已完成并启用自动发送的采集运行可重试交接', 409, 'COLLECTOR_HANDOFF_NOT_ELIGIBLE');
+    }
+    const current = (await client.query('SELECT * FROM collector_run_handoffs WHERE run_id=$1 AND account_id=$2 FOR UPDATE', [runId, accountId])).rows[0];
+    if (current?.status === 'PROCESSING' && new Date(current.lease_expires_at).getTime() > Date.now()) {
+      return handoffSummary(current.body, current.status);
+    }
+    const body = current?.body || { receipts: {} };
+    for (const receipt of Object.values(body.receipts || {})) {
+      if (receipt.status !== 'FAILED') continue;
+      receipt.status = receipt.collectItemId ? 'COLLECTED' : 'PENDING';
+      delete receipt.error;
+    }
+    delete body.error; delete body.attempts;
+    await client.query(`INSERT INTO collector_run_handoffs (run_id,account_id,status,body)
+      VALUES ($1,$2,'PENDING',$3::jsonb) ON CONFLICT (run_id) DO UPDATE SET
+      status='PENDING',body=EXCLUDED.body,next_run_at=NOW(),lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()`,
+    [runId, accountId, JSON.stringify(body)]);
+    const summary = handoffSummary(body, 'PENDING');
+    await client.query(`UPDATE collector_task_runs SET result_summary=jsonb_set(result_summary,'{handoff}',$3::jsonb),updated_at=NOW()
+      WHERE id=$1 AND account_id=$2`, [runId, accountId, JSON.stringify(summary)]);
+    return summary;
+  });
+}
+
+function collectorSkus(values) {
+  if (!Array.isArray(values) || values.length > 500) {
+    throw serviceError("每批商品编号最多 500 个", 422, "COLLECTOR_SKUS_INVALID");
+  }
+  const skus = [...new Set(values.map(value => String(value ?? "").trim()))];
+  if (skus.some(sku => !/^\d{1,30}$/.test(sku))) {
+    throw serviceError("商品编号必须是 Ozon 数字 SKU", 422, "COLLECTOR_SKUS_INVALID");
+  }
+  return skus;
+}
+
+function lockCollectorSkus(client, accountId) {
+  // Short database transactions only; no Ozon requests while this lock is held.
+  return client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`collector-skus:ozon:${accountId}`]);
+}
+
+async function activeCollectorSkuClaims(client, accountId, skus) {
+  const { rows } = await client.query(`SELECT c.source_sku AS sku,c.run_id AS "runId",r.task_id AS "taskId",t.name AS "taskName"
+    FROM collector_sku_claims c JOIN collector_task_runs r ON r.id=c.run_id AND r.account_id=c.account_id
+    JOIN collector_tasks t ON t.id=r.task_id AND t.account_id=r.account_id
+    JOIN collector_devices d ON d.id=r.claimed_by_device_id AND d.account_id=r.account_id
+    WHERE c.account_id=$1 AND c.source='ozon' AND c.source_sku=ANY($2::text[])
+      AND r.status='RUNNING' AND r.cancel_requested_at IS NULL AND r.lock_expires_at>clock_timestamp() AND d.status='ACTIVE'`, [accountId, skus]);
+  return new Map(rows.map(row => [row.sku, { ...row, state: "COLLECTING" }]));
+}
+
+export async function claimCollectorRunSkus({ accountId, runId, deviceId, leaseToken, skus = [] } = {}) {
+  const requested = collectorSkus(skus);
+  return transaction(async client => {
+    const run = await ensureRunScope(client, accountId, runId, { lock: true });
+    await assertLeaseWithClient(client, run, accountId, deviceId, leaseToken);
+    if (run.cancel_requested_at) throw serviceError("任务已请求取消", 409, "COLLECTOR_RUN_CANCELLING");
+    if (!requested.length) return { items: [] };
+    await lockCollectorSkus(client, accountId);
+    const saved = await findCollectorSkuHistory(client, accountId, requested);
+    const groups = await collectorGroupHistory(client, accountId, requested);
+    const wholeGroup = run.configuration_snapshot?.configuration?.captureScope === 'ALL';
+    const active = await activeCollectorSkuClaims(client, accountId, requested);
+    const items = requested.map(sku => (groups.get(sku)?.complete ? groups.get(sku) : (!wholeGroup && saved.get(sku)))
+      || (active.get(sku)?.runId !== runId && active.get(sku))
+      || { sku, state: "CLAIMED", runId, taskId: run.task_id });
+    const accepted = items.filter(item => item.state === "CLAIMED").map(item => item.sku);
+    if (accepted.length) await client.query(`INSERT INTO collector_sku_claims(account_id,source,source_sku,run_id)
+      SELECT $1,'ozon',sku,$3 FROM unnest($2::text[]) AS sku
+      ON CONFLICT(account_id,source,source_sku) DO UPDATE SET run_id=EXCLUDED.run_id`, [accountId, accepted, runId]);
+    return { items };
+  });
+}
+
+export async function releaseCollectorRunSkus({ accountId, runId, deviceId, leaseToken, skus = [] } = {}) {
+  const requested = collectorSkus(skus);
+  return transaction(async client => {
+    const run = await ensureRunScope(client, accountId, runId, { lock: true });
+    await assertLeaseWithClient(client, run, accountId, deviceId, leaseToken);
+    await lockCollectorSkus(client, accountId);
+    const result = await client.query(`DELETE FROM collector_sku_claims c
+      WHERE account_id=$1 AND run_id=$2 AND source='ozon' AND source_sku=ANY($3::text[])
+      AND NOT EXISTS(SELECT 1 FROM collector_product_members m JOIN collector_product_groups g ON g.id=m.group_id
+        WHERE m.account_id=c.account_id AND m.source_sku=c.source_sku AND g.owner_run_id=c.run_id)`, [accountId, runId, requested]);
+    return { releasedCount: result.rowCount };
+  });
+}
+
+async function collectorGroupOperation(input, operation) {
+  const { accountId, runId, deviceId, leaseToken } = input;
+  return transaction(async client => {
+    const run = await ensureRunScope(client, accountId, runId, { lock: true });
+    await assertLeaseWithClient(client, run, accountId, deviceId, leaseToken);
+    if (run.cancel_requested_at) throw serviceError('任务已请求取消', 409, 'COLLECTOR_RUN_CANCELLING');
+    if (run.configuration_snapshot?.configuration?.captureScope !== 'ALL')
+      throw serviceError('本次运行未选择整组采集，请创建整组任务', 409, 'COLLECTOR_GROUP_SCOPE_REQUIRED');
+    return operation(client, input);
+  });
+}
+export const claimCollectorRunProductGroup = input => collectorGroupOperation(input, claimProductGroup);
+export const saveCollectorRunGroupVariant = input => collectorGroupOperation(input, saveProductGroupVariant);
+export const releaseCollectorRunProductGroup = input => collectorGroupOperation(input, releaseProductGroup);
+
 export async function upsertCollectorRunItem({
   accountId,
   runId,
   deviceId,
   leaseToken,
   item = {},
-} = {}) {
+} = {}, {checkAdmission=admitCollectedItem} = {}) {
+  let admittedPayload=null;
   const source = clean(item.source || "ozon", 80).toLowerCase();
   const sourceKey = required(item.sourceKey || item.sourceSku || item.sku || item.productId, "商品来源键", 500);
   const status = normalizeStatus(item.status || "DISCOVERED", COLLECTOR_ITEM_STATUSES, "商品状态");
+  if (source === 'ozon' && status === 'QUALIFIED') {
+    const pool=await poolReady();
+    const run=await ensureRunScope(pool,accountId,runId);
+    await assertLeaseWithClient(pool,run,accountId,deviceId,leaseToken);
+    if(run.cancel_requested_at)throw serviceError('任务已请求取消',409,'COLLECTOR_RUN_CANCELLING');
+    const existing=(await pool.query(`SELECT * FROM collector_task_items
+      WHERE account_id=$1 AND run_id=$2 AND source=$3 AND source_key=$4`,[accountId,runId,source,sourceKey])).rows[0];
+    // Replayed or historical successful results are already internal data.
+    if(existing?.status==='QUALIFIED')return {item:mapItem(existing),created:false};
+    const raw=withoutCollectorScope(hasOwn(item,'rawPayload')?jsonObject(item.rawPayload,'rawPayload'):(existing?.raw_payload||{}));
+    // QUALIFIED confirms buyer details/media were saved; Seller enrichment starts
+    // after this row is imported. Its completion boundary performs full admission.
+    const admitted=await checkAdmission({accountId,item:{...raw,sku:raw.sku||item.sourceSku||sourceKey},requireComplete:false},{pool});
+    admittedPayload=admitted;
+    item={...item,rawPayload:admitted};
+  }
   return transaction(async (client) => {
     const run = await ensureRunScope(client, accountId, runId, { lock: true });
     await assertLeaseWithClient(client, run, accountId, deviceId, leaseToken);
@@ -1249,10 +1463,33 @@ export async function upsertCollectorRunItem({
       [runId, accountId, source, sourceKey],
     );
     const existing = existingResult.rows[0] || null;
+    const groupId = clean(item.rawPayload?.collectorGroupId, 240);
+    if (source === 'ozon' && status === 'QUALIFIED' && run.configuration_snapshot?.configuration?.captureScope === 'ALL' && !groupId)
+      throw serviceError('本次任务需要整组采集，请更新采集助手后重试', 409, 'COLLECTOR_GROUP_SCOPE_REQUIRED');
+    if (groupId && status === 'QUALIFIED') {
+      if (run.configuration_snapshot?.configuration?.captureScope !== 'ALL' || source !== 'ozon' || sourceKey !== groupId)
+        throw serviceError('商品组与采集运行不一致', 409, 'COLLECTOR_GROUP_SCOPE_REQUIRED');
+      if (run.cancel_requested_at) throw serviceError('任务已请求取消', 409, 'COLLECTOR_RUN_CANCELLING');
+      if (existing?.status === 'QUALIFIED') {
+        const completed = await client.query('SELECT id FROM collector_product_groups WHERE id=$1 AND account_id=$2 AND completed_item_id=$3', [groupId, accountId, existing.id]);
+        if (completed.rowCount) return { item: mapItem(existing), created: false };
+      }
+      await assertProductGroupComplete(client, { accountId, runId, groupId, anchorSku: item.sourceSku }, item.rawPayload);
+    }
+    if (!groupId && source === "ozon" && status === "QUALIFIED" && existing?.status !== "QUALIFIED") {
+      if (run.cancel_requested_at) throw serviceError("任务已请求取消", 409, "COLLECTOR_RUN_CANCELLING");
+      const sku = clean(item.sourceSku || item.sku || sourceKey, 240);
+      await lockCollectorSkus(client, accountId);
+      const group = (await collectorGroupHistory(client, accountId, [sku])).get(sku);
+      const saved = group?.complete ? group : (await findCollectorSkuHistory(client, accountId, [sku])).get(sku);
+      const active = (await activeCollectorSkuClaims(client, accountId, [sku])).get(sku);
+      const duplicate = saved || (active?.runId !== runId && active);
+      if (duplicate) return { item: null, created: false, duplicate: true, existing: duplicate };
+    }
     if (existing && !ITEM_TRANSITIONS[existing.status]?.has(status)) {
       const explicitFailedRetry = existing.status === "FAILED"
         && item.retry === true
-        && ["DISCOVERED", "ENRICHED", "QUALIFIED"].includes(status);
+        && ["DISCOVERED", "ENRICHED", "QUALIFIED", "FILTERED_OUT"].includes(status);
       if (!explicitFailedRetry) {
         throw serviceError(
           `商品状态不能从 ${existing.status} 变更为 ${status}`,
@@ -1264,20 +1501,27 @@ export async function upsertCollectorRunItem({
     const data = (camel, snake) => withoutCollectorScope(hasOwn(item, camel)
       ? jsonObject(item[camel], camel)
       : (existing?.[snake] || {}));
+    const exportDataFromRaw = hasOwn(item, 'exportDataFromRaw') ? item.exportDataFromRaw === true
+      : hasOwn(item, 'exportData') ? false : existing?.export_data_from_raw === true;
     const attemptCount = existing
       ? Number(existing.attempt_count || 1) + (item.retry === true ? 1 : 0)
       : boundedInteger(item.attemptCount, { label: "尝试次数", min: 1, max: 10_000, fallback: 1 });
     const completedAt = TERMINAL_ITEM_STATUSES.has(status) ? new Date() : null;
     const id = existing?.id || stableId("colitem", runId, source, sourceKey);
+    const rawPayload = await consumeCollectorMediaObjects(client, { accountId, runId, itemId: id,
+      deviceId: run.claimed_by_device_id, leaseHash: run.lease_token_hash,
+      retryFromRunId: run.configuration_snapshot?.configuration?.retryFromRunId || null,
+      payload: admittedPayload || data('rawPayload', 'raw_payload') });
     const result = await client.query(
       `INSERT INTO collector_task_items (
          id,task_id,run_id,account_id,operating_store_id,data_collection_store_id,
          collect_item_id,source,source_key,source_sku,source_url,sort_order,status,
          attempt_count,raw_payload,analytics,sourcing,pricing,filter_result,export_data,
-         error_code,error_message,completed_at
+         error_code,error_message,completed_at,dedup_saved_at,export_data_from_raw
        ) VALUES (
          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
-         $15::jsonb,$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb,$20::jsonb,$21,$22,$23
+         $15::jsonb,$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb,$20::jsonb,$21,$22,$23,
+         CASE WHEN $13='QUALIFIED' THEN NOW() ELSE NULL END,$24
        )
        ON CONFLICT (run_id,source,source_key) DO UPDATE SET
          collect_item_id=EXCLUDED.collect_item_id,
@@ -1285,9 +1529,10 @@ export async function upsertCollectorRunItem({
          sort_order=EXCLUDED.sort_order,status=EXCLUDED.status,
          attempt_count=EXCLUDED.attempt_count,raw_payload=EXCLUDED.raw_payload,
          analytics=EXCLUDED.analytics,sourcing=EXCLUDED.sourcing,pricing=EXCLUDED.pricing,
-         filter_result=EXCLUDED.filter_result,export_data=EXCLUDED.export_data,
+         filter_result=EXCLUDED.filter_result,export_data=EXCLUDED.export_data,export_data_from_raw=EXCLUDED.export_data_from_raw,
          error_code=EXCLUDED.error_code,error_message=EXCLUDED.error_message,
          completed_at=EXCLUDED.completed_at,updated_at=NOW()
+         ,dedup_saved_at=COALESCE(collector_task_items.dedup_saved_at,EXCLUDED.dedup_saved_at)
        WHERE collector_task_items.account_id=EXCLUDED.account_id
        RETURNING *`,
       [
@@ -1299,17 +1544,21 @@ export async function upsertCollectorRunItem({
           ? boundedInteger(item.sortOrder, { label: "排序", min: 0, max: 100_000_000 })
           : Number(existing?.sort_order || 0),
         status, attemptCount,
-        JSON.stringify(data("rawPayload", "raw_payload")),
+        JSON.stringify(rawPayload),
         JSON.stringify(data("analytics", "analytics")),
         JSON.stringify(data("sourcing", "sourcing")),
         JSON.stringify(data("pricing", "pricing")),
         JSON.stringify(data("filterResult", "filter_result")),
-        JSON.stringify(data("exportData", "export_data")),
+        JSON.stringify(exportDataFromRaw ? {} : data("exportData", "export_data")),
         hasOwn(item, "errorCode") ? clean(item.errorCode, 120) : (existing?.error_code || ""),
         hasOwn(item, "errorMessage") ? clean(item.errorMessage, 2000) : (existing?.error_message || ""),
         completedAt,
+        exportDataFromRaw,
       ],
     );
+    if (groupId && status === 'QUALIFIED') {
+      await completeProductGroup(client, { accountId, runId, groupId, itemId: result.rows[0].id });
+    }
     const stats = await client.query(
       `SELECT
          COUNT(*)::int AS total_count,
@@ -1331,8 +1580,62 @@ export async function upsertCollectorRunItem({
         Number(counts.qualified_count), Number(counts.filtered_count), Number(counts.failed_count),
       ],
     );
+    const preparingMedia = status === 'FAILED' && rawPayload.mediaPreparation?.status === 'preparing';
+    if (source === "ozon" && TERMINAL_ITEM_STATUSES.has(status) && !preparingMedia) {
+      await client.query(`DELETE FROM collector_sku_claims c WHERE account_id=$1 AND run_id=$2 AND source='ozon' AND source_sku=$3
+        AND NOT EXISTS(SELECT 1 FROM collector_product_members m JOIN collector_product_groups g ON g.id=m.group_id
+          WHERE m.account_id=c.account_id AND m.source_sku=c.source_sku AND g.owner_run_id=c.run_id)`,
+        [accountId, runId, result.rows[0].source_sku || sourceKey]);
+    }
     return { item: mapItem(result.rows[0]), created: !existing };
   });
+}
+
+// Read a page of saved results, without returning raw captures/media or revalidating historical input.
+export async function listCollectorRunResults({accountId,runId,limit=50,offset=0}={}) {
+  const pool=await poolReady();
+  const run=await ensureRunScope(pool,accountId,runId);
+  limit=boundedInteger(limit,{label:'分页数量',min:1,max:100,fallback:50});
+  offset=boundedInteger(offset,{label:'分页偏移',min:0,max:10_000_000,fallback:0});
+  const total=Number((await pool.query("SELECT count(*)::int AS total FROM collector_task_items WHERE account_id=$1 AND run_id=$2 AND status='QUALIFIED'",[accountId,runId])).rows[0].total);
+  const rows=(await pool.query(`SELECT i.id,i.source,i.source_key,i.source_sku,i.collect_item_id,i.completed_at,i.dedup_saved_at,
+    COALESCE(NULLIF(p.data->>'name',''),NULLIF(p.data->>'nameLabel',''),NULLIF(p.data->>'title',''),NULLIF(p.data->>'productName',''),i.source_sku) AS name,
+    COALESCE(p.data->>'image',p.data->>'primaryImage',p.data#>>'{images,0}','') AS image,
+    COALESCE(NULLIF(p.data->>'sku',''),NULLIF(p.data->>'productId',''),NULLIF(p.data->>'product_id',''),NULLIF(i.source_sku,''),i.source_key) AS capture_sku,
+    ARRAY(SELECT DISTINCT COALESCE(v->>'sku',v->>'id') FROM jsonb_array_elements(
+      CASE WHEN jsonb_typeof(p.data->'variants')='array' THEN p.data->'variants' ELSE '[]'::jsonb END ||
+      CASE WHEN jsonb_typeof(p.data#>'{variantData,variants}')='array' THEN p.data#>'{variantData,variants}' ELSE '[]'::jsonb END) v) AS variant_skus,
+    h.status AS handoff_status,h.body->'receipts'->i.id AS receipt
+    FROM collector_task_items i CROSS JOIN LATERAL(SELECT CASE WHEN i.export_data_from_raw THEN i.raw_payload ELSE i.raw_payload || i.export_data END AS data)p
+    LEFT JOIN collector_run_handoffs h ON h.run_id=i.run_id AND h.account_id=i.account_id
+    WHERE i.account_id=$1 AND i.run_id=$2 AND i.status='QUALIFIED'
+    ORDER BY i.sort_order,i.created_at,i.id LIMIT $3 OFFSET $4`,[accountId,runId,limit,offset])).rows;
+  const skusFor=row=>[...new Set([row.capture_sku,...row.variant_skus].filter(Boolean))];
+  const skus=[...new Set(rows.filter(row=>row.source==='ozon').flatMap(skusFor))];
+  const owners=await createAiListingRepository({pool}).readCollectorAutomaticOwners({accountId,skus});
+  const sources=await findOzonCollectedSkuSources(pool,accountId,skus);
+  const requestKey=row=>sha256([accountId,row.source,row.capture_sku,`collector-select:${runId}:${row.id}`].join('|'));
+  const requests=new Map((await pool.query('SELECT idempotency_key,status,collect_item_id FROM collect_requests WHERE account_id=$1 AND idempotency_key=ANY($2::text[])',[accountId,rows.map(requestKey)])).rows.map(row=>[row.idempotency_key,row]));
+  const ids=[...new Set([...rows.flatMap(row=>[row.collect_item_id,row.receipt?.collectItemId]),...sources.values(),...[...requests.values()].map(row=>row.collect_item_id)].filter(Boolean))];
+  const collected=new Map((await pool.query('SELECT id,deleted_at FROM collect_items WHERE account_id=$1 AND id=ANY($2::text[])',[accountId,ids])).rows.map(row=>[row.id,row]));
+  const items=rows.map(row=>{
+    const requested=skusFor(row),request=requests.get(requestKey(row)),receipt=row.receipt;
+    const linkedId=row.collect_item_id || request?.collect_item_id || receipt?.collectItemId;
+    const collectItemId=linkedId || sources.get(row.capture_sku) || '';
+    const collect=collected.get(collectItemId),processing=['PENDING','PROCESSING'].includes(row.handoff_status);
+    const incompleteHistory=!linkedId && requested.some(sku=>!sources.has(sku));
+    const collectBoxStatus=collect ? (collect.deleted_at?'DELETED':incompleteHistory?'UNKNOWN':'SENT') : request?.status==='PROCESSING'?'PROCESSING'
+      : collectItemId || request || receipt?.status==='FAILED' || !row.dedup_saved_at ? 'UNKNOWN' : processing?'PROCESSING':'NOT_SENT';
+    const owned=requested.map(sku=>owners.get(sku)).filter(Boolean);
+    const aiTasks=[...new Map(owned.map(task=>[task.id,{id:task.id,status:task.status,deletedAt:task.deletedAt??null}])).values()];
+    const blocked=aiTasks.some(task=>task.deletedAt!==null||task.status==='MERGED');
+    const aiStatus=blocked?'BLOCKED':owned.length===requested.length && requested.length?'CREATED':owned.length?'PARTIAL'
+      : receipt?.status==='FAILED' || receipt?.createdTaskIds?.length || receipt?.reusedTaskIds?.length ? 'UNKNOWN'
+      : processing && run.configuration_snapshot?.configuration?.autoStartAiGeneration===true?'PROCESSING':receipt?.skipped?'UNKNOWN':'NOT_SENT';
+    return {id:row.id,runId,sourceKey:row.source_key,sourceSku:row.source_sku,name:row.name,image:row.image,
+      completedAt:row.completed_at,collectItemId,collectBoxStatus,aiStatus,aiTasks,canSend:true};
+  });
+  return {items,total,limit,offset};
 }
 
 export async function listCollectorRunItems({
@@ -1341,21 +1644,30 @@ export async function listCollectorRunItems({
   status = "",
   limit = 500,
   offset = 0,
+  view = "full",
+  itemIds = [],
+  sourceKeys = [],
+  collectItemIds = [],
 } = {}) {
   const pool = await poolReady();
   const normalizedStatus = status ? normalizeStatus(status, COLLECTOR_ITEM_STATUSES, "商品状态") : "";
   const result = await pool.query(
-    `SELECT i.* FROM collector_task_items i
+    `SELECT ${view === "identity" ? "i.id,i.source_key" : "i.*"} FROM collector_task_items i
      JOIN collector_task_runs r ON r.id=i.run_id AND r.account_id=i.account_id
      WHERE i.account_id=$1 AND i.run_id=$2 AND ($3='' OR i.status=$3)
+     AND (cardinality($6::text[])+cardinality($7::text[])+cardinality($8::text[])=0
+          OR i.id=ANY($6::text[]) OR i.source_key=ANY($7::text[]) OR i.collect_item_id=ANY($8::text[]))
      ORDER BY i.sort_order,i.created_at,i.id LIMIT $4 OFFSET $5`,
     [
       required(accountId, "账号 ID"), required(runId, "运行 ID"), normalizedStatus,
       boundedInteger(limit, { label: "分页数量", min: 1, max: 5000, fallback: 500 }),
       boundedInteger(offset, { label: "分页偏移", min: 0, max: 10_000_000, fallback: 0 }),
+      itemIds, sourceKeys, collectItemIds,
     ],
   );
-  return result.rows.map(mapItem);
+  return view === "identity"
+    ? result.rows.map(row => ({ id: row.id, sourceKey: row.source_key }))
+    : result.rows.map(mapItem);
 }
 
 export async function appendCollectorRunEvent({
@@ -1386,17 +1698,29 @@ export async function appendCollectorRunEvent({
   });
 }
 
-export async function listCollectorRunEvents({ accountId, runId, afterId = 0, limit = 500 } = {}) {
+export async function appendCollectorRunEvents({ accountId, runId, events, actorType = 'device', actorId = '' } = {}) {
+  return transaction(async client => {
+    const run = await ensureRunScope(client, accountId, runId);
+    const result = [];
+    for (const event of events) result.push(await insertEvent(client, { ...event,
+      taskId: run.task_id, runId, accountId, fromStatus: run.status, toStatus: run.status, actorType, actorId,
+    }));
+    return result;
+  });
+}
+
+export async function listCollectorRunEvents({ accountId, runId, afterId = 0, limit = 500, eventType = "" } = {}) {
   const pool = await poolReady();
   const result = await pool.query(
     `SELECT e.* FROM collector_task_events e
      JOIN collector_task_runs r ON r.id=e.run_id AND r.account_id=e.account_id
-     WHERE e.account_id=$1 AND e.run_id=$2 AND e.id>$3
+     WHERE e.account_id=$1 AND e.run_id=$2 AND e.id>$3 AND ($5='' OR e.event_type=$5)
      ORDER BY e.id LIMIT $4`,
     [
       required(accountId, "账号 ID"), required(runId, "运行 ID"),
       boundedInteger(afterId, { label: "事件游标", min: 0, max: Number.MAX_SAFE_INTEGER, fallback: 0 }),
       boundedInteger(limit, { label: "分页数量", min: 1, max: 2000, fallback: 500 }),
+      clean(eventType, 120),
     ],
   );
   return result.rows.map(mapEvent);

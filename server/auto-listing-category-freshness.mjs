@@ -101,9 +101,13 @@ export function createAutoListingCategoryFreshness({
     }
 
     let refreshed = false;
+    const blockedSharedCategoryIds = [];
     for (const { evidence, shared } of uniqueShared.values()) {
       const match = resolveExactType({ tree: snapshot.items, sourceTypeId: shared.sourceTypeId });
-      if (match.kind !== "UNIQUE_MATCH") throw failure("AUTO_LISTING_CATEGORY_NEEDS_REVIEW");
+      if (match.kind !== "UNIQUE_MATCH") {
+        blockedSharedCategoryIds.push(shared.id);
+        continue;
+      }
       if (match.descriptionCategoryId === shared.currentDescriptionCategoryId
         && match.typeId === shared.currentTypeId) continue;
       try {
@@ -122,7 +126,7 @@ export function createAutoListingCategoryFreshness({
         accountId: scope,
         evidenceId: evidence.id,
         expectedVersion: shared.version,
-        safeFailureCode: "OZON_CATEGORY_INVALIDATED",
+        safeFailureCode: "ZONGZI_CATEGORY_INVALIDATED",
         transitionedAt: invalidatedAt,
       });
       if (!plainData(invalidated) || invalidated.status !== "INVALIDATED"
@@ -147,6 +151,11 @@ export function createAutoListingCategoryFreshness({
       }
       refreshed = true;
     }
-    return Object.freeze({ status: refreshed ? "REFRESHED" : "CURRENT" });
+    return Object.freeze({
+      status: refreshed ? "REFRESHED" : "CURRENT",
+      ...(blockedSharedCategoryIds.length ? {
+        blockedSharedCategoryIds: Object.freeze(blockedSharedCategoryIds),
+      } : {}),
+    });
   };
 }

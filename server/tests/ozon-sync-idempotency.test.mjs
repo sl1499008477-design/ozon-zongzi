@@ -77,6 +77,7 @@ function fixture({
   globalThis.fetch = async (url) => {
     fetchCalls += 1;
     const path = new URL(url).pathname;
+    if (path === "/v1/roles") return {ok:true,status:200,text:async()=>JSON.stringify({expires_at:"2027-01-30T00:00:00Z"})};
     if (path === "/v1/seller/info") {
       return {
         ok: true,
@@ -84,7 +85,7 @@ function fixture({
         text: async () => JSON.stringify({ result: { company: { name: "Seller" } } }),
       };
     }
-    if (path === "/v1/actions") {
+    if (path === "/v2/warehouse/list") {
       await onActions?.();
       if (failActions) {
         return {
@@ -99,7 +100,7 @@ function fixture({
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ result: [{ id: "promotion-1" }] }),
+        text: async () => JSON.stringify({ result: [{ warehouse_id: "warehouse-1" }] }),
       };
     }
     throw new Error(`unexpected Ozon path: ${path}`);
@@ -117,7 +118,7 @@ function fixture({
 const syncInput = (overrides = {}) => ({
   accountId: "account-a",
   storeId: "store-a",
-  type: "PROMOTIONS",
+  type: "WAREHOUSES",
   jobId: "shared-client-key",
   requestId: "shared-request",
   source: "web",
@@ -172,7 +173,7 @@ test("concurrent identical sync requests share one successful execution", async 
     const persisted = testFixture.state();
 
     assert.deepEqual(second, first);
-    assert.equal(testFixture.fetchCalls(), 2);
+    assert.equal(testFixture.fetchCalls(), 3);
     assert.equal(
       persisted.reports.filter((report) => report.clientJobId === "shared-client-key").length,
       1,
@@ -195,7 +196,7 @@ test("same failed sync request replays the exact public failure", async () => {
       () => testFixture.service.runLocalSync(testFixture.state(), syncInput()),
       (error) => {
         firstFailure = structuredClone(error.body);
-        return error?.status === 503 && error?.code === "OZON_HTTP_503";
+        return error?.status === 503 && error?.code === "ZONGZI_HTTP_503";
       },
     );
     const callsAfterFirst = testFixture.fetchCalls();
@@ -204,7 +205,7 @@ test("same failed sync request replays the exact public failure", async () => {
       () => testFixture.service.runLocalSync(testFixture.state(), syncInput()),
       (error) => {
         assert.deepEqual(error.body, firstFailure);
-        return error?.status === 503 && error?.code === "OZON_HTTP_503";
+        return error?.status === 503 && error?.code === "ZONGZI_HTTP_503";
       },
     );
     assert.equal(testFixture.fetchCalls(), callsAfterFirst);
@@ -242,7 +243,7 @@ test("concurrent identical failed sync requests share one public failure", async
     assert.equal(first.status, "rejected");
     assert.equal(second.status, "rejected");
     assert.deepEqual(second.reason.body, first.reason.body);
-    assert.equal(testFixture.fetchCalls(), 2);
+    assert.equal(testFixture.fetchCalls(), 3);
     assert.equal(
       persisted.reports.filter((report) => report.clientJobId === "shared-client-key").length,
       1,
@@ -279,7 +280,7 @@ test("failed sync claim is shared and released for a later retry", async () => {
       syncInput(),
     );
     assert.equal(retry.status, "SUCCESS");
-    assert.equal(testFixture.fetchCalls(), 2);
+    assert.equal(testFixture.fetchCalls(), 3);
   } finally {
     testFixture.restore();
   }
@@ -340,7 +341,7 @@ test("in-flight client key rejects a changed request or sync scope", async () =>
 
     releaseAction.resolve();
     await firstPromise;
-    assert.equal(testFixture.fetchCalls(), 2);
+    assert.equal(testFixture.fetchCalls(), 3);
   } finally {
     releaseAction.resolve();
     testFixture.restore();

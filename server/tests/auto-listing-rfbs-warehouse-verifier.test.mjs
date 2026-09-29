@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createAutoListingRfbsWarehouseVerifier } from "../auto-listing-rfbs-warehouse-verifier.mjs";
+import { callOzonSellerApi } from '../ozon-client.mjs';
 
 const OBSERVED_AT = "2026-08-11T12:00:00.000Z";
 
@@ -341,8 +342,8 @@ test("treats malformed, oversized, accessor, and proxy responses as retryable va
 
 test("maps timeouts and 5xx failures to retryable safe errors without retrying the read", async () => {
   for (const apiError of [
-    Object.assign(new Error("api-key-secret timeout"), { code: "OZON_TIMEOUT", status: 504 }),
-    Object.assign(new Error("password=raw-production-secret"), { code: "OZON_HTTP_503", status: 503 }),
+    Object.assign(new Error("api-key-secret timeout"), { code: "ZONGZI_TIMEOUT", status: 504 }),
+    Object.assign(new Error("password=raw-production-secret"), { code: "ZONGZI_HTTP_503", status: 503 }),
   ]) {
     let calls = 0;
     const { verifier } = harness({
@@ -353,12 +354,62 @@ test("maps timeouts and 5xx failures to retryable safe errors without retrying t
   }
 });
 
+test('CN warehouse HTTP 502 retries only the same read once on RU without changing the original credential',async()=>{
+  const credential=Object.freeze({id:'store-a',clientId:'client-a',apiKey:'synthetic-only',ozonRoute:'CN'}),calls=[];
+  const {verifier}=harness({credential,callOzonSellerApi:async(c,path,body,timeout,options)=>{
+    calls.push({c,path,body,timeout,options});assert.equal(Object.isFrozen(c),true);
+    if(c.ozonRoute==='CN')throw Object.assign(new Error('Bad Gateway'),{code:'ZONGZI_HTTP_502',status:502});
+    return {warehouses:[remoteWarehouse()]};
+  }});
+  assert.equal((await verifier.verifyRfbsWarehouse(validInput())).outcome,'PASSED');
+  assert.deepEqual(calls.map(x=>x.c.ozonRoute),['CN','RU']);
+  assert.ok(calls.every(x=>x.path==='/v2/warehouse/list'&&x.c.id===credential.id&&x.c.clientId===credential.clientId&&x.c.apiKey===credential.apiKey));
+  assert.deepEqual(calls[0].body,{});assert.deepEqual(calls[1].body,{});
+  assert.equal(credential.ozonRoute,'CN');
+});
+
+test('warehouse backup route excludes unselected CN, network failures and other HTTP statuses and remains bounded',async()=>{
+  for(const [route,code,status,expectedCalls] of [['RU','ZONGZI_HTTP_502',502,1],['LEGACY','ZONGZI_HTTP_502',502,1],
+    [undefined,'ZONGZI_HTTP_502',502,1],['CN','ZONGZI_NETWORK_ERROR',502,1],['CN','ZONGZI_TIMEOUT',504,1],
+    ['CN','ZONGZI_HTTP_503',503,1],['CN','ZONGZI_HTTP_502',502,2]]){
+    let calls=0;const {verifier}=harness({credential:{id:'store-a',clientId:'client-a',apiKey:'synthetic-only',ozonRoute:route},
+      callOzonSellerApi:async()=>{calls++;throw Object.assign(new Error('unavailable'),{code,status});}});
+    await rejectsSafely(()=>verifier.verifyRfbsWarehouse(validInput()),'RFBS_VALIDATION_REQUIRED',true);
+    assert.equal(calls,expectedCalls,`${route} ${code}`);
+  }
+});
+
+test('a warehouse backup response still must prove the exact active target',async()=>{
+  for(const [warehouse,code] of [[remoteWarehouse({warehouse_id:'9999'}),'RFBS_WAREHOUSE_NOT_FOUND'],[remoteWarehouse({status:'disabled'}),'RFBS_WAREHOUSE_DISABLED']]){
+    const routes=[];const {verifier}=harness({credential:{id:'store-a',clientId:'client-a',apiKey:'synthetic-only',ozonRoute:'CN'},
+      callOzonSellerApi:async credential=>{routes.push(credential.ozonRoute);if(routes.length===1)throw Object.assign(new Error('bad gateway'),{code:'ZONGZI_HTTP_502',status:502});return {warehouses:[warehouse]};}});
+    await rejectsSafely(()=>verifier.verifyRfbsWarehouse(validInput()),code);assert.deepEqual(routes,['CN','RU']);
+  }
+});
+
+test('real transport selects RU for warehouse and first product write without changing frozen CN or replaying an unknown write',async()=>{
+  const original=globalThis.fetch,calls=[];
+  globalThis.fetch=async(url,options)=>{calls.push({url,method:options.method,headers:options.headers});
+    return String(url)==='https://api-seller.ozon.ru/v2/warehouse/list'
+      ?new Response(JSON.stringify({warehouses:[remoteWarehouse()]}),{status:200,headers:{'content-type':'application/json'}})
+      :new Response('Bad Gateway',{status:502});};
+  try{
+    const credential={id:'store-a',clientId:'client-a',apiKey:'synthetic-only',ozonRoute:'CN'};
+    const {verifier}=harness({credential,callOzonSellerApi});
+    assert.equal((await verifier.verifyRfbsWarehouse(validInput())).outcome,'PASSED');
+    await assert.rejects(callOzonSellerApi(credential,'/v3/product/import',{items:[]}),{code:'ZONGZI_HTTP_502'});
+    assert.deepEqual(calls.map(x=>x.url),['https://api-seller.ozon.ru/v2/warehouse/list','https://api-seller.ozon.ru/v3/product/import']);
+    assert.ok(calls.every(x=>x.method==='POST'&&x.headers['Client-Id']==='client-a'&&x.headers['Api-Key']==='synthetic-only'));
+    assert.equal(credential.ozonRoute,'CN');
+  }finally{globalThis.fetch=original;}
+});
+
 test("maps Ozon authentication failures to a non-retryable scope mismatch", async () => {
   let calls = 0;
   const { verifier } = harness({
     callOzonSellerApi: async () => {
       calls += 1;
-      throw Object.assign(new Error("authorization Bearer api-key-secret"), { code: "OZON_HTTP_403", status: 403 });
+      throw Object.assign(new Error("authorization Bearer api-key-secret"), { code: "ZONGZI_HTTP_403", status: 403 });
     },
   });
   await rejectsSafely(() => verifier.verifyRfbsWarehouse(validInput()), "RFBS_WAREHOUSE_SCOPE_MISMATCH");

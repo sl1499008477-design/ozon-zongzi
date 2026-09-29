@@ -7,21 +7,26 @@ import {
 } from "./account-shared-ozon-category-contract.mjs";
 
 const SAFE_FAILURE_CODES = new Set([
-  "OZON_CATEGORY_INVALIDATED",
-  "OZON_CATEGORY_NEEDS_REVIEW",
-  "OZON_TAXONOMY_CHANGED",
-  "OZON_TYPE_NOT_FOUND",
-  "OZON_TYPE_AMBIGUOUS",
-  "OZON_TYPE_DUPLICATE",
+  "ZONGZI_CATEGORY_INVALIDATED",
+  "ZONGZI_CATEGORY_NEEDS_REVIEW",
+  "ZONGZI_TAXONOMY_CHANGED",
+  "ZONGZI_TYPE_NOT_FOUND",
+  "ZONGZI_TYPE_AMBIGUOUS",
+  "ZONGZI_TYPE_DUPLICATE",
   "MANUAL_REVIEW_REQUIRED",
 ]);
-const STORED_EVIDENCE_KEYS = Object.freeze([
-  "id", "accountId", "collectItemId", "sourceVersion", "productDraftId",
-  "productDraftVersion", "ozonProductId", "sourceSku", "taxonomyScope",
-  "sourceDescriptionCategoryId", "sourceTypeId", "normalizedPath",
-  "attributeSummary", "provenance", "capturedAt", "rawResponseRef",
-  "rawResponseHash",
-]);
+const STORED_PROVENANCE_EXTRA_KEYS = {
+  ENRICHMENT_CACHE: ["enrichmentSource", "enrichmentContractVersion"],
+  OZON_READ_LOOKUP: [
+    "lookupContractVersion", "requestedOzonProductId", "requestedSourceSku",
+    "matchedOzonProductId", "matchedSourceSku", "triggerProductDraftId", "triggerProductDraftVersion",
+  ],
+  MANUAL_CONFIRMATION: [
+    "confirmationContractVersion", "triggerProductDraftId", "triggerProductDraftVersion",
+    "selectedDescriptionCategoryId", "selectedTypeId", "taxonomyScope", "actorId",
+    "correlationId", "idempotencyKey",
+  ],
+};
 const HASH = /^[0-9a-f]{64}$/u;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -32,7 +37,7 @@ function repositoryError(code, status = 400) {
 }
 
 function invalid() {
-  return repositoryError("ACCOUNT_SHARED_OZON_CATEGORY_CONTRACT_INVALID", 400);
+  return repositoryError("ACCOUNT_SHARED_ZONGZI_CATEGORY_CONTRACT_INVALID", 400);
 }
 
 function exactObject(value, keys) {
@@ -102,45 +107,61 @@ function deepFreeze(value, seen = new WeakSet()) {
   return Object.freeze(value);
 }
 
-function normalizeStoredEvidence(record) {
-  try {
-    exactObject(record, STORED_EVIDENCE_KEYS);
-    const { id, ...input } = record;
-    return Object.freeze({ id: text(id), ...sourceCategoryEvidence(input) });
-  } catch {
-    throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
-  }
+function storedPositiveNumber(value) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
+// Stored facts have already crossed the input boundary. Project known fields without
+// reapplying capture-time metadata limits or exposing historical vendor extensions.
 function publicEvidence(record) {
-  return normalizeStoredEvidence(record);
-}
-
-function validateStoredEvidenceRows(state) {
   try {
-    const rows = state.collectOzonCategorySourceEvidence;
-    if (!Array.isArray(rows) || types.isProxy(rows)
-      || Object.getPrototypeOf(rows) !== Array.prototype) throw invalid();
-    const descriptors = Object.getOwnPropertyDescriptors(rows);
-    const lengthDescriptor = descriptors.length;
-    if (!lengthDescriptor || lengthDescriptor.get || lengthDescriptor.set
-      || lengthDescriptor.value !== rows.length || lengthDescriptor.enumerable !== false
-      || lengthDescriptor.configurable !== false || lengthDescriptor.writable !== true) throw invalid();
-    let elements = 0;
-    for (const key of Reflect.ownKeys(descriptors)) {
-      const descriptor = descriptors[key];
-      if (descriptor.get || descriptor.set) throw invalid();
-      if (key === "length") continue;
-      if (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key)
-        || Number(key) >= rows.length || descriptor.enumerable !== true) throw invalid();
-      elements += 1;
+    const provenance = record.provenance ?? {};
+    const sourceKind = provenance.sourceKind ?? (record.productDraftId ? "PRODUCT_DRAFT" : null);
+    const projected = {
+      id: text(record.id),
+      accountId: text(record.accountId),
+      collectItemId: record.collectItemId === null ? null : text(record.collectItemId),
+      sourceVersion: text(record.sourceVersion),
+      productDraftId: typeof record.productDraftId === "string" ? record.productDraftId : null,
+      productDraftVersion: storedPositiveNumber(record.productDraftVersion),
+      ozonProductId: storedPositiveNumber(record.ozonProductId),
+      sourceSku: typeof record.sourceSku === "string" ? record.sourceSku : null,
+      taxonomyScope: text(record.taxonomyScope, 80),
+      sourceDescriptionCategoryId: rowNumber(record.sourceDescriptionCategoryId),
+      sourceTypeId: rowNumber(record.sourceTypeId),
+      normalizedPath: Array.isArray(record.normalizedPath)
+        ? record.normalizedPath.filter((part) => typeof part === "string") : [],
+      attributeSummary: Array.isArray(record.attributeSummary)
+        ? record.attributeSummary.flatMap((attribute) => {
+          if (!attribute || typeof attribute.key !== "string"
+            || (attribute.value !== null && !["string", "number", "boolean"].includes(typeof attribute.value))) return [];
+          const projected = { key: attribute.key, value: attribute.value };
+          const dictionaryValueId = storedPositiveNumber(attribute.dictionaryValueId);
+          if (dictionaryValueId !== null) projected.dictionaryValueId = dictionaryValueId;
+          return [projected];
+        }) : [],
+      provenance: null,
+      capturedAt: record.capturedAt ?? null,
+      rawResponseRef: record.rawResponseRef ?? null,
+      rawResponseHash: record.rawResponseHash ?? null,
+    };
+    projected.provenance = {
+      accountId: projected.accountId, collectItemId: projected.collectItemId,
+      sourceKind, sourceRecordId: provenance.sourceRecordId ?? projected.productDraftId,
+      rawResponseRef: projected.rawResponseRef, rawResponseHash: projected.rawResponseHash,
+      capturedAt: projected.capturedAt,
+    };
+    for (const key of STORED_PROVENANCE_EXTRA_KEYS[sourceKind] ?? []) {
+      const value = provenance[key];
+      if (value === null || typeof value === "string" || typeof value === "number") {
+        projected.provenance[key] = value;
+      }
     }
-    if (elements !== rows.length) throw invalid();
-    for (let index = 0; index < rows.length; index += 1) {
-      normalizeStoredEvidence(descriptors[String(index)].value);
-    }
+    return deepFreeze(projected);
   } catch {
-    throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+    throw repositoryError("ZONGZI_CATEGORY_PERSISTENCE_FAILED", 500);
   }
 }
 
@@ -164,8 +185,8 @@ function publicShared(record) {
 function sourceKey(evidence) {
   return [
     evidence.accountId,
-    evidence.provenance.sourceKind,
-    evidence.provenance.sourceRecordId,
+    evidence.provenance?.sourceKind ?? (evidence.productDraftId ? "PRODUCT_DRAFT" : null),
+    evidence.provenance?.sourceRecordId ?? evidence.productDraftId,
     evidence.sourceVersion,
   ].join("\u0001");
 }
@@ -224,7 +245,8 @@ function normalizeState(working) {
     .map((row) => `${row.accountId}\u0001${row.collectItemId}`));
   const backfill = new Map();
   for (const evidence of working.collectOzonCategorySourceEvidence) {
-    if (!evidence?.collectItemId || evidence?.provenance?.sourceKind === "ENRICHMENT_CACHE") continue;
+    const sourceKind = evidence?.provenance?.sourceKind ?? (evidence?.productDraftId ? "PRODUCT_DRAFT" : null);
+    if (!evidence?.collectItemId || !sourceKind || sourceKind === "ENRICHMENT_CACHE") continue;
     const key = `${evidence.accountId}\u0001${evidence.collectItemId}`;
     if (pointedItems.has(key)) continue;
     const item = (Array.isArray(working?.caches?.collectBox) ? working.caches.collectBox : [])
@@ -232,16 +254,16 @@ function normalizeState(working) {
         && String(row?.id || "") === evidence.collectItemId);
     const draftId = item?.currentDraftId ?? item?.current_draft_id ?? null;
     const draftVersion = Number(item?.draftVersion ?? item?.draft_version ?? 0);
-    if (evidence.provenance.sourceKind === "OZON_READ_LOOKUP") continue;
-    if (evidence.provenance.sourceKind === "PRODUCT_DRAFT"
+    if (sourceKind === "OZON_READ_LOOKUP") continue;
+    if (sourceKind === "PRODUCT_DRAFT"
       && ((draftId !== null && String(draftId) !== evidence.productDraftId)
         || (draftVersion > 0 && draftVersion !== evidence.productDraftVersion))) continue;
     backfill.set(key, {
       accountId: evidence.accountId,
       collectItemId: evidence.collectItemId,
       evidenceId: evidence.id,
-      sourceKind: evidence.provenance.sourceKind,
-      sourceRecordId: evidence.provenance.sourceRecordId,
+      sourceKind,
+      sourceRecordId: evidence.provenance?.sourceRecordId ?? evidence.productDraftId,
       sourceVersion: evidence.sourceVersion,
     });
   }
@@ -281,6 +303,28 @@ function enqueueState(state, operation) {
 function readInput(input, listKey) {
   exactObject(input, ["accountId", listKey]);
   return { accountId: text(input.accountId), ids: idList(input[listKey]) };
+}
+
+function readSourceCategoriesInput(input) {
+  exactObject(input, ["accountId", "categories"]);
+  const accountId = text(input.accountId);
+  const rows = input.categories;
+  if (!Array.isArray(rows) || types.isProxy(rows) || rows.length > 500) throw invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(rows);
+  if (Reflect.ownKeys(descriptors).some((key) => key !== "length"
+    && (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key)
+      || descriptors[key].get || descriptors[key].set || !descriptors[key].enumerable))) throw invalid();
+  const categories = Array.from({ length: rows.length }, (_, index) => {
+    const category = descriptors[index]?.value;
+    exactObject(category, ["sourceDescriptionCategoryId", "sourceTypeId", "taxonomyScope"]);
+    if (category.taxonomyScope !== "OZON:DEFAULT") throw invalid();
+    return {
+      sourceDescriptionCategoryId: positiveInteger(category.sourceDescriptionCategoryId),
+      sourceTypeId: positiveInteger(category.sourceTypeId),
+      taxonomyScope: category.taxonomyScope,
+    };
+  });
+  return { accountId, categories };
 }
 
 function transitionBase(input, extraKeys = []) {
@@ -371,8 +415,8 @@ function manualEvidence(input, draftId, draftVersion) {
 }
 
 function rowNumber(value) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+  const number = storedPositiveNumber(value);
+  if (number === null) throw repositoryError("ZONGZI_CATEGORY_PERSISTENCE_FAILED", 500);
   return number;
 }
 
@@ -398,74 +442,39 @@ function mapSharedRow(row) {
 }
 
 function categoryEvidenceFromRow(row) {
-  const stored = row?.provenance?.categoryEvidence;
-  if (stored) return { id: text(row.id), ...sourceCategoryEvidence(stored) };
-  const sourceKind = text(row.source_kind, 40);
+  const stored = row.provenance?.categoryEvidence ?? {};
   const capturedAt = new Date(row.captured_at).toISOString();
-  const common = {
-    accountId: text(row.account_id),
-    sourceVersion: text(row.source_version),
-    ozonProductId: null,
-    taxonomyScope: text(row.taxonomy_scope, 80),
-    sourceDescriptionCategoryId: rowNumber(row.source_description_category_id),
-    sourceTypeId: rowNumber(row.source_type_id),
-    normalizedPath: [],
-    attributeSummary: [],
+  // Columns carry the account, source identity and category/version. The JSON
+  // envelope is optional historical metadata and must never override those columns.
+  return publicEvidence({
+    id: row.id,
+    accountId: row.account_id,
+    collectItemId: row.collect_item_id,
+    sourceVersion: row.source_version,
+    productDraftId: row.product_draft_id,
+    productDraftVersion: row.source_kind === "PRODUCT_DRAFT"
+      ? storedPositiveNumber(String(row.source_version).replace(/^draft:/u, "")) : null,
+    ozonProductId: stored.ozonProductId,
+    sourceSku: row.source_kind === "ENRICHMENT_CACHE" ? row.enrichment_sku : stored.sourceSku,
+    taxonomyScope: row.taxonomy_scope,
+    sourceDescriptionCategoryId: row.source_description_category_id,
+    sourceTypeId: row.source_type_id,
+    normalizedPath: stored.normalizedPath ?? row.provenance?.normalizedPath,
+    attributeSummary: stored.attributeSummary ?? row.provenance?.attributeSummary,
     capturedAt,
-    rawResponseRef: text(row.raw_response_ref),
-    rawResponseHash: sha256(row.raw_response_hash),
-  };
-  if (sourceKind === "PRODUCT_DRAFT") {
-    const productDraftVersion = Number(row.source_version);
-    return {
-      id: text(row.id),
-      ...sourceCategoryEvidence({
-        ...common,
-        collectItemId: text(row.collect_item_id),
-        productDraftId: text(row.product_draft_id),
-        productDraftVersion: positiveInteger(productDraftVersion),
-        sourceSku: null,
-        provenance: {
-          accountId: text(row.account_id),
-          collectItemId: text(row.collect_item_id),
-          sourceKind,
-          sourceRecordId: text(row.source_record_id),
-          rawResponseRef: text(row.raw_response_ref),
-          rawResponseHash: sha256(row.raw_response_hash),
-          capturedAt,
-        },
-      }),
-    };
-  }
-  if (sourceKind === "ENRICHMENT_CACHE") {
-    return {
-      id: text(row.id),
-      ...sourceCategoryEvidence({
-        ...common,
-        collectItemId: null,
-        productDraftId: null,
-        productDraftVersion: null,
-        sourceSku: text(row.enrichment_sku),
-        provenance: {
-          accountId: text(row.account_id),
-          collectItemId: null,
-          sourceKind,
-          sourceRecordId: text(row.source_record_id),
-          rawResponseRef: text(row.raw_response_ref),
-          rawResponseHash: sha256(row.raw_response_hash),
-          capturedAt,
-          enrichmentSource: text(row.enrichment_source, 80),
-          enrichmentContractVersion: text(row.enrichment_contract_version, 120),
-        },
-      }),
-    };
-  }
-  if (sourceKind === "MANUAL_CONFIRMATION") {
-    const categoryEvidence = row.provenance?.categoryEvidence;
-    if (!categoryEvidence) throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
-    return { id: text(row.id), ...sourceCategoryEvidence(categoryEvidence) };
-  }
-  throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+    rawResponseRef: row.raw_response_ref,
+    rawResponseHash: row.raw_response_hash,
+    provenance: {
+      ...row.provenance,
+      ...stored.provenance,
+      sourceKind: row.source_kind,
+      sourceRecordId: row.source_record_id,
+      ...(row.source_kind === "ENRICHMENT_CACHE" ? {
+        enrichmentSource: row.enrichment_source,
+        enrichmentContractVersion: row.enrichment_contract_version,
+      } : {}),
+    },
+  });
 }
 
 function makeEvent({
@@ -515,7 +524,7 @@ function recordEvidenceInState(working, evidenceInput, { idFactory }) {
   );
   if (existing) {
     if (!sameObservation(existing, evidence)) {
-      throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
+      throw repositoryError("ZONGZI_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
     }
     const shared = working.accountOzonSharedCategories.find(
       (row) => signature(row) === signature(existing),
@@ -540,7 +549,7 @@ function recordEvidenceInState(working, evidenceInput, { idFactory }) {
     const existingLookup = working.collectOzonCategoryLookupEvidence.find((row) =>
       row.accountId === lookup.accountId && row.id === lookup.id);
     if (existingLookup && JSON.stringify(existingLookup) !== JSON.stringify(lookup)) {
-      throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
+      throw repositoryError("ZONGZI_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
     }
     if (!existingLookup) working.collectOzonCategoryLookupEvidence.push(lookup);
   }
@@ -631,11 +640,11 @@ function findSharedForEvidence(working, accountId, evidenceId) {
   const evidence = working.collectOzonCategorySourceEvidence.find(
     (row) => row.accountId === accountId && row.id === evidenceId,
   );
-  if (!evidence) throw repositoryError("OZON_CATEGORY_EVIDENCE_NOT_FOUND", 404);
+  if (!evidence) throw repositoryError("ZONGZI_CATEGORY_EVIDENCE_NOT_FOUND", 404);
   const shared = working.accountOzonSharedCategories.find(
     (row) => row.accountId === accountId && signature(row) === signature(evidence),
   );
-  if (!shared) throw repositoryError("OZON_CATEGORY_SHARED_NOT_FOUND", 404);
+  if (!shared) throw repositoryError("ZONGZI_CATEGORY_SHARED_NOT_FOUND", 404);
   return { evidence, shared };
 }
 
@@ -653,7 +662,7 @@ function transitionInState(working, {
     && shared.evidenceId === evidenceId
     && Object.entries(desired).every(([key, value]) => shared[key] === value)) return shared;
   if (shared.version !== expectedVersion) {
-    throw repositoryError("OZON_CATEGORY_SHARED_VERSION_CONFLICT", 409);
+    throw repositoryError("ZONGZI_CATEGORY_SHARED_VERSION_CONFLICT", 409);
   }
   const previous = clone(shared);
   Object.assign(shared, desired, {
@@ -677,11 +686,11 @@ function confirmManualInState(working, input, { idFactory }) {
     row.accountId === input.accountId && row.idempotencyKey === input.idempotencyKey);
   if (existingObservation) {
     if (existingObservation.requestHash !== input.requestHash) {
-      throw repositoryError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
+      throw repositoryError("ZONGZI_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
     }
     const shared = working.accountOzonSharedCategories.find((row) =>
       row.accountId === input.accountId && row.evidenceId === existingObservation.sourceEvidenceId);
-    if (!shared) throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+    if (!shared) throw repositoryError("ZONGZI_CATEGORY_PERSISTENCE_FAILED", 500);
     return shared;
   }
   const item = (Array.isArray(working?.caches?.collectBox) ? working.caches.collectBox : [])
@@ -698,13 +707,8 @@ function confirmManualInState(working, input, { idFactory }) {
     ?? pointedEvidence?.provenance?.triggerProductDraftId
     ?? (pointer?.sourceKind === "PRODUCT_DRAFT" ? pointer.sourceRecordId : null);
   if (!item || !pointer || !draftId || !Number.isSafeInteger(draftVersion) || draftVersion <= 0
-    || input.expectedSourceVersion !== `draft:${draftVersion}`
-    || (pointer.sourceKind === "PRODUCT_DRAFT"
-      && (pointer.sourceRecordId !== String(draftId)
-        || ![String(draftVersion), `draft:${draftVersion}`].includes(pointer.sourceVersion)))
-    || (pointedEvidence?.provenance?.triggerProductDraftVersion
-      && pointedEvidence.provenance.triggerProductDraftVersion !== draftVersion)) {
-    throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
+    || input.expectedSourceVersion !== `draft:${draftVersion}`) {
+    throw repositoryError("ZONGZI_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
   }
   const evidence = manualEvidence(input, String(draftId), draftVersion);
   const evidenceRecord = { id: text(idFactory()), ...evidence };
@@ -776,13 +780,12 @@ export function createJsonAccountSharedOzonCategoryRepository({
 
   async function write(operation) {
     return enqueueState(state, async () => {
-      if (Array.isArray(state.collectOzonCategorySourceEvidence)) validateStoredEvidenceRows(state);
       const working = normalizeState(clone(state));
       const result = operation(working);
       try {
         await persist(working);
       } catch {
-        throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+        throw repositoryError("ZONGZI_CATEGORY_PERSISTENCE_FAILED", 500);
       }
       commitState(state, working);
       return result;
@@ -832,7 +835,6 @@ export function createJsonAccountSharedOzonCategoryRepository({
     async readCurrentEvidence(input) {
       const { accountId, ids } = readInput(input, "collectItemIds");
       await migrate();
-      validateStoredEvidenceRows(state);
       const pointerIds = new Map(state.collectOzonCategoryCurrentSources
         .filter((row) => row.accountId === accountId && ids.includes(row.collectItemId))
         .map((row) => [row.collectItemId, row.evidenceId]));
@@ -847,11 +849,21 @@ export function createJsonAccountSharedOzonCategoryRepository({
     async readSharedForEvidence(input) {
       const { accountId, ids } = readInput(input, "evidenceIds");
       await migrate();
-      validateStoredEvidenceRows(state);
       const signatures = new Set(state.collectOzonCategorySourceEvidence
         .filter((row) => row.accountId === accountId && ids.includes(row.id))
         .map(signature));
       return deepFreeze(state.accountOzonSharedCategories
+        .filter((row) => row.accountId === accountId && signatures.has(signature(row)))
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .map(publicShared));
+    },
+
+    async readSharedForSourceCategories(input) {
+      const { accountId, categories } = readSourceCategoriesInput(input);
+      if (!categories.length) return Object.freeze([]);
+      const signatures = new Set(categories.map((category) => signature({ accountId, ...category })));
+      const rows = Array.isArray(state.accountOzonSharedCategories) ? state.accountOzonSharedCategories : [];
+      return deepFreeze(rows
         .filter((row) => row.accountId === accountId && signatures.has(signature(row)))
         .sort((left, right) => left.id.localeCompare(right.id))
         .map(publicShared));
@@ -888,9 +900,9 @@ async function withTransaction(pool, operation) {
     return result;
   } catch (error) {
     if (client) await client.query("ROLLBACK").catch(() => {});
-    if (String(error?.code || "").startsWith("OZON_")
-      || error?.code === "ACCOUNT_SHARED_OZON_CATEGORY_CONTRACT_INVALID") throw error;
-    throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+    if (String(error?.code || "").startsWith("ZONGZI_")
+      || error?.code === "ACCOUNT_SHARED_ZONGZI_CATEGORY_CONTRACT_INVALID") throw error;
+    throw repositoryError("ZONGZI_CATEGORY_PERSISTENCE_FAILED", 500);
   } finally {
     client?.release();
   }
@@ -914,7 +926,7 @@ async function recordEvidencePostgres(client, evidenceInput, { idFactory }) {
     const existing = categoryEvidenceFromRow(existingResult.rows[0]);
     const { id, ...existingEvidence } = existing;
     if (!sameObservation(existingEvidence, evidence)) {
-      throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
+      throw repositoryError("ZONGZI_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
     }
     const sharedResult = await client.query(
       `SELECT * FROM account_ozon_shared_categories
@@ -962,7 +974,7 @@ async function recordEvidencePostgres(client, evidenceInput, { idFactory }) {
       lookupRow.response_hash,
       new Date(lookupRow.captured_at).toISOString()] : [];
     if (JSON.stringify(actualLookup) !== JSON.stringify(expectedLookup)) {
-      throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
+      throw repositoryError("ZONGZI_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
     }
   }
   const evidenceRow = (await client.query(
@@ -1100,7 +1112,7 @@ async function transitionPostgres(client, {
       WHERE account_id=$1 AND id=$2`,
     [accountId, evidenceId],
   )).rows[0];
-  if (!evidenceRow) throw repositoryError("OZON_CATEGORY_EVIDENCE_NOT_FOUND", 404);
+  if (!evidenceRow) throw repositoryError("ZONGZI_CATEGORY_EVIDENCE_NOT_FOUND", 404);
   const sharedIdentity = (await client.query(
     `SELECT id FROM account_ozon_shared_categories
       WHERE account_id=$1 AND source_description_category_id=$2
@@ -1108,7 +1120,7 @@ async function transitionPostgres(client, {
     [accountId, rowNumber(evidenceRow.source_description_category_id),
       rowNumber(evidenceRow.source_type_id), text(evidenceRow.taxonomy_scope, 80)],
   )).rows[0];
-  if (!sharedIdentity) throw repositoryError("OZON_CATEGORY_SHARED_NOT_FOUND", 404);
+  if (!sharedIdentity) throw repositoryError("ZONGZI_CATEGORY_SHARED_NOT_FOUND", 404);
   await client.query(
     "SELECT pg_advisory_xact_lock(account_ozon_shared_category_lease_key($1,$2))",
     [accountId, sharedIdentity.id],
@@ -1121,13 +1133,13 @@ async function transitionPostgres(client, {
     [accountId, rowNumber(evidenceRow.source_description_category_id),
       rowNumber(evidenceRow.source_type_id), text(evidenceRow.taxonomy_scope, 80), sharedIdentity.id],
   )).rows[0];
-  if (!sharedRow) throw repositoryError("OZON_CATEGORY_SHARED_NOT_FOUND", 404);
+  if (!sharedRow) throw repositoryError("ZONGZI_CATEGORY_SHARED_NOT_FOUND", 404);
   const current = mapSharedRow(sharedRow);
   if (current.version === expectedVersion + 1
     && Object.entries(desired).every(([key, value]) => current[key] === value)
     && current.evidenceId === evidenceId) return current;
   if (current.version !== expectedVersion) {
-    throw repositoryError("OZON_CATEGORY_SHARED_VERSION_CONFLICT", 409);
+    throw repositoryError("ZONGZI_CATEGORY_SHARED_VERSION_CONFLICT", 409);
   }
   const updated = (await client.query(
     `UPDATE account_ozon_shared_categories
@@ -1145,7 +1157,7 @@ async function transitionPostgres(client, {
       transitionedAt, expectedVersion,
     ],
   )).rows[0];
-  if (!updated) throw repositoryError("OZON_CATEGORY_SHARED_VERSION_CONFLICT", 409);
+  if (!updated) throw repositoryError("ZONGZI_CATEGORY_SHARED_VERSION_CONFLICT", 409);
   return mapSharedRow(updated);
 }
 
@@ -1171,7 +1183,7 @@ async function confirmManualPostgres(client, input, { idFactory }) {
   )).rows[0];
   if (replay) {
     if (replay.request_hash !== input.requestHash) {
-      throw repositoryError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
+      throw repositoryError("ZONGZI_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
     }
     return mapSharedRow(replay);
   }
@@ -1187,27 +1199,14 @@ async function confirmManualPostgres(client, input, { idFactory }) {
   const draftVersion = Number(basis?.current_draft_version);
   if (!basis || !Number.isSafeInteger(draftVersion) || draftVersion <= 0
     || input.expectedSourceVersion !== `draft:${draftVersion}`) {
-    throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
+    throw repositoryError("ZONGZI_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
   }
   const current = (await client.query(
-    `SELECT pointer.*,evidence.provenance
+    `SELECT pointer.*
        FROM collect_ozon_category_current_sources AS pointer
-       JOIN collect_ozon_category_source_evidence AS evidence
-         ON evidence.account_id=pointer.account_id AND evidence.id=pointer.source_evidence_id
       WHERE pointer.account_id=$1 AND pointer.collect_item_id=$2 FOR UPDATE OF pointer`,
     [input.accountId, input.collectItemId],
   )).rows[0] ?? null;
-  if (current) {
-    const triggerDraftId = current.source_kind === "PRODUCT_DRAFT"
-      ? current.source_record_id
-      : current.provenance?.categoryEvidence?.provenance?.triggerProductDraftId;
-    const triggerDraftVersion = current.source_kind === "PRODUCT_DRAFT"
-      ? Number(String(current.source_version).replace(/^draft:/u, ""))
-      : Number(current.provenance?.categoryEvidence?.provenance?.triggerProductDraftVersion);
-    if (triggerDraftId !== basis.current_draft_id || triggerDraftVersion !== draftVersion) {
-      throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
-    }
-  }
   const evidence = manualEvidence(input, basis.current_draft_id, draftVersion);
   const evidenceId = text(idFactory());
   const evidenceRow = (await client.query(
@@ -1305,7 +1304,7 @@ async function confirmManualPostgres(client, input, { idFactory }) {
       [...pointerParams, current.source_evidence_id, current.source_kind,
         current.source_record_id, current.source_version],
     );
-    if (updated.rowCount !== 1) throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
+    if (updated.rowCount !== 1) throw repositoryError("ZONGZI_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
   } else {
     const inserted = await client.query(
       `INSERT INTO collect_ozon_category_current_sources
@@ -1313,7 +1312,7 @@ async function confirmManualPostgres(client, input, { idFactory }) {
        VALUES ($1,$2,$3,'MANUAL_CONFIRMATION',$4,$5,$6) ON CONFLICT DO NOTHING`,
       pointerParams,
     );
-    if (inserted.rowCount !== 1) throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
+    if (inserted.rowCount !== 1) throw repositoryError("ZONGZI_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
   }
   categoryEvidenceFromRow(evidenceRow);
   return mapSharedRow(sharedRow);
@@ -1382,10 +1381,10 @@ export function createPostgresAccountSharedOzonCategoryRepository({
             ORDER BY current_source.collect_item_id`,
           [accountId, ids],
         )).rows;
-        return deepFreeze(rows.map((row) => publicEvidence(categoryEvidenceFromRow(row))));
+        return deepFreeze(rows.map(categoryEvidenceFromRow));
       } catch (error) {
-        if (error?.code === "OZON_CATEGORY_PERSISTENCE_FAILED") throw error;
-        throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+        if (error?.code === "ZONGZI_CATEGORY_PERSISTENCE_FAILED") throw error;
+        throw repositoryError("ZONGZI_CATEGORY_PERSISTENCE_FAILED", 500);
       }
     },
 
@@ -1407,7 +1406,27 @@ export function createPostgresAccountSharedOzonCategoryRepository({
         )).rows;
         return deepFreeze(rows.map((row) => publicShared(mapSharedRow(row))));
       } catch {
-        throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+        throw repositoryError("ZONGZI_CATEGORY_PERSISTENCE_FAILED", 500);
+      }
+    },
+
+    async readSharedForSourceCategories(input) {
+      const { accountId, categories } = readSourceCategoriesInput(input);
+      if (!categories.length) return Object.freeze([]);
+      try {
+        const rows = (await pool.query(
+          `SELECT shared.*
+             FROM account_ozon_shared_categories AS shared
+            WHERE shared.account_id=$1
+              AND (shared.source_description_category_id,shared.source_type_id,shared.taxonomy_scope)
+                IN (SELECT * FROM unnest($2::bigint[], $3::bigint[], $4::text[]))
+            ORDER BY shared.id`,
+          [accountId, categories.map((row) => row.sourceDescriptionCategoryId),
+            categories.map((row) => row.sourceTypeId), categories.map((row) => row.taxonomyScope)],
+        )).rows;
+        return deepFreeze(rows.map((row) => publicShared(mapSharedRow(row))));
+      } catch {
+        throw repositoryError("ZONGZI_CATEGORY_PERSISTENCE_FAILED", 500);
       }
     },
 

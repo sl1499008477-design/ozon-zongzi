@@ -6,7 +6,10 @@ const REQUEST_KEY = /^auto-listing-plan-[a-f0-9]{64}$/u;
 const RESERVE_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "profileId", "profileVersion",
   "inputHash", "expectedStatusVersion", "requestKey", "planningContract", "skeletonHash",
+  "gatewayConnectionId", "gatewayConnectionVersion",
 ]);
+const SOURCE_IMAGE_BINDING_KEYS = ["sourceImageAnalysisRunId", "sourceImageIntelligenceHash"];
+const INTELLIGENT_RESERVE_KEYS = new Set([...RESERVE_KEYS, ...SOURCE_IMAGE_BINDING_KEYS]);
 const SAVE_KEYS = new Set([
   ...RESERVE_KEYS,
   "reservationToken", "strategyVersionId", "sourceHash", "strategyHash", "configHash",
@@ -14,14 +17,27 @@ const SAVE_KEYS = new Set([
   "plannerModel", "promptTemplateVersion", "regeneration",
   "gatewayRequestId", "plan", "planHash",
 ]);
+const INTELLIGENT_SAVE_KEYS = new Set([...SAVE_KEYS, ...SOURCE_IMAGE_BINDING_KEYS]);
 const RELEASE_KEYS = new Set([
   "accountId", "jobId", "itemId", "inputHash", "expectedStatusVersion", "reservationToken", "errorCode",
+  "gatewayConnectionId", "gatewayConnectionVersion",
 ]);
+const CHANNEL_RELEASE_KEYS = new Set([
+  ...RESERVE_KEYS, "attemptId", "reservationToken", "errorCode",
+]);
+const INTELLIGENT_CHANNEL_RELEASE_KEYS = new Set([...CHANNEL_RELEASE_KEYS, ...SOURCE_IMAGE_BINDING_KEYS]);
+const CHANNEL_RELEASED = "AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED";
 const ADVANCE_STAGE_KEYS = new Set([
   "accountId", "jobId", "itemId", "sourceSnapshotId", "attemptId", "inputHash",
   "expectedStatusVersion", "reservationToken", "planningContract", "skeletonHash",
-  "fromStage", "toStage",
+  "fromStage", "toStage", "gatewayConnectionId", "gatewayConnectionVersion",
 ]);
+const INTELLIGENT_ADVANCE_STAGE_KEYS = new Set([...ADVANCE_STAGE_KEYS, ...SOURCE_IMAGE_BINDING_KEYS]);
+const REPLACE_RESERVATION_KEYS = new Set([
+  ...RESERVE_KEYS, "attemptId", "reservationToken",
+  "replacementGatewayConnectionId", "replacementGatewayConnectionVersion",
+]);
+const INTELLIGENT_REPLACE_RESERVATION_KEYS = new Set([...REPLACE_RESERVATION_KEYS, ...SOURCE_IMAGE_BINDING_KEYS]);
 const PLANNER_STAGES = new Set([
   "BUILDING_SKELETON", "FILLING_COPY", "VALIDATING_COPY", "COMPLETED", "FAILED",
 ]);
@@ -35,6 +51,7 @@ const DERIVED_PLAN_KEYS = new Set([
   "regeneration", "gatewayRequestId", "parentPlanId", "derivationKind", "materializationSetHash",
   "planningContract", "skeletonHash",
 ]);
+const INTELLIGENT_DERIVED_PLAN_KEYS = new Set([...DERIVED_PLAN_KEYS, ...SOURCE_IMAGE_BINDING_KEYS]);
 const VISUAL_GROUPS_KEYS = new Set(["sourceHash", "groups", "reasonCodes", "visualGroupsHash"]);
 const VISUAL_GROUP_KEYS = new Set([
   "visualGroupKey", "sourceSkus", "variantIds", "referenceImages", "factEvidence", "reasonCodes",
@@ -154,21 +171,40 @@ function assertScope(input) {
   if (!validVersion(input.expectedStatusVersion)) throw invalid();
 }
 
+function intelligentContract(input) {
+  return input.planningContract === "FIXED_SKELETON_SOURCE_IMAGE_V1";
+}
+
+function validSourceImageBinding(input) {
+  return intelligentContract(input)
+    ? safeIdentifier(input.sourceImageAnalysisRunId) && HASH.test(input.sourceImageIntelligenceHash || "")
+    : !Object.hasOwn(input, "sourceImageAnalysisRunId") && !Object.hasOwn(input, "sourceImageIntelligenceHash");
+}
+
+function reserveProjection(input) {
+  const keys = intelligentContract(input) ? INTELLIGENT_RESERVE_KEYS : RESERVE_KEYS;
+  return Object.fromEntries([...keys].map((key) => [key, input[key]]));
+}
+
 function validateReserve(input) {
-  if (!exactObject(input, RESERVE_KEYS)) throw invalid();
+  if (!exactObject(input, intelligentContract(input) ? INTELLIGENT_RESERVE_KEYS : RESERVE_KEYS)) throw invalid();
   assertScope(input);
   if (!safeIdentifier(input.sourceSnapshotId) || !safeIdentifier(input.profileId)
-    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(input.planningContract)
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(input.planningContract)
     || (input.planningContract === "LEGACY_FULL_PLAN_V3" && input.skeletonHash !== null)
-    || (input.planningContract === "FIXED_SKELETON_V1" && !HASH.test(input.skeletonHash || ""))
+    || (["FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(input.planningContract)
+      && !HASH.test(input.skeletonHash || ""))
+    || !validSourceImageBinding(input)
     || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
+    || !((input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+      || (safeIdentifier(input.gatewayConnectionId) && validVersion(input.gatewayConnectionVersion)))
     || !HASH.test(input.inputHash || "") || !REQUEST_KEY.test(input.requestKey || "")) throw invalid();
   return input;
 }
 
 function validateSave(input) {
-  if (!exactObject(input, SAVE_KEYS)) throw invalid();
-  validateReserve(Object.fromEntries([...RESERVE_KEYS].map((key) => [key, input[key]])));
+  if (!exactObject(input, intelligentContract(input) ? INTELLIGENT_SAVE_KEYS : SAVE_KEYS)) throw invalid();
+  validateReserve(reserveProjection(input));
   for (const key of ["reservationToken", "strategyVersionId"]) {
     if (!safeIdentifier(input[key])) throw invalid();
   }
@@ -219,19 +255,44 @@ function validateRelease(input) {
   if (!exactObject(input, RELEASE_KEYS)) throw invalid();
   assertScope(input);
   if (!HASH.test(input.inputHash || "") || !safeIdentifier(input.reservationToken)
-    || !ERROR_CODE.test(input.errorCode || "")) throw invalid();
+    || !ERROR_CODE.test(input.errorCode || "")
+    || !((input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+      || (safeIdentifier(input.gatewayConnectionId) && validVersion(input.gatewayConnectionVersion)))) throw invalid();
+  return input;
+}
+
+function validateChannelRelease(input) {
+  if (!exactObject(input, intelligentContract(input) ? INTELLIGENT_CHANNEL_RELEASE_KEYS : CHANNEL_RELEASE_KEYS)) throw invalid();
+  validateReserve(reserveProjection(input));
+  if (!safeIdentifier(input.attemptId) || !safeIdentifier(input.reservationToken)
+    || input.errorCode !== CHANNEL_RELEASED) throw invalid();
   return input;
 }
 
 function validateAdvanceStage(input) {
-  if (!exactObject(input, ADVANCE_STAGE_KEYS)) throw invalid();
+  if (!exactObject(input, intelligentContract(input) ? INTELLIGENT_ADVANCE_STAGE_KEYS : ADVANCE_STAGE_KEYS)) throw invalid();
   assertScope(input);
   if (!safeIdentifier(input.sourceSnapshotId) || !safeIdentifier(input.attemptId)
     || !safeIdentifier(input.reservationToken) || !HASH.test(input.inputHash || "")
-    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(input.planningContract)
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(input.planningContract)
     || !PLANNER_STAGES.has(input.fromStage) || !PLANNER_STAGES.has(input.toStage)
     || (input.planningContract === "LEGACY_FULL_PLAN_V3" && input.skeletonHash !== null)
-    || (input.planningContract === "FIXED_SKELETON_V1" && !HASH.test(input.skeletonHash || ""))) throw invalid();
+    || (["FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(input.planningContract)
+      && !HASH.test(input.skeletonHash || ""))
+    || !validSourceImageBinding(input)
+    || !((input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+      || (safeIdentifier(input.gatewayConnectionId) && validVersion(input.gatewayConnectionVersion)))) throw invalid();
+  return input;
+}
+
+function validateReplaceReservation(input) {
+  if (!exactObject(input, intelligentContract(input) ? INTELLIGENT_REPLACE_RESERVATION_KEYS : REPLACE_RESERVATION_KEYS)) throw invalid();
+  validateReserve(reserveProjection(input));
+  if (!safeIdentifier(input.attemptId) || !safeIdentifier(input.reservationToken)
+    || !((input.replacementGatewayConnectionId === null
+        && input.replacementGatewayConnectionVersion === null)
+      || (safeIdentifier(input.replacementGatewayConnectionId)
+        && validVersion(input.replacementGatewayConnectionVersion)))) throw invalid();
   return input;
 }
 
@@ -243,7 +304,8 @@ function validateLoad(input) {
 
 function validateDerivedCommand(input) {
   if (!exactObject(input, DERIVED_COMMAND_KEYS) || !exactObject(input.scope, DERIVED_SCOPE_KEYS)
-    || !exactObject(input.derivedPlan, DERIVED_PLAN_KEYS)) throw invalid();
+    || !exactObject(input.derivedPlan, intelligentContract(input.derivedPlan)
+      ? INTELLIGENT_DERIVED_PLAN_KEYS : DERIVED_PLAN_KEYS)) throw invalid();
   const { scope, derivedPlan } = input;
   assertScope(scope);
   if (!safeIdentifier(scope.parentPlanId)
@@ -253,9 +315,11 @@ function validateDerivedCommand(input) {
     || derivedPlan.sourceAccountId !== scope.accountId || derivedPlan.jobId !== scope.jobId
     || derivedPlan.itemId !== scope.itemId || derivedPlan.parentPlanId !== scope.parentPlanId
     || derivedPlan.id === derivedPlan.parentPlanId || derivedPlan.derivationKind !== "SOURCE_MATERIALIZATION"
-    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1"].includes(derivedPlan.planningContract)
+    || !["LEGACY_FULL_PLAN_V3", "FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(derivedPlan.planningContract)
     || (derivedPlan.planningContract === "LEGACY_FULL_PLAN_V3" && derivedPlan.skeletonHash !== null)
-    || (derivedPlan.planningContract === "FIXED_SKELETON_V1" && !HASH.test(derivedPlan.skeletonHash || ""))
+    || (["FIXED_SKELETON_V1", "FIXED_SKELETON_SOURCE_IMAGE_V1"].includes(derivedPlan.planningContract)
+      && !HASH.test(derivedPlan.skeletonHash || ""))
+    || !validSourceImageBinding(derivedPlan)
     || !Number.isInteger(derivedPlan.profileVersion) || derivedPlan.profileVersion < 1
     || !["strategyHash", "configHash", "sourceHash", "inputHash", "planHash", "visualGroupsHash", "materializationSetHash"]
       .every((key) => HASH.test(derivedPlan[key] || ""))
@@ -287,6 +351,8 @@ function assertParentMatchesDerived(row, scope, derived) {
     || parent.plannerModel !== derived.plannerModel || parent.promptTemplateVersion !== derived.promptTemplateVersion
     || parent.planningContract !== derived.planningContract
     || (parent.skeletonHash ?? null) !== derived.skeletonHash
+    || (parent.sourceImageAnalysisRunId ?? null) !== (derived.sourceImageAnalysisRunId ?? null)
+    || (parent.sourceImageIntelligenceHash ?? null) !== (derived.sourceImageIntelligenceHash ?? null)
     || parent.planHash !== derived.planHash
     || JSON.stringify(canonical(parent.plan)) !== JSON.stringify(canonical(derived.plan))
     || JSON.stringify(canonical(parent.factRegistry)) !== JSON.stringify(canonical(derived.factRegistry))
@@ -311,6 +377,8 @@ function assertDerivedStoredRow(row, scope, derived) {
     || stored.promptTemplateVersion !== derived.promptTemplateVersion || stored.planHash !== derived.planHash
     || stored.planningContract !== derived.planningContract
     || (stored.skeletonHash ?? null) !== derived.skeletonHash
+    || (stored.sourceImageAnalysisRunId ?? null) !== (derived.sourceImageAnalysisRunId ?? null)
+    || (stored.sourceImageIntelligenceHash ?? null) !== (derived.sourceImageIntelligenceHash ?? null)
     || stored.visualGroupsHash !== derived.visualGroupsHash
     || stored.factRegistryHash !== sha256(derived.factRegistry)
     || stored.gatewayRequestId !== derived.gatewayRequestId || stored.parentPlanId !== derived.parentPlanId
@@ -360,6 +428,8 @@ function assertStoredRow(row, input) {
     || mapped.itemId !== input.itemId || mapped.sourceSnapshotId !== input.sourceSnapshotId
     || mapped.planningContract !== input.planningContract
     || (mapped.skeletonHash ?? null) !== input.skeletonHash
+    || (mapped.sourceImageAnalysisRunId ?? null) !== (input.sourceImageAnalysisRunId ?? null)
+    || (mapped.sourceImageIntelligenceHash ?? null) !== (input.sourceImageIntelligenceHash ?? null)
     || mapped.strategyVersionId !== input.strategyVersionId || mapped.profileId !== input.profileId
     || mapped.profileVersion !== input.profileVersion || mapped.inputHash !== input.inputHash
     || mapped.sourceHash !== input.sourceHash || mapped.strategyHash !== input.strategyHash
@@ -425,33 +495,53 @@ export function createPostgresContentPlanRepository({
       }
 
       const resumable = await client.query(
-        `SELECT id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage
+        `SELECT id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage,
+                source_image_analysis_run_id,source_image_intelligence_hash,
+                gateway_connection_id,gateway_connection_version
            FROM auto_listing_content_plan_attempts
           WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND source_snapshot_id=$4
             AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
             AND expected_status_version=$8 AND request_key=$9 AND planning_contract=$10
             AND skeleton_hash IS NOT DISTINCT FROM $11
+            AND source_image_analysis_run_id IS NOT DISTINCT FROM $12
+            AND source_image_intelligence_hash IS NOT DISTINCT FROM $13
             AND status='PLANNING' AND lease_expires_at <= NOW()
           FOR UPDATE`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.planningContract, input.skeletonHash],
+          input.planningContract, input.skeletonHash, input.sourceImageAnalysisRunId ?? null,
+          input.sourceImageIntelligenceHash ?? null],
       );
       if (resumable.rowCount > 1) throw evidenceConflict();
       if (resumable.rowCount === 1) {
         const resumed = await client.query(
-          `UPDATE auto_listing_content_plan_attempts
+          `UPDATE auto_listing_content_plan_attempts AS attempt
               SET lease_owner=$2,lease_token=$3,
-                  lease_expires_at=NOW() + ($4 * INTERVAL '1 millisecond'),updated_at=NOW()
-            WHERE account_id=$1 AND id=$5 AND status='PLANNING' AND lease_expires_at <= NOW()
-            RETURNING id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage`,
-          [input.accountId, leaseOwner, leaseToken, leaseMs, resumable.rows[0].id],
+                  lease_expires_at=NOW() + ($4 * INTERVAL '1 millisecond'),
+                  gateway_connection_id=CASE WHEN EXISTS (
+                    SELECT 1 FROM auto_listing_content_plan_responses AS response
+                     WHERE response.account_id=attempt.account_id AND response.attempt_id=attempt.id
+                  ) THEN attempt.gateway_connection_id ELSE $5 END,
+                  gateway_connection_version=CASE WHEN EXISTS (
+                    SELECT 1 FROM auto_listing_content_plan_responses AS response
+                     WHERE response.account_id=attempt.account_id AND response.attempt_id=attempt.id
+                  ) THEN attempt.gateway_connection_version ELSE $6 END,
+                  updated_at=NOW()
+            WHERE attempt.account_id=$1 AND attempt.id=$7 AND attempt.status='PLANNING'
+              AND attempt.lease_expires_at <= NOW()
+            RETURNING id,attempt_no,input_hash,planning_contract,skeleton_hash,planner_stage,
+                      source_image_analysis_run_id,source_image_intelligence_hash,
+                      gateway_connection_id,gateway_connection_version`,
+          [input.accountId, leaseOwner, leaseToken, leaseMs, input.gatewayConnectionId,
+            input.gatewayConnectionVersion, resumable.rows[0].id],
         );
         const row = resumed.rows[0];
         if (resumed.rowCount !== 1 || row.id !== resumable.rows[0].id
           || row.input_hash !== input.inputHash || row.planning_contract !== input.planningContract
           || (row.skeleton_hash ?? null) !== (resumable.rows[0].skeleton_hash ?? null)
           || (row.skeleton_hash ?? null) !== input.skeletonHash
+          || (row.source_image_analysis_run_id ?? null) !== (input.sourceImageAnalysisRunId ?? null)
+          || (row.source_image_intelligence_hash ?? null) !== (input.sourceImageIntelligenceHash ?? null)
           || !PLANNER_STAGES.has(row.planner_stage)) throw evidenceConflict();
         await client.query("COMMIT");
         return {
@@ -462,7 +552,14 @@ export function createPostgresContentPlanRepository({
           inputHash: row.input_hash,
           planningContract: row.planning_contract,
           skeletonHash: row.skeleton_hash ?? null,
+          ...(intelligentContract(input) ? {
+            sourceImageAnalysisRunId: row.source_image_analysis_run_id,
+            sourceImageIntelligenceHash: row.source_image_intelligence_hash,
+          } : {}),
           plannerStage: row.planner_stage,
+          gatewayConnectionId: row.gateway_connection_id ?? null,
+          gatewayConnectionVersion: row.gateway_connection_version == null
+            ? null : Number(row.gateway_connection_version),
         };
       }
 
@@ -482,8 +579,11 @@ export function createPostgresContentPlanRepository({
             AND p.id=a.accepted_plan_id
           WHERE a.account_id=$1 AND a.job_id=$2 AND a.item_id=$3 AND a.input_hash=$4
             AND a.planning_contract=$5 AND a.skeleton_hash IS NOT DISTINCT FROM $6
+            AND a.source_image_analysis_run_id IS NOT DISTINCT FROM $7
+            AND a.source_image_intelligence_hash IS NOT DISTINCT FROM $8
             AND a.status='ACCEPTED'`,
-        [input.accountId, input.jobId, input.itemId, input.inputHash, input.planningContract, input.skeletonHash],
+        [input.accountId, input.jobId, input.itemId, input.inputHash, input.planningContract, input.skeletonHash,
+          input.sourceImageAnalysisRunId ?? null, input.sourceImageIntelligenceHash ?? null],
       );
       if (accepted.rows[0]) {
         if (boundary.rows[0].active_content_plan_id !== accepted.rows[0].accepted_plan_id) throw evidenceConflict();
@@ -514,13 +614,16 @@ export function createPostgresContentPlanRepository({
         `INSERT INTO auto_listing_content_plan_attempts (
            id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,input_hash,
            expected_status_version,request_key,attempt_no,status,lease_owner,lease_token,lease_expires_at,
-           planning_contract,skeleton_hash,planner_stage
+           planning_contract,skeleton_hash,planner_stage,gateway_connection_id,gateway_connection_version,
+           source_image_analysis_run_id,source_image_intelligence_hash
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PLANNING',$12,$13,
-           NOW() + ($14 * INTERVAL '1 millisecond'),$15,$16,$17)`,
+           NOW() + ($14 * INTERVAL '1 millisecond'),$15,$16,$17,$18,$19,$20,$21)`,
         [attemptId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
           input.profileId, input.profileVersion, input.inputHash, input.expectedStatusVersion,
           input.requestKey, attemptNo, leaseOwner, leaseToken, leaseMs, input.planningContract, input.skeletonHash,
-          input.planningContract === "LEGACY_FULL_PLAN_V3" ? "FILLING_COPY" : "BUILDING_SKELETON"],
+          input.planningContract === "LEGACY_FULL_PLAN_V3" ? "FILLING_COPY" : "BUILDING_SKELETON",
+          input.gatewayConnectionId, input.gatewayConnectionVersion, input.sourceImageAnalysisRunId ?? null,
+          input.sourceImageIntelligenceHash ?? null],
       );
       await client.query("COMMIT");
       return {
@@ -531,7 +634,13 @@ export function createPostgresContentPlanRepository({
         inputHash: input.inputHash,
         planningContract: input.planningContract,
         skeletonHash: input.skeletonHash,
+        ...(intelligentContract(input) ? {
+          sourceImageAnalysisRunId: input.sourceImageAnalysisRunId,
+          sourceImageIntelligenceHash: input.sourceImageIntelligenceHash,
+        } : {}),
         plannerStage: input.planningContract === "LEGACY_FULL_PLAN_V3" ? "FILLING_COPY" : "BUILDING_SKELETON",
+        gatewayConnectionId: input.gatewayConnectionId,
+        gatewayConnectionVersion: input.gatewayConnectionVersion,
       };
     } catch (error) {
       await rollback(client);
@@ -569,6 +678,10 @@ export function createPostgresContentPlanRepository({
             AND attempt.expected_status_version=$8 AND attempt.request_key=$9
             AND attempt.planning_contract=$11 AND attempt.status='PLANNING'
             AND attempt.skeleton_hash IS NOT DISTINCT FROM $12
+            AND attempt.gateway_connection_id IS NOT DISTINCT FROM $13
+            AND attempt.gateway_connection_version IS NOT DISTINCT FROM $14
+            AND attempt.source_image_analysis_run_id IS NOT DISTINCT FROM $15
+            AND attempt.source_image_intelligence_hash IS NOT DISTINCT FROM $16
             AND attempt.planner_stage='VALIDATING_COPY'
             AND attempt.lease_token=$10 AND attempt.lease_expires_at > NOW()
             AND EXISTS (
@@ -587,7 +700,9 @@ export function createPostgresContentPlanRepository({
           FOR UPDATE`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.reservationToken, input.planningContract, input.skeletonHash],
+          input.reservationToken, input.planningContract, input.skeletonHash,
+          input.gatewayConnectionId, input.gatewayConnectionVersion,
+          input.sourceImageAnalysisRunId ?? null, input.sourceImageIntelligenceHash ?? null],
       );
       if (attempt.rowCount !== 1) throw leaseConflict();
       const inserted = await client.query(
@@ -595,8 +710,9 @@ export function createPostgresContentPlanRepository({
            id,account_id,job_id,item_id,source_snapshot_id,strategy_version_id,profile_id,
            strategy_hash,config_hash,source_hash,input_hash,planner_model,profile_version,
            prompt_template_version,plan,plan_hash,visual_groups_hash,visual_groups,fact_registry_hash,fact_registry,regeneration,
-           gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash,planning_contract,skeleton_hash
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,NULL,NULL,NULL,$23,$24)
+           gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash,planning_contract,skeleton_hash,
+           source_image_analysis_run_id,source_image_intelligence_hash
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,NULL,NULL,NULL,$23,$24,$25,$26)
          RETURNING *`,
         [nextPlanId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
           input.strategyVersionId, input.profileId, input.strategyHash, input.configHash,
@@ -605,7 +721,8 @@ export function createPostgresContentPlanRepository({
           input.visualGroupsHash, JSON.stringify(input.visualGroups),
           input.factRegistryHash, JSON.stringify(input.factRegistry),
           input.regeneration === null ? null : JSON.stringify(input.regeneration), input.gatewayRequestId,
-          input.planningContract, input.skeletonHash],
+          input.planningContract, input.skeletonHash, input.sourceImageAnalysisRunId ?? null,
+          input.sourceImageIntelligenceHash ?? null],
       );
       if (inserted.rowCount !== 1) throw evidenceConflict();
       const accepted = await client.query(
@@ -616,12 +733,18 @@ export function createPostgresContentPlanRepository({
             AND profile_id=$5 AND profile_version=$6 AND input_hash=$7
             AND expected_status_version=$8 AND request_key=$9 AND planning_contract=$12
             AND skeleton_hash IS NOT DISTINCT FROM $13
+            AND gateway_connection_id IS NOT DISTINCT FROM $14
+            AND gateway_connection_version IS NOT DISTINCT FROM $15
+            AND source_image_analysis_run_id IS NOT DISTINCT FROM $16
+            AND source_image_intelligence_hash IS NOT DISTINCT FROM $17
             AND status='PLANNING' AND planner_stage='VALIDATING_COPY'
             AND lease_token=$10 AND lease_expires_at > NOW()
           RETURNING id`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
           input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
-          input.reservationToken, nextPlanId, input.planningContract, input.skeletonHash],
+          input.reservationToken, nextPlanId, input.planningContract, input.skeletonHash,
+          input.gatewayConnectionId, input.gatewayConnectionVersion,
+          input.sourceImageAnalysisRunId ?? null, input.sourceImageIntelligenceHash ?? null],
       );
       if (accepted.rowCount !== 1) throw leaseConflict();
       const switched = await client.query(
@@ -646,6 +769,88 @@ export function createPostgresContentPlanRepository({
     }
   }
 
+  async function replaceContentPlanReservation(rawInput) {
+    const input = validateReplaceReservation(rawInput);
+    const leaseToken = token();
+    const attemptId = id();
+    if (!safeIdentifier(leaseToken) || !safeIdentifier(attemptId)) throw invalid();
+    let client;
+    try {
+      client = await pool.connect();
+      await client.query("BEGIN");
+      const boundary = await client.query(
+        `SELECT id,snapshot_id,status,status_version,active_content_plan_id,planning_contract
+           FROM auto_listing_job_items
+          WHERE account_id=$1 AND job_id=$2 AND id=$3
+          FOR UPDATE`,
+        [input.accountId, input.jobId, input.itemId],
+      );
+      assertItemBoundary(boundary.rows[0], input);
+      const failed = await client.query(
+        `UPDATE auto_listing_content_plan_attempts AS attempt
+            SET status='FAILED',planner_stage='FAILED',error_code='EVIDENCE_NOT_REUSABLE',
+                error_retryable=TRUE,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+            AND attempt.source_snapshot_id=$4 AND attempt.profile_id=$5 AND attempt.profile_version=$6
+            AND attempt.input_hash=$7 AND attempt.expected_status_version=$8
+            AND attempt.request_key=$9 AND attempt.planning_contract=$10
+            AND attempt.skeleton_hash IS NOT DISTINCT FROM $11 AND attempt.id=$12
+            AND attempt.lease_token=$13 AND attempt.status='PLANNING'
+            AND attempt.lease_expires_at > NOW()
+            AND attempt.gateway_connection_id IS NOT DISTINCT FROM $14
+            AND attempt.gateway_connection_version IS NOT DISTINCT FROM $15
+            AND attempt.source_image_analysis_run_id IS NOT DISTINCT FROM $16
+            AND attempt.source_image_intelligence_hash IS NOT DISTINCT FROM $17
+          RETURNING attempt.id,attempt.attempt_no`,
+        [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.profileId,
+          input.profileVersion, input.inputHash, input.expectedStatusVersion, input.requestKey,
+          input.planningContract, input.skeletonHash, input.attemptId, input.reservationToken,
+          input.gatewayConnectionId, input.gatewayConnectionVersion,
+          input.sourceImageAnalysisRunId ?? null, input.sourceImageIntelligenceHash ?? null],
+      );
+      const previous = failed.rows?.[0];
+      if (failed.rowCount !== 1 || previous?.id !== input.attemptId
+        || !Number.isInteger(Number(previous.attempt_no))) throw leaseConflict();
+      const attemptNo = Number(previous.attempt_no) + 1;
+      if (attemptNo > maxAttempts) {
+        throw repositoryError("AUTO_LISTING_CONTENT_PLAN_ATTEMPTS_EXHAUSTED", "图片规划重试次数已用完", false);
+      }
+      await client.query(
+        `INSERT INTO auto_listing_content_plan_attempts (
+           id,account_id,job_id,item_id,source_snapshot_id,profile_id,profile_version,input_hash,
+           expected_status_version,request_key,attempt_no,status,lease_owner,lease_token,lease_expires_at,
+           planning_contract,skeleton_hash,planner_stage,gateway_connection_id,gateway_connection_version,
+           source_image_analysis_run_id,source_image_intelligence_hash
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PLANNING',$12,$13,
+           NOW() + ($14 * INTERVAL '1 millisecond'),$15,$16,'FILLING_COPY',$17,$18,$19,$20)`,
+        [attemptId, input.accountId, input.jobId, input.itemId, input.sourceSnapshotId,
+          input.profileId, input.profileVersion, input.inputHash, input.expectedStatusVersion,
+          input.requestKey, attemptNo, leaseOwner, leaseToken, leaseMs, input.planningContract,
+          input.skeletonHash, input.replacementGatewayConnectionId,
+          input.replacementGatewayConnectionVersion, input.sourceImageAnalysisRunId ?? null,
+          input.sourceImageIntelligenceHash ?? null],
+      );
+      await client.query("COMMIT");
+      return Object.freeze({
+        status: "RESERVED", attemptId, attemptNo, reservationToken: leaseToken,
+        inputHash: input.inputHash, planningContract: input.planningContract,
+        skeletonHash: input.skeletonHash, plannerStage: "FILLING_COPY",
+        gatewayConnectionId: input.replacementGatewayConnectionId,
+        gatewayConnectionVersion: input.replacementGatewayConnectionVersion,
+        ...(intelligentContract(input) ? {
+          sourceImageAnalysisRunId: input.sourceImageAnalysisRunId,
+          sourceImageIntelligenceHash: input.sourceImageIntelligenceHash,
+        } : {}),
+      });
+    } catch (error) {
+      await rollback(client);
+      if (isKnown(error)) throw error;
+      throw unavailable();
+    } finally {
+      release(client);
+    }
+  }
+
   async function releaseContentPlanReservation(rawInput) {
     const input = validateRelease(rawInput);
     try {
@@ -657,6 +862,8 @@ export function createPostgresContentPlanRepository({
                   lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
             WHERE a.account_id=$1 AND a.job_id=$2 AND a.item_id=$3 AND a.input_hash=$4
               AND a.expected_status_version=$5 AND a.status='PLANNING' AND a.lease_token=$6
+              AND a.gateway_connection_id IS NOT DISTINCT FROM $8
+              AND a.gateway_connection_version IS NOT DISTINCT FROM $9
               AND EXISTS (
                 SELECT 1 FROM auto_listing_job_items i
                  WHERE i.account_id=a.account_id AND i.job_id=a.job_id AND i.id=a.item_id
@@ -664,7 +871,8 @@ export function createPostgresContentPlanRepository({
               )
             RETURNING a.id`,
           [input.accountId, input.jobId, input.itemId, input.inputHash,
-            input.expectedStatusVersion, input.reservationToken, input.errorCode],
+            input.expectedStatusVersion, input.reservationToken, input.errorCode,
+            input.gatewayConnectionId, input.gatewayConnectionVersion],
         );
         return { released: released.rowCount === 1 };
       } finally {
@@ -673,6 +881,55 @@ export function createPostgresContentPlanRepository({
     } catch (error) {
       if (isKnown(error)) throw error;
       throw unavailable();
+    }
+  }
+
+  async function releaseContentPlanChannelReservation(rawInput) {
+    const input = validateChannelRelease(rawInput);
+    let client;
+    try {
+      client = await pool.connect();
+      const released = await client.query(
+        `UPDATE auto_listing_content_plan_attempts AS attempt
+            SET lease_owner='AUTO_LISTING_CONTENT_PLAN_CHANNEL_RELEASED',
+                lease_expires_at=NOW(),updated_at=NOW()
+          WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+            AND attempt.source_snapshot_id=$4 AND attempt.id=$5
+            AND attempt.profile_id=$6 AND attempt.profile_version=$7
+            AND attempt.input_hash=$8 AND attempt.expected_status_version=$9
+            AND attempt.request_key=$10 AND attempt.lease_token=$11
+            AND attempt.planning_contract=$12 AND attempt.skeleton_hash IS NOT DISTINCT FROM $13
+            AND attempt.gateway_connection_id IS NOT DISTINCT FROM $14
+            AND attempt.gateway_connection_version IS NOT DISTINCT FROM $15
+            AND attempt.source_image_analysis_run_id IS NOT DISTINCT FROM $16
+            AND attempt.source_image_intelligence_hash IS NOT DISTINCT FROM $17
+            AND attempt.status='PLANNING' AND attempt.lease_expires_at > NOW()
+            AND EXISTS (
+              SELECT 1 FROM auto_listing_job_items AS item
+               WHERE item.account_id=attempt.account_id AND item.job_id=attempt.job_id
+                 AND item.id=attempt.item_id AND item.snapshot_id=attempt.source_snapshot_id
+                 AND item.status='PLANNING' AND item.status_version=attempt.expected_status_version
+                 AND item.planning_contract=attempt.planning_contract
+            )
+          RETURNING attempt.id,attempt.attempt_no,attempt.status,attempt.lease_owner,
+                    attempt.lease_token,attempt.error_code,attempt.error_retryable`,
+        [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.attemptId,
+          input.profileId, input.profileVersion, input.inputHash, input.expectedStatusVersion,
+          input.requestKey, input.reservationToken, input.planningContract, input.skeletonHash,
+          input.gatewayConnectionId, input.gatewayConnectionVersion,
+          input.sourceImageAnalysisRunId ?? null, input.sourceImageIntelligenceHash ?? null],
+      );
+      const row = released.rows?.[0];
+      if (released.rowCount !== 1 || row?.id !== input.attemptId || Number(row.attempt_no) < 1
+        || row.status !== "PLANNING" || row.lease_owner !== CHANNEL_RELEASED
+        || row.lease_token !== input.reservationToken || row.error_code !== null
+        || row.error_retryable !== null) throw leaseConflict();
+      return Object.freeze({ released: true, attemptId: row.id, attemptNo: Number(row.attempt_no) });
+    } catch (error) {
+      if (isKnown(error)) throw error;
+      throw unavailable();
+    } finally {
+      release(client);
     }
   }
 
@@ -688,6 +945,10 @@ export function createPostgresContentPlanRepository({
             AND attempt.source_snapshot_id=$4 AND attempt.id=$5 AND attempt.input_hash=$6
             AND attempt.expected_status_version=$7 AND attempt.lease_token=$8
             AND attempt.planning_contract=$9 AND attempt.skeleton_hash IS NOT DISTINCT FROM $10
+            AND attempt.gateway_connection_id IS NOT DISTINCT FROM $13
+            AND attempt.gateway_connection_version IS NOT DISTINCT FROM $14
+            AND attempt.source_image_analysis_run_id IS NOT DISTINCT FROM $15
+            AND attempt.source_image_intelligence_hash IS NOT DISTINCT FROM $16
             AND attempt.planner_stage=$11 AND attempt.status='PLANNING'
             AND attempt.lease_expires_at > NOW()
             AND EXISTS (
@@ -700,7 +961,9 @@ export function createPostgresContentPlanRepository({
           RETURNING attempt.id,attempt.planning_contract,attempt.skeleton_hash,attempt.planner_stage`,
         [input.accountId, input.jobId, input.itemId, input.sourceSnapshotId, input.attemptId,
           input.inputHash, input.expectedStatusVersion, input.reservationToken,
-          input.planningContract, input.skeletonHash, input.fromStage, input.toStage],
+          input.planningContract, input.skeletonHash, input.fromStage, input.toStage,
+          input.gatewayConnectionId, input.gatewayConnectionVersion,
+          input.sourceImageAnalysisRunId ?? null, input.sourceImageIntelligenceHash ?? null],
       );
       if (advanced.rowCount !== 1) throw leaseConflict();
       const row = advanced.rows[0];
@@ -796,8 +1059,8 @@ export function createPostgresContentPlanRepository({
            strategy_hash,config_hash,source_hash,input_hash,planner_model,profile_version,
            prompt_template_version,plan,plan_hash,visual_groups_hash,visual_groups,fact_registry_hash,fact_registry,
            regeneration,gateway_request_id,parent_plan_id,derivation_kind,materialization_set_hash,
-           planning_contract,skeleton_hash
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,$23,$24,$25,$26,$27)
+           planning_contract,skeleton_hash,source_image_analysis_run_id,source_image_intelligence_hash
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::JSONB,$16,$17,$18::JSONB,$19,$20::JSONB,$21::JSONB,$22,$23,$24,$25,$26,$27,$28,$29)
          RETURNING id`,
         [derivedPlan.id, scope.accountId, scope.jobId, scope.itemId, derivedPlan.sourceSnapshotId,
           derivedPlan.strategyVersionId, derivedPlan.profileId, derivedPlan.strategyHash,
@@ -807,7 +1070,8 @@ export function createPostgresContentPlanRepository({
           factRegistryHash, JSON.stringify(derivedPlan.factRegistry),
           derivedPlan.regeneration === null ? null : JSON.stringify(derivedPlan.regeneration),
           derivedPlan.gatewayRequestId, scope.parentPlanId, derivedPlan.derivationKind,
-          derivedPlan.materializationSetHash, derivedPlan.planningContract, derivedPlan.skeletonHash],
+          derivedPlan.materializationSetHash, derivedPlan.planningContract, derivedPlan.skeletonHash,
+          derivedPlan.sourceImageAnalysisRunId ?? null, derivedPlan.sourceImageIntelligenceHash ?? null],
       );
       if (inserted.rowCount !== 1 || inserted.rows[0]?.id !== derivedPlan.id) throw evidenceConflict();
       const relation = await client.query(
@@ -842,9 +1106,11 @@ export function createPostgresContentPlanRepository({
 
   return Object.freeze({
     reserveContentPlan,
+    replaceContentPlanReservation,
     advanceContentPlanStage,
     saveContentPlan,
     releaseContentPlanReservation,
+    releaseContentPlanChannelReservation,
     loadActiveContentPlan,
     createDerivedMaterializedPlan,
   });

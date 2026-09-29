@@ -1,19 +1,11 @@
+import "./support/dedicated-postgres-test-environment.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Pool } from "pg";
 
 const databaseConfig = process.env.SONLI_MIGRATION_TEST_DATABASE_URL
   ? { connectionString: process.env.SONLI_MIGRATION_TEST_DATABASE_URL }
-  : process.env.POSTGRES_HOST
-    ? {
-        host: process.env.POSTGRES_HOST,
-        port: Number(process.env.POSTGRES_PORT || 5432),
-        database: process.env.POSTGRES_DB,
-        user: process.env.POSTGRES_USER,
-        password: process.env.POSTGRES_PASSWORD,
-        ssl: false,
-      }
-    : null;
+  : null;
 
 test("PostgreSQL accepts forward-compatible ACCEPTED semantics while preserving its envelope", {
   skip: !databaseConfig,

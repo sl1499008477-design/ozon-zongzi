@@ -118,6 +118,27 @@
   min-width: 0;
 }
 
+.ai-model-settings-page .ai-model-settings-channel-add {
+  display: flex;
+  align-items: center;
+}
+
+.ai-model-settings-page .ai-model-settings-channel-add .ant-select {
+  min-width: min(100%, 320px);
+}
+
+.ai-model-settings-page .ai-model-settings-channels {
+  min-width: 0;
+}
+
+.ai-model-settings-page .ai-model-settings-page__grid > .ai-model-settings-channels-card {
+  grid-column: 1 / -1;
+}
+
+.ai-model-settings-page .ai-model-settings-channels .ant-table-cell {
+  overflow-wrap: anywhere;
+}
+
 .ai-model-settings-page .ai-model-settings-history .ant-table-cell {
   overflow-wrap: anywhere;
 }
@@ -135,6 +156,10 @@
   .ai-model-settings-page .ai-model-settings-page__grid > .ant-card:last-child {
     grid-column: auto;
   }
+
+  .ai-model-settings-page .ai-model-settings-page__grid > .ai-model-settings-channels-card {
+    grid-column: auto;
+  }
 }
 
 @media (max-width: 768px) {
@@ -147,3 +172,46 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Administrator workspace: active configuration first, focused sections below. */
+.ai-model-settings-page { padding-top: 64px; gap: 24px; }
+.ai-model-settings-page .ai-model-settings-page__header { align-items: center; }
+.ai-model-settings-page .ai-model-settings-page__header h1 { font-size: 30px; margin: 8px 0; }
+.ai-model-settings-page .ai-model-settings-page__grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.ai-model-settings-page .ant-card { min-width: 0; }
+.ai-model-settings-page .ai-model-settings-fields--selection { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ai-model-settings-page .ai-model-settings-fields--selection > label:first-child { grid-column: 1 / -1; }
+.ai-model-settings-page .ai-settings-active-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 24px; }
+.ai-model-settings-page .ai-settings-active-values > div { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ai-model-settings-page .ai-settings-active-values span { color: #61708f; font-size: 13px; }
+.ai-model-settings-page .ai-settings-active-values strong { color: #071737; overflow-wrap: anywhere; font-size: 17px; }
+.ai-model-settings-page .ai-settings-active-values .ant-tag { align-self: flex-start; }
+.ai-model-settings-page .ai-settings-details { min-width: 0; border: 1px solid #dce8f7; border-radius: 12px; padding: 12px 16px; }
+.ai-model-settings-page .ai-settings-details > summary { cursor: pointer; color: #526381; font-weight: 500; }
+.ai-model-settings-page .ai-settings-details[open] > summary { margin-bottom: 16px; }
+.ai-model-settings-page .ai-settings-details > .ai-model-settings-fields,
+.ai-model-settings-page .ai-settings-details > .ai-settings-details,
+.ai-model-settings-page .ai-settings-details > .ant-space { margin-bottom: 16px; }
+.ai-model-settings-page .ai-settings-details p { color: #61708f; line-height: 1.7; overflow-wrap: anywhere; }
+.ai-model-settings-page .ai-settings-connection-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.ai-model-settings-page .ant-tabs { min-width: 0; }
+.ai-model-settings-page .ant-tabs-nav { margin-bottom: 20px; }
+.ai-model-settings-page #ai-settings-tabs { scroll-margin-top: 100px; }
+@media(max-width: 768px) {
+  .ai-model-settings-page { padding-top: 40px; }
+  .ai-model-settings-page .ai-settings-active-values { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+  .ai-model-settings-page .ai-model-settings-fields--selection { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ai-model-settings-page .ai-settings-change-summary { padding: 14px 16px; border-radius: 12px; background: #f6fafe; }
+.ai-model-settings-page .ai-settings-change-summary p { margin: 8px 0 0; color: #61708f; overflow-wrap: anywhere; }
+.ai-model-settings-page .ant-card-body > button { justify-self: start; }
+@media (max-width: 768px) {
+  .ai-model-settings-page .ai-model-settings-page__header { align-items: stretch; }
+  .ai-model-settings-page .ai-model-settings-page__header > button { align-self: flex-start; }
+}
+
+.ai-model-settings-page .ai-settings-advanced { margin-top: 20px; }
+.ai-model-settings-page .ai-settings-advanced > summary { cursor: pointer; padding: 16px 4px; color: #52688c; }
+.ai-model-settings-page .ai-settings-quick .ai-model-settings-fields { margin-bottom: 20px; }
+.ai-model-settings-page .ai-settings-quick .ai-model-settings-fields--selection > label:first-child { grid-column: auto; }

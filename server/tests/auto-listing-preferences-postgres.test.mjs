@@ -10,7 +10,7 @@ const frozen = normalizeAndHashAutoListingConfig({
 });
 const brandedFrozen = normalizeAndHashAutoListingConfig({
   targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 5,
-  priceAdjustmentKopecks: "100", brandMode: "PREFER_SOURCE",
+  priceAdjustmentKopecks: "100", brandMode: "PREFER_SOURCE", useCategoryStrategy: false,
 });
 
 function preferenceRow(overrides = {}) {
@@ -38,7 +38,12 @@ test("preference save validates owned active FBS inventory scope and records one
         has_active_product_association: true,
       }] };
       if (sql.includes("INSERT INTO auto_listing_preferences")) return { rows: [preferenceRow({
-        image_config: { ...brandedFrozen.config.image, brandMode: "PREFER_SOURCE", defaultsVersion: 2 },
+        image_config: {
+          ...brandedFrozen.config.image,
+          brandMode: "PREFER_SOURCE",
+          useCategoryStrategy: false,
+          defaultsVersion: 3,
+        },
       })] };
       if (sql.includes("INSERT INTO audit_events")) return { rows: [{ event_id: params[0] }], rowCount: 1 };
       return { rows: [] };
@@ -56,11 +61,13 @@ test("preference save validates owned active FBS inventory scope and records one
   assert.equal(result.configVersion, 1);
   assert.equal(result.accountId, "account-a");
   assert.equal(result.brandMode, "PREFER_SOURCE");
-  assert.equal(result.imageDefaultsVersion, 2);
+  assert.equal(result.useCategoryStrategy, false);
+  assert.equal(result.imageDefaultsVersion, 3);
   assert.deepEqual(result.image, brandedFrozen.config.image);
   const preferenceInsert = calls.find(([sql]) => sql.includes("INSERT INTO auto_listing_preferences"));
   assert.equal(JSON.parse(preferenceInsert[1][6]).brandMode, "PREFER_SOURCE");
-  assert.equal(JSON.parse(preferenceInsert[1][6]).defaultsVersion, 2);
+  assert.equal(JSON.parse(preferenceInsert[1][6]).useCategoryStrategy, false);
+  assert.equal(JSON.parse(preferenceInsert[1][6]).defaultsVersion, 3);
   assert.ok(calls.some(([sql]) => sql.includes("has_active_product_association")));
   assert.ok(calls.some(([sql]) => sql.includes("INSERT INTO audit_events")));
   assert.deepEqual(calls.map(([sql]) => sql).filter((sql) => ["BEGIN", "COMMIT", "ROLLBACK", "RELEASE"].includes(sql)), [
@@ -188,6 +195,10 @@ test("preference save rejects unsupported or malformed RFBS-like warehouse state
 
 test("preference save rejects stale versions before writing", async () => {
   let writes = 0;
+  const changed = normalizeAndHashAutoListingConfig({
+    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 6,
+    priceAdjustmentKopecks: "100",
+  });
   const client = {
     async query(sql) {
       if (sql.includes("SELECT id FROM accounts")) return { rows: [{ id: "account-a" }] };
@@ -200,9 +211,49 @@ test("preference save rejects stale versions before writing", async () => {
   const repository = createPostgresAutoListingPreferencesRepository({ pool: { async query() {}, async connect() { return client; } } });
   await assert.rejects(repository.savePreferences({
     accountId: "account-a", actorId: "account-a", expectedVersion: 2,
-    idempotencyKey: "pref-a", correlationId: "corr-a", config: frozen.config, configHash: frozen.configHash,
+    idempotencyKey: "pref-a", correlationId: "corr-a", config: changed.config, configHash: changed.configHash,
   }), { code: "AUTO_LISTING_PREFERENCES_VERSION_CONFLICT" });
   assert.equal(writes, 0);
+});
+
+test("preference save accepts a stale version when the normalized config is already current", async () => {
+  const calls = [];
+  const client = {
+    async query(sql, params = []) {
+      calls.push([sql, params]);
+      if (sql.includes("SELECT id FROM accounts")) return { rows: [{ id: "account-a" }] };
+      if (sql.includes("FROM audit_events")) return { rows: [] };
+      if (sql.includes("FROM auto_listing_preferences") && sql.includes("FOR UPDATE")) {
+        return { rows: [preferenceRow({ config_version: 3, price_multiplier_micros: "1000000" })] };
+      }
+      if (sql.includes("FROM stores s") && sql.includes("JOIN warehouses")) {
+        throw new Error("an identical stale save must not revalidate the already stored target");
+      }
+      if (sql.includes("INSERT INTO auto_listing_preferences") || sql.includes("UPDATE auto_listing_preferences")) {
+        throw new Error("an identical stale save must not rewrite preferences");
+      }
+      if (sql.includes("INSERT INTO audit_events")) return { rows: [{ event_id: params[0] }], rowCount: 1 };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = createPostgresAutoListingPreferencesRepository({
+    pool: { async query() {}, async connect() { return client; } },
+  });
+
+  const result = await repository.savePreferences({
+    accountId: "account-a", actorId: "account-a", expectedVersion: 2,
+    idempotencyKey: "pref-identical-stale", correlationId: "corr-identical-stale",
+    config: frozen.config, configHash: frozen.configHash,
+  });
+
+  assert.equal(result.configVersion, 3);
+  assert.deepEqual(result.image, frozen.config.image);
+  assert.equal(calls.filter(([sql]) => sql.includes("INSERT INTO audit_events")).length, 1);
+  assert.equal(calls.some(([sql]) => sql.includes("FROM stores s") && sql.includes("JOIN warehouses")), false);
+  assert.deepEqual(calls.map(([sql]) => sql).filter((sql) => ["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)), [
+    "BEGIN", "COMMIT",
+  ]);
 });
 
 test("preference reads and failures remain account scoped and safe", async () => {

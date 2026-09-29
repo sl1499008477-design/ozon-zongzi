@@ -1,0 +1,5 @@
+.web-collection-options, .web-collection-jobs-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
+.web-collection-help { color: #7382a4; font-size: 12px; line-height: 1.7; margin: 6px 0 0; overflow-wrap: anywhere; }
+.web-collection-card p.web-collection-help { margin: 8px 0 12px; }
+.web-collection-jobs-head { margin: 20px 0 10px; }
+.web-collection-card .ant-alert { margin-top: 12px; }

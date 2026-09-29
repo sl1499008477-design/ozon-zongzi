@@ -26,9 +26,10 @@ export function createAutoListingCategoryAccessPostgres({
     const storeId = required(targetStoreId);
     const result = await pool.query(
       `SELECT s.id,s.owner_account_id,s.client_id,s.currency_code,
-              sc.encrypted_api_key,sc.iv,sc.auth_tag
+              sc.encrypted_api_key,sc.iv,sc.auth_tag,COALESCE(r.route,'CN') AS ozon_route
          FROM stores s
          JOIN store_credentials sc ON sc.store_id=s.id
+         LEFT JOIN account_ozon_routes r ON r.account_id=s.owner_account_id
         WHERE s.id=$1 AND s.owner_account_id=$2 AND s.status <> 'disabled'
           AND s.currency_source='OZON_SELLER_INFO' AND s.currency_synced_at IS NOT NULL
           AND sc.encrypted_api_key <> '' AND sc.iv <> '' AND sc.auth_tag <> ''
@@ -49,6 +50,7 @@ export function createAutoListingCategoryAccessPostgres({
       clientId: row.client_id,
       currencyCode: row.currency_code,
       apiKey,
+      ...(row.ozon_route?{ozonRoute:row.ozon_route}:{}),
     });
   };
 }

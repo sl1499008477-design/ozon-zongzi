@@ -15,6 +15,13 @@ if (!enabled) {
       acceptedReplay: true,
       abaFenced: true,
       staleBeforeAttempt: true,
+      channelReclaimed: true,
+      expiredLeaseReclaimed: true,
+      storedImageReusable: true,
+      memoryPostgresChannelParity: true,
+      storedEvidenceCompensated: true,
+      producerReplacementFenced: true,
+      checkerProvenanceParity: true,
     });
   });
 }

@@ -12,7 +12,7 @@ function harness({ authenticated = actor, body = {}, serviceError = null } = {})
   const service = Object.freeze(Object.fromEntries([
     "listStrategies", "getSettings", "updateSettings", "getDraft", "createDraft",
     "startSamplingSession", "confirmSampleSet", "removeSample", "createAnalysisAttempt",
-    "updateDraft", "publishDraft", "rollbackDraft", "readSampleThumbnail",
+    "updateDraft", "archiveDraft", "publishDraft", "rollbackDraft", "readSampleThumbnail",
   ].map((method) => [method, async (input) => {
     calls.push({ method, input });
     const failure = typeof serviceError === "function" ? serviceError(method) : serviceError;
@@ -53,6 +53,7 @@ const valid = {
     idempotencyKey: "samples-a", correlationId: "correlation-a",
   },
   remove: { expectedDraftVersion: 2, idempotencyKey: "remove-a", correlationId: "correlation-a" },
+  archive: { expectedDraftVersion: 3, idempotencyKey: "archive-a", correlationId: "correlation-a" },
   analysis: { costConfirmed: true, idempotencyKey: "analysis-a", correlationId: "correlation-a" },
   edit: { expectedDraftVersion: 3, patch: {}, idempotencyKey: "edit-a", correlationId: "correlation-a" },
   publish: {
@@ -77,6 +78,7 @@ test("the fixed administrator route table maps only closed methods and path IDs"
     ["DELETE", "/admin/auto-listing/category-strategies/draft-a/samples/sample-a", valid.remove, "removeSample", 200],
     ["POST", "/admin/auto-listing/category-strategies/draft-a/analysis-attempts", valid.analysis, "createAnalysisAttempt", 201],
     ["PATCH", "/admin/auto-listing/category-strategies/draft-a", valid.edit, "updateDraft", 200],
+    ["DELETE", "/admin/auto-listing/category-strategies/draft-a", valid.archive, "archiveDraft", 200],
     ["POST", "/admin/auto-listing/category-strategies/draft-a/publish", valid.publish, "publishDraft", 201],
     ["POST", "/admin/auto-listing/category-strategies/draft-a/rollback", valid.rollback, "rollbackDraft", 201],
   ];

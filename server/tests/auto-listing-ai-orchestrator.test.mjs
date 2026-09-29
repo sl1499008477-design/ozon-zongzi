@@ -3,16 +3,37 @@ import test from "node:test";
 import { orchestrateAutoListingAiPhase } from "../auto-listing-ai-orchestrator.mjs";
 
 const H = (digit = "a") => digit.repeat(64);
+const gatewayExecution = Object.freeze({
+  channelId: "channel-a",
+  connectionId: "connection-a",
+  connectionVersion: 3,
+  idleTimeoutMs: 300_000,
+});
 const services = (overrides = {}) => ({
   planContent: async () => ({ id: "plan-parent", accountId: "account-a", jobId: "job-a", itemId: "item-a" }),
   materializeSourceAsset: async () => ({
     status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
     parentPlanId: "plan-parent", sourceAssetId: "source-a",
   }),
+  materializeSourceImageForAnalysis: async () => ({ status: "TERMINAL", sourceAssetId: "source-a" }),
+  analyzeSourceImageBatch: async () => ({ status: "ACCEPTED", analysisBatchId: "batch-a" }),
+  cleanSourceImageOverlay: async () => ({
+    status: "GENERATED", derivativeAttemptId: "derivative-attempt-a", sourceAssetId: "source-a",
+  }),
+  checkSourceImageCleanup: async () => ({
+    status: "ACCEPTED", derivativeAttemptId: "derivative-attempt-a", sourceAssetId: "source-a",
+  }),
+  reconcileSourceImageAnalysis: async () => ({
+    status: "ACCEPTED", id: "run-a", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+  }),
   finalizeMaterializedPlan: async () => derivedPlan(),
   generateImageSlot: async () => ({
     status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
     planId: "plan-derived", slotKey: "main-1", role: "MAIN",
+  }),
+  checkImageGroup: async () => ({
+    status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+    planId: "plan-derived", visualGroupKey: "group-a",
   }),
   generateRichContent: async () => ({
     status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
@@ -21,15 +42,22 @@ const services = (overrides = {}) => ({
 });
 
 function message(phase, overrides = {}) {
+  const sourceImagePhase = ["ANALYZE_SOURCE_IMAGE_BATCH", "CLEAN_SOURCE_IMAGE_OVERLAY",
+    "CHECK_SOURCE_IMAGE_CLEANUP", "RECONCILE_SOURCE_IMAGE_ANALYSIS", "CHECK_IMAGE_GROUP"].includes(phase);
   return {
-    contractVersion: "V1",
+    contractVersion: sourceImagePhase ? "V3" : "V1",
     accountId: "account-a",
     itemId: "item-a",
     phase,
     expectedStatusVersion: 7,
     correlationId: "correlation-a",
     ...(phase === "MATERIALIZE_SOURCE_ASSET" ? { sourceAssetId: "source-a" } : {}),
+    ...(phase === "ANALYZE_SOURCE_IMAGE_BATCH" ? { analysisBatchId: "batch-a" } : {}),
+    ...(["CLEAN_SOURCE_IMAGE_OVERLAY", "CHECK_SOURCE_IMAGE_CLEANUP"].includes(phase)
+      ? { analysisRunId: "run-a", derivativeAttemptId: "derivative-attempt-a" } : {}),
+    ...(phase === "RECONCILE_SOURCE_IMAGE_ANALYSIS" ? { analysisRunId: "run-a" } : {}),
     ...(phase === "GENERATE_IMAGE_SLOT" ? { slotKey: "main-1" } : {}),
+    ...(phase === "CHECK_IMAGE_GROUP" ? { visualGroupKey: "group-a" } : {}),
     ...overrides,
   };
 }
@@ -73,6 +101,36 @@ function acceptedAssets() {
   }));
 }
 
+function checkGroupFixture({ targetCount = 7, acceptedCount = targetCount, mainCount = 1 } = {}) {
+  const plan = derivedPlan();
+  const targetSlots = Array.from({ length: targetCount }, (_, index) => ({
+    slotKey: `group-b-slot-${index + 1}`,
+    visualGroupKey: "group-b",
+    role: index < mainCount ? "MAIN" : "DETAIL",
+    order: plan.plan.slots.length + index + 1,
+  }));
+  plan.plan.slots.push(...targetSlots);
+  plan.visualGroups.groups.push({
+    visualGroupKey: "group-b",
+    referenceImages: [{
+      assetId: "source-b", evidenceKind: "CONTENT_HASH", contentHash: H("7"),
+      sourceRefHash: H("8"), sourceRef: null,
+    }],
+  });
+  const assets = targetSlots.slice(0, acceptedCount).map((entry, index) => ({
+    id: `group-b-asset-${index + 1}`,
+    status: "ACCEPTED",
+    accountId: "account-a",
+    jobId: "job-a",
+    itemId: "item-a",
+    planId: "plan-derived",
+    slotKey: entry.slotKey,
+    visualGroupKey: entry.visualGroupKey,
+    role: entry.role,
+  }));
+  return { plan, assets };
+}
+
 function phaseInput(phase) {
   const parent = parentPlan();
   const plan = derivedPlan();
@@ -81,11 +139,43 @@ function phaseInput(phase) {
     sourceSnapshotId: "snapshot-a", gatewayProfile: inert, gateway: inert, repository: inert, evidenceRepository: inert,
     sourceCapture: inert, strategyCapture: inert, configCapture: inert, visualGroupsCapture: inert,
     promptTemplateVersion: "planner-v1", prohibitedClaims: [], regeneration: null,
-    planningContract: "LEGACY_FULL_PLAN_V3",
+    planningContract: "LEGACY_FULL_PLAN_V3", gatewayExecution,
   };
   if (phase === "MATERIALIZE_SOURCE_ASSET") return {
     parentPlan: parent, sourceSnapshot: inert, policy: undefined, repository: inert,
     downloader: inert, storage: inert, logger: null,
+  };
+  if (phase === "ANALYZE_SOURCE_IMAGE_BATCH") return {
+    run: {
+      id: "run-a", accountId: "account-a", jobId: "job-a", itemId: "item-a", expectedStatusVersion: 7,
+    },
+    batch: { analysisBatchId: "batch-a" }, profile: inert, repository: inert,
+    sourceAssetLoader: inert, gateway: inert, gatewayExecution,
+  };
+  if (phase === "CLEAN_SOURCE_IMAGE_OVERLAY") return {
+    attempt: {
+      accountId: "account-a", jobId: "job-a", itemId: "item-a", analysisRunId: "run-a",
+      sourceAssetId: "source-a", derivativeAttemptId: "derivative-attempt-a",
+      expectedStatusVersion: 7, inputHash: H("1"), attemptNo: 1, status: "RESERVED",
+    },
+    cleanupInput: inert, original: inert, profile: inert, gateway: inert,
+    repository: inert, storage: inert, cleanupRecorder: null, gatewayExecution,
+  };
+  if (phase === "CHECK_SOURCE_IMAGE_CLEANUP") return {
+    attempt: {
+      accountId: "account-a", jobId: "job-a", itemId: "item-a", analysisRunId: "run-a",
+      sourceAssetId: "source-a", derivativeAttemptId: "derivative-attempt-a",
+      expectedStatusVersion: 7, status: "GENERATED",
+    },
+    original: inert, candidate: inert, profile: inert, gateway: inert,
+    repository: inert, gatewayExecution,
+  };
+  if (phase === "RECONCILE_SOURCE_IMAGE_ANALYSIS") return {
+    run: {
+      id: "run-a", accountId: "account-a", jobId: "job-a", itemId: "item-a", expectedStatusVersion: 7,
+    },
+    sourceCapture: inert, assessments: [], decisions: [], acceptedDerivativeBindings: [],
+    repository: inert, summaryInputHash: H("7"),
   };
   if (phase === "FINALIZE_MATERIALIZED_PLAN") return { parentPlan: parent, repository: inert };
   if (phase === "GENERATE_IMAGE_SLOT") return {
@@ -93,18 +183,28 @@ function phaseInput(phase) {
     sourceAssetLoader: inert, repository: inert, gateway: inert,
     profile: inert, imageModel: "image-model", ratio: "3:4", resolution: "1K", size: "768x1024",
     quality: "medium", templateVersion: "image-v1", regeneration: null, storage: inert, logger: null, maxAttempts: 3,
+    gatewayExecution,
+  };
+  if (phase === "CHECK_IMAGE_GROUP") return {
+    plan, acceptedAssets: acceptedAssets(), frozenAcceptedSlotKeys: [], checker: async () => null,
+    sourceImageIntelligence: { summaryHash: H("6") },
+    gatewayProfile: inert, gateway: inert, repository: inert,
+    analysisRun: {
+      id: "run-a", accountId: "account-a", jobId: "job-a", itemId: "item-a", expectedStatusVersion: 7,
+    },
+    gatewayExecution,
   };
   return {
     plan, profile: inert, gateway: inert, repository: inert, factRegistry: [], acceptedAssets: acceptedAssets(),
     planHash: H("e"), sourceHash: H("f"), promptTemplateVersion: "rich-v1", maxAttempts: 3,
-    leaseOwner: "rich-worker",
+    leaseOwner: "rich-worker", gatewayExecution,
   };
 }
 
 function context(phase, overrides = {}) {
   return {
     accountId: "account-a", jobId: "job-a", itemId: "item-a",
-    status: ["GENERATE_IMAGE_SLOT", "GENERATE_RICH_CONTENT"].includes(phase) ? "GENERATING" : "PLANNING",
+    status: ["GENERATE_IMAGE_SLOT", "CHECK_IMAGE_GROUP", "GENERATE_RICH_CONTENT"].includes(phase) ? "GENERATING" : "PLANNING",
     statusVersion: 7,
     activeContentPlanId: phase === "PLAN_CONTENT" ? null
       : ["MATERIALIZE_SOURCE_ASSET", "FINALIZE_MATERIALIZED_PLAN"].includes(phase) ? "plan-parent" : "plan-derived",
@@ -150,6 +250,9 @@ test("ACKs a stale closed V1 message without reading phase input or calling a ph
     retryable: false,
     failureCode: "AUTO_LISTING_AI_STATUS_STALE",
     correlationId: "correlation-a",
+    failureScope: null,
+    deliveryState: null,
+    retryAfterMs: null,
   });
   assert.ok(Object.isFrozen(outcome));
 });
@@ -178,8 +281,13 @@ test("routes every phase exactly once with only server-loaded scope and returns 
   const cases = [
     ["PLAN_CONTENT", "planContent", "PLAN_READY"],
     ["MATERIALIZE_SOURCE_ASSET", "materializeSourceAsset", "SOURCE_ASSET_ACCEPTED"],
+    ["ANALYZE_SOURCE_IMAGE_BATCH", "analyzeSourceImageBatch", "SOURCE_IMAGE_BATCH_ACCEPTED"],
+    ["CLEAN_SOURCE_IMAGE_OVERLAY", "cleanSourceImageOverlay", "SOURCE_IMAGE_CLEANUP_GENERATED"],
+    ["CHECK_SOURCE_IMAGE_CLEANUP", "checkSourceImageCleanup", "SOURCE_IMAGE_CLEANUP_ACCEPTED"],
+    ["RECONCILE_SOURCE_IMAGE_ANALYSIS", "reconcileSourceImageAnalysis", "SOURCE_IMAGE_ANALYSIS_READY"],
     ["FINALIZE_MATERIALIZED_PLAN", "finalizeMaterializedPlan", "MATERIALIZED_PLAN_READY"],
     ["GENERATE_IMAGE_SLOT", "generateImageSlot", "IMAGE_SLOT_ACCEPTED"],
+    ["CHECK_IMAGE_GROUP", "checkImageGroup", "IMAGE_GROUP_ACCEPTED"],
     ["GENERATE_RICH_CONTENT", "generateRichContent", "CONTENT_READY_FOR_REVIEW"],
   ];
   for (const [phase, serviceName, expectedOutcome] of cases) {
@@ -189,8 +297,13 @@ test("routes every phase exactly once with only server-loaded scope and returns 
         calls.push(value);
         if (phase === "PLAN_CONTENT") return { id: "plan-parent", accountId: "account-a", jobId: "job-a", itemId: "item-a", prompt: "must-not-leak" };
         if (phase === "MATERIALIZE_SOURCE_ASSET") return { status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a", parentPlanId: "plan-parent", sourceAssetId: "source-a", objectKey: "must-not-leak" };
+        if (phase === "ANALYZE_SOURCE_IMAGE_BATCH") return { status: "ACCEPTED", analysisBatchId: "batch-a", rawResponse: "must-not-leak" };
+        if (phase === "CLEAN_SOURCE_IMAGE_OVERLAY") return { status: "GENERATED", derivativeAttemptId: "derivative-attempt-a", sourceAssetId: "source-a", objectKey: "must-not-leak" };
+        if (phase === "CHECK_SOURCE_IMAGE_CLEANUP") return { status: "ACCEPTED", derivativeAttemptId: "derivative-attempt-a", sourceAssetId: "source-a", checkResult: "must-not-leak" };
+        if (phase === "RECONCILE_SOURCE_IMAGE_ANALYSIS") return { status: "ACCEPTED", id: "run-a", accountId: "account-a", jobId: "job-a", itemId: "item-a", summary: "must-not-leak" };
         if (phase === "FINALIZE_MATERIALIZED_PLAN") return { ...derivedPlan(), sourceRef: "https://must-not-leak.invalid" };
         if (phase === "GENERATE_IMAGE_SLOT") return { status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived", slotKey: "main-1", role: "MAIN", objectKey: "must-not-leak" };
+        if (phase === "CHECK_IMAGE_GROUP") return { status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived", visualGroupKey: "group-a", rawResponse: "must-not-leak" };
         return { status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived", rawResponse: "must-not-leak" };
       },
     });
@@ -215,19 +328,99 @@ test("routes every phase exactly once with only server-loaded scope and returns 
         ...(phase === "MATERIALIZE_SOURCE_ASSET" ? { sourceAssetId: "source-a" } : {}),
         expectedStatusVersion: 7,
       });
+    } else if (["ANALYZE_SOURCE_IMAGE_BATCH", "RECONCILE_SOURCE_IMAGE_ANALYSIS"].includes(phase)) {
+      assert.deepEqual(forwarded.scope, {
+        accountId: "account-a", jobId: "job-a", itemId: "item-a", expectedStatusVersion: 7,
+      });
+    } else if (phase === "CLEAN_SOURCE_IMAGE_OVERLAY") {
+      assert.deepEqual(forwarded.scope, {
+        accountId: "account-a", jobId: "job-a", itemId: "item-a", analysisRunId: "run-a",
+        sourceAssetId: "source-a", derivativeAttemptId: "derivative-attempt-a",
+        expectedStatusVersion: 7, inputHash: H("1"), attemptNo: 1,
+      });
+    } else if (phase === "CHECK_SOURCE_IMAGE_CLEANUP") {
+      assert.deepEqual(forwarded.scope, {
+        accountId: "account-a", jobId: "job-a", itemId: "item-a", analysisRunId: "run-a",
+        sourceAssetId: "source-a", derivativeAttemptId: "derivative-attempt-a",
+        expectedStatusVersion: 7,
+      });
     } else if (phase === "GENERATE_IMAGE_SLOT") {
       assert.deepEqual(forwarded.scope, {
         accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
         visualGroupKey: "group-a", slotKey: "main-1", expectedStatusVersion: 7,
       });
       assert.equal(forwarded.correlationId, "correlation-a");
+    } else if (phase === "CHECK_IMAGE_GROUP") {
+      assert.deepEqual(forwarded.scope, {
+        accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
+        visualGroupKey: "group-a", expectedStatusVersion: 7,
+      });
+      assert.equal(forwarded.sourceImageIntelligence.summaryHash, H("6"));
+      assert.deepEqual(forwarded.gatewayProfile, {});
+      assert.deepEqual(forwarded.repository, {});
     } else {
       assert.equal(forwarded.accountId, "account-a");
       assert.equal(forwarded.jobId, "job-a");
       assert.equal(forwarded.itemId, "item-a");
       assert.equal(forwarded.planId, "plan-derived");
+      assert.equal(forwarded.expectedStatusVersion, 7);
       assert.equal(forwarded.correlationId, "correlation-a");
     }
+  }
+});
+
+test("forwards one exact frozen gateway execution to every paid phase", async () => {
+  for (const [phase, serviceName] of [
+    ["PLAN_CONTENT", "planContent"],
+    ["ANALYZE_SOURCE_IMAGE_BATCH", "analyzeSourceImageBatch"],
+    ["CLEAN_SOURCE_IMAGE_OVERLAY", "cleanSourceImageOverlay"],
+    ["CHECK_SOURCE_IMAGE_CLEANUP", "checkSourceImageCleanup"],
+    ["GENERATE_IMAGE_SLOT", "generateImageSlot"],
+    ["CHECK_IMAGE_GROUP", "checkImageGroup"],
+    ["GENERATE_RICH_CONTENT", "generateRichContent"],
+  ]) {
+    let forwarded;
+    const configured = services({
+      [serviceName]: async (input) => {
+        forwarded = input.gatewayExecution;
+        if (phase === "PLAN_CONTENT") {
+          return { id: "plan-parent", accountId: "account-a", jobId: "job-a", itemId: "item-a" };
+        }
+        if (phase === "ANALYZE_SOURCE_IMAGE_BATCH") {
+          return { status: "ACCEPTED", analysisBatchId: "batch-a" };
+        }
+        if (phase === "CLEAN_SOURCE_IMAGE_OVERLAY") {
+          return { status: "GENERATED", derivativeAttemptId: "derivative-attempt-a", sourceAssetId: "source-a" };
+        }
+        if (phase === "CHECK_SOURCE_IMAGE_CLEANUP") {
+          return { status: "ACCEPTED", derivativeAttemptId: "derivative-attempt-a", sourceAssetId: "source-a" };
+        }
+        if (phase === "GENERATE_IMAGE_SLOT") {
+          return {
+            status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+            planId: "plan-derived", slotKey: "main-1", role: "MAIN",
+          };
+        }
+        if (phase === "CHECK_IMAGE_GROUP") {
+          return {
+            status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+            planId: "plan-derived", visualGroupKey: "group-a",
+          };
+        }
+        return {
+          status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+          planId: "plan-derived",
+        };
+      },
+    });
+    const currentContext = context(phase, {
+      phaseInput: { ...phaseInput(phase), gatewayExecution },
+    });
+    const outcome = await orchestrateAutoListingAiPhase({
+      message: message(phase), context: currentContext,
+    }, configured);
+    assert.equal(outcome.disposition, "ACK");
+    assert.equal(forwarded, gatewayExecution);
   }
 });
 
@@ -258,6 +451,59 @@ test("accepts and forwards server-loaded category style references to image gene
   assert.equal(outcome.outcome, "IMAGE_SLOT_ACCEPTED");
   assert.equal(outcome.failureCode, null);
   assert.equal(forwarded.categoryStyleReferences, categoryStyleReferences);
+});
+
+test("accepts and forwards the verified source-image intelligence summary only for an intelligent image plan", async () => {
+  const sourceImageIntelligenceSummary = Object.freeze({ summaryHash: H("6") });
+  const plan = {
+    ...derivedPlan(),
+    planningContract: "FIXED_SKELETON_SOURCE_IMAGE_V1",
+    sourceImageIntelligenceHash: sourceImageIntelligenceSummary.summaryHash,
+  };
+  let forwarded;
+  const outcome = await orchestrateAutoListingAiPhase({
+    message: message("GENERATE_IMAGE_SLOT"),
+    context: context("GENERATE_IMAGE_SLOT", {
+      phaseInput: {
+        ...phaseInput("GENERATE_IMAGE_SLOT"),
+        plan,
+        slot: plan.plan.slots[0],
+        sourceImageIntelligenceSummary,
+      },
+    }),
+  }, services({ generateImageSlot: async (input) => {
+    forwarded = input;
+    return {
+      status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+      planId: "plan-derived", slotKey: "main-1", role: "MAIN",
+    };
+  } }));
+
+  assert.equal(outcome.outcome, "IMAGE_SLOT_ACCEPTED");
+  assert.equal(outcome.failureCode, null);
+  assert.equal(forwarded.sourceImageIntelligenceSummary, sourceImageIntelligenceSummary);
+
+  await assert.rejects(orchestrateAutoListingAiPhase({
+    message: message("GENERATE_IMAGE_SLOT"),
+    context: context("GENERATE_IMAGE_SLOT", {
+      phaseInput: {
+        ...phaseInput("GENERATE_IMAGE_SLOT"),
+        sourceImageIntelligenceSummary,
+      },
+    }),
+  }, services()), { code: "AUTO_LISTING_AI_ORCHESTRATOR_INPUT_INVALID" });
+
+  await assert.rejects(orchestrateAutoListingAiPhase({
+    message: message("GENERATE_IMAGE_SLOT"),
+    context: context("GENERATE_IMAGE_SLOT", {
+      phaseInput: {
+        ...phaseInput("GENERATE_IMAGE_SLOT"),
+        plan,
+        slot: plan.plan.slots[0],
+        sourceImageIntelligenceSummary: { summaryHash: H("7") },
+      },
+    }),
+  }, services()), { code: "AUTO_LISTING_AI_ORCHESTRATOR_INPUT_INVALID" });
 });
 
 test("fails closed on extra context, phase-input or dependency keys and on cross-scope identities", async () => {
@@ -329,6 +575,198 @@ test("uses only activeContentPlanId and rejects parent/latest or non-materialize
   assert.equal(calls, 0);
 });
 
+test("CHECK_IMAGE_GROUP accepts only the current immutable parent analysis run from an earlier status version", async () => {
+  let calls = 0;
+  const currentInput = phaseInput("CHECK_IMAGE_GROUP");
+  currentInput.analysisRun = { ...currentInput.analysisRun, expectedStatusVersion: 7 };
+  const result = await orchestrateAutoListingAiPhase({
+    message: message("CHECK_IMAGE_GROUP", { expectedStatusVersion: 8 }),
+    context: context("CHECK_IMAGE_GROUP", {
+      statusVersion: 8,
+      phaseInput: currentInput,
+    }),
+  }, services({
+    checkImageGroup: async () => {
+      calls += 1;
+      return {
+        status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+        planId: "plan-derived", visualGroupKey: "group-a",
+      };
+    },
+  }));
+  assert.equal(result.outcome, "IMAGE_GROUP_ACCEPTED");
+  assert.equal(calls, 1);
+
+  for (const invalidContext of [
+    context("CHECK_IMAGE_GROUP", {
+      statusVersion: 8,
+      phaseInput: { ...phaseInput("CHECK_IMAGE_GROUP"), analysisRun: {
+        ...phaseInput("CHECK_IMAGE_GROUP").analysisRun, expectedStatusVersion: 9,
+      } },
+    }),
+    context("CHECK_IMAGE_GROUP", {
+      statusVersion: 8,
+      activeContentPlanId: "plan-other",
+      phaseInput: currentInput,
+    }),
+    context("CHECK_IMAGE_GROUP", {
+      statusVersion: 8,
+      phaseInput: { ...currentInput, analysisRun: { ...currentInput.analysisRun, accountId: "account-b" } },
+    }),
+  ]) {
+    await assert.rejects(orchestrateAutoListingAiPhase({
+      message: message("CHECK_IMAGE_GROUP", { expectedStatusVersion: 8 }),
+      context: invalidContext,
+    }, services({ checkImageGroup: async () => { calls += 1; } })), {
+      code: "AUTO_LISTING_AI_ORCHESTRATOR_INPUT_INVALID",
+      retryable: false,
+    });
+  }
+  assert.equal(calls, 1);
+
+  await assert.rejects(orchestrateAutoListingAiPhase({
+    message: message("ANALYZE_SOURCE_IMAGE_BATCH", { expectedStatusVersion: 8 }),
+    context: context("ANALYZE_SOURCE_IMAGE_BATCH", {
+      statusVersion: 8,
+      phaseInput: {
+        ...phaseInput("ANALYZE_SOURCE_IMAGE_BATCH"),
+        run: { ...phaseInput("ANALYZE_SOURCE_IMAGE_BATCH").run, expectedStatusVersion: 7 },
+      },
+    }),
+  }, services()), { code: "AUTO_LISTING_AI_ORCHESTRATOR_INPUT_INVALID", retryable: false });
+});
+
+test("CHECK_IMAGE_GROUP validates only six to thirteen accepted assets from its exact target group", async () => {
+  const valid = checkGroupFixture({ targetCount: 7, acceptedCount: 6 });
+  let calls = 0;
+  const result = await orchestrateAutoListingAiPhase({
+    message: message("CHECK_IMAGE_GROUP", { visualGroupKey: "group-b" }),
+    context: context("CHECK_IMAGE_GROUP", {
+      phaseInput: {
+        ...phaseInput("CHECK_IMAGE_GROUP"),
+        plan: valid.plan,
+        acceptedAssets: valid.assets,
+      },
+    }),
+  }, services({
+    checkImageGroup: async () => {
+      calls += 1;
+      return {
+        status: "ACCEPTED", accountId: "account-a", jobId: "job-a", itemId: "item-a",
+        planId: "plan-derived", visualGroupKey: "group-b",
+      };
+    },
+  }));
+  assert.equal(result.outcome, "IMAGE_GROUP_ACCEPTED");
+  assert.equal(calls, 1);
+
+  const tooMany = checkGroupFixture({ targetCount: 14 });
+  const noMain = checkGroupFixture({ targetCount: 6, mainCount: 0 });
+  const duplicateMain = checkGroupFixture({ targetCount: 6, mainCount: 2 });
+  const sibling = acceptedAssets()[0];
+  for (const candidate of [
+    { plan: valid.plan, assets: valid.assets.slice(0, 5) },
+    tooMany,
+    noMain,
+    duplicateMain,
+    { plan: valid.plan, assets: [...valid.assets.slice(0, 5), sibling] },
+  ]) {
+    await assert.rejects(orchestrateAutoListingAiPhase({
+      message: message("CHECK_IMAGE_GROUP", { visualGroupKey: "group-b" }),
+      context: context("CHECK_IMAGE_GROUP", {
+        phaseInput: {
+          ...phaseInput("CHECK_IMAGE_GROUP"),
+          plan: candidate.plan,
+          acceptedAssets: candidate.assets,
+        },
+      }),
+    }, services({ checkImageGroup: async () => { calls += 1; } })), {
+      code: "AUTO_LISTING_AI_ORCHESTRATOR_INPUT_INVALID",
+      retryable: false,
+    });
+  }
+  assert.equal(calls, 1);
+});
+
+test("CHECK_IMAGE_GROUP binds retry slot keys to the accepted assets of its exact target group", async () => {
+  const valid = checkGroupFixture({ targetCount: 7, acceptedCount: 6 });
+  const invalidRetrySlotKeys = [
+    ["selling-1"],
+    ["unknown-slot"],
+    ["group-b-slot-2", "group-b-slot-2"],
+    [],
+  ];
+  let calls = 0;
+
+  for (const retrySlotKeys of invalidRetrySlotKeys) {
+    const result = await orchestrateAutoListingAiPhase({
+      message: message("CHECK_IMAGE_GROUP", { visualGroupKey: "group-b" }),
+      context: context("CHECK_IMAGE_GROUP", {
+        phaseInput: {
+          ...phaseInput("CHECK_IMAGE_GROUP"),
+          plan: valid.plan,
+          acceptedAssets: valid.assets,
+        },
+      }),
+    }, services({
+      checkImageGroup: async () => {
+        calls += 1;
+        return {
+          status: "RETRY_QUEUED",
+          accountId: "account-a",
+          jobId: "job-a",
+          itemId: "item-a",
+          planId: "plan-derived",
+          visualGroupKey: "group-b",
+          retrySlotKeys,
+        };
+      },
+    }));
+
+    assert.deepEqual(result, {
+      contractVersion: "V1",
+      disposition: "FAIL",
+      phase: "CHECK_IMAGE_GROUP",
+      outcome: "FAILED",
+      retryable: false,
+      failureCode: "AUTO_LISTING_IMAGE_GROUP_CHECK_INPUT_INVALID",
+      correlationId: "correlation-a",
+      failureScope: "BUSINESS",
+      deliveryState: null,
+      retryAfterMs: null,
+    });
+  }
+
+  const accepted = await orchestrateAutoListingAiPhase({
+    message: message("CHECK_IMAGE_GROUP", { visualGroupKey: "group-b" }),
+    context: context("CHECK_IMAGE_GROUP", {
+      phaseInput: {
+        ...phaseInput("CHECK_IMAGE_GROUP"),
+        plan: valid.plan,
+        acceptedAssets: valid.assets,
+      },
+    }),
+  }, services({
+    checkImageGroup: async () => {
+      calls += 1;
+      return {
+        status: "RETRY_QUEUED",
+        accountId: "account-a",
+        jobId: "job-a",
+        itemId: "item-a",
+        planId: "plan-derived",
+        visualGroupKey: "group-b",
+        retrySlotKeys: ["group-b-slot-2", "group-b-slot-4"],
+      };
+    },
+  }));
+
+  assert.equal(calls, 5, "every candidate must reach the post-call result boundary");
+  assert.equal(accepted.disposition, "ACK");
+  assert.equal(accepted.outcome, "IMAGE_GROUP_RETRY_QUEUED");
+  assert.equal(accepted.failureCode, null);
+});
+
 test("requires rich content to use one final materialized plan and a complete accepted set with MAIN and at least six slots", async () => {
   let calls = 0;
   const configured = services({ generateRichContent: async () => { calls += 1; } });
@@ -384,6 +822,49 @@ test("generates one independently scoped rich-content document per visual group"
   assert.equal(result.outcome, "CONTENT_READY_FOR_REVIEW");
   assert.deepEqual(calls.map((call) => call.visualGroupKey).sort(), ["group-a", "group-b"]);
   assert.deepEqual(calls.map((call) => call.acceptedAssets.length), [6, 6]);
+});
+
+test("lease loss after one rich-content group prevents starting the next paid group", async () => {
+  const plan = derivedPlan();
+  const secondSlots = [
+    slot("group-b-main", "MAIN", 7), slot("group-b-selling-1", "SELLING_POINT", 8),
+    slot("group-b-selling-2", "SELLING_POINT", 9), slot("group-b-detail", "DETAIL", 10),
+    slot("group-b-scene", "SCENE", 11), slot("group-b-info", "INFOGRAPHIC", 12),
+  ].map((entry) => ({ ...entry, visualGroupKey: "group-b" }));
+  plan.plan.slots.push(...secondSlots);
+  plan.visualGroups.groups.push({
+    visualGroupKey: "group-b",
+    referenceImages: [{
+      assetId: "source-b", evidenceKind: "CONTENT_HASH", contentHash: H("7"), sourceRefHash: H("8"), sourceRef: null,
+    }],
+  });
+  const acceptedAssets = plan.plan.slots.map((entry, index) => ({
+    id: `lease-asset-${index}`, status: "ACCEPTED",
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-derived",
+    slotKey: entry.slotKey, visualGroupKey: entry.visualGroupKey, role: entry.role,
+  }));
+  let leaseActive = true;
+  const stale = Object.assign(new Error("stale execution"), {
+    code: "AUTO_LISTING_AI_EXECUTION_LEASE_LOST", retryable: false,
+  });
+  const calls = [];
+  await assert.rejects(orchestrateAutoListingAiPhase({
+    message: message("GENERATE_RICH_CONTENT"),
+    context: context("GENERATE_RICH_CONTENT", {
+      phaseInput: { ...phaseInput("GENERATE_RICH_CONTENT"), plan, acceptedAssets },
+    }),
+    assertLeaseActive: () => { if (!leaseActive) throw stale; },
+  }, services({ generateRichContent: async (input) => {
+    input.assertLeaseActive();
+    calls.push(input.visualGroupKey);
+    leaseActive = false;
+    return {
+      status: "ACCEPTED", accountId: input.accountId, jobId: input.jobId, itemId: input.itemId,
+      planId: input.planId,
+    };
+  } })), (error) => error === stale);
+
+  assert.deepEqual(calls, ["group-a"]);
 });
 
 test("maps final MAIN and minimum-six outcomes without touching accepted siblings or adding a checker phase", async () => {
@@ -548,4 +1029,107 @@ test("ACKs materialization/finalization duplicates after the active plan was alr
     assert.equal(result.outcome, phase === "FINALIZE_MATERIALIZED_PLAN" ? "MATERIALIZED_PLAN_READY" : "STALE");
   }
   assert.equal(calls, 0);
+});
+
+test("classifies every supported channel failure with explicit safe delivery metadata", async () => {
+  const cases = [
+    ["AI_GATEWAY_NETWORK_FAILED", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["AI_GATEWAY_RATE_LIMITED", "CHANNEL_TRANSIENT", "NOT_SENT", 12_000],
+    ["AI_GATEWAY_IDLE_TIMEOUT", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["AI_GATEWAY_UNEXPECTED_EOF", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["INVALID_GATEWAY_RESPONSE", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["RETRYABLE_GATEWAY", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["GATEWAY_TIMEOUT", "CHANNEL_TRANSIENT", "POSSIBLY_SENT", null],
+    ["AI_GATEWAY_UNAUTHORIZED", "CHANNEL_REVALIDATION", "NOT_SENT", null],
+    ["AI_GATEWAY_MODEL_NOT_FOUND", "CHANNEL_REVALIDATION", "NOT_SENT", null],
+    ["AI_GATEWAY_CAPABILITY_INVALID", "CHANNEL_REVALIDATION", "NOT_SENT", null],
+    ["NON_RETRYABLE_AUTH", "CHANNEL_REVALIDATION", "NOT_SENT", null],
+    ["AI_GATEWAY_QUOTA_EXHAUSTED", "CHANNEL_REVALIDATION", "NOT_SENT", null],
+    ["AI_GATEWAY_NO_CAPACITY", "CHANNEL_TRANSIENT", "NOT_SENT", null],
+  ];
+  for (const [code, failureScope, deliveryState, retryAfterMs] of cases) {
+    const error = Object.assign(new Error("raw upstream detail must not leak"), {
+      code,
+      retryable: true,
+      deliveryState,
+      retryAfterMs,
+    });
+    const value = await orchestrateAutoListingAiPhase({
+      message: message("PLAN_CONTENT"), context: context("PLAN_CONTENT"),
+    }, services({ planContent: async () => { throw error; } }));
+
+    assert.equal(value.disposition, "RETRY", code);
+    assert.equal(value.failureCode, code, code);
+    assert.equal(value.failureScope, failureScope, code);
+    assert.equal(value.deliveryState, deliveryState, code);
+    assert.equal(value.retryAfterMs, retryAfterMs, code);
+    assert.doesNotMatch(JSON.stringify(value), /raw upstream detail/u);
+  }
+});
+
+test("classifies live inner reservations as durable v3 deferrals instead of business failures", async () => {
+  const cases = [
+    ["PLAN_CONTENT", "AUTO_LISTING_CONTENT_PLAN_IN_PROGRESS", "planContent"],
+    ["GENERATE_IMAGE_SLOT", "AUTO_LISTING_IMAGE_IN_PROGRESS", "generateImageSlot"],
+    ["GENERATE_RICH_CONTENT", "AUTO_LISTING_RICH_CONTENT_IN_PROGRESS", "generateRichContent"],
+  ];
+  for (const [phase, code, service] of cases) {
+    const busy = Object.assign(new Error("private reservation owner"), {
+      code,
+      retryable: true,
+    });
+    const value = await orchestrateAutoListingAiPhase({
+      message: message(phase), context: context(phase), assertLeaseActive() {},
+    }, services({ [service]: async () => { throw busy; } }));
+
+    assert.deepEqual(value, {
+      contractVersion: "V1",
+      disposition: "RETRY",
+      phase,
+      outcome: "IN_PROGRESS",
+      retryable: true,
+      failureCode: code,
+      correlationId: "correlation-a",
+      failureScope: "RESERVATION_BUSY",
+      deliveryState: null,
+      retryAfterMs: 30_000,
+    });
+    assert.doesNotMatch(JSON.stringify(value), /private reservation owner/u);
+  }
+});
+
+test("classifies adapter 404 model rejection as NOT_SENT revalidation without broadening other 4xx failures", async () => {
+  for (const [status, expectedScope, expectedDelivery] of [
+    [404, "CHANNEL_REVALIDATION", "NOT_SENT"],
+    [400, "BUSINESS", null],
+  ]) {
+    const error = Object.assign(new Error("safe gateway rejection"), {
+      code: "NON_RETRYABLE_GATEWAY", retryable: false, status,
+    });
+    const value = await orchestrateAutoListingAiPhase({
+      message: message("PLAN_CONTENT"), context: context("PLAN_CONTENT"),
+    }, services({ planContent: async () => { throw error; } }));
+
+    assert.equal(value.failureScope, expectedScope, status);
+    assert.equal(value.deliveryState, expectedDelivery, status);
+    if (status === 404) {
+      assert.equal(value.disposition, "RETRY");
+      assert.equal(value.failureCode, "NON_RETRYABLE_GATEWAY");
+    }
+  }
+});
+
+test("keeps business validation and caller cancellation outside channel cooldown", async () => {
+  for (const [code, retryable] of [
+    ["AUTO_LISTING_CONTENT_PLAN_INVALID", false],
+    ["GATEWAY_CANCELLED", false],
+  ]) {
+    const error = Object.assign(new Error("private business detail"), { code, retryable });
+    const value = await orchestrateAutoListingAiPhase({
+      message: message("PLAN_CONTENT"), context: context("PLAN_CONTENT"),
+    }, services({ planContent: async () => { throw error; } }));
+    assert.equal(value.failureScope, "BUSINESS", code);
+    assert.equal(value.deliveryState, null, code);
+    assert.equal(value.retryAfterMs, null, code);
+  }
 });

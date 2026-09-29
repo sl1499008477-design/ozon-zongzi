@@ -1,8 +1,10 @@
 (function (root) {
   'use strict';
-  const isTrustedSellerTab = (tab) => {
+  const getSellerOrigin = () => root.JzActiveSellerRoute?.getOrigin() || 'https://seller.ozon.ru';
+  const allowedOrigin = origin => ['https://seller.ozon.ru', 'https://seller.ozonru.cn'].includes(origin);
+  const isTrustedSellerTab = (tab, sellerOrigin = getSellerOrigin()) => {
     try {
-      return new URL(String(tab?.url || '')).origin === 'https://seller.ozon.ru';
+      return allowedOrigin(sellerOrigin) && new URL(String(tab?.url || '')).origin === sellerOrigin;
     } catch {
       return false;
     }
@@ -11,24 +13,26 @@
     const normalized = String(value == null ? '' : value).trim();
     return /^\d{4,15}$/.test(normalized) ? normalized : '';
   };
-  const trustedCookieCompanyIds = (cookies) => [...new Set(
+  const trustedCookieCompanyIds = (cookies, sellerOrigin = getSellerOrigin()) => [...new Set(
     (cookies || [])
       .filter(
         (cookie) =>
           cookie?.name === 'sc_company_id'
-          && ['seller.ozon.ru', 'ozon.ru'].includes(
+          && allowedOrigin(sellerOrigin)
+          && [new URL(sellerOrigin).hostname, new URL(sellerOrigin).hostname.replace(/^seller\./, '')].includes(
             String(cookie.domain || '').replace(/^\./, '').toLowerCase(),
           ),
       )
       .map((cookie) => normalizeCompanyId(cookie.value))
       .filter(Boolean),
   )];
-  const resolveTrustedSellerCompanyId = (cookies) => {
-    const ids = trustedCookieCompanyIds(cookies);
-    if (ids.length !== 1) throw new Error(ids.length ? '多个 seller.ozon.ru sc_company_id 冲突' : 'sc_company_id cookie 未找到,请确保已登录 seller.ozon.ru');
+  const resolveTrustedSellerCompanyId = (cookies, sellerOrigin = getSellerOrigin()) => {
+    const ids = trustedCookieCompanyIds(cookies, sellerOrigin);
+    if (ids.length !== 1) throw new Error(ids.length ? '当前 Seller 线路 sc_company_id 冲突' : 'sc_company_id cookie 未找到,请确保已登录当前 Seller 线路');
     return ids[0];
   };
   const resolveTrustedSellerCompanyContext = ({
+    sellerOrigin = getSellerOrigin(),
     cookies = [],
     observations = [],
     sellerTabs = [],
@@ -36,7 +40,7 @@
     ttlMs = 10 * 60 * 1000,
     stabilizationWindowMs = 0,
   } = {}) => {
-    const trustedTabs = (sellerTabs || []).filter(isTrustedSellerTab);
+    const trustedTabs = (sellerTabs || []).filter(tab => isTrustedSellerTab(tab, sellerOrigin));
     if (!trustedTabs.length) throw new Error('SELLER_CONTEXT_REQUIRED');
     const trustedTabIds = new Set(trustedTabs.map((tab) => Number(tab.id)));
     const validObservations = (observations || [])
@@ -54,7 +58,7 @@
         || Number(right.revision || 0) - Number(left.revision || 0)
         || right.index - left.index
       ));
-    const cookieIds = trustedCookieCompanyIds(cookies);
+    const cookieIds = trustedCookieCompanyIds(cookies, sellerOrigin);
     const latestObservation = validObservations[0];
     const observedId = normalizeCompanyId(latestObservation?.companyId);
     const safeStabilizationWindowMs = Math.max(0, Number(stabilizationWindowMs) || 0);
@@ -76,7 +80,7 @@
     const companyId = cookieId || observedId;
     if (!companyId) {
       if ((cookies || []).some((cookie) => cookie?.name === 'sc_company_id')) {
-        throw new Error('sc_company_id cookie 未找到,请确保已登录 seller.ozon.ru');
+        throw new Error('sc_company_id cookie 未找到,请确保已登录当前 Seller 线路');
       }
       throw new Error('SELLER_COMPANY_CONTEXT_REQUIRED');
     }
@@ -89,25 +93,28 @@
     };
   };
   const resolveSellerMessageIdentity = async ({
+    sellerOrigin = getSellerOrigin(),
     findSellerTabs,
     getCookies,
     getObservedContexts,
     now = () => Date.now(),
   } = {}) => {
-    const sellerTabs = (await findSellerTabs?.() || []).filter(isTrustedSellerTab);
+    const sellerTabs = (await findSellerTabs?.() || []).filter(tab => isTrustedSellerTab(tab, sellerOrigin));
     if (!sellerTabs.length) throw new Error('SELLER_CONTEXT_REQUIRED');
-    const companyCookies = await getCookies({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
+    const companyCookies = await getCookies({ url: sellerOrigin + '/', name: 'sc_company_id' });
     const context = resolveTrustedSellerCompanyContext({
+      sellerOrigin,
       cookies: companyCookies,
       observations: await getObservedContexts?.(sellerTabs) || [],
       sellerTabs,
       now: now(),
     });
-    const cookies = await getCookies({ url: 'https://seller.ozon.ru/' });
-    const scopedCookies = (cookies || []).filter((cookie) => String(cookie?.domain || '').replace(/^\./, '') === 'seller.ozon.ru');
+    const cookies = await getCookies({ url: sellerOrigin + '/' });
+    const scopedCookies = (cookies || []).filter((cookie) => String(cookie?.domain || '').replace(/^\./, '') === new URL(sellerOrigin).hostname);
     return { ...context, cookies: scopedCookies };
   };
   const api = Object.freeze({
+    getSellerOrigin,
     isTrustedSellerTab,
     normalizeCompanyId,
     resolveSellerMessageIdentity,

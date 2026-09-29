@@ -123,7 +123,15 @@ function categorySnapshot({ accountId, categoryEvidence, sharedCategory }) {
   };
 }
 
-function priceEvidence(record, fallback, collectItem, currencyContext, { allowFallbackPrices = true } = {}) {
+// Read-only pricing projection for independent listing workflows; no snapshot or strategy gate.
+export function readAutoListingSourcePrice({ record = {}, fallback = null, collectItem = {}, currencyContext = {} } = {}) {
+  return priceEvidence(record, fallback, collectItem, currencyContext, { ignoreMalformedDecimalCandidates: true });
+}
+
+function priceEvidence(record, fallback, collectItem, currencyContext, {
+  allowFallbackPrices = true,
+  ignoreMalformedDecimalCandidates = false,
+} = {}) {
   const sourceCurrency = firstDefined(
     record?.currency,
     record?.currencyCode,
@@ -161,18 +169,57 @@ function priceEvidence(record, fallback, collectItem, currencyContext, { allowFa
     if (typeof value === "number" && Number.isFinite(value)) return value;
     throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   };
-  const minorUnits = (...values) => {
-    const value = values.find((candidate) => candidate !== undefined && candidate !== null && candidate !== "");
-    if (value === undefined) return "";
-    if (typeof value !== "string" && !(typeof value === "number" && Number.isFinite(value))) {
-      throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  const historicalDisplayMinorUnits = (value) => {
+    const display = String(value).trim();
+    const displayCurrency = /(?:¥|￥|\bCNY\b)/iu.test(display)
+      ? "CNY"
+      : /(?:₽|\bRUB\b|руб)/iu.test(display) ? "RUB" : "";
+    if (displayCurrency && displayCurrency !== currency) return "";
+    const numeric = display
+      .replace(/(?:\bCNY\b|\bRUB\b|руб(?:\.|\p{L})*)/giu, "")
+      .replace(/[¥￥₽]/gu, "")
+      .trim();
+    if (!numeric || !/^[0-9][0-9.,'’\s\u00a0\u2007\u202f]*$/u.test(numeric)) return "";
+    let decimal = numeric.replace(/['’\s\u00a0\u2007\u202f]/gu, "");
+    const comma = decimal.lastIndexOf(",");
+    const dot = decimal.lastIndexOf(".");
+    const separator = Math.max(comma, dot);
+    if (separator >= 0) {
+      const fractionalDigits = decimal.length - separator - 1;
+      decimal = fractionalDigits >= 1 && fractionalDigits <= 2
+        ? `${decimal.slice(0, separator).replace(/[.,]/gu, "")}.${decimal.slice(separator + 1)}`
+        : decimal.replace(/[.,]/gu, "");
     }
-    const decimal = String(value).trim();
     const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,2}))?$/u.exec(decimal);
-    if (!match) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+    if (!match) return "";
     const result = BigInt(match[1]) * 100n + BigInt((match[2] || "").padEnd(2, "0") || "0");
-    if (result > POSTGRES_BIGINT_MAX) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
-    return String(result);
+    return result <= POSTGRES_BIGINT_MAX ? String(result) : "";
+  };
+  const minorUnits = (...values) => {
+    for (const value of values) {
+      if (value === undefined || value === null || value === "") continue;
+      if (typeof value !== "string" && !(typeof value === "number" && Number.isFinite(value))) {
+        if (ignoreMalformedDecimalCandidates) continue;
+        throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+      }
+      const decimal = String(value).trim();
+      const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,2}))?$/u.exec(decimal);
+      if (!match) {
+        if (ignoreMalformedDecimalCandidates) {
+          const recovered = historicalDisplayMinorUnits(decimal);
+          if (recovered) return recovered;
+          continue;
+        }
+        throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+      }
+      const result = BigInt(match[1]) * 100n + BigInt((match[2] || "").padEnd(2, "0") || "0");
+      if (result > POSTGRES_BIGINT_MAX) {
+        if (ignoreMalformedDecimalCandidates) continue;
+        throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+      }
+      return String(result);
+    }
+    return "";
   };
   const explicitBlack = fact(record?.blackKopecks, record?.black_kopecks, record?.blackPriceKopecks,
     ...(allowFallbackPrices
@@ -201,6 +248,105 @@ function priceEvidence(record, fallback, collectItem, currencyContext, { allowFa
   };
 }
 
+const VISUAL_ASPECT_KINDS = new Map([
+  ["цвет", "COLOR"],
+  ["color", "COLOR"],
+  ["colour", "COLOR"],
+  ["рисунок", "PATTERN"],
+  ["узор", "PATTERN"],
+  ["принт", "PATTERN"],
+  ["pattern", "PATTERN"],
+  ["форма", "SHAPE"],
+  ["shape", "SHAPE"],
+  ["материал", "MATERIAL"],
+  ["material", "MATERIAL"],
+  ["количество предметов", "ACCESSORY_COUNT"],
+  ["количество в комплекте", "ACCESSORY_COUNT"],
+  ["number of items", "ACCESSORY_COUNT"],
+]);
+const SIZE_ASPECTS = new Set([
+  "размер", "российский размер", "size", "объем", "обьем", "volume", "вместимость", "capacity",
+]);
+
+function normalizedAspectLabel(value) {
+  return text(value)
+    .toLocaleLowerCase("ru-RU")
+    .replace(/ё/gu, "е")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function variantFact(kind, value) {
+  const factId = crypto.createHash("sha256").update(`${kind}\u0000${value}`).digest("hex").slice(0, 24);
+  return { factId: `fact.variant.${factId}`, kind, value };
+}
+
+function evidenceFromVariantAspects(value, sku) {
+  if (value?.evidence !== undefined && value.evidence !== null) return value.evidence;
+  const aspects = value?.aspectValues;
+  if (!aspects || typeof aspects !== "object" || Array.isArray(aspects)) return null;
+  const appearanceFacts = [];
+  const sizeFacts = [];
+  let ambiguous = false;
+  for (const [rawName, rawValue] of Object.entries(aspects)) {
+    const name = normalizedAspectLabel(rawName);
+    const factValue = typeof rawValue === "string" || typeof rawValue === "number"
+      ? String(rawValue).replace(/\s+/gu, " ").trim()
+      : "";
+    if (!name || !factValue || factValue.length > 2048 || /[\u0000-\u001f\u007f]/u.test(factValue)) {
+      ambiguous = true;
+      continue;
+    }
+    const appearanceKind = VISUAL_ASPECT_KINDS.get(name);
+    if (appearanceKind) appearanceFacts.push(variantFact(appearanceKind, factValue));
+    else if (SIZE_ASPECTS.has(name)) sizeFacts.push(variantFact("SIZE", factValue));
+    else ambiguous = true;
+  }
+  if (!appearanceFacts.length && !sizeFacts.length) return null;
+  return {
+    contractVersion: 1,
+    variantId: `source-sku:${sku}`,
+    appearanceStatus: ambiguous || !appearanceFacts.length ? "AMBIGUOUS" : "COMPLETE",
+    appearanceFacts,
+    sizeFacts,
+  };
+}
+
+function ozoneMediaIdentity(entry) {
+  const url = typeof entry === "string"
+    ? entry
+    : (entry && typeof entry === "object" && !Array.isArray(entry)
+      ? firstDefined(entry.url, entry.src, entry.imageUrl)
+      : null);
+  if (typeof url !== "string" || !url.trim()) return null;
+  try {
+    const parsed = new URL(url);
+    if (!/(?:^|\.)ozone\.ru$/iu.test(parsed.hostname)) return null;
+    const pathname = parsed.pathname.replace(/\/wc\d+(?=\/)/giu, "");
+    if (!/^\/s3\/multimedia-/iu.test(pathname)) return null;
+    return `ozon:${pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function mergedMedia(...collections) {
+  const result = [];
+  const seen = new Set();
+  for (const collection of collections) {
+    if (!Array.isArray(collection)) continue;
+    for (const entry of collection) {
+      const normalized = jsonSafe(entry);
+      const key = ozoneMediaIdentity(normalized) || JSON.stringify(normalized);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(normalized);
+    }
+  }
+  return result;
+}
+
 function variantsSnapshot(draft, collectItem, currencyContext) {
   const primarySku = text(firstDefined(draft.sku, draft.sourceSku, collectItem.sku, collectItem.sourceSku));
   if (!primarySku) throw sourceError("AUTO_LISTING_SOURCE_SKU_REQUIRED");
@@ -210,7 +356,7 @@ function variantsSnapshot(draft, collectItem, currencyContext) {
     name: firstDefined(draft.title, draft.name, collectItem.name, collectItem.title, ""),
     price: firstDefined(draft.price, collectItem.price, ""),
     priceEvidence: priceEvidence(draft, null, collectItem, currencyContext),
-    media: firstDefined(draft.media, draft.images, collectItem.images, []),
+    media: firstNonEmptyArray(draft.images, draft.media, collectItem.images),
     groupId: firstDefined(draft.variantGroupId, draft.groupId, null),
     relation: firstDefined(draft.relation, draft.variantRelation, draft.groupEvidence, null),
     evidence: firstDefined(draft.evidence, null),
@@ -220,6 +366,7 @@ function variantsSnapshot(draft, collectItem, currencyContext) {
     const value = record && typeof record === "object" && !Array.isArray(record) ? record : {};
     const sku = text(firstDefined(value.sku, value.sourceSku, value.source_sku));
     if (!sku) throw sourceError("AUTO_LISTING_SOURCE_SKU_REQUIRED");
+    const variantMedia = firstNonEmptyArray(value.media, value.images);
     return {
       sku,
       offerId: firstDefined(value.offerId, value.offer_id, ""),
@@ -230,12 +377,12 @@ function variantsSnapshot(draft, collectItem, currencyContext) {
         sku === primarySku ? draft : null,
         sku === primarySku ? collectItem : {},
         currencyContext,
-        { allowFallbackPrices: sku === primarySku },
+        { allowFallbackPrices: sku === primarySku, ignoreMalformedDecimalCandidates: true },
       ),
-      media: firstDefined(value.media, value.images, []),
+      media: sku === primarySku ? mergedMedia(primary.media, variantMedia) : mergedMedia(variantMedia),
       groupId: firstDefined(value.variantGroupId, value.groupId, value.group_id, null),
       relation: firstDefined(value.relation, value.variantRelation, value.groupEvidence, null),
-      evidence: firstDefined(value.evidence, null),
+      evidence: evidenceFromVariantAspects(value, sku),
     };
   });
   if (!variants.some((variant) => variant.sku === primarySku)) variants.unshift(primary);

@@ -334,7 +334,7 @@ function failureMatrixRecoveryHarness({ absenceStatus = "ABSENT", refreshResult 
       ? { status: "ABSENT", code: "OZON_OFFERS_CONFIRMED_ABSENT" }
       : absenceStatus === "PRESENT"
         ? { status: "PRESENT", code: "OZON_OFFER_PRESENT" }
-        : { status: "UNKNOWN", code: "OZON_OFFER_RECONCILIATION_UNKNOWN" }; },
+        : { status: "UNKNOWN", code: "ZONGZI_OFFER_RECONCILIATION_UNKNOWN" }; },
     invalidateSharedCategory: async () => { calls.push("invalidate"); shared = {
       ...shared, status: "INVALIDATED", version: 2,
     }; return shared; },
@@ -424,11 +424,11 @@ test("production recovery boundaries fail closed for the Task 10 failure matrix"
         submissionLinkId: input.submissionLinkId, submissionLinkStatus: "SUBMITTED",
         submissionJobId: "matrix-job", submission: {
           id: "matrix-job", accountId: input.accountId, status: "FAILED",
-          ozonTaskId: "matrix-retry-task", errorCode: "OZON_ITEM_RESULT",
+          ozonTaskId: "matrix-retry-task", errorCode: "ZONGZI_ITEM_RESULT",
           successCount: 0, failedCount: 1, skippedCount: 0,
           resultSummary: { success: 0, failed: 1, skipped: 0, stockCount: 0 },
           items: [{ offerId: "matrix-offer", status: "FAILED", productId: null,
-            errorCode: "OZON_ITEM_RESULT" }],
+            errorCode: "ZONGZI_ITEM_RESULT" }],
           categoryRecovery: {
             attemptId: "matrix-attempt", status: "NEEDS_REVIEW",
             originalOzonTaskId: "matrix-original-task", retryOzonTaskId: "matrix-retry-task",

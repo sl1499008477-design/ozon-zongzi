@@ -889,7 +889,7 @@ if (!enabled) {
       const linked = await repository.loadCollectSources({ accountId: accountA, collectItemIds: [linkedCollect] });
       assert.equal(
         linked[0].sourceVersion,
-        "draft:7:payload-one:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
+        `draft:7:payload-one:category:shared-category-${accountA}:1:AUTO_LISTING_SOURCE_SNAPSHOT_V3`,
       );
       assert.equal(linked[0].rawResponseRef, rawOne);
       assert.equal(linked[0].rawResponseHash, "payload-one");
@@ -982,7 +982,7 @@ if (!enabled) {
         rawResponseRef: blockedSourceEvidence.rawResponseRef,
         targetStoreId: mixedSourceBusiness.configSnapshot.targetStoreId,
         targetWarehouseId: mixedSourceBusiness.configSnapshot.targetWarehouseId,
-        sourceOrder: 1,
+        sourceOrder: 2,
         status: "BLOCKED",
         planningContract: "LEGACY_FULL_PLAN_V3",
         failureCode: "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",

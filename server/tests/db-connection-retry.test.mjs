@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const ENV_KEYS = ["DATABASE_URL", "POSTGRES_HOST", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_PORT"];
+const ENV_KEYS = ["DATABASE_URL", "POSTGRES_HOST", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_PORT", "POSTGRES_POOL_MAX"];
 
 function saveEnvironment() {
   return Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -115,3 +115,21 @@ test("concurrent close is single-flight, preserves replacements after end failur
     restoreEnvironment(saved);
   }
 });
+
+for (const [limit, expected] of [[undefined, 10], ["4", 4]]) {
+  test(`pool allocates the configured maximum without connecting (${limit ?? "default"})`, async () => {
+    const saved = saveEnvironment();
+    const connection = await freshConnection();
+    try {
+      process.env.DATABASE_URL = "postgres://synthetic:synthetic@127.0.0.1:1/synthetic";
+      if (limit === undefined) delete process.env.POSTGRES_POOL_MAX;
+      else process.env.POSTGRES_POOL_MAX = limit;
+      const pool = await connection.getPostgresPool();
+      assert.equal(pool.options.max, expected);
+      assert.equal(pool.totalCount, 0);
+    } finally {
+      await connection.closePostgresPool();
+      restoreEnvironment(saved);
+    }
+  });
+}

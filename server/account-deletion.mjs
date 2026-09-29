@@ -136,6 +136,8 @@ export function removeAccountScope(
   state.collectorSessions = retainedCollectorSessions;
   state.collectorOzonEnrichmentCache = retainedCollectorOzonEnrichmentCache;
   state.collectorOzonEnrichmentJobs = retainedCollectorOzonEnrichmentJobs;
+  state.collectorOzonEnrichmentTaskControls = (state.collectorOzonEnrichmentTaskControls || [])
+    .filter((record) => normalized(record?.accountId) !== accountId);
   state.hashes = filterMap(state.hashes, accountId, storeIds);
   state.leases = filterMap(state.leases, accountId, storeIds);
   state.browserAgents = filterMap(state.browserAgents, accountId, storeIds);
@@ -154,6 +156,7 @@ export function removeAccountScope(
       ? state.currentStoreIdsByAccount
       : {};
   delete state.currentStoreIdsByAccount[accountId];
+  if(state.ozonRoutesByAccount)delete state.ozonRoutesByAccount[accountId];
 
   if (normalized(state.currentAccountId) === accountId) {
     state.currentAccountId = "";

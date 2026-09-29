@@ -148,102 +148,90 @@ test("JSON records immutable evidence and one account-shared source-direct row w
   assert.equal(persisted.length, 1);
 });
 
-test("JSON preload rejects non-contract evidence without leaking extra raw vendor secrets", async () => {
+test("JSON preload projects historical extra fields without leaking raw vendor secrets", async () => {
   const preload = { id: "evidence-preload", ...sourceEvidence(), rawVendorSecret: "token-secret" };
   const { repository } = createJson({ state: initializedState([preload]) });
 
-  await assert.rejects(repository.readCurrentEvidence({
+  const [read] = await repository.readCurrentEvidence({
     accountId: "account-a",
     collectItemIds: ["collect-a"],
-  }), (error) => (
-    error?.code === "OZON_CATEGORY_PERSISTENCE_FAILED"
-      && !String(error?.message).includes("token-secret")
-      && !Object.hasOwn(error, "cause")
-  ));
-  await assert.rejects(repository.recordSourceEvidence(sourceEvidence({
+  });
+  assert.equal(read.id, "evidence-preload");
+  assert.equal(read.sourceDescriptionCategoryId, 17028702);
+  assert.equal(read.sourceTypeId, 94405);
+  assert.equal(JSON.stringify(read).includes("token-secret"), false);
+  const next = await repository.recordSourceEvidence(sourceEvidence({
     sourceVersion: "draft:8",
     productDraftVersion: 8,
-  })), assertCode("OZON_CATEGORY_PERSISTENCE_FAILED"));
+  }));
+  assert.equal(next.evidence.sourceVersion, "draft:8");
 });
 
-test("JSON preload never executes evidence accessors or proxies and rejects cycles safely", async () => {
+// Executable objects cannot come from stored JSON. Exercise that protection at
+// recordSourceEvidence, where untrusted in-process input actually enters the repository.
+test("JSON new evidence never executes accessors or proxies and rejects cycles safely", async () => {
   const fixtures = [];
+  let executed = 0;
 
-  const accessor = { id: "accessor", ...sourceEvidence() };
+  const accessor = sourceEvidence();
   Object.defineProperty(accessor, "sourceSku", {
     enumerable: true,
     configurable: true,
-    get() { throw new Error("getter vendor-secret"); },
+    get() { executed += 1; throw new Error("getter vendor-secret"); },
   });
   fixtures.push(accessor);
 
-  fixtures.push(new Proxy({ id: "proxy", ...sourceEvidence() }, {
-    get() { throw new Error("proxy vendor-secret"); },
+  fixtures.push(new Proxy(sourceEvidence(), {
+    get() { executed += 1; throw new Error("proxy vendor-secret"); },
   }));
 
-  const cyclic = { id: "cyclic", ...sourceEvidence() };
-  cyclic.rawVendorCycle = cyclic;
+  const cyclic = sourceEvidence();
+  cyclic.attributeSummary[0].value = cyclic;
   fixtures.push(cyclic);
 
-  for (const preload of fixtures) {
-    const { repository } = createJson({ state: initializedState([preload]) });
-    await assert.rejects(repository.readCurrentEvidence({
-      accountId: "account-a",
-      collectItemIds: ["collect-a"],
-    }), (error) => (
-      error?.code === "OZON_CATEGORY_PERSISTENCE_FAILED"
+  for (const input of fixtures) {
+    const { repository, state } = createJson({ persist: async () => assert.fail("invalid write persisted") });
+    await assert.rejects(repository.recordSourceEvidence(input), (error) => (
+      error?.code === "ACCOUNT_SHARED_ZONGZI_CATEGORY_CONTRACT_INVALID"
         && !String(error?.message).includes("vendor-secret")
         && !Object.hasOwn(error, "cause")
     ));
+    assert.deepEqual(state, {});
   }
+  assert.equal(executed, 0);
 });
 
-test("JSON evidence array carrier rejects index accessors, proxies, sparse slots, symbols, and prototypes safely", async () => {
-  const valid = { id: "carrier-evidence", ...sourceEvidence() };
+test("JSON new evidence rejects metadata array accessors, proxies and symbol properties before persistence", async () => {
+  const valid = { key: "8229", value: "Cup", dictionaryValueId: 94405 };
   const fixtures = [];
+  let executed = 0;
 
   const accessor = [valid];
   Object.defineProperty(accessor, "0", {
     enumerable: true,
     configurable: true,
-    get() { throw new Error("array-index vendor-secret"); },
+    get() { executed += 1; throw new Error("array-index vendor-secret"); },
   });
   fixtures.push(accessor);
 
   fixtures.push(new Proxy([valid], {
-    get() { throw new Error("array-proxy vendor-secret"); },
+    get() { executed += 1; throw new Error("array-proxy vendor-secret"); },
   }));
-
-  const sparse = new Array(1);
-  fixtures.push(sparse);
 
   const symbol = [valid];
   symbol[Symbol("vendor-secret")] = valid;
   fixtures.push(symbol);
 
-  const prototype = [valid];
-  Object.setPrototypeOf(prototype, { inheritedSecret: "vendor-secret" });
-  fixtures.push(prototype);
-
   for (const rows of fixtures) {
-    const state = initializedState();
-    state.collectOzonCategorySourceEvidence = rows;
-    const { repository } = createJson({ state });
-    for (const operation of [
-      () => repository.readCurrentEvidence({
-        accountId: "account-a", collectItemIds: ["collect-a"],
-      }),
-      () => repository.recordSourceEvidence(sourceEvidence({
-        sourceVersion: "draft:8", productDraftVersion: 8,
-      })),
-    ]) {
-      await assert.rejects(operation(), (error) => (
-        error?.code === "OZON_CATEGORY_PERSISTENCE_FAILED"
-          && !String(error?.message).includes("vendor-secret")
-          && !Object.hasOwn(error, "cause")
-      ));
-    }
+    const { repository, state } = createJson({ persist: async () => assert.fail("invalid write persisted") });
+    await assert.rejects(repository.recordSourceEvidence(sourceEvidence({ attributeSummary: rows })), (error) => (
+      error?.code === "ACCOUNT_SHARED_ZONGZI_CATEGORY_CONTRACT_INVALID"
+        && !String(error?.message).includes("vendor-secret")
+        && !Object.hasOwn(error, "cause")
+    ));
+    assert.deepEqual(state, {});
   }
+  assert.equal(executed, 0);
 });
 
 test("evidence replay is idempotent and a conflicting source version fails closed", async () => {
@@ -258,7 +246,7 @@ test("evidence replay is idempotent and a conflicting source version fails close
 
   await assert.rejects(repository.recordSourceEvidence(sourceEvidence({
     sourceDescriptionCategoryId: 17028703,
-  })), assertCode("OZON_CATEGORY_SOURCE_VERSION_CONFLICT"));
+  })), assertCode("ZONGZI_CATEGORY_SOURCE_VERSION_CONFLICT"));
   assert.equal(state.collectOzonCategorySourceEvidence.length, 1);
 });
 
@@ -340,7 +328,7 @@ test("concurrent same-version writes serialize to one fact and one safe conflict
 
   assert.deepEqual(results.map((result) => result.status).sort(), ["fulfilled", "rejected"]);
   assert.equal(results.find((result) => result.status === "rejected").reason.code,
-    "OZON_CATEGORY_SOURCE_VERSION_CONFLICT");
+    "ZONGZI_CATEGORY_SOURCE_VERSION_CONFLICT");
   assert.equal(state.collectOzonCategorySourceEvidence.length, 1);
   assert.equal(state.accountOzonSharedCategories.length, 1);
   assert.equal(state.accountOzonSharedCategoryEvents.length, 1);
@@ -388,7 +376,7 @@ test("reads require exact account scope and return immutable projections", async
   }), []);
   await assert.rejects(repository.readCurrentEvidence({
     accountId: "account-a", collectItemIds: ["collect-a"], storeId: "store-a",
-  }), assertCode("ACCOUNT_SHARED_OZON_CATEGORY_CONTRACT_INVALID"));
+  }), assertCode("ACCOUNT_SHARED_ZONGZI_CATEGORY_CONTRACT_INVALID"));
   const accessorIds = ["collect-a"];
   Object.defineProperty(accessorIds, "0", {
     enumerable: true,
@@ -397,7 +385,7 @@ test("reads require exact account scope and return immutable projections", async
   });
   await assert.rejects(repository.readCurrentEvidence({
     accountId: "account-a", collectItemIds: accessorIds,
-  }), assertCode("ACCOUNT_SHARED_OZON_CATEGORY_CONTRACT_INVALID"));
+  }), assertCode("ACCOUNT_SHARED_ZONGZI_CATEGORY_CONTRACT_INVALID"));
 });
 
 test("JSON and PostgreSQL current evidence follow the canonical source pointer, never capture clocks", async () => {
@@ -451,6 +439,24 @@ test("JSON and PostgreSQL current evidence follow the canonical source pointer, 
         queries.push(sql);
         return { rows: [{
           id: olderHighDraftVersion.id,
+          account_id: "account-a",
+          collect_item_id: "collect-a",
+          source_kind: "PRODUCT_DRAFT",
+          source_record_id: "draft-a",
+          source_version: "draft:99",
+          product_draft_id: "draft-a",
+          enrichment_source: null,
+          enrichment_sku: null,
+          enrichment_contract_version: null,
+          source_description_category_id: "17028702",
+          source_type_id: "94405",
+          taxonomy_scope: "OZON:DEFAULT",
+          captured_at: CAPTURED_AT,
+          raw_response_hash: HASH_A,
+          raw_response_ref: "raw-a",
+          product_raw_response_ref: "raw-a",
+          lookup_evidence_id: null,
+          created_at: CAPTURED_AT,
           provenance: { categoryEvidence: sourceEvidence({
             sourceVersion: olderHighDraftVersion.sourceVersion,
             productDraftVersion: olderHighDraftVersion.productDraftVersion,
@@ -675,6 +681,38 @@ test("manual confirmation appends provenance and CASes the current draft pointer
     "MANUAL_CATEGORY_CONFIRMED");
 });
 
+test("manual confirmation can replace older category evidence after the same draft is edited", async () => {
+  const state = { caches: { collectBox: [{
+    id: "collect-a", accountId: "account-a", currentDraftId: "draft-a", draftVersion: 1,
+  }] } };
+  const { repository } = createJson({ state });
+  await repository.recordSourceEvidence(sourceEvidence({
+    sourceVersion: "draft:1", productDraftVersion: 1,
+  }));
+  state.caches.collectBox[0].draftVersion = 2;
+
+  const updated = await repository.confirmManualCategory({
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    expectedSourceVersion: "draft:2",
+    currentDescriptionCategoryId: 17028654,
+    currentTypeId: 971445831,
+    taxonomyFingerprint: TAXONOMY_HASH,
+    validatedAt: VALIDATED_AT,
+    actorId: "account-a",
+    correlationId: "manual-after-edit-correlation",
+    idempotencyKey: "manual-after-edit-idempotency",
+    requestHash: HASH_B,
+  });
+
+  assert.equal(updated.source, "MANUAL");
+  assert.equal(updated.currentDescriptionCategoryId, 17028654);
+  assert.equal(updated.currentTypeId, 971445831);
+  assert.equal(state.collectOzonCategoryCurrentSources[0].sourceKind, "MANUAL_CONFIRMATION");
+  assert.match(state.collectOzonCategoryCurrentSources[0].sourceVersion, /^manual-confirmation:v1:/u);
+  assert.equal(state.collectOzonCategoryManualConfirmationEvidence[0].triggerProductDraftVersion, 2);
+});
+
 test("all transitions enforce optimistic versions and atomically append safe events", async () => {
   let failNextPersist = false;
   const { state, repository } = createJson({ persist: async () => {
@@ -686,15 +724,15 @@ test("all transitions enforce optimistic versions and atomically append safe eve
     accountId: "account-a",
     evidenceId: recorded.evidence.id,
     expectedVersion: 2,
-    safeFailureCode: "OZON_CATEGORY_INVALIDATED",
+    safeFailureCode: "ZONGZI_CATEGORY_INVALIDATED",
     transitionedAt: VALIDATED_AT,
-  }), assertCode("OZON_CATEGORY_SHARED_VERSION_CONFLICT"));
+  }), assertCode("ZONGZI_CATEGORY_SHARED_VERSION_CONFLICT"));
 
   const invalidated = await repository.invalidateSharedCategory({
     accountId: "account-a",
     evidenceId: recorded.evidence.id,
     expectedVersion: 1,
-    safeFailureCode: "OZON_CATEGORY_INVALIDATED",
+    safeFailureCode: "ZONGZI_CATEGORY_INVALIDATED",
     transitionedAt: VALIDATED_AT,
   });
   assert.equal(invalidated.status, "INVALIDATED");
@@ -707,9 +745,9 @@ test("all transitions enforce optimistic versions and atomically append safe eve
     accountId: "account-a",
     evidenceId: recorded.evidence.id,
     expectedVersion: 2,
-    safeFailureCode: "OZON_TYPE_AMBIGUOUS",
+    safeFailureCode: "ZONGZI_TYPE_AMBIGUOUS",
     transitionedAt: "2026-08-12T02:03:05.000Z",
-  }), assertCode("OZON_CATEGORY_PERSISTENCE_FAILED"));
+  }), assertCode("ZONGZI_CATEGORY_PERSISTENCE_FAILED"));
   assert.deepEqual(state, beforeFailure, "failed persistence cannot expose a row without its event");
 });
 
@@ -745,7 +783,7 @@ test("JSON stale replay cannot reuse an idempotent transition through different 
     currentTypeId: 94405,
     taxonomyFingerprint: TAXONOMY_HASH,
     validatedAt: VALIDATED_AT,
-  }), assertCode("OZON_CATEGORY_SHARED_VERSION_CONFLICT"));
+  }), assertCode("ZONGZI_CATEGORY_SHARED_VERSION_CONFLICT"));
   assert.equal(state.accountOzonSharedCategories[0].evidenceId, first.evidence.id);
   assert.equal(state.accountOzonSharedCategoryEvents.length, 2);
 });
@@ -771,7 +809,7 @@ test("taxonomy refresh activation and review transitions reject raw or unapprove
     expectedVersion: 2,
     safeFailureCode: "vendor said credential=secret",
     transitionedAt: "2026-08-12T02:03:05.000Z",
-  }), assertCode("ACCOUNT_SHARED_OZON_CATEGORY_CONTRACT_INVALID"));
+  }), assertCode("ACCOUNT_SHARED_ZONGZI_CATEGORY_CONTRACT_INVALID"));
 });
 
 test("PostgreSQL reads emit exact account predicates and never carry store fields", async () => {
@@ -816,7 +854,7 @@ test("PostgreSQL first writes acquire an account/source-version transaction fenc
   });
 
   await assert.rejects(repository.recordSourceEvidence(sourceEvidence()),
-    assertCode("OZON_CATEGORY_PERSISTENCE_FAILED"));
+    assertCode("ZONGZI_CATEGORY_PERSISTENCE_FAILED"));
   assert.equal(calls[0].sql, "BEGIN");
   assert.match(calls[1].sql, /pg_advisory_xact_lock/iu);
   assert.deepEqual(calls[1].params, [
@@ -832,7 +870,7 @@ test("PostgreSQL connection failures expose only the fixed safe repository code"
     },
   });
   await assert.rejects(repository.recordSourceEvidence(sourceEvidence()), (error) => (
-    error?.code === "OZON_CATEGORY_PERSISTENCE_FAILED"
+    error?.code === "ZONGZI_CATEGORY_PERSISTENCE_FAILED"
       && !String(error?.message).includes("secret")
       && !Object.hasOwn(error, "cause")
   ));
@@ -891,9 +929,10 @@ const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
 
 async function migrationFiles() {
   const files = (await readdir(migrationsDir))
-    .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= 72)
+    .filter((file) => /^\d{3}_.+\.sql$/u.test(file)
+      && (Number(file.slice(0, 3)) <= 72 || file === "101_manual_category_confirmation_product_revision.sql"))
     .sort();
-  assert.equal(files.at(-1), "072_account_shared_category_confirmation_audit_provenance.sql");
+  assert.equal(files.at(-1), "101_manual_category_confirmation_product_revision.sql");
   return files;
 }
 
@@ -994,6 +1033,12 @@ if (!postgresEnabled) {
             (id,collect_item_id,source_payload_id,version,data_hash,data,updated_by)
            VALUES ($1,$2,$3,1,$4,'{}'::jsonb,$5)`,
           [unresolvedDraftId, unresolvedCollectItemId, unresolvedRawId, HASH_B, accountId],
+        );
+        await client.query(
+          `INSERT INTO product_draft_revisions
+            (id,draft_id,version,data_hash,data,changed_by,change_reason)
+           VALUES ($1,$2,1,$3,'{}'::jsonb,$4,'test source revision')`,
+          [`revision-unresolved-${suffix}`, unresolvedDraftId, HASH_B, accountId],
         );
         await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3",
           [unresolvedDraftId, accountId, unresolvedCollectItemId]);
@@ -1181,6 +1226,24 @@ if (!postgresEnabled) {
         [accountId],
       )).rows[0].count, 4, "each manual confirmation appends a distinct source observation");
 
+      await scoped.query(
+        `INSERT INTO product_draft_revisions
+          (id,draft_id,version,data_hash,data,changed_by,change_reason)
+         VALUES ($1,$2,2,$3,'{}'::jsonb,$4,'test later revision')`,
+        [`revision-unresolved-v2-${suffix}`, unresolvedDraftId, HASH_A, accountId],
+      );
+      await assert.doesNotReject(scoped.query(
+        "UPDATE product_drafts SET version=2,data_hash=$2 WHERE id=$1",
+        [unresolvedDraftId, HASH_A],
+      ));
+      assert.deepEqual((await scoped.query(
+        `SELECT trigger_product_draft_version
+           FROM collect_ozon_category_manual_confirmation_evidence
+          WHERE account_id=$1 AND collect_item_id=$2
+          ORDER BY captured_at,id`,
+        [accountId, unresolvedCollectItemId],
+      )).rows.map((row) => Number(row.trigger_product_draft_version)), [1, 1]);
+
       const lookup = await repository.recordSourceEvidence(lookupEvidence({
         accountId, collectItemId, sku: `SKU-${suffix}`,
         triggerProductDraftId: draftId, triggerProductDraftVersion: 7,
@@ -1256,7 +1319,7 @@ if (!postgresEnabled) {
       await scoped.query(`CREATE TRIGGER reject_task3_lookup_evidence BEFORE INSERT
         ON collect_ozon_category_source_evidence FOR EACH ROW EXECUTE FUNCTION reject_task3_lookup_evidence()`);
       await assert.rejects(repository.recordSourceEvidence(rollbackInput),
-        assertCode("OZON_CATEGORY_PERSISTENCE_FAILED"));
+        assertCode("ZONGZI_CATEGORY_PERSISTENCE_FAILED"));
       assert.equal((await scoped.query(
         "SELECT COUNT(*)::INT AS count FROM collect_ozon_category_lookup_evidence WHERE account_id=$1 AND id=$2",
         [accountId, rollbackRef],
@@ -1287,6 +1350,12 @@ if (!postgresEnabled) {
           (id,collect_item_id,source_payload_id,version,data_hash,data,updated_by)
          VALUES ($1,$2,$3,1,$4,'{}'::jsonb,$5)`,
         [foreignDraftId, foreignCollectItemId, foreignRawId, HASH_B, foreignAccountId],
+      );
+      await scoped.query(
+        `INSERT INTO product_draft_revisions
+          (id,draft_id,version,data_hash,data,changed_by,change_reason)
+         VALUES ($1,$2,1,$3,'{}'::jsonb,$4,'test foreign source revision')`,
+        [`revision-foreign-${suffix}`, foreignDraftId, HASH_B, foreignAccountId],
       );
       await scoped.query("UPDATE collect_items SET current_draft_id=$1 WHERE id=$2",
         [foreignDraftId, foreignCollectItemId]);
@@ -1403,9 +1472,9 @@ if (!postgresEnabled) {
         accountId,
         evidenceId: first.evidence.id,
         expectedVersion: 2,
-        safeFailureCode: "OZON_CATEGORY_INVALIDATED",
+        safeFailureCode: "ZONGZI_CATEGORY_INVALIDATED",
         transitionedAt: "2026-08-12T02:03:05.000Z",
-      }), assertCode("OZON_CATEGORY_SHARED_VERSION_CONFLICT"));
+      }), assertCode("ZONGZI_CATEGORY_SHARED_VERSION_CONFLICT"));
 
       const counts = (await scoped.query(`
         SELECT

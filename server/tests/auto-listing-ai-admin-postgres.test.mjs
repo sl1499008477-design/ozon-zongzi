@@ -80,14 +80,15 @@ function scriptedPool(steps) {
 test("admin PostgreSQL repository factory is closed and requires a real pool", () => {
   const pool = { async connect() {}, async query() {} };
   assert.deepEqual(Object.keys(createAutoListingAiAdminPostgres({ pool })).sort(), [
-    "beginCapabilityTest", "completeCapabilitySubcall", "completeCapabilityTest", "createProfile", "createStrategyVersion",
+    "archiveCategoryStrategyDraft", "beginCapabilityTest", "completeCapabilitySubcall", "completeCapabilityTest", "createProfile", "createStrategyVersion",
     "listProfiles", "listStrategyVersions", "loadCapabilityExecutionForSecretResolution",
-    "loadConnectionForCapabilitySecretResolution",
+    "loadConnectionForCapabilitySecretResolution", "loadRuntimeProfile",
     "markCapabilitySubcallSending",
     "prepareProfileRollback", "publishCategoryStrategyDraft", "publishProfile", "publishStrategyVersion",
     "rollbackCategoryStrategyVersion", "rollbackProfile",
   ]);
   assert.equal(typeof createAutoListingAiAdminPostgres({ pool }).publishCategoryStrategyDraft, "function");
+  assert.equal(typeof createAutoListingAiAdminPostgres({ pool }).archiveCategoryStrategyDraft, "function");
   assert.equal(typeof createAutoListingAiAdminPostgres({ pool }).rollbackCategoryStrategyVersion, "function");
   assert.throws(() => createAutoListingAiAdminPostgres({ pool, apiKey: "raw" }), {
     code: "AUTO_LISTING_AI_ADMIN_REPOSITORY_INVALID",
@@ -111,6 +112,12 @@ test("category publish and rollback reject hidden fields, accessors, custom prot
     input: {
       accountId: "account-a", actorId: "account-a", draftId: "draft-a", expectedDraftVersion: 4,
       expectedPublishedStrategyVersionId: "strategy-a", idempotencyKey: "publish-a", correlationId: "corr-a",
+    },
+  }, {
+    method: "archiveCategoryStrategyDraft",
+    input: {
+      accountId: "account-a", actorId: "account-a", draftId: "draft-a", expectedDraftVersion: 4,
+      idempotencyKey: "archive-a", correlationId: "corr-a",
     },
   }, {
     method: "rollbackCategoryStrategyVersion",
@@ -158,6 +165,39 @@ test("category publish and rollback reject hidden fields, accessors, custom prot
   assert.equal(getterRuns, 0);
   assert.equal(proxyTrapRuns, 0);
   assert.equal(poolCalls, 0);
+});
+
+test("category publish accepts the authoritative manual-confirmation source before checking analysis", async () => {
+  const draft = {
+    id: "category-draft-manual", account_id: "account-a", draft_version: 4, status: "DRAFT_READY",
+    source_collect_item_id: "collect-manual", source_product_draft_id: "product-draft-manual",
+    source_product_draft_version: 2, expected_source_version: "draft:2",
+    taxonomy_scope: "OZON:DEFAULT", description_category_id: "17027923", type_id: "94891",
+  };
+  const { pool, calls } = scriptedPool([
+    { rows: [] },
+    { rows: [{ id: "account-a" }] },
+    { rows: [] },
+    { rows: [] },
+    { rows: [] },
+    { rows: [{ mode: "REQUIRE_EXACT_STRATEGY" }] },
+    { rows: [draft] },
+    (sql) => {
+      const rejectsManual = /pointer\.source_kind='PRODUCT_DRAFT'/u.test(sql)
+        || /pointer\.source_version IN \(product_draft\.version::TEXT,'draft:' \|\| product_draft\.version::TEXT\)/u.test(sql);
+      return { rows: rejectsManual ? [] : [{ id: draft.source_collect_item_id }] };
+    },
+    { rows: [] },
+    { rows: [] },
+  ]);
+
+  await assert.rejects(createAutoListingAiAdminPostgres({ pool }).publishCategoryStrategyDraft({
+    accountId: "account-a", actorId: "account-a", draftId: draft.id, expectedDraftVersion: 4,
+    expectedPublishedStrategyVersionId: "strategy-current", idempotencyKey: "publish-manual",
+    correlationId: "publish-manual-correlation",
+  }), { code: "AUTO_LISTING_AI_STRATEGY_NOT_PUBLISHABLE", status: 409 });
+
+  assert.equal(calls.at(-2).sql, "ROLLBACK");
 });
 
 test("profile creation serializes by account, persists only an env reference, and writes idempotent audit evidence", async () => {
@@ -444,6 +484,7 @@ test("publishing a tested successor on its already ACTIVE connection atomically 
     { rows: [{ id: "profile-current", config_version: 1 }] }, { rows: [] },
     { rows: [{ id: "connection-active", version: 1, status_version: 3 }] },
     { rows: [{ ...passed, enabled: true }] },
+    { rows: [] },
     { rowCount: 1, rows: [{ event_id: "audit-profile", action: "AUTO_LISTING_AI_PROFILE_PUBLISH",
       actor_id: "account-a", occurred_at: new Date("2026-08-09T02:03:04.000Z") }] }, { rows: [] },
   ]);
@@ -460,8 +501,33 @@ test("publishing a tested successor on its already ACTIVE connection atomically 
   assert.equal(calls.some(({ sql }) => /SET status='RETIRED'|SET status='ACTIVE'/iu.test(sql)), false);
   assert.equal(calls.some(({ sql }) => /SET enabled=FALSE/iu.test(sql)), true);
   assert.equal(calls.some(({ sql }) => /SET enabled=TRUE/iu.test(sql)), true);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_ai_profile_channels/iu.test(sql)), true);
   assert.equal(calls.at(-2).sql, "COMMIT");
   assert.equal(remaining.length, 0);
+});
+
+test("a primary channel insert failure rolls back the publication transaction before activation audit", async () => {
+  const passed = { ...profileRow, api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+    connection_id: "connection-active", connection_version: 1,
+    capability_result: { outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
+      models: { text: "text-model-a", image: "image-model-a" }, checkedAt: "2026-08-04T10:01:00.000Z" },
+    capability_checked_at: "2026-08-04T10:01:00.000Z" };
+  const { pool, calls } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [] }, { rows: [passed] },
+    { rows: [{ id: "catalog-active", status: "ACTIVE", version: 1, status_version: 3 }] },
+    { rows: [{ active_profile_id: "profile-current", catalog_id: "catalog-active" }] },
+    { rows: [{ id: "profile-current", config_version: 1 }] }, { rows: [] },
+    { rows: [{ id: "connection-active", version: 1, status_version: 3 }] },
+    { rows: [{ ...passed, enabled: true }] },
+    (sql) => { assert.match(sql, /INSERT INTO auto_listing_ai_profile_channels/iu); throw new Error("channel insert failed"); },
+    { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiAdminPostgres({ pool }).publishProfile({
+    accountId: "account-a", actorId: "account-a", profileId: "profile-a", configVersion: 1,
+    idempotencyKey: "publish-primary-insert-failure", correlationId: "corr-primary-insert-failure",
+  }), { code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED", status: 503 });
+  assert.equal(calls.some(({ sql }) => /INSERT INTO audit_events/iu.test(sql)), false);
+  assert.equal(calls.at(-2).sql, "ROLLBACK");
 });
 
 test("paid credential preparation recovers exact ownership after its COMMIT response is lost", async () => {
@@ -811,6 +877,28 @@ test("profile publish rejects missing image capability without changing any enab
   assert.equal(calls.some(({ sql }) => /SET enabled=/iu.test(sql)), false);
   assert.equal(calls.at(-2).sql, "ROLLBACK");
 });
+test("managed profile publish checks connection and catalog without requiring a paid test", async () => {
+  const incomplete = {
+    ...profileRow, connection_id: "connection-a", connection_version: 1,
+    capability_result: { outcome: "PASSED", features: ["STRUCTURED_TEXT"],
+      models: { text: "text-model-a", image: "image-model-a" }, checkedAt: "2026-08-04T10:01:00.000Z" },
+    capability_checked_at: "2026-08-04T10:01:00.000Z",
+  };
+  const { pool, calls } = scriptedPool([
+    { rows: [] },
+    { rowCount: 1, rows: [{ id: "account-a" }] },
+    { rowCount: 0, rows: [] },
+    { rowCount: 1, rows: [incomplete] },
+    { rows: [] },
+  ]);
+  const repository = createAutoListingAiAdminPostgres({ pool });
+  await assert.rejects(repository.publishProfile({
+    accountId: "account-a", actorId: "account-a", profileId: "profile-a", configVersion: 1,
+    idempotencyKey: "idem-publish-a", correlationId: "corr-publish-a",
+  }), { code: "AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED" });
+  assert.equal(calls.some(({ sql }) => /SET enabled=/iu.test(sql)), false);
+  assert.equal(calls.at(-2).sql, "ROLLBACK");
+});
 
 test("profile publish replay never re-enables a profile superseded by a later publication", async () => {
   const { pool, calls } = scriptedPool([
@@ -856,6 +944,7 @@ test("connection-backed publish activates the validated target and retires the p
     { rows: [{ id: "connection-new", version: 1, status_version: 3 }] },
     { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-active" }] },
     { rows: [{ ...passed, enabled: true }] },
+    { rows: [] },
     { rowCount: 1, rows: [{ event_id: "audit-profile" }] }, { rows: [] },
   ]);
   const result = await createAutoListingAiAdminPostgres({ pool }).publishProfile({
@@ -867,6 +956,8 @@ test("connection-backed publish activates the validated target and retires the p
   const activated = calls.find(({ sql }) => /UPDATE ai_gateway_connection_versions[\s\S]*SET status='ACTIVE'/iu.test(sql));
   assert.deepEqual(retired.params.slice(0, 3), ["account-a", "connection-old", 1]);
   assert.deepEqual(activated.params.slice(0, 3), ["account-a", "connection-new", 1]);
+  const primary = calls.find(({ sql }) => /INSERT INTO auto_listing_ai_profile_channels/iu.test(sql));
+  assert.deepEqual(primary.params, ["account-a", "profile-a", 1, "Profile A", "connection-new", 1]);
   assert.equal(calls.at(-2).sql, "COMMIT");
 });
 
@@ -892,6 +983,8 @@ test("publishing a legacy profile retires the prior active encrypted connection 
     idempotencyKey: "publish-legacy-a", correlationId: "corr-legacy-a",
   });
   assert.equal(result.enabled, true);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_ai_profile_channels/iu.test(sql)), false,
+    "legacy env-var profiles must not receive a fabricated primary channel");
   const retired = calls.find(({ sql }) => /UPDATE ai_gateway_connection_versions[\s\S]*SET status='RETIRED'/iu.test(sql));
   assert.deepEqual(retired.params.slice(0, 3), ["account-a", "connection-old", 1]);
   assert.equal(calls.some(({ sql }) => /SET status='ACTIVE'/iu.test(sql)), false);
@@ -937,6 +1030,7 @@ test("rollback requires a fresh audited rollback capability and republishes the 
     { rows: [{ id: "connection-old", version: 1, status_version: 6 }] },
     { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-active" }] },
     { rows: [{ ...passed, enabled: true }] },
+    { rows: [] },
     { rowCount: 1, rows: [{ event_id: "audit-profile", action: "AUTO_LISTING_AI_PROFILE_ROLLBACK",
       actor_id: "account-a", occurred_at: new Date("2026-08-09T03:04:05.000Z") }] }, { rows: [] },
   ]);
@@ -952,6 +1046,7 @@ test("rollback requires a fresh audited rollback capability and republishes the 
   assert.match(calls[5].sql, /metadata->>'purpose'='ROLLBACK_CAPABILITY'/iu);
   assert.match(calls[6].sql, /status='VALIDATED'/iu);
   assert.match(calls[15].sql, /status='ACTIVE'/iu);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_ai_profile_channels/iu.test(sql)), true);
   assert.equal(calls.at(-2).sql, "COMMIT");
 });
 
@@ -1038,4 +1133,21 @@ test("strategy list is account and key scoped while database errors are always s
     error?.code === "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED"
       && error?.retryable === true
       && !/password|secret|internal|XX000/iu.test(error.message));
+});
+
+ test("runtime profile rejects models absent from the latest synced catalog", async () => {
+  const repository = createAutoListingAiAdminPostgres({ pool: { connect: async () => {}, query: async (_sql, params) => {
+    assert.deepEqual(params, ["account-a"]);
+    return { rows: [{ ...profileRow, enabled: true, capability_result: { outcome: "PASSED" },
+      runtime_catalog: { models: [{ id: "gpt-5.6-luna" }, { id: "image-model-a" }] } }] };
+  } } });
+  await assert.rejects(repository.loadRuntimeProfile({ accountId: "account-a" }), { code: "AI_GATEWAY_MODEL_MISMATCH" });
+});
+ test("runtime profile keeps available and legacy configurations usable", async () => {
+  for (const runtime_catalog of [null, { models: [{ id: "text-model-a" }, { id: "image-model-a" }] }]) {
+    const repository = createAutoListingAiAdminPostgres({ pool: { connect: async () => {}, query: async () => ({ rows: [{
+      ...profileRow, enabled: true, runtime_catalog, capability_result: { outcome: "PASSED" },
+    }] }) } });
+    assert.equal((await repository.loadRuntimeProfile({ accountId: "account-a" })).id, "profile-a");
+  }
 });

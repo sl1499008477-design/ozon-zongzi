@@ -4,13 +4,17 @@ const HASH = /^[a-f0-9]{64}$/u;
 const MIME_EXTENSION = Object.freeze({ "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" });
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
 const MAX_SOURCE_PIXELS = 40_000_000;
-const SCOPE_FIELDS = Object.freeze([
+const PLAN_SCOPE_FIELDS = Object.freeze([
   "accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId", "sourceRefHash", "inputHash",
   "expectedStatusVersion", "attemptId", "attemptNo", "leaseToken", "leaseExpiresAt",
 ]);
-const OWNER_REQUEST_FIELDS = Object.freeze(SCOPE_FIELDS.filter((field) => field !== "leaseExpiresAt"));
+const ANALYSIS_SCOPE_FIELDS = Object.freeze([
+  "accountId", "jobId", "itemId", "owner", "sourceAssetId", "sourceRefHash", "inputHash",
+  "expectedStatusVersion", "attemptId", "attemptNo", "leaseToken", "leaseExpiresAt",
+]);
 
 export const SOURCE_ASSET_OBJECT_KEY_VERSION = "SOURCE_V1";
+export const SOURCE_ANALYSIS_ASSET_OBJECT_KEY_VERSION = "SOURCE_V2";
 
 function sourceAssetError(code, retryable = false) {
   const value = new Error("自动上架来源图片暂时无法保存");
@@ -27,6 +31,23 @@ export function isSafeSourceScopeIdentifier(value, maxBytes = 240) {
 
 const identifier = isSafeSourceScopeIdentifier;
 
+function ownerOf(scope) {
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) return null;
+  const hasPlan = Object.hasOwn(scope, "parentPlanId");
+  const hasOwner = Object.hasOwn(scope, "owner");
+  if (hasPlan === hasOwner) return null;
+  if (hasPlan) return identifier(scope.parentPlanId)
+    ? { kind: "CONTENT_PLAN", id: scope.parentPlanId }
+    : null;
+  const owner = scope.owner;
+  return owner && typeof owner === "object" && !Array.isArray(owner)
+    && Reflect.ownKeys(owner).length === 2 && ["CONTENT_PLAN", "SOURCE_IMAGE_ANALYSIS"].includes(owner.kind) && identifier(owner.id)
+    ? { kind: owner.kind, id: owner.id }
+    : null;
+}
+
+const scopeFields = (scope) => ownerOf(scope)?.kind === "CONTENT_PLAN" ? PLAN_SCOPE_FIELDS : ANALYSIS_SCOPE_FIELDS;
+
 function validTimestamp(value) {
   if (value instanceof Date) return Number.isFinite(value.getTime());
   if (typeof value === "number") return Number.isFinite(value) && value >= 0;
@@ -34,8 +55,10 @@ function validTimestamp(value) {
 }
 
 function validScope(scope) {
+  const owner = ownerOf(scope);
   return scope && typeof scope === "object" && !Array.isArray(scope)
-    && ["accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId", "attemptId", "leaseToken"].every((key) => identifier(scope[key]))
+    && owner !== null
+    && ["accountId", "jobId", "itemId", "sourceAssetId", "attemptId", "leaseToken"].every((key) => identifier(scope[key]))
     && HASH.test(scope.sourceRefHash || "") && HASH.test(scope.inputHash || "")
     && Number.isInteger(scope.expectedStatusVersion) && scope.expectedStatusVersion >= 1
     && Number.isInteger(scope.attemptNo) && scope.attemptNo >= 1 && scope.attemptNo <= 3
@@ -43,8 +66,10 @@ function validScope(scope) {
 }
 
 function validKeyScope(scope) {
+  const owner = ownerOf(scope);
   return scope && typeof scope === "object" && !Array.isArray(scope)
-    && ["accountId", "jobId", "itemId", "parentPlanId", "sourceAssetId"].every((key) => identifier(scope[key]))
+    && owner !== null
+    && ["accountId", "jobId", "itemId", "sourceAssetId"].every((key) => identifier(scope[key]))
     && HASH.test(scope.sourceRefHash || "") && HASH.test(scope.inputHash || "")
     && Number.isInteger(scope.attemptNo) && scope.attemptNo >= 1 && scope.attemptNo <= 3;
 }
@@ -52,20 +77,26 @@ function validKeyScope(scope) {
 const segment = (value) => Buffer.from(value, "utf8").toString("base64url");
 
 export function buildSourceAssetObjectKey(input = {}) {
+  const owner = ownerOf(input);
+  const version = owner?.kind === "CONTENT_PLAN" ? SOURCE_ASSET_OBJECT_KEY_VERSION : SOURCE_ANALYSIS_ASSET_OBJECT_KEY_VERSION;
   if (!validKeyScope(input) || !HASH.test(input.contentHash || "") || !MIME_EXTENSION[input.contentType]
-    || (input.objectKeyVersion != null && input.objectKeyVersion !== SOURCE_ASSET_OBJECT_KEY_VERSION)) {
+    || (input.objectKeyVersion != null && input.objectKeyVersion !== version)) {
     throw sourceAssetError("AUTO_LISTING_SOURCE_ASSET_SCOPE_INVALID");
   }
+  const prefix = owner.kind === "CONTENT_PLAN"
+    ? ["auto-listing", "source", "v1", segment(input.accountId), segment(input.jobId), segment(input.itemId), segment(owner.id)]
+    : ["auto-listing", "source", "v2", segment(input.accountId), segment(input.jobId), segment(input.itemId), "analysis-run", segment(owner.id)];
   return [
-    "auto-listing", "source", "v1",
-    segment(input.accountId), segment(input.jobId), segment(input.itemId), segment(input.parentPlanId), segment(input.sourceAssetId),
+    ...prefix, segment(input.sourceAssetId),
     input.sourceRefHash, `attempt-${input.attemptNo}`, input.inputHash, `${input.contentHash}.${MIME_EXTENSION[input.contentType]}`,
   ].join("/");
 }
 
 export function verifySourceAssetObjectKey(input = {}) {
   try {
-    return input.objectKeyVersion === SOURCE_ASSET_OBJECT_KEY_VERSION
+    const owner = ownerOf(input);
+    const version = owner?.kind === "CONTENT_PLAN" ? SOURCE_ASSET_OBJECT_KEY_VERSION : SOURCE_ANALYSIS_ASSET_OBJECT_KEY_VERSION;
+    return owner !== null && input.objectKeyVersion === version
       && typeof input.objectKey === "string"
       && Buffer.byteLength(input.objectKey, "utf8") <= 2048
       && input.objectKey === buildSourceAssetObjectKey(input);
@@ -76,7 +107,9 @@ export function verifySourceAssetObjectKey(input = {}) {
 
 function sameFields(actual, expected, fields) {
   return actual && typeof actual === "object" && !Array.isArray(actual)
-    && fields.every((field) => actual[field] === expected[field]);
+    && fields.every((field) => field === "owner"
+      ? actual.owner?.kind === expected.owner?.kind && actual.owner?.id === expected.owner?.id
+      : actual[field] === expected[field]);
 }
 
 function safeLog(logger, event) {
@@ -142,7 +175,7 @@ async function persistCleanup({ scope, stored, repository, originalErrorCode, lo
     accountId: scope.accountId,
     jobId: scope.jobId,
     itemId: scope.itemId,
-    parentPlanId: scope.parentPlanId,
+    ...(ownerOf(scope).kind === "CONTENT_PLAN" ? { parentPlanId: scope.parentPlanId } : { owner: { ...scope.owner } }),
     sourceAssetId: scope.sourceAssetId,
     materializationAttemptId: scope.attemptId,
     sourceRefHash: scope.sourceRefHash,
@@ -210,7 +243,9 @@ export async function storeMaterializedSourceAsset({ scope, downloaded, storage,
     throw sourceAssetError("AUTO_LISTING_SOURCE_ASSET_INVALID");
   }
   const stored = {
-    objectKeyVersion: SOURCE_ASSET_OBJECT_KEY_VERSION,
+    objectKeyVersion: ownerOf(scope).kind === "CONTENT_PLAN"
+      ? SOURCE_ASSET_OBJECT_KEY_VERSION
+      : SOURCE_ANALYSIS_ASSET_OBJECT_KEY_VERSION,
     objectKey: "",
     contentHash: downloaded.contentHash,
     contentType: downloaded.contentType,
@@ -244,12 +279,15 @@ export async function storeMaterializedSourceAsset({ scope, downloaded, storage,
     throw failure;
   }
 
-  const request = { ...Object.fromEntries(OWNER_REQUEST_FIELDS.map((field) => [field, scope[field]])), ...stored };
+  const request = {
+    ...Object.fromEntries(scopeFields(scope).filter((field) => field !== "leaseExpiresAt").map((field) => [field, scope[field]])),
+    ...stored,
+  };
   const expected = { ...scope, ...stored };
   let recorded;
   try {
     recorded = await repository.recordStoredSourceMaterialization(request);
-    if (!sameFields(recorded, expected, [...SCOPE_FIELDS, ...Object.keys(stored)]) || recorded.status !== "STORED") {
+    if (!sameFields(recorded, expected, [...scopeFields(scope), ...Object.keys(stored)]) || recorded.status !== "STORED") {
       throw sourceAssetError("AUTO_LISTING_SOURCE_MATERIALIZATION_REPOSITORY_FAILED", true);
     }
   } catch (caught) {

@@ -47,7 +47,8 @@ function localState() {
 
 const actions = Object.freeze({ review: false, approve: false, retry: false, regenerate: false, cancel: false });
 
-function item({ id, title, status, order, failureStage = null }) {
+function item({ id, title, status, order, failureStage = null, aiQueue = null, workflowProgress = null,
+  uploadPreparation = null }) {
   return {
     itemId: `item-${id}`,
     sourceRecordId: `collect-${id}`,
@@ -62,6 +63,14 @@ function item({ id, title, status, order, failureStage = null }) {
     createdAt: "2026-08-25T00:00:00.000Z",
     updatedAt: "2026-08-25T00:02:03.000Z",
     failureStage,
+    ...(aiQueue ? {
+      aiQueueState: aiQueue.state,
+      aiChannelDisplayName: aiQueue.displayName,
+      aiChannelSwitching: aiQueue.switching,
+      aiChannelWaitStartedAt: aiQueue.waitStartedAt,
+    } : {}),
+    ...(workflowProgress ? { workflowProgress } : {}),
+    ...(uploadPreparation ? { uploadPreparation } : {}),
     price: {
       currency: "CNY",
       branch: "BLACK_GTE_80",
@@ -77,18 +86,42 @@ function item({ id, title, status, order, failureStage = null }) {
   };
 }
 
-function jobs(processingStatus = "GENERATING") {
+function jobs(processingStatus = "UPLOADING") {
   return [{
     jobId: "job-center",
     createdAt: "2026-08-25T00:00:00.000Z",
+    useCategoryStrategy: false,
     items: [
-      item({ id: "processing", title: "处理中商品", status: processingStatus, order: 1 }),
+      item({
+        id: "processing", title: "处理中商品", status: processingStatus, order: 1,
+        uploadPreparation: processingStatus === "UPLOADING" ? { published: 3, total: 12 } : null,
+      }),
       item({ id: "review", title: "待审核商品", status: "READY_FOR_REVIEW", order: 2 }),
       item({ id: "preparation", title: "准备失败商品", status: "BLOCKED", order: 3, failureStage: "PREPARATION" }),
       item({ id: "generation", title: "生成失败商品", status: "BLOCKED", order: 4, failureStage: "GENERATION" }),
       item({ id: "upload", title: "上传失败商品", status: "BLOCKED", order: 5, failureStage: "UPLOAD" }),
       item({ id: "succeeded", title: "上架成功商品", status: "SUCCEEDED", order: 6 }),
       item({ id: "cancelled", title: "已取消商品", status: "CANCELLED", order: 7 }),
+      item({
+        id: "calling", title: "调用中商品", status: "GENERATING", order: 8,
+        aiQueue: { state: "CALLING_AI", displayName: "主通道", switching: false, waitStartedAt: null },
+        workflowProgress: { phase: "GENERATE_IMAGE_SLOT", state: "RUNNING", attemptCount: 1,
+          updatedAt: "2026-08-25T00:02:03.000Z", nextRetryAt: null },
+      }),
+      item({
+        id: "waiting", title: "等待通道商品", status: "PLANNING", order: 9,
+        aiQueue: { state: "WAITING_FOR_AI_CHANNEL", displayName: null, switching: false,
+          waitStartedAt: "2026-08-25T00:01:00.000Z" },
+        workflowProgress: { phase: "PLAN_CONTENT", state: "QUEUED", attemptCount: 0,
+          updatedAt: "2026-08-25T00:01:00.000Z", nextRetryAt: null },
+      }),
+      item({
+        id: "switching", title: "切换通道商品", status: "GENERATING", order: 10,
+        aiQueue: { state: "SWITCHING_AI_CHANNEL", displayName: "故障通道", switching: true,
+          waitStartedAt: "2026-08-25T00:01:30.000Z" },
+        workflowProgress: { phase: "GENERATE_IMAGE_SLOT", state: "QUEUED", attemptCount: 1,
+          updatedAt: "2026-08-25T00:01:30.000Z", nextRetryAt: null },
+      }),
     ],
   }];
 }
@@ -119,7 +152,14 @@ test("ordered collection creation switches to the task center with exact multipl
     context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     const pageErrors = [];
+    const uncontrolledRequests = [];
     page.on("pageerror", (error) => pageErrors.push(error.stack || error.message));
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.hostname !== "127.0.0.1" && url.hostname !== "images.example.test") {
+        uncontrolledRequests.push(`${request.method()} ${url.origin}${url.pathname}`);
+      }
+    });
     await page.addInitScript(() => {
       const nativeSetInterval = window.setInterval.bind(window);
       const nativeClearInterval = window.clearInterval.bind(window);
@@ -190,7 +230,21 @@ test("ordered collection creation switches to the task center with exact multipl
     assert.equal(createBody?.config?.priceMultiplierMicros, "1000000");
     assert.equal(new URL(page.url()).search, "?source=collect&ids=collect-b,collect-a");
     await page.getByRole("columnheader", { name: "任务用时" }).waitFor();
+    await page.getByRole("columnheader", { name: "策略来源" }).waitFor();
+    assert.ok(await page.getByText("默认模板", { exact: true }).count() >= 1);
     assert.ok(await page.getByRole("progressbar").count() >= 1);
+    await page.getByText("正在使用「主通道」生成", { exact: true }).waitFor({ timeout: 2_000 });
+    await page.getByText("等待可用 AI 通道", { exact: true }).waitFor({ timeout: 2_000 });
+    await page.getByText("原通道暂不可用，正在等待其他通道", { exact: true }).waitFor({ timeout: 2_000 });
+    const waitingRow = page.getByRole("row").filter({ hasText: "等待通道商品" });
+    const switchingRow = page.getByRole("row").filter({ hasText: "切换通道商品" });
+    assert.equal(await waitingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "30");
+    assert.equal(await switchingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "60");
+    const uploadingRow = page.getByRole("row").filter({ hasText: "处理中商品" });
+    await uploadingRow.getByText("正在准备图片 3/12", { exact: true }).waitFor();
+    assert.equal(await uploadingRow.getByRole("progressbar").getAttribute("aria-valuenow"), "87");
+    await uploadingRow.getByText(/当前阶段/u).waitFor();
+    await uploadingRow.getByText(/已用时/u).waitFor();
     await page.getByText("总用时 2分3秒", { exact: true }).waitFor();
     assert.ok(await page.evaluate(() => window.__intervalCountForTest(1_000)) >= 1);
     await page.getByRole("tab", { name: "创建任务" }).click();
@@ -205,6 +259,7 @@ test("ordered collection creation switches to the task center with exact multipl
     assert.equal(await page.getByText("生成失败商品", { exact: true }).count(), 0);
     assert.ok(await page.getByText("图片不可用", { exact: true }).count() >= 1);
     assert.deepEqual(pageErrors, []);
+    assert.deepEqual(uncontrolledRequests, [], "rendered acceptance must not contact a real AI or Ozon endpoint");
   } finally {
     await context?.close();
     await browser?.close();
@@ -231,7 +286,12 @@ test("review-ready tasks keep polling and clean up after the refreshed row becom
     context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     const pageErrors = [];
+    const uncontrolledRequests = [];
     page.on("pageerror", (error) => pageErrors.push(error.stack || error.message));
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.hostname !== "127.0.0.1") uncontrolledRequests.push(`${request.method()} ${url.origin}${url.pathname}`);
+    });
     await page.addInitScript(() => {
       let nextIntervalId = 1;
       const intervals = new Map();
@@ -297,6 +357,7 @@ test("review-ready tasks keep polling and clean up after the refreshed row becom
     assert.equal(jobsReadCount, initialJobsReadCount + 1);
     await page.waitForFunction(() => window.__intervalCountForTest(3_000) === 0);
     assert.deepEqual(pageErrors, []);
+    assert.deepEqual(uncontrolledRequests, [], "polling acceptance must remain entirely local and mocked");
   } finally {
     await context?.close();
     await browser?.close();

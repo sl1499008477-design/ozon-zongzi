@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createAutoListingRuntime } from "../auto-listing-runtime.mjs";
+
+test("runtime routes the injected Ozon transport through both default category service boundaries", async () => {
+  const source = await readFile(new URL("../auto-listing-runtime.mjs", import.meta.url), "utf8");
+  assert.equal(source.match(/createOzonCategoryService\(\{ callOzonSellerApi \}\)/gu)?.length, 2);
+});
 
 function enabledEnv(overrides = {}) {
   return {
@@ -112,6 +118,24 @@ test("enabled runtime starts the queue consumer before startup replay and stops 
   assert.deepEqual(events, ["worker-start", "relay-startup-replay", "relay-stop", "worker-stop"]);
 });
 
+test("runtime dependency spread keeps the public source image analyzer reachable by the worker", async () => {
+  const sourceImageAnalyzer = async () => ({ status: "ACCEPTED" });
+  let receivedAnalyzer;
+  const runtime = createAutoListingRuntime({
+    env: enabledEnv(),
+    createAiWorkerDependencies: async () => ({ sourceImageAnalyzer }),
+    createAiWorker(input) {
+      receivedAnalyzer = input.sourceImageAnalyzer;
+      return Object.freeze({ async start() { return true; }, async stop() {} });
+    },
+    createAiOutboxRelay: async () => Object.freeze({ async start() { return true; }, async stop() {} }),
+  });
+
+  assert.equal(await runtime.startAiWorker(), true);
+  assert.equal(receivedAnalyzer, sourceImageAnalyzer);
+  await runtime.stopAiWorker();
+});
+
 test("relay startup failure rolls back the already-started consumer and stays safely retryable", async () => {
   const events = [];
   const runtime = createAutoListingRuntime({
@@ -143,6 +167,11 @@ test("enabled runtime lazily composes one dedicated worker and stops it graceful
       dependencyFactories += 1;
       return {
         bossFactory: () => harness.boss,
+        executionRepository: {
+          async adopt() { throw new Error("no job in this test"); },
+          async renew() { throw new Error("no job in this test"); },
+          async requeueChannelFailure() { throw new Error("no job in this test"); },
+        },
         loadContext: async () => { throw new Error("no job in this test"); },
         orchestrate: async () => { throw new Error("no job in this test"); },
         workflow: { async applyOutcome() { throw new Error("no job in this test"); } },
@@ -157,9 +186,15 @@ test("enabled runtime lazily composes one dedicated worker and stops it graceful
   assert.equal(await runtime.startAiWorker(), true);
   assert.equal(dependencyFactories, 1);
   assert.equal(pools, 0);
-  assert.deepEqual(harness.calls, ["start", "createQueue", "work"]);
+  assert.deepEqual(harness.calls, [
+    "start", "createQueue", "createQueue", "createQueue", "createQueue",
+    "work", "work", "work", "work",
+  ]);
   await runtime.stopAiWorker();
-  assert.deepEqual(harness.calls, ["start", "createQueue", "work", "stop"]);
+  assert.deepEqual(harness.calls, [
+    "start", "createQueue", "createQueue", "createQueue", "createQueue",
+    "work", "work", "work", "work", "stop",
+  ]);
 });
 
 test("enabled runtime has a default production composition and missing configuration fails safely before database connection", async () => {
@@ -242,6 +277,7 @@ test("runtime injects the AI workflow into job creation only when both feature f
     const workflow = {
       async stageInitialPlanWork() {},
       async applyPhaseOutcome() {},
+      async requeueChannelFailure() {},
     };
     const repository = { name: "repository-a" };
     const service = { name: "service-a" };
@@ -377,7 +413,7 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
   assert.deepEqual({ pools, repositories, services }, { pools: 1, repositories: 1, services: 1 });
 });
 
-test("runtime defaults new collect-box items to the server-owned fixed skeleton", async () => {
+test("runtime defaults all new collect-box and Excel items to the server-owned fixed skeleton", async () => {
   let serviceInput;
   const runtime = createAutoListingRuntime({
     env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0" }),
@@ -399,7 +435,7 @@ test("runtime defaults new collect-box items to the server-owned fixed skeleton"
   }), "FIXED_SKELETON_V1");
   assert.equal(serviceInput.selectPlanningContract({
     accountId: "account-a", sourceType: "EXCEL_SKU", collectItemId: "collect-b",
-  }), "LEGACY_FULL_PLAN_V3");
+  }), "FIXED_SKELETON_V1");
 });
 
 test("runtime composes the RFBS verifier from tenant-scoped warehouse and credential ports", async () => {

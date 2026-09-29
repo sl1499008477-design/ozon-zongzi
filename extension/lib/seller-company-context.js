@@ -51,7 +51,7 @@
     return '';
   };
 
-  const companyIdFromFetchArgs = (input, init) => {
+  const companyIdFromFetchArgs = (input, init, sellerOrigin = 'https://seller.ozon.ru') => {
     const initValue = normalizeCompanyId(readHeader(init?.headers, COMPANY_HEADER));
     if (initValue) return initValue;
     const requestValue = normalizeCompanyId(readHeader(input?.headers, COMPANY_HEADER));
@@ -60,13 +60,14 @@
     const requestUrl = typeof input === 'string' ? input : String(input?.url || '');
     let parsedUrl;
     try {
-      parsedUrl = new URL(requestUrl, 'https://seller.ozon.ru');
+      parsedUrl = new URL(requestUrl, sellerOrigin);
     } catch {
       return '';
     }
     if (
       parsedUrl.protocol !== 'https:'
-      || parsedUrl.hostname !== 'seller.ozon.ru'
+      || !['https://seller.ozon.ru', 'https://seller.ozonru.cn'].includes(sellerOrigin)
+      || parsedUrl.origin !== sellerOrigin
       || parsedUrl.pathname !== '/api/composer-api.bx/_action/setUserCookies'
     ) {
       return '';
@@ -102,7 +103,7 @@
     let wrappedFetch = null;
     if (typeof originalFetch === 'function') {
       wrappedFetch = function (...args) {
-        emit(companyIdFromFetchArgs(args[0], args[1]));
+        emit(companyIdFromFetchArgs(args[0], args[1], pageRoot.location?.origin || 'https://seller.ozon.ru'));
         return originalFetch.apply(this, args);
       };
       pageRoot.fetch = wrappedFetch;

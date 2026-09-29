@@ -9,6 +9,7 @@ import {
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import {
   ensureFormalSchema,
+  captureFormalMirrorBaseline,
   formalPersistenceHealth,
   hydrateStoreCatalogFromRelationalTables,
   mirrorStateToRelationalTables,
@@ -29,7 +30,7 @@ const RETIRED_CATEGORY_STATE_KEYS = Object.freeze([
 
 function clonePersistenceState(state = {}) {
   const clone = structuredClone(state);
-  for (const key of ["__storageVersion", "__deletedAccountScopes"]) {
+  for (const key of ["__storageVersion", "__deletedAccountScopes", "__formalMirrorBaseline"]) {
     if (!Object.hasOwn(state, key)) continue;
     Object.defineProperty(clone, key, {
       value: structuredClone(state[key]),
@@ -106,13 +107,24 @@ async function ensureSchema(pool) {
   schemaReady = true;
 }
 
-async function readJsonState(dataFile) {
+async function readJsonState(dataFile, { migrate = true } = {}) {
   try {
-    const raw = await fs.readFile(dataFile, "utf8");
+    const raw = await fs.readFile(dataFile, "utf8").catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new TypeError("The persisted state must be an object");
+    }
     const result = normalizeRetiredCategoryState(
-      unprotectStateFromStorage(JSON.parse(raw)),
+      unprotectStateFromStorage(parsed),
     );
-    if (result.changed) {
+    if (result.state.stores?.some((store) => store.apiKeyDecryptError)) {
+      throw new Error("Persisted credentials could not be decrypted");
+    }
+    if (result.changed && migrate) {
       await writeJsonAtomically({
         dataDir: path.dirname(dataFile),
         dataFile,
@@ -121,8 +133,9 @@ async function readJsonState(dataFile) {
     }
     return result.state;
   } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
+    throw Object.assign(new Error("本地数据读取失败，已停止写入以保护原文件。请检查文件权限、加密密钥或从备份恢复。", { cause: error }), {
+      code: "LOCAL_STATE_READ_FAILED", status: 503,
+    });
   }
 }
 
@@ -218,7 +231,7 @@ export async function disablePersistedOperatingStores({ accountId = "", storeIds
   }
 }
 
-export async function loadPersistedState({ dataFile }) {
+export async function loadPersistedState({ dataFile, hydrateCatalog = true }) {
   if (!postgresEnabled()) return readJsonState(dataFile);
 
   const pool = await getPostgresPool();
@@ -258,7 +271,11 @@ export async function loadPersistedState({ dataFile }) {
     });
     if (!formalBackfillComplete) {
       try {
-        await mirrorStateToRelationalTables(pool, state);
+        const existing = await pool.query('SELECT EXISTS(SELECT 1 FROM accounts LIMIT 1) AS populated');
+        if (!existing.rows[0]?.populated) await mirrorStateToRelationalTables(pool, state);
+        // Existing relations are already initialized. Replaying the old JSON on
+        // every process restart can overwrite fresher worker data as well as
+        // performing thousands of unrelated writes during a read.
         formalBackfillComplete = true;
         formalBackfillError = "";
       } catch (error) {
@@ -266,12 +283,14 @@ export async function loadPersistedState({ dataFile }) {
         console.warn(`正式数据表回填失败: ${formalBackfillError}`);
       }
     }
-    try {
-      await hydrateStoreCatalogFromRelationalTables(pool, state);
-    } catch (error) {
-      console.warn(`正式商品/仓库数据恢复失败: ${String(error?.message || error).slice(0, 500)}`);
+    if (hydrateCatalog) {
+      try {
+        await hydrateStoreCatalogFromRelationalTables(pool, state);
+      } catch (error) {
+        console.warn(`正式商品/仓库数据恢复失败: ${String(error?.message || error).slice(0, 500)}`);
+      }
     }
-    return state;
+    return captureFormalMirrorBaseline(state, { includeCatalog: hydrateCatalog });
   }
 
   const legacyState = await readJsonState(dataFile);
@@ -279,7 +298,7 @@ export async function loadPersistedState({ dataFile }) {
   return legacyState;
 }
 
-export async function savePersistedState({ dataDir, dataFile, state }) {
+export async function savePersistedState({ dataDir, dataFile, state, catalogMutation = null }) {
   const normalized = normalizeRetiredCategoryState(state);
   const persistenceState = normalized.state;
   const protectedState = protectStateForStorage(persistenceState);
@@ -300,9 +319,14 @@ export async function savePersistedState({ dataDir, dataFile, state }) {
       state: persistenceState,
       protectedState,
       refreshProtectedState: protectStateForStorage,
-      mirror: mirrorStateToRelationalTablesInTransaction,
+      mirror: (transactionClient, transactionState) => mirrorStateToRelationalTablesInTransaction(
+        transactionClient,
+        transactionState,
+        { catalogMutation },
+      ),
     });
     commitNormalizedState(state, persistenceState);
+    captureFormalMirrorBaseline(state);
   } finally {
     client.release();
   }
@@ -374,15 +398,7 @@ export async function savePersistedCollectBox({ dataDir, dataFile, state }) {
 
 export async function persistenceHealth({ dataFile } = {}) {
   if (!postgresEnabled()) {
-    let jsonFileExists = false;
-    if (dataFile) {
-      try {
-        await fs.access(dataFile);
-        jsonFileExists = true;
-      } catch {
-        jsonFileExists = false;
-      }
-    }
+    const jsonFileExists = dataFile ? (await readJsonState(dataFile, { migrate: false })) !== null : false;
     return {
       ok: true,
       mode: "json",
@@ -392,7 +408,6 @@ export async function persistenceHealth({ dataFile } = {}) {
   }
 
   const pool = await getPostgresPool();
-  await ensureSchema(pool);
   await pool.query("SELECT 1");
   let formal;
   try {

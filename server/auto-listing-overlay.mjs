@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 import { verifyAutoListingFrozenConfig } from "./auto-listing-contract.mjs";
-import { calculateAutoListingActualPrice, calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
+import { calculateAutoListingPriceFromEvidence } from "./auto-listing-pricing.mjs";
 import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 import {
   AUTO_LISTING_OZON_RICH_CONTENT_VERSION,
@@ -189,7 +189,7 @@ function normalizeBaseInput(input) {
     categoryRuleVersion: text(input.versions.categoryRuleVersion),
     dictionaryVersion: text(input.versions.dictionaryVersion),
   };
-  const normalizedPricing = normalizePricingEvidence(input.pricingEvidence);
+  const normalizedPricing = normalizePricingEvidence(input.pricingEvidence, { allowSourcePriceOnly: true });
   const pricingEvidence = normalizedPricing.evidence;
   const legacyVariants = input.variants.every((variant) => exactObject(variant, VARIANT_KEYS));
   const pricedVariants = input.variants.every((variant) => exactObject(variant, PRICED_VARIANT_KEYS));
@@ -260,20 +260,13 @@ function verifyFrozenConfig(value) {
 function derivePrice(pricingEvidence, adjustmentKopecks, priceMultiplierMicros) {
   let calculated;
   try {
-    calculated = pricingEvidence.greenKopecks === null
-      ? calculateAutoListingActualPrice({
-        currency: pricingEvidence.currency,
-        sourcePriceKopecks: pricingEvidence.blackKopecks,
-        adjustmentKopecks,
-        priceMultiplierMicros,
-      })
-      : calculateAutoListingPrice({
-        currency: pricingEvidence.currency,
-        blackKopecks: pricingEvidence.blackKopecks,
-        greenKopecks: pricingEvidence.greenKopecks,
-        adjustmentKopecks,
-        priceMultiplierMicros,
-      });
+    calculated = calculateAutoListingPriceFromEvidence({
+      currency: pricingEvidence.currency,
+      blackKopecks: pricingEvidence.blackKopecks,
+      greenKopecks: pricingEvidence.greenKopecks,
+      adjustmentKopecks,
+      priceMultiplierMicros,
+    });
   } catch { throw overlayInvalid(); }
   if (!/^\d{1,30}$/u.test(calculated.finalPriceKopecks)) throw overlayInvalid();
   const kopecks = BigInt(calculated.finalPriceKopecks);

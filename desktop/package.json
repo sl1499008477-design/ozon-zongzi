@@ -1,38 +1,23 @@
 {
-  "name": "sonli-collector-desktop",
-  "version": "1.0.20",
+  "name": "ozon-zongzi-desktop",
+  "version": "1.0.29",
   "private": true,
   "author": "sonli",
-  "description": "sonli Ozon cross-platform collection assistant",
+  "description": "ozon 粽子",
   "type": "module",
   "main": "dist-electron/main.js",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
-  "scripts": {
-    "start": "electron .",
-    "test": "node --test tests/*.test.mjs",
-    "verify": "node scripts/verify.mjs",
-    "pack": "electron-builder --dir --publish never",
-    "dist:mac": "electron-builder --mac dmg zip --x64 --arm64 --publish never",
-    "dist:mac:zip": "electron-builder --mac zip --x64 --arm64 --publish never",
-    "dist:win": "electron-builder --win nsis portable --x64 --publish never"
-  },
   "dependencies": {
     "axios": "^1.13.2",
     "cheerio": "^1.1.2",
     "dayjs": "^1.11.19",
-    "decimal.js": "^10.6.0",
     "electron-log": "^5.4.3",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.7.3",
     "exceljs": "^4.4.0",
-    "pako": "^2.1.0",
     "sharp": "^0.34.5"
-  },
-  "devDependencies": {
-    "electron": "39.2.7",
-    "electron-builder": "^26.0.12"
   },
   "optionalDependencies": {
     "@img/sharp-darwin-arm64": "0.34.5",
@@ -41,54 +26,9 @@
     "@img/sharp-libvips-darwin-x64": "1.2.4",
     "@img/sharp-win32-x64": "0.34.5"
   },
-  "build": {
-    "appId": "cn.sonli.ozon.collector",
-    "productName": "sonli 采集助手",
-    "asar": true,
-    "asarUnpack": [
-      "node_modules/@img/**/*",
-      "node_modules/sharp/**/*"
-    ],
-    "directories": {
-      "output": "release",
-      "buildResources": "build"
-    },
-    "files": [
-      "dist/**/*",
-      "dist-electron/**/*",
-      "electron/**/*",
-      "build/icon.png",
-      "package.json"
-    ],
-    "mac": {
-      "category": "public.app-category.business",
-      "icon": "build/icon.png",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "target": [
-        "dmg",
-        "zip"
-      ]
-    },
-    "win": {
-      "icon": "build/icon.png",
-      "executableName": "sonli-collector",
-      "target": [
-        "nsis",
-        "portable"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "artifactName": "sonli-collector-${version}-win-${arch}-setup.${ext}"
-    },
-    "portable": {
-      "artifactName": "sonli-collector-${version}-win-${arch}-portable.${ext}"
-    },
-    "artifactName": "sonli-collector-${version}-${os}-${arch}.${ext}"
-  },
-  "APP_ENV": "production"
+  "APP_ENV": "production",
+  "sonliRuntime": {
+    "apiBase": "https://www.ozonzongzi.com/api",
+    "webBase": "https://www.ozonzongzi.com"
+  }
 }

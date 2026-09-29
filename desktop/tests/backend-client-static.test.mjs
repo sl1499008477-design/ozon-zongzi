@@ -60,14 +60,9 @@ test('run creation source has no retired store-scope selector', () => {
     assert.doesNotMatch(backendSource, /createCollectorRun[\s\S]{0,320}dataCollectionStoreId:/);
 });
 
-test('persisted item statuses match collector service contract', () => {
-    assert.match(collectionSource, /item\.pricingError\s*\?\s*'FAILED'\s*:\s*'QUALIFIED'/);
-});
-
-test('Seller Analytics has a single 200ms global request gate', () => {
-    assert.match(sellerSource, /MIN_REQUEST_INTERVAL_MS\s*=\s*200/);
-    assert.match(sellerSource, /await abortable\(requestGate\(\), signal\)/);
-    assert.match(dataFilterSource, /SELLER_ANALYTICS_ENRICH_FAILED/);
+test('collected item status is based on Ozon qualification', () => {
+    assert.match(collectionSource, /status:\s*'QUALIFIED'/);
+    assert.doesNotMatch(collectionSource, /item\.pricingError/);
 });
 
 test('URL collection finishes each analytics and filter batch before scrolling again', () => {
@@ -81,8 +76,8 @@ test('Ozon access pages cannot be reported as a successful empty collection', ()
     assert.match(mainWindowSource, /setUserAgent\(chromeCompatibleUserAgent\(\)\)/);
     assert.match(mainWindowSource, /button\.rb, \.btn\.rb/);
     assert.match(mainWindowSource, /productLinkCount/);
-    assert.match(collectionSource, /error\.code = 'OZON_ACCESS_BLOCKED'/);
-    assert.match(collectionSource, /error\.code = 'OZON_PRODUCT_LIST_EMPTY'/);
+    assert.match(collectionSource, /error\.code = 'ZONGZI_ACCESS_BLOCKED'/);
+    assert.match(collectionSource, /error\.code = 'ZONGZI_PRODUCT_LIST_EMPTY'/);
     assert.match(collectionSource, /if \(scrollAttempts >= maxScrollAttempts\) \{[\s\S]{0,180}this\.assertProductsCollected\(\)/);
     assert.match(collectionSource, /if \(bottomOutCount >= 3\) \{[\s\S]{0,180}this\.assertProductsCollected\(\)/);
     assert.match(parseSource, /a\[href\*="\/product\/"\]/);
@@ -123,9 +118,9 @@ test('renderer exposes collect-box import, not direct publishing', () => {
     assert.doesNotMatch(rendererSource, new RegExp(['是否确认', '上架表格中的商品'].join('')));
 });
 
-test('goodsFilter uses reverse pricing instead of requiring a missing CNY sale price', () => {
-    assert.match(dataFilterSource, /operation:\s*upMode == 2 \? 'goodsFilter2' : 'goodsFilter'/);
-    assert.match(dataFilterSource, /mode:\s*upMode == 2 \? 'profit' : 'pricing'/);
+test('desktop collection no longer depends on pricing or candidate-source modules', () => {
+    assert.doesNotMatch(dataFilterSource + collectionSource + interfaceSource, /calculateCollectorPricing|\/pricing\/|1688-window|pricingConfigVersionId|checkTargetProfitPercent/);
+    assert.doesNotMatch(parseSource, /1688Parse|aoXiaParse|1688\.com/);
 });
 
 test('category cold start offers all categories and learns mappings from Seller data', () => {

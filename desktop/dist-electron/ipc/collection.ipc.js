@@ -2,10 +2,13 @@ import { ipcMain, app } from 'electron';
 import { TaskManager } from '../services/collection/task-manager.services.js';
 import { SysTemUtils } from '../utils/system.js';
 import log from '../log/index.js';
-import { getShopList, getLogisticsList, getConfigList, getCategoryList } from '../services/collection/interface.services.js';
+import { getShopList, getCategoryList } from '../services/collection/interface.services.js';
 import { join } from 'node:path';
-import { addCollectorResultsToCollectBox } from '../services/collector-backend.services.js';
+import { addCollectorResultsToCollectBox, getCollectorTask, listCollectorAiConfigs, readCollectorRunOutcomes, listCollectorRunsForTask, listCollectorRunResults } from '../services/collector-backend.services.js';
 import { normalizeExcelDownloadRequest } from '../services/collection/excel-path.core.js';
+import { sendCollectorResultsToAiListing } from '../services/collector-ai-listing.services.js';
+import { readCollectorDuplicates } from '../services/collector-duplicates.services.js';
+import { listCollectorFilterPresets, saveCollectorFilterPreset, updateCollectorFilterPreset, deleteCollectorFilterPreset } from '../services/collector-filter-presets.services.js';
 export const collectionIpc = (win) => {
     const taskManager = TaskManager.getInstance();
     taskManager.setMainWindow(win);
@@ -133,10 +136,15 @@ export const collectionIpc = (win) => {
             };
         }
     });
+    ipcMain.handle('collection-resume-task', async (_event, payload) => {
+        try { return { code: 200, data: await taskManager.resumeTask(payload), message: '已继续原采集运行' }; }
+        catch (error) { return { code: Number(error?.status || 500), errorCode: error?.code || 'COLLECTOR_RESUME_FAILED', message: error?.message || String(error), data: null }; }
+    });
     // 获取任务状态
     ipcMain.handle('collection-get-task', async (event, taskId) => {
         try {
-            const task = taskManager.getTask(taskId);
+            // Source tasks may be outside the current page; the API checks the current account.
+            const task = await getCollectorTask(taskId);
             if (!task) {
                 return {
                     code: 404,
@@ -151,13 +159,46 @@ export const collectionIpc = (win) => {
             };
         }
         catch (error) {
-            log.error('获取任务失败', error);
             return {
-                code: 500,
-                message: error instanceof Error ? error.message : '获取任务失败',
+                code: Number(error?.status || 500),
+                message: error?.status === 404 ? '原任务已不存在' : '无法读取原任务，请确认登录账号后重试',
                 data: null,
             };
         }
+    });
+    ipcMain.handle('collection-get-duplicates', async (event, payload) => {
+        try {
+            return { code: 200, message: '获取跳过商品成功', data: await readCollectorDuplicates(payload) };
+        }
+        catch (error) {
+            const code = Number(error?.status || 500);
+            return { code, message: [401, 403].includes(code) ? '无法读取跳过商品，请确认登录账号后重试'
+                : code === 422 ? '该任务还没有可查看的运行记录' : '读取跳过商品失败，请重试', data: null };
+        }
+    });
+    ipcMain.handle('collection-get-outcomes', async (_event, payload) => {
+        try { return { code: 200, data: await readCollectorRunOutcomes(payload) }; }
+        catch (error) { return { code: Number(error?.status || 500), message: error?.message || '读取采集结果失败，请重试' }; }
+    });
+    ipcMain.handle('collection-get-runs', async (_event, { taskId, limit = 50, offset = 0 } = {}) => {
+        try {
+            return { code: 200, data: { runs: await listCollectorRunsForTask(taskId, { limit, offset }) } };
+        }
+        catch (error) {
+            return { code: Number(error?.status || 500), message: error?.message || '读取历史轮次失败，请重试' };
+        }
+    });
+    ipcMain.handle('collection-get-results', async (_event, { runId, limit = 50, offset = 0 } = {}) => {
+        try {
+            return { code: 200, data: await listCollectorRunResults(runId, { limit, offset }) };
+        }
+        catch (error) {
+            return { code: Number(error?.status || 500), message: error?.message || '读取已保存商品失败，请重试' };
+        }
+    });
+    ipcMain.handle('collection-retry-failed', async (_event, payload) => {
+        try { return { code: 200, data: await taskManager.retryFailedItems(payload), message: '已按原配置建立失败商品重试任务' }; }
+        catch (error) { return { code: Number(error?.status || 500), message: error?.message || '建立重试任务失败' }; }
     });
     // 获取所有任务
     ipcMain.handle('collection-get-all-tasks', async (event, params) => {
@@ -256,7 +297,7 @@ export const collectionIpc = (win) => {
     ipcMain.handle('collection-download-excel', async (_event, payload) => {
         return await taskManager.downloadExcel(normalizeExcelDownloadRequest(payload));
     });
-    // 将明确选择的结果，或本任务全部 QUALIFIED 结果加入 sonli 采集箱。
+    // 将明确选择的结果，或本任务全部 QUALIFIED 结果加入 ozon 粽子采集箱。
     ipcMain.handle('collection-add-to-collect-box', async (_event, payload = {}) => {
         try {
             const result = await addCollectorResultsToCollectBox(payload);
@@ -272,21 +313,38 @@ export const collectionIpc = (win) => {
             return { code: Number(error?.status || 500), message: error?.message || String(error), data: null };
         }
     });
-    // 获取物流
-    ipcMain.handle('get-logistics-list', async (event, params) => {
-        return await getLogisticsList();
+    ipcMain.handle('collection-filter-presets-list', () => {
+        try { return { code: 200, data: listCollectorFilterPresets() }; }
+        catch (error) { return { code: 400, message: error.message }; }
     });
+    ipcMain.handle('collection-filter-presets-save', (_event, input) => {
+        try { return { code: 200, data: saveCollectorFilterPreset(input) }; }
+        catch (error) { return { code: 400, message: error.message }; }
+    });
+    ipcMain.handle('collection-filter-presets-update', (_event, input) => {
+        try { return { code: 200, data: updateCollectorFilterPreset(input) }; }
+        catch (error) { return { code: 400, message: error.message }; }
+    });
+    ipcMain.handle('collection-filter-presets-delete', (_event, input) => {
+        try { return { code: 200, data: deleteCollectorFilterPreset(input) }; }
+        catch (error) { return { code: 400, message: error.message }; }
+    });
+    ipcMain.handle('collection-ai-configs', async () => {
+        try { return { code: 200, data: await listCollectorAiConfigs() }; }
+        catch (error) { return { code: Number(error?.status || 500), message: error?.message || String(error) }; }
+    });
+    ipcMain.handle('collection-send-to-ai-listing', (_event, payload = {}) => sendCollectorResultsToAiListing(payload));
     // 获取店铺
     ipcMain.handle('get-shop-list', async (event, params) => {
         return await getShopList();
     });
-    // 获取店铺配置
-    ipcMain.handle('get-config-list', async (event, params) => {
-        return await getConfigList();
-    });
     // 获取分类
     ipcMain.handle('get-category-list', async (event, params) => {
-        return await getCategoryList();
+        return await getCategoryList({
+            refresh: params?.refresh === true,
+            localOnly: params?.localOnly === true,
+            background: params?.background === true,
+        });
     });
     // 获取当前任务数
     ipcMain.handle('get-current-task-count', async (event) => {
@@ -305,11 +363,11 @@ export const collectionIpc = (win) => {
             const timestamp = new Date().getTime();
             const folderName = `sonli_collector_${timestamp}`;
             const dest = join(desktopPath, folderName);
-            await SysTemUtils.fileOperations.copyFolder(excelDir, dest);
+            return SysTemUtils.fileOperations.copyFolder(excelDir, dest) === true;
         }
         catch (error) {
             log.error('导出所有表格失败~', error);
+            return false;
         }
-        return true;
     });
 };

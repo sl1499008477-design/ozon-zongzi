@@ -3,13 +3,12 @@ import { promises as fsPromises } from 'fs';
 import { dirname } from 'path';
 import log from '../log/index.js';
 import sharp from 'sharp';
+import { withCollectorRequest } from '../services/collector-network.core.js';
 
 const IMAGE_HOST_SUFFIXES = [
     'ozon.ru',
     'ozone.ru',
-    '1688.com',
-    'alibaba.com',
-    'alicdn.com',
+    'ozonstatic.cn',
 ];
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -18,7 +17,7 @@ function assertTrustedImageUrl(value) {
     const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
     if (url.protocol !== 'https:'
         || !IMAGE_HOST_SUFFIXES.some((suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`))) {
-        throw new Error('图片地址不是受信任的 Ozon/1688 HTTPS 资源');
+        throw new Error('图片地址不是受信任的 Ozon HTTPS 资源');
     }
     return url;
 }
@@ -68,7 +67,7 @@ async function downloadTrustedImage(value) {
 }
 
 async function excelImageBuffer(value) {
-    const input = await downloadTrustedImage(value);
+    const input = await withCollectorRequest(() => downloadTrustedImage(value), { kind: 'thumbnail' });
     return sharp(input, {
         failOn: 'warning',
         limitInputPixels: 40_000_000,
@@ -87,6 +86,11 @@ export class ExcelWriter {
     saving = false;
     /** 内存写入队列（仅操作内存，不碰磁盘） */
     memoryQueue = Promise.resolve();
+    pendingRows = 0;
+    dirtyRows = 0;
+    flushTimer = null;
+    lastError = null;
+    appendError = null;
     constructor(filePath, sheetName = 'Sheet1') {
         this.filePath = filePath;
         this.sheetName = sheetName;
@@ -147,6 +151,7 @@ export class ExcelWriter {
             for (const row of rows) {
                 this.worksheet.addRow(row);
             }
+            this.dirtyRows += rows.length;
         });
         return this.memoryQueue;
     }
@@ -156,17 +161,45 @@ export class ExcelWriter {
      * @returns 返回布尔值表示是否成功保存
      */
     async appendAndSave(rows) {
+        await this.enqueueRows(rows);
+        return this.flushToDisk();
+    }
+    /** Accept bounded work without waiting for thumbnails. The server already owns these rows. */
+    async enqueueRows(rows) {
         await this.init();
-        const savePromise = this.memoryQueue.then(async () => {
-            const isInUse = await this.isFileInUse(this.filePath);
-            if (isInUse) {
-                log.warn(`文件 ${this.filePath} 被占用`);
-                return false;
-            }
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
-                const rowObj = this.worksheet.addRow(row);
-                const rowIndex = rowObj.number;
+        for (let offset = 0; offset < rows.length; offset += 100) {
+            const batch = rows.slice(offset, offset + 100);
+            // Includes rows currently downloading. Large groups cannot grow an unbounded promise chain.
+            if (this.pendingRows + batch.length > 256)
+                await this.memoryQueue;
+            this.pendingRows += batch.length;
+            this.memoryQueue = this.memoryQueue.then(async () => {
+                await this.appendImageRows(batch);
+                this.dirtyRows += batch.length;
+                if (this.dirtyRows >= 100) await this.saveSnapshot();
+            }).catch(error => {
+                this.lastError = error;
+                this.appendError = error;
+                log.error('Excel 后台写入失败', error);
+            }).finally(() => { this.pendingRows -= batch.length; });
+        }
+        if (!this.flushTimer) {
+            this.flushTimer = setTimeout(() => {
+                this.flushTimer = null;
+                this.flushToDisk().catch(error => log.error('Excel 定时保存失败', error));
+            }, 2000);
+            this.flushTimer.unref?.();
+        }
+        return true;
+    }
+    async appendImageRows(rows) {
+        // Two thumbnail workers, with the worksheet changed only by this serial queue.
+        for (let offset = 0; offset < rows.length; offset += 2) {
+            await Promise.all(rows.slice(offset, offset + 2).map(async row => {
+                const rowObj = this.worksheet.addRow(row), rowIndex = rowObj.number;
+                rowObj.eachCell(cell => {
+                    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+                });
                 try {
                     if (row.cover) {
                         const buffer = await excelImageBuffer(row.cover);
@@ -181,66 +214,28 @@ export class ExcelWriter {
                             br: { col: 3, row: rowIndex - 1 + 0.999 },
                             editAs: 'oneCell',
                         });
-                        this.worksheet.getColumn(50).width = 15;
-                        this.worksheet.addImage(imageId, {
-                            tl: { col: 49, row: rowIndex - 1 },
-                            br: { col: 50, row: rowIndex - 1 + 0.999 },
-                            editAs: 'oneCell',
-                        });
                     }
-                    if (row.cover2) {
-                        const convertedBuffer = await excelImageBuffer(row.cover2);
-                        const imageId = this.workbook.addImage({
-                            buffer: convertedBuffer,
-                            extension: 'png',
-                        });
-                        rowObj.height = 80;
-                        this.worksheet.getColumn(49).width = 15;
-                        this.worksheet.addImage(imageId, {
-                            tl: { col: 48, row: rowIndex - 1 },
-                            br: { col: 49, row: rowIndex - 1 + 0.999 },
-                            editAs: 'oneCell',
-                        });
-                    }
-                    rowObj.eachCell((cell) => {
-                        cell.alignment = {
-                            vertical: 'middle',
-                            horizontal: 'center',
-                            wrapText: true,
-                        };
-                    });
                 }
                 catch (e) {
                     log.warn(`图片处理失败`, e);
                 }
-            }
-            try {
-                const dir = dirname(this.filePath);
-                await fsPromises.mkdir(dir, {
-                    recursive: true,
-                });
-                const tempPath = `${this.filePath}.tmp`;
-                // 先写入临时文件
-                await this.workbook.xlsx.writeFile(tempPath);
-                // 删除旧文件（Windows 下 rename 覆盖容易 EPERM）
-                try {
-                    await fsPromises.unlink(this.filePath);
-                }
-                catch { }
-                // 临时文件替换正式文件
-                await fsPromises.rename(tempPath, this.filePath);
-                return true;
-            }
-            catch (error) {
-                log.error(`写入Excel失败`, error);
-                return false;
-            }
-        });
+            }));
+        }
+    }
+    async saveSnapshot() {
         try {
-            return await savePromise;
+            await fsPromises.mkdir(dirname(this.filePath), { recursive: true });
+            const tempPath = `${this.filePath}.tmp`;
+            await this.workbook.xlsx.writeFile(tempPath);
+            // Preserve the last usable export if replacement fails (for example, an open Excel file).
+            await fsPromises.rename(tempPath, this.filePath);
+            this.dirtyRows = 0;
+            this.lastError = null;
+            return true;
         }
         catch (error) {
-            log.error(`保存Excel失败:`, error);
+            this.lastError = error;
+            log.error('写入 Excel 失败', error);
             return false;
         }
     }
@@ -262,21 +257,14 @@ export class ExcelWriter {
      */
     async flushToDisk() {
         await this.init();
-        if (this.saving) {
-            log.warn(`已有写盘任务进行中，跳过本次 flush`);
-            return false;
-        }
-        this.saving = true;
-        try {
-            const dir = dirname(this.filePath);
-            await fsPromises.mkdir(dir, { recursive: true });
-            // 如果写入失败，检查是否被占用
-            const writeResult = await this.writeFileWithProcessHandling(this.filePath);
-            return writeResult;
-        }
-        finally {
-            this.saving = false;
-        }
+        clearTimeout(this.flushTimer);
+        this.flushTimer = null;
+        const saved = this.memoryQueue.then(async () => {
+            const success = this.dirtyRows || this.lastError ? await this.saveSnapshot() : true;
+            return success && !this.appendError;
+        });
+        this.memoryQueue = saved.catch(error => { this.lastError = error; });
+        return saved;
     }
     /**
      * 尝试写入文件，如果被占用则返回false
@@ -438,6 +426,12 @@ export class ExcelWriter {
         return this.filePath;
     }
     reset(filePath) {
+        clearTimeout(this.flushTimer);
+        this.flushTimer = null;
+        this.pendingRows = 0;
+        this.dirtyRows = 0;
+        this.lastError = null;
+        this.appendError = null;
         this.workbook = new ExcelJS.Workbook();
         this.worksheet = this.workbook.addWorksheet(this.sheetName);
         this.initialized = true; // 已初始化，但用的是新 workbook

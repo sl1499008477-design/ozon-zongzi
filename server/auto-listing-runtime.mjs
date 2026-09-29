@@ -10,6 +10,7 @@ import { selectAutoListingPlanningContract } from "./auto-listing-planning-contr
 import {
   autoListingAiEnabled,
   autoListingEnabled,
+  autoListingSourceImageIntelligenceEnabled,
   autoListingUploadEnabled,
 } from "./runtime-config.mjs";
 
@@ -24,7 +25,7 @@ function validAiWorkflow(value) {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
-    const expected = ["stageInitialPlanWork", "applyPhaseOutcome"];
+    const expected = ["stageInitialPlanWork", "applyPhaseOutcome", "requeueChannelFailure"];
     const keys = Reflect.ownKeys(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
     return keys.length === expected.length
@@ -164,12 +165,18 @@ export function createAutoListingRuntime({
   let aiWorkerPromise = null;
   const serviceDisabled = !autoListingEnabled(env);
   const aiEnabled = autoListingEnabled(env) && autoListingAiEnabled(env);
+  const sourceImageIntelligenceEnabled = autoListingSourceImageIntelligenceEnabled(env);
   const observabilitySecret = String(
     env.AUTO_LISTING_CATEGORY_STRATEGY_OBSERVABILITY_HASH_SECRET || "",
   );
   const observability = observabilitySecret ? createObservability({ metrics, logger,
     accountHashSecret: observabilitySecret }) : null;
-  const selectPlanningContract = (input) => selectAutoListingPlanningContract(input);
+  const selectPlanningContract = (input) => selectAutoListingPlanningContract({
+    accountId: input?.accountId,
+    sourceType: input?.sourceType,
+    collectItemId: input?.collectItemId,
+    sourceImageIntelligenceEnabled,
+  });
   const resolveAiWorkerDependencies = createAiWorkerDependencies || (async ({ env: runtimeEnv, resolvePool: runtimePool }) => {
     const { createDefaultAutoListingAiProductionDependencies } = await import("./auto-listing-ai-runtime-composition.mjs");
     return createDefaultAutoListingAiProductionDependencies({ env: runtimeEnv, resolvePool: runtimePool });
@@ -192,7 +199,7 @@ export function createAutoListingRuntime({
     ]);
     return createAutoListingListingBasePreparer({
       loadStoreAccess: createAutoListingCategoryAccessPostgres({ pool }),
-      categoryService: createOzonCategoryService(),
+      categoryService: createOzonCategoryService({ callOzonSellerApi }),
       versions: {
         normalizerVersion: runtimeEnv.AUTO_LISTING_NORMALIZER_VERSION || "v3",
         categoryRuleVersion: runtimeEnv.OZON_CATEGORY_RULE_VERSION || "2026-07-v1",
@@ -212,7 +219,7 @@ export function createAutoListingRuntime({
     ]);
     return createAutoListingCategoryFreshness({
       loadStoreAccess: createAutoListingCategoryAccessPostgres({ pool }),
-      categoryService: createOzonCategoryService(),
+      categoryService: createOzonCategoryService({ callOzonSellerApi }),
       repository: createPostgresAccountSharedOzonCategoryRepository({ pool }),
     });
   });

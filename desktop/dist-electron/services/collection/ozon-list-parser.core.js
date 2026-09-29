@@ -35,7 +35,8 @@ export function parseOzonProductCards(html, domain) {
         seenIds.add(id);
         const card = $(element).closest('[data-index], .tile-root').first();
         const scope = card.length ? card : $(element).parent();
-        const price = parsePrice(scope.find('.tsHeadline500Medium').first().text());
+        const priceText = scope.find('.tsHeadline500Medium').first().text();
+        const price = parsePrice(priceText);
         const originalPriceText = scope.find('.tsBodyControl400Small').first().text();
         const originalPrice = parsePrice(originalPriceText) || undefined;
         const names = scope
@@ -52,14 +53,15 @@ export function parseOzonProductCards(html, domain) {
             scoreText = scope.find('.tsBodyControl300XSmall').first().text().replace(/\u202f/g, ' ');
         }
         const scoreMatch = scoreText.match(/\s*([0-5](?:[.,]\d)?)\s*(\d[\d\s]*)\s*/i);
-        const rating = scoreMatch ? scoreMatch[1].replace(',', '.') : 0;
-        const reviewCountLabel = scoreMatch ? scoreMatch[2].replace(/\s/g, '') : 0;
+        const rating = scoreMatch ? scoreMatch[1].replace(',', '.') : undefined;
+        const reviewCountLabel = scoreMatch ? scoreMatch[2].replace(/\s/g, '') : undefined;
         const queryUrl = encodeURIComponent(`/modal/otherOffersFromSellers?product_id=${id}&page_changed=true`);
         const requestUrl = `${domain}/api/entrypoint-api.bx/page/json/v2?url=${queryUrl}`;
         const link = `https://www.ozon.ru/product/${id}`;
 
         data.push({
             href,
+            priceText,
             price,
             price1: price,
             oPrice: originalPrice,

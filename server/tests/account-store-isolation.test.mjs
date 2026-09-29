@@ -137,7 +137,10 @@ assert.equal(payloadB.binding.id, "store_b");
 assert.deepEqual(payloadB.caches.collectBox.map((item) => item.id), ["collect_b"]);
 assert.deepEqual(payloadB.caches.files.map((file) => file.id), ["file_b"]);
 assert.deepEqual(payloadB.caches.products.map((item) => item.id), ["product_b", "product_b_archived"]);
-assert.deepEqual(payloadB.caches.postings.map((item) => item.id), ["posting_b"]);
+assert.equal("postings" in payloadB.caches, false);
+assert.equal("promotions" in payloadB.caches, false);
+assert.equal("returns" in payloadB.caches, false);
+assert.equal("refunds" in payloadB.caches, false);
 assert.deepEqual(payloadB.caches.warehouses.map((item) => item.id), [
   "warehouse_b",
   "warehouse_b_fbo",
@@ -171,7 +174,8 @@ assert.deepEqual(payloadB.caches.warehouses[3].listingEligibility, {
 assert.equal(payloadB.caches.warehouses.some((item) => item.warehouse_id === "fbs-a"), false);
 assert.deepEqual(payloadB.caches.favorites.map((item) => item.id), ["favorite_b"]);
 assert.equal(payloadB.summary.products, 2);
-assert.equal(payloadB.summary.postings, 1);
+assert.equal("postings" in payloadB.summary, false);
+assert.equal("totalGmv" in payloadB.summary, false);
 assert.deepEqual(Object.keys(payloadB.jobs), ["job_b"]);
 
 const noCrossStoreCurrency = localStatePayload(ensureAccountState({
@@ -197,9 +201,9 @@ const noCrossStoreCurrency = localStatePayload(ensureAccountState({
 assert.equal(noCrossStoreCurrency.binding.currencyCode, "");
 assert.equal(noCrossStoreCurrency.stores.find((store) => store.id === "store_unknown").currencyCode, "");
 assert.equal(noCrossStoreCurrency.stores.find((store) => store.id === "store_cny").currencyCode, "CNY");
-assert.equal(noCrossStoreCurrency.caches.postings[0].currency_code, "CNY");
-assert.equal(noCrossStoreCurrency.summary.currencyCode, "CNY");
-assert.equal(noCrossStoreCurrency.summary.totalGmv, "8.88");
+assert.equal("postings" in noCrossStoreCurrency.caches, false);
+assert.equal("currencyCode" in noCrossStoreCurrency.summary, false);
+assert.equal("totalGmv" in noCrossStoreCurrency.summary, false);
 
 assert.equal(canAccessLocalFile(state.caches.files[0], accountB), false);
 assert.equal(canAccessLocalFile(state.caches.files[1], accountB), true);
@@ -320,6 +324,7 @@ await writeFile(path.join(dataDir, "local-state.json"), JSON.stringify({
 const originalFetch = globalThis.fetch;
 try {
   let routeFetchCalls = 0;
+  let failWarehouse = true;
   globalThis.fetch = async (url) => {
     routeFetchCalls += 1;
     const apiPath = new URL(url).pathname;
@@ -331,6 +336,13 @@ try {
       };
     }
     if (apiPath === "/v2/warehouse/list") {
+      if (!failWarehouse) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ result: [{ warehouse_id: "warehouse-route" }] }),
+        };
+      }
       return {
         ok: false,
         status: 403,
@@ -402,8 +414,8 @@ try {
     timestamp: failedSync.body.timestamp,
     taskId: failedSync.body.taskId,
     requestId: "request_route_failure",
-    code: "OZON_HTTP_403",
-    message: "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
+    code: "ZONGZI_HTTP_403",
+    message: "Ozon 403: /v2/warehouse/list (ZONGZI_HTTP_403)",
     details: {
       status: 403,
       apiPath: "/v2/warehouse/list",
@@ -415,6 +427,7 @@ try {
   assert.equal(JSON.stringify(failedSync.body).includes("client-a-secret"), false);
   assert.equal(JSON.stringify(failedSync.body).includes("api-key-a-secret"), false);
   assert.equal(JSON.stringify(failedSync.body).includes("nested-secret"), false);
+  failWarehouse = false;
 
   const sharedRouteBody = {
     storeId: "store_a",
@@ -423,7 +436,7 @@ try {
   };
   const accountAFirst = await requestJson(
     "POST",
-    "/local/sync/PROMOTIONS",
+    "/local/sync/WAREHOUSES",
     sharedRouteBody,
     `Bearer ${routeToken}`,
   );
@@ -431,7 +444,7 @@ try {
   const callsAfterAccountAFirst = routeFetchCalls;
   const accountAReplay = await requestJson(
     "POST",
-    "/local/sync/PROMOTIONS",
+    "/local/sync/WAREHOUSES",
     sharedRouteBody,
     `Bearer ${routeToken}`,
   );
@@ -441,7 +454,7 @@ try {
 
   const changedRequest = await requestJson(
     "POST",
-    "/local/sync/PROMOTIONS",
+    "/local/sync/WAREHOUSES",
     { ...sharedRouteBody, requestId: "changed-route-request" },
     `Bearer ${routeToken}`,
   );
@@ -449,7 +462,7 @@ try {
   assert.equal(changedRequest.body.code, "SYNC_IDEMPOTENCY_CONFLICT");
   const changedScope = await requestJson(
     "POST",
-    "/local/sync/WAREHOUSES",
+    "/local/sync/PRODUCTS",
     sharedRouteBody,
     `Bearer ${routeToken}`,
   );
@@ -458,7 +471,7 @@ try {
 
   const accountBFirst = await requestJson(
     "POST",
-    "/local/sync/PROMOTIONS",
+    "/local/sync/WAREHOUSES",
     {
       ...sharedRouteBody,
       storeId: "store_b",
@@ -482,7 +495,7 @@ try {
   );
   assert.equal(new Set(
     persistedRoute.auditEvents
-      .filter((event) => event.action === "SYNC_PROMOTIONS")
+      .filter((event) => event.action === "SYNC_WAREHOUSES" && event.status === "SUCCESS")
       .map((event) => event.eventId),
   ).size, 2);
 

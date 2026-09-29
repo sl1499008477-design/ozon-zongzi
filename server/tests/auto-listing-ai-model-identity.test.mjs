@@ -12,3 +12,11 @@ test("accepts only an exact requested model or its dated provider snapshot", () 
   ]) assert.equal(isCompatibleAiModelIdentity("gpt-5.4", reported), false);
   assert.equal(isCompatibleAiModelIdentity("gpt-5.4-2026-03-05", "gpt-5.4-2026-03-05-extra"), false);
 });
+
+test("accepts the observed luna gateway alias without allowing unrelated models or suffixes", () => {
+  assert.equal(isCompatibleAiModelIdentity("gpt-5.6-luna", "gpt-56-luna-2026-07-09-datazone"), true);
+  for (const reported of ["gpt-56-luna", "gpt-56-luna-2026-07-10-datazone", "gpt-56-luna-2026-07-09-datazone-extra", "gpt-5.4"]) {
+    assert.equal(isCompatibleAiModelIdentity("gpt-5.6-luna", reported), false);
+  }
+  assert.equal(isCompatibleAiModelIdentity("gpt-5.4", "gpt-56-luna-2026-07-09-datazone"), false);
+});

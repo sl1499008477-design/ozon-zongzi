@@ -320,6 +320,99 @@ test("missing source IDs use only an ephemeral account-owned credential for exac
   assert.equal(JSON.stringify(state.accountOzonSharedCategories).includes("secret-a"), false);
 });
 
+test("PostgreSQL missing source IDs load credential-only state and keep account-scoped store selection", async () => {
+  const loadOptions = [];
+  const lookupContexts = [];
+  const credentialState = {
+    currentStoreIdsByAccount: {
+      "account-a": "credential-store-a",
+      "account-b": "credential-store-b",
+    },
+    stores: [
+      { id: "credential-store-a", ownerAccountId: "account-a", clientId: "client-a", apiKey: "secret-a" },
+      { id: "credential-store-b", ownerAccountId: "account-b", clientId: "client-b", apiKey: "secret-b" },
+    ],
+  };
+  const runtime = createAccountSharedOzonCategoryRuntime({
+    loadState: async (options) => {
+      loadOptions.push(options);
+      return credentialState;
+    },
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => false }),
+    persistenceMode: () => "postgres",
+    sourceLookup: {
+      async lookup(context) {
+        lookupContexts.push(context);
+        return resolvedLookup("postgres-credential-only");
+      },
+    },
+    initializePostgresRepository: () => ({
+      recordSourceEvidence: async () => ({ shared: null }),
+      readCurrentEvidence: async () => [],
+      readSharedForEvidence: async () => [],
+    }),
+    now: () => new Date(NOW),
+    randomUUID: () => "postgres-credential-only",
+  });
+  const item = collectedItem();
+  item.sourceSku = "offer-entry";
+  delete item.listingDraft.sourceCategory.descriptionCategoryId;
+  delete item.listingDraft.sourceCategory.typeIdCandidate;
+
+  await runtime.recordCollectionResult({
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    item,
+    productDraftId: "draft-a",
+    productDraftVersion: 1,
+    sourceVersion: "draft:1",
+    rawResponseRef: "raw-a",
+    rawResponseHash: crypto.createHash("sha256").update("raw-a").digest("hex"),
+    capturedAt: NOW,
+  });
+
+  assert.deepEqual(loadOptions, [{ hydrateCatalog: false }]);
+  assert.equal(lookupContexts.length, 1);
+  assert.equal(lookupContexts[0].accountId, "account-a");
+  assert.equal(lookupContexts[0].store.id, "credential-store-a");
+  assert.equal(lookupContexts[0].store.ownerAccountId, "account-a");
+});
+
+test("numeric public Ozon product id is not duplicated as a seller offer id", async () => {
+  const lookupContexts = [];
+  const sourceLookup = {
+    async lookup(context) {
+      lookupContexts.push(context);
+      return resolvedLookup("numeric-product-id");
+    },
+  };
+  const { runtime, state } = createRuntimeHarness({ sourceLookup });
+  const item = collectedItem();
+  item.ozonProductId = 10001;
+  item.sku = "10001";
+  item.sourceSku = "10001";
+  delete item.listingDraft.sourceCategory.descriptionCategoryId;
+  delete item.listingDraft.sourceCategory.typeIdCandidate;
+
+  await runtime.recordCollectionResult({
+    state,
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    item,
+    productDraftId: "draft-a",
+    productDraftVersion: 1,
+    sourceVersion: "draft:1",
+    rawResponseRef: "raw-a",
+    rawResponseHash: crypto.createHash("sha256").update("raw-a").digest("hex"),
+    capturedAt: NOW,
+  });
+
+  assert.equal(lookupContexts.length, 1);
+  assert.equal(lookupContexts[0].ozonProductId, 10001);
+  assert.equal(lookupContexts[0].sourceSku, null);
+});
+
 test("JSON collection result and immutable source evidence commit through one save", async () => {
   const { runtime, state, saves } = createRuntimeHarness();
   await runtime.recordCollectionResult({
@@ -574,4 +667,19 @@ test("PostgreSQL administrator confirmation keeps transition, audit, and idempot
   assert.ok(queries.some(({ sql }) => sql.includes("pg_advisory_xact_lock")));
   assert.ok(queries.some(({ sql }) => sql.includes("INSERT INTO audit_events")));
   assert.equal(queries.at(-1).sql, "COMMIT");
+});
+
+test('collection admission records Seller target while preserving the different original source evidence',async()=>{
+  const h=createRuntimeHarness();
+  const item=h.state.caches.collectBox[0];
+  item.listingDraft.collectionAdmission={status:'PASSED',checkedAt:NOW,taxonomyFingerprint:'a'.repeat(64),
+    targets:[{status:'MATCHED',method:'DICTIONARY_VALUE_ID',source:{descriptionCategoryId:17028702,typeIdCandidate:94405},
+      target:{storeId:'store-a',descriptionCategoryId:17028701,typeId:94405}}]};
+  await h.runtime.recordCollectionResult({state:h.state,accountId:'account-a',collectItemId:'collect-a',item,
+    productDraftId:'draft:collect-a',productDraftVersion:1,sourceVersion:'draft:1',capturedAt:NOW,
+    rawResponseRef:'collect-request:fixture',rawResponseHash:'b'.repeat(64)});
+  const rows=await h.runtime.readForItems({accountId:'account-a',collectItemIds:['collect-a']});
+  assert.equal(rows[0].categoryResolution.sourceDescriptionCategoryId,17028702);
+  assert.equal(rows[0].categoryResolution.currentDescriptionCategoryId,17028701);
+  assert.equal(rows[0].categoryResolution.validatedAt,NOW);
 });

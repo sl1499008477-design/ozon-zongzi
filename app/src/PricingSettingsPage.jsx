@@ -13,16 +13,17 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Upload,
 } from "antd";
+import Table from "./PagedTable.jsx";
 import {
   CloudUploadOutlined,
   DeleteOutlined,
   PlusOutlined,
 } from "@ant-design/icons";
 import { apiRequest, postMessageRequest } from "./client-transport.js";
+import { SourceSectionTitle } from "./SourceTable.jsx";
 
 const accountLastLoginText = (value) => {
   if (!value) return "—";
@@ -272,25 +273,25 @@ export default function PricingSettingsPage({ account, binding }) {
 
   const numericInput = (value, onChange, extra = {}) => <InputNumber value={value} onChange={(next) => onChange(next ?? 0)} controls={false} style={{ width: "100%" }} disabled={!editable} {...extra} />;
   const commissionColumns = [
-    { title: "规则名称", width: 150, render: (_, row, index) => <Input value={row.ruleName} disabled={!editable} onChange={(event) => patchRow("commissionRules", index, "ruleName", event.target.value)} /> },
-    { title: "Ozon 类目键", width: 220, render: (_, row, index) => <Input value={row.ozonCategoryId} disabled={!editable} onChange={(event) => patchRow("commissionRules", index, "ozonCategoryId", event.target.value)} /> },
-    { title: "履约", width: 105, render: (_, row, index) => <Select value={row.fulfillmentType} disabled={!editable} style={{ width: "100%" }} options={["RFBS", "FBP", "WHD", "FBS", "FBO", "ALL"].map((value) => ({ value, label: value }))} onChange={(value) => patchRow("commissionRules", index, "fulfillmentType", value)} /> },
-    { title: "最低价 ₽", width: 110, render: (_, row, index) => numericInput(row.minPriceRub, (value) => patchRow("commissionRules", index, "minPriceRub", value), { min: 0 }) },
-    { title: "最高价 ₽", width: 110, render: (_, row, index) => numericInput(row.maxPriceRub, (value) => patchRow("commissionRules", index, "maxPriceRub", value), { min: 0, placeholder: "不限" }) },
-    { title: "佣金率 %", width: 105, render: (_, row, index) => numericInput(row.commissionRate, (value) => patchRow("commissionRules", index, "commissionRate", value), { min: 0, max: 99 }) },
-    { title: "操作", width: 70, render: (_, __, index) => <Button danger type="text" disabled={!editable} icon={<DeleteOutlined />} onClick={() => removeRow("commissionRules", index)} /> },
+    { title: "规则名称", width: 150, render: (_, row) => <Input value={row.ruleName} disabled={!editable} onChange={(event) => patchRow("commissionRules", config.commissionRules.indexOf(row), "ruleName", event.target.value)} /> },
+    { title: "Ozon 类目键", width: 220, render: (_, row) => <Input value={row.ozonCategoryId} disabled={!editable} onChange={(event) => patchRow("commissionRules", config.commissionRules.indexOf(row), "ozonCategoryId", event.target.value)} /> },
+    { title: "履约", width: 105, render: (_, row) => <Select value={row.fulfillmentType} disabled={!editable} style={{ width: "100%" }} options={["RFBS", "FBP", "WHD", "FBS", "FBO", "ALL"].map((value) => ({ value, label: value }))} onChange={(value) => patchRow("commissionRules", config.commissionRules.indexOf(row), "fulfillmentType", value)} /> },
+    { title: "最低价 ₽", width: 110, render: (_, row) => numericInput(row.minPriceRub, (value) => patchRow("commissionRules", config.commissionRules.indexOf(row), "minPriceRub", value), { min: 0 }) },
+    { title: "最高价 ₽", width: 110, render: (_, row) => numericInput(row.maxPriceRub, (value) => patchRow("commissionRules", config.commissionRules.indexOf(row), "maxPriceRub", value), { min: 0, placeholder: "不限" }) },
+    { title: "佣金率 %", width: 105, render: (_, row) => numericInput(row.commissionRate, (value) => patchRow("commissionRules", config.commissionRules.indexOf(row), "commissionRate", value), { min: 0, max: 99 }) },
+    { title: "操作", width: 70, render: (_, row) => <Button danger type="text" disabled={!editable} icon={<DeleteOutlined />} onClick={() => removeRow("commissionRules", config.commissionRules.indexOf(row))} /> },
   ];
   const logisticsColumns = [
-    { title: "物流商", width: 110, render: (_, row, index) => <Input value={row.provider} disabled={!editable} onChange={(event) => patchRow("logisticsRules", index, "provider", event.target.value.toUpperCase())} /> },
-    { title: "线路", width: 110, render: (_, row, index) => <Input value={row.routeCode} disabled={!editable} onChange={(event) => patchRow("logisticsRules", index, "routeCode", event.target.value)} /> },
-    { title: "仓库", width: 105, render: (_, row, index) => <Input value={row.warehouseId} disabled={!editable} onChange={(event) => patchRow("logisticsRules", index, "warehouseId", event.target.value)} /> },
-    { title: "起重 g", width: 95, render: (_, row, index) => numericInput(row.minWeightG, (value) => patchRow("logisticsRules", index, "minWeightG", value), { min: 0 }) },
-    { title: "止重 g", width: 95, render: (_, row, index) => numericInput(row.maxWeightG, (value) => patchRow("logisticsRules", index, "maxWeightG", value), { min: 0, placeholder: "不限" }) },
-    { title: "基础费 ¥", width: 100, render: (_, row, index) => numericInput(row.baseFeeCny, (value) => patchRow("logisticsRules", index, "baseFeeCny", value), { min: 0 }) },
-    { title: "每 kg ¥", width: 100, render: (_, row, index) => numericInput(row.feePerKgCny, (value) => patchRow("logisticsRules", index, "feePerKgCny", value), { min: 0 }) },
-    { title: "最低费 ¥", width: 100, render: (_, row, index) => numericInput(row.minimumFeeCny, (value) => patchRow("logisticsRules", index, "minimumFeeCny", value), { min: 0 }) },
-    { title: "计体积重", width: 90, render: (_, row, index) => <Switch checked={Boolean(row.useVolumeWeight)} disabled={!editable} onChange={(value) => patchRow("logisticsRules", index, "useVolumeWeight", value)} /> },
-    { title: "操作", width: 70, render: (_, __, index) => <Button danger type="text" disabled={!editable} icon={<DeleteOutlined />} onClick={() => removeRow("logisticsRules", index)} /> },
+    { title: "物流商", width: 110, render: (_, row) => <Input value={row.provider} disabled={!editable} onChange={(event) => patchRow("logisticsRules", config.logisticsRules.indexOf(row), "provider", event.target.value.toUpperCase())} /> },
+    { title: "线路", width: 110, render: (_, row) => <Input value={row.routeCode} disabled={!editable} onChange={(event) => patchRow("logisticsRules", config.logisticsRules.indexOf(row), "routeCode", event.target.value)} /> },
+    { title: "仓库", width: 105, render: (_, row) => <Input value={row.warehouseId} disabled={!editable} onChange={(event) => patchRow("logisticsRules", config.logisticsRules.indexOf(row), "warehouseId", event.target.value)} /> },
+    { title: "起重 g", width: 95, render: (_, row) => numericInput(row.minWeightG, (value) => patchRow("logisticsRules", config.logisticsRules.indexOf(row), "minWeightG", value), { min: 0 }) },
+    { title: "止重 g", width: 95, render: (_, row) => numericInput(row.maxWeightG, (value) => patchRow("logisticsRules", config.logisticsRules.indexOf(row), "maxWeightG", value), { min: 0, placeholder: "不限" }) },
+    { title: "基础费 ¥", width: 100, render: (_, row) => numericInput(row.baseFeeCny, (value) => patchRow("logisticsRules", config.logisticsRules.indexOf(row), "baseFeeCny", value), { min: 0 }) },
+    { title: "每 kg ¥", width: 100, render: (_, row) => numericInput(row.feePerKgCny, (value) => patchRow("logisticsRules", config.logisticsRules.indexOf(row), "feePerKgCny", value), { min: 0 }) },
+    { title: "最低费 ¥", width: 100, render: (_, row) => numericInput(row.minimumFeeCny, (value) => patchRow("logisticsRules", config.logisticsRules.indexOf(row), "minimumFeeCny", value), { min: 0 }) },
+    { title: "计体积重", width: 90, render: (_, row) => <Switch checked={Boolean(row.useVolumeWeight)} disabled={!editable} onChange={(value) => patchRow("logisticsRules", config.logisticsRules.indexOf(row), "useVolumeWeight", value)} /> },
+    { title: "操作", width: 70, render: (_, row) => <Button danger type="text" disabled={!editable} icon={<DeleteOutlined />} onClick={() => removeRow("logisticsRules", config.logisticsRules.indexOf(row))} /> },
   ];
   const fxColumns = [
     { title: "SKU", dataIndex: "sku", width: 135 },
@@ -306,6 +307,7 @@ export default function PricingSettingsPage({ account, binding }) {
 
   return (
     <div className="source-page hidden-route-page pricing-settings-page">
+      <SourceSectionTitle title="算价配置" subtitle="管理算价版本、物流规则与汇率设置" />
       <div className="pricing-settings-layout">
         <Card className="panel-card pricing-version-panel" loading={loading}>
           <div className="card-title-row"><span>配置版本</span><Button type="primary" icon={<PlusOutlined />} onClick={() => createDraft(config?.id || "")}>新建草稿</Button></div>
@@ -379,7 +381,7 @@ export default function PricingSettingsPage({ account, binding }) {
                 rowKey="id"
                 size="small"
                 loading={fxLoading}
-                pagination={false}
+
                 scroll={{ x: 1100 }}
                 dataSource={fxStatus.probes || []}
                 columns={fxColumns}
@@ -410,12 +412,12 @@ export default function PricingSettingsPage({ account, binding }) {
               {officialImportSummary ? <Alert type="success" showIcon message={`已导入 ${officialImportSummary.summaryRuleCount} 条规则`} description={`${officialImportSummary.categoryCount} 个官方类目；${officialImportSummary.detailMappingCount} 条商品类型映射；履约：${officialImportSummary.fulfillmentTypes?.join(" / ")}`} /> : null}
               {(config.officialImports || []).length ? <Alert type="info" showIcon message={`当前版本来自 ${config.officialImports.length} 份 Ozon 官方文件`} description={config.officialImports.map((item) => `${item.sourceName}（${item.fulfillmentTypes?.join("/")}，${item.summaryRuleCount} 条）`).join("；")} /> : null}
               <div className="pricing-table-actions"><span>按 Ozon 官方类目、履约方式和卢布售价区间匹配；未命中时不会静默套用通用费率。</span><Button disabled={!editable} icon={<PlusOutlined />} onClick={() => addRow("commissionRules", { ruleName: "新佣金规则", ozonCategoryId: "*", fulfillmentType: "RFBS", minPriceRub: 0, maxPriceRub: null, commissionRate: 0, priority: 100 })}>新增规则</Button></div>
-              <Table rowKey={(row) => row.id || `${row.ruleName}-${row.fulfillmentType}-${row.minPriceRub}`} size="small" pagination={{ defaultPageSize: 50, showSizeChanger: true, pageSizeOptions: [20, 50, 100], showTotal: (total) => `共 ${total} 条` }} scroll={{ x: 950 }} dataSource={config.commissionRules || []} columns={commissionColumns} />
+              <Table rowKey={(row) => row.id || `${row.ruleName}-${row.fulfillmentType}-${row.minPriceRub}`} size="small" pagination={{ showTotal: (total) => `共 ${total} 条` }} scroll={{ x: 950 }} dataSource={config.commissionRules || []} columns={commissionColumns} />
             </> : null}
 
             {section === "物流规则" ? <>
               <div className="pricing-table-actions"><span>支持基础费、公斤费、最低费和体积重。</span><Button disabled={!editable} icon={<PlusOutlined />} onClick={() => addRow("logisticsRules", { provider: "XY", routeCode: "", warehouseId: "*", minWeightG: 0, maxWeightG: null, baseFeeCny: 0, feePerKgCny: 0, minimumFeeCny: 0, useVolumeWeight: false, volumeDivisor: 6000, priority: 100 })}>新增规则</Button></div>
-              <Table rowKey={(row) => row.id || `${row.provider}-${row.minWeightG}`} size="small" pagination={false} scroll={{ x: 1100 }} dataSource={config.logisticsRules || []} columns={logisticsColumns} />
+              <Table rowKey={(row) => row.id || `${row.provider}-${row.minWeightG}`} size="small"  scroll={{ x: 1100 }} dataSource={config.logisticsRules || []} columns={logisticsColumns} />
             </> : null}
 
             {section === "国内费用" ? <div className="pricing-domestic-list">
@@ -466,7 +468,7 @@ export default function PricingSettingsPage({ account, binding }) {
           <Form.Item label="状态" name="status">
             <Select options={[{ value: "ACTIVE", label: "启用" }, { value: "DISABLED", label: "停用" }]} />
           </Form.Item>
-          <Alert type="info" showIcon message="价格必须来自同一 SKU、同一采集时刻；只有同时取得 RUB 与 CNY 前台真实售价时才参与汇率计算。" />
+          <Alert type="info" showIcon message="价格必须来自同一 SKU、同一采集时刻；只有同时取得 RUB 与 CNY 前台竞品真实售价计算时才参与汇率计算。" />
         </Form>
       </Modal>
     </div>

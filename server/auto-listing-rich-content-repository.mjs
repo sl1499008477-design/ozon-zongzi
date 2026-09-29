@@ -1,11 +1,18 @@
 import crypto from "node:crypto";
 
-const DEFAULT_RICH_CONTENT_LEASE_MS = 300_000;
+// Keep enough time after the five-minute provider idle timeout to persist the
+// deterministic fallback (or the provider result) under the same fenced lease.
+const DEFAULT_RICH_CONTENT_LEASE_MS = 360_000;
 import { sha256, verifyPersistedAcceptedGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
-import { buildRichContentEvidenceIdentity, validateRichContentDocument } from "./auto-listing-rich-content.mjs";
+import {
+  buildRichContentAttemptInputHash,
+  buildRichContentEvidenceIdentity,
+  validateRichContentDocument,
+} from "./auto-listing-rich-content.mjs";
 import { isCompatibleAiModelIdentity } from "./auto-listing-ai-model-identity.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
+const CHANNEL_RELEASED = "AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED";
 const SCOPE_KEYS = ["accountId", "jobId", "itemId", "planId"];
 const VERSION = "AUTO_LISTING_RICH_CONTENT_V1";
 const ASSET_ROLES = new Set(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
@@ -146,7 +153,7 @@ function validTask4CheckerEvidence(asset, facts, reservation) {
   if (!plainObject(evidence) || !plainObject(evidence.checkerResult)
     || typeof evidence.textRequired !== "boolean"
     || (evidence.textForbidden !== undefined && typeof evidence.textForbidden !== "boolean")
-    || !sameFactRegistry(facts, checkerFacts)
+    || !(sameFactRegistry(facts, checkerFacts) || sameFactRegistry(checkerFacts, facts))
     || !Array.isArray(evidence.sourceFactIds)
     || evidence.sourceFactIds.length !== new Set(evidence.sourceFactIds).size
     || evidence.sourceFactIds.some((factId) => !clean(factId)
@@ -214,18 +221,28 @@ function validateScope(input) {
   }
 }
 
+function validGatewayProvenance(input) {
+  if (!Object.hasOwn(input, "gatewayConnectionId") && !Object.hasOwn(input, "gatewayConnectionVersion")) return true;
+  return (input.gatewayConnectionId === null && input.gatewayConnectionVersion === null)
+    || (clean(input.gatewayConnectionId) && Number.isInteger(input.gatewayConnectionVersion)
+      && input.gatewayConnectionVersion >= 1 && input.gatewayConnectionVersion <= 2_147_483_647);
+}
+
 function validateReservation(input) {
   validateScope(input);
   for (const key of ["planHash", "sourceHash", "factRegistryHash", "assetHash", "promptHash"]) {
     if (!HASH.test(input[key] || "")) throw attemptError();
   }
-  if (!clean(input.profileId) || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
+  if (!Number.isInteger(input.expectedStatusVersion) || input.expectedStatusVersion < 1
+    || input.expectedStatusVersion > 2_147_483_647
+    || !clean(input.profileId) || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
     || !clean(input.modelName) || !clean(input.promptTemplateVersion)
     || !validFactEvidence(input.sourceFactEvidence)
     || !validAssetEvidence(input.assetEvidence, input)
     || !exactObject(input.requestEvidence, new Set(["requestKey", "schemaVersion"]))
     || input.requestEvidence.requestKey !== `auto-listing-rich-${input.inputHash}` || input.requestEvidence.schemaVersion !== VERSION
-    || !Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 5) {
+    || !Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 5
+    || !validGatewayProvenance(input)) {
     throw attemptError();
   }
   let identity = null;
@@ -242,8 +259,14 @@ function validateReservation(input) {
       promptTemplateVersion: input.promptTemplateVersion,
     });
   } catch {}
+  let expectedInputHash = null;
+  try {
+    expectedInputHash = identity
+      ? buildRichContentAttemptInputHash(identity.inputHash, input.expectedStatusVersion)
+      : null;
+  } catch {}
   if (!identity || input.factRegistryHash !== identity.factRegistryHash || input.assetHash !== identity.assetHash
-    || input.promptHash !== identity.promptHash || input.inputHash !== identity.inputHash
+    || input.promptHash !== identity.promptHash || input.inputHash !== expectedInputHash
   ) {
     throw attemptError();
   }
@@ -264,7 +287,8 @@ function validPersistenceContract(input) {
 }
 
 function matchingScope(left, right) {
-  return scopeKey(left) === scopeKey(right) && left.inputHash === right.inputHash;
+  return scopeKey(left) === scopeKey(right) && left.inputHash === right.inputHash
+    && left.expectedStatusVersion === right.expectedStatusVersion;
 }
 
 function mapRow(row) {
@@ -318,6 +342,8 @@ export function createMemoryRichContentRepository({
     for (const key of ["sourceFactEvidence", "assetEvidence", "requestEvidence"]) {
       if (input[key] !== undefined && !same(input[key], row[key])) throw attemptError();
     }
+    if ((row.gatewayConnectionId ?? null) !== (input.gatewayConnectionId ?? null)
+      || (row.gatewayConnectionVersion ?? null) !== (input.gatewayConnectionVersion ?? null)) throw attemptError();
     return row;
   };
 
@@ -355,12 +381,32 @@ export function createMemoryRichContentRepository({
       const active = related.find((row) => row.status === "GENERATING" && row.leaseExpiresAt > timestamp);
       if (active) return { status: "IN_PROGRESS" };
       for (const row of related) {
-        if (row.status === "GENERATING" && row.leaseExpiresAt <= timestamp) {
+        if (row.status === "GENERATING" && row.leaseExpiresAt <= timestamp
+          && row.leaseOwner !== CHANNEL_RELEASED) {
           Object.assign(row, {
             status: "FAILED", errorCode: "LEASE_EXPIRED", errorRetryable: true,
             leaseOwner: null, leaseToken: null, leaseExpiresAt: null, updatedAt: timestamp,
           });
         }
+      }
+      const reclaimable = related.filter((row) => row.status === "GENERATING"
+        && row.leaseExpiresAt <= timestamp
+        && row.leaseOwner === CHANNEL_RELEASED);
+      if (reclaimable.length > 1) throw attemptError();
+      if (reclaimable.length === 1) {
+        const leaseToken = token();
+        if (!clean(leaseToken)) throw attemptError();
+        const leaseOwner = clean(input.leaseOwner) ? input.leaseOwner : "rich-content-generator";
+        Object.assign(reclaimable[0], {
+          status: "GENERATING", errorCode: null, errorRetryable: null,
+          leaseOwner, leaseToken, leaseExpiresAt: timestamp + leaseMs, updatedAt: timestamp,
+          gatewayConnectionId: input.gatewayConnectionId ?? null,
+          gatewayConnectionVersion: input.gatewayConnectionVersion ?? null,
+        });
+        return {
+          status: "RESERVED", attemptNo: reclaimable[0].attemptNo, leaseToken,
+          inputHash: input.inputHash, promptHash: input.promptHash,
+        };
       }
       const attemptNo = related.reduce((highest, row) => Math.max(highest, row.attemptNo), 0) + 1;
       if (attemptNo > input.maxAttempts) return { status: "ATTEMPTS_EXHAUSTED" };
@@ -392,12 +438,23 @@ export function createMemoryRichContentRepository({
       if (!clean(input?.errorCode) || typeof input.errorRetryable !== "boolean") throw attemptError();
       return terminalize(input, "FAILED");
     },
+    async releaseRichContentAttempt(input) {
+      if (input?.errorCode !== CHANNEL_RELEASED) throw attemptError();
+      validateReservation(input);
+      const row = owned(input);
+      Object.assign(row, {
+        leaseOwner: CHANNEL_RELEASED, errorCode: null, errorRetryable: null,
+        leaseExpiresAt: now(), updatedAt: now(),
+      });
+      return clone(row);
+    },
     snapshot() { return clone(rows); },
   };
   repository.reserveRichContent = repository.reserveRichContentAttempt;
   repository.completeRichContent = repository.completeRichContentAttempt;
   repository.rejectRichContent = repository.rejectRichContentAttempt;
   repository.failRichContent = repository.failRichContentAttempt;
+  repository.releaseRichContent = repository.releaseRichContentAttempt;
   return Object.freeze(repository);
 }
 
@@ -424,8 +481,10 @@ export function createPostgresRichContentRepository({
       await client.query("BEGIN");
       const boundary = await client.query(
         `SELECT id FROM auto_listing_job_items
-         WHERE account_id=$1 AND job_id=$2 AND id=$3 FOR UPDATE`,
-        values.slice(0, 3),
+         WHERE account_id=$1 AND job_id=$2 AND id=$3
+           AND status='GENERATING' AND status_version=$4 AND active_content_plan_id=$5
+         FOR UPDATE`,
+        [...values.slice(0, 3), input.expectedStatusVersion, input.planId],
       );
       if (boundary.rowCount !== 1) throw attemptError();
       await client.query(
@@ -433,7 +492,8 @@ export function createPostgresRichContentRepository({
          SET status='FAILED',error_code='LEASE_EXPIRED',error_retryable=TRUE,
              lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW()
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
-           AND status='GENERATING' AND lease_expires_at <= NOW()`,
+           AND status='GENERATING' AND lease_expires_at <= NOW()
+           AND lease_owner <> 'AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED'`,
         [...values, input.inputHash],
       );
       const accepted = await client.query(
@@ -466,6 +526,37 @@ export function createPostgresRichContentRepository({
         await client.query("COMMIT");
         return { status: "IN_PROGRESS" };
       }
+      const reclaimable = await client.query(
+        `SELECT * FROM ai_rich_content_results
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
+           AND status='GENERATING' AND lease_expires_at <= NOW()
+           AND lease_owner='AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED'
+         FOR UPDATE`,
+        [...values, input.inputHash],
+      );
+      if (reclaimable.rowCount > 1) throw attemptError();
+      if (reclaimable.rowCount === 1) {
+        const reclaimed = await client.query(
+          `UPDATE ai_rich_content_results
+           SET status='GENERATING',error_code=NULL,error_retryable=NULL,
+               lease_owner=$2,lease_token=$3,lease_expires_at=NOW()+($4 * INTERVAL '1 millisecond'),
+               gateway_connection_id=$5,gateway_connection_version=$6,updated_at=NOW()
+           WHERE id=$1 AND status='GENERATING' AND lease_expires_at <= NOW()
+             AND lease_owner='AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED'
+           RETURNING *`,
+          [reclaimable.rows[0].id, leaseOwner, leaseToken, leaseMs,
+            input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null],
+        );
+        const record = mapRow(reclaimed.rows[0]);
+        if (reclaimed.rowCount !== 1 || record?.status !== "GENERATING"
+          || record.inputHash !== input.inputHash || record.attemptNo !== reclaimable.rows[0].attempt_no
+          || record.leaseToken !== leaseToken) throw attemptError();
+        await client.query("COMMIT");
+        return {
+          status: "RESERVED", attemptNo: record.attemptNo, leaseToken,
+          inputHash: input.inputHash, promptHash: input.promptHash,
+        };
+      }
       const attempts = await client.query(
         `SELECT COALESCE(MAX(attempt_no),0)::INTEGER AS attempt_no FROM ai_rich_content_results
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5`,
@@ -481,13 +572,15 @@ export function createPostgresRichContentRepository({
            id,account_id,job_id,item_id,plan_id,profile_id,source_hash,asset_hash,input_hash,attempt_no,
            model_name,profile_version,prompt_template_version,rich_content,output_hash,checker_result,status,
            plan_hash,fact_registry_hash,prompt_hash,request_evidence,model_evidence,source_fact_evidence,
-           asset_evidence,gateway_request_id,lease_owner,lease_token,lease_expires_at
+           asset_evidence,gateway_request_id,lease_owner,lease_token,lease_expires_at,
+           gateway_connection_id,gateway_connection_version
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'{}'::JSONB,'','{}'::JSONB,'GENERATING',
-           $14,$15,$16,$17::JSONB,NULL,$18::JSONB,$19::JSONB,NULL,$20,$21,NOW()+($22 * INTERVAL '1 millisecond'))`,
+           $14,$15,$16,$17::JSONB,NULL,$18::JSONB,$19::JSONB,NULL,$20,$21,NOW()+($22 * INTERVAL '1 millisecond'),$23,$24)`,
         [rowId, ...values, input.profileId, input.sourceHash, input.assetHash, input.inputHash, attemptNo,
           input.modelName, input.profileVersion, input.promptTemplateVersion, input.planHash,
           input.factRegistryHash, input.promptHash, JSON.stringify(input.requestEvidence),
-          JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), leaseOwner, leaseToken, leaseMs],
+          JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), leaseOwner, leaseToken, leaseMs,
+          input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null],
       );
       await client.query("COMMIT");
       return { status: "RESERVED", attemptNo, leaseToken, inputHash: input.inputHash, promptHash: input.promptHash };
@@ -515,16 +608,30 @@ export function createPostgresRichContentRepository({
     let result;
     try {
       result = await pool.query(
-      `UPDATE ai_rich_content_results SET
+      `WITH current_item AS (
+         SELECT item.account_id,item.job_id,item.id,item.active_content_plan_id
+         FROM auto_listing_job_items AS item
+         WHERE item.account_id=$1 AND item.job_id=$2 AND item.id=$3
+           AND item.status='GENERATING' AND item.status_version=$31 AND item.active_content_plan_id=$4
+         FOR UPDATE
+       )
+       UPDATE ai_rich_content_results AS attempt SET
          status=$7,rich_content=$8::JSONB,output_hash=$9,checker_result=$10::JSONB,
          gateway_request_id=$11,model_evidence=$12::JSONB,error_code=$13,error_retryable=$14,
          lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=NOW(),accepted_at=$15
-       WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
-         AND attempt_no=$6 AND status='GENERATING' AND lease_token=$16 AND lease_expires_at > NOW()
-         AND plan_hash=$17 AND source_hash=$18 AND fact_registry_hash=$19 AND asset_hash=$20 AND prompt_hash=$21
-         AND profile_id=$22 AND profile_version=$23 AND model_name=$24 AND prompt_template_version=$25
-         AND source_fact_evidence=$26::JSONB AND asset_evidence=$27::JSONB AND request_evidence=$28::JSONB
-       RETURNING *`,
+       FROM current_item AS item
+       WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+         AND attempt.plan_id=$4 AND attempt.input_hash=$5 AND attempt.attempt_no=$6
+         AND attempt.status='GENERATING' AND attempt.lease_token=$16 AND attempt.lease_expires_at > NOW()
+         AND attempt.plan_hash=$17 AND attempt.source_hash=$18 AND attempt.fact_registry_hash=$19
+         AND attempt.asset_hash=$20 AND attempt.prompt_hash=$21 AND attempt.profile_id=$22
+         AND attempt.profile_version=$23 AND attempt.model_name=$24 AND attempt.prompt_template_version=$25
+         AND attempt.source_fact_evidence=$26::JSONB AND attempt.asset_evidence=$27::JSONB
+         AND attempt.request_evidence=$28::JSONB
+         AND attempt.gateway_connection_id IS NOT DISTINCT FROM $29
+         AND attempt.gateway_connection_version IS NOT DISTINCT FROM $30
+         AND item.account_id=$1 AND item.job_id=$2 AND item.id=$3 AND item.active_content_plan_id=$4
+       RETURNING attempt.*`,
       [...SCOPE_KEYS.map((key) => input[key]), input.inputHash, input.attemptNo, status,
         JSON.stringify(accepted ? input.richContent : {}), accepted ? input.outputHash : "",
         JSON.stringify(accepted ? input.checkerResult : {}), accepted ? input.gatewayRequestId : null,
@@ -532,7 +639,8 @@ export function createPostgresRichContentRepository({
         accepted ? null : input.errorRetryable, accepted ? new Date() : null, input.leaseToken,
         input.planHash, input.sourceHash, input.factRegistryHash, input.assetHash, input.promptHash,
         input.profileId, input.profileVersion, input.modelName, input.promptTemplateVersion,
-        JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence)],
+        JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence),
+        input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null, input.expectedStatusVersion],
       );
     } catch {
       throw repositoryError();
@@ -543,16 +651,64 @@ export function createPostgresRichContentRepository({
     return record;
   }
 
+  async function releaseRichContentAttempt(input) {
+    validateReservation(input);
+    if (input?.errorCode !== CHANNEL_RELEASED || !Number.isInteger(input.attemptNo)
+      || input.attemptNo < 1 || !clean(input.leaseToken)) throw attemptError();
+    let result;
+    try {
+      result = await pool.query(
+        `WITH current_item AS (
+           SELECT item.account_id,item.job_id,item.id,item.active_content_plan_id
+           FROM auto_listing_job_items AS item
+           WHERE item.account_id=$1 AND item.job_id=$2 AND item.id=$3
+             AND item.status='GENERATING' AND item.status_version=$22 AND item.active_content_plan_id=$4
+           FOR UPDATE
+         )
+         UPDATE ai_rich_content_results AS attempt SET
+           lease_owner='AUTO_LISTING_RICH_CONTENT_CHANNEL_RELEASED',
+           lease_expires_at=NOW(),updated_at=NOW()
+         FROM current_item AS item
+         WHERE attempt.account_id=$1 AND attempt.job_id=$2 AND attempt.item_id=$3
+           AND attempt.plan_id=$4 AND attempt.input_hash=$5 AND attempt.attempt_no=$6
+           AND attempt.status='GENERATING' AND attempt.lease_token=$7 AND attempt.lease_expires_at > NOW()
+           AND attempt.plan_hash=$8 AND attempt.source_hash=$9 AND attempt.fact_registry_hash=$10
+           AND attempt.asset_hash=$11 AND attempt.prompt_hash=$12 AND attempt.profile_id=$13
+           AND attempt.profile_version=$14 AND attempt.model_name=$15 AND attempt.prompt_template_version=$16
+           AND attempt.source_fact_evidence=$17::JSONB AND attempt.asset_evidence=$18::JSONB
+           AND attempt.request_evidence=$19::JSONB
+           AND attempt.gateway_connection_id IS NOT DISTINCT FROM $20
+           AND attempt.gateway_connection_version IS NOT DISTINCT FROM $21
+           AND item.account_id=$1 AND item.job_id=$2 AND item.id=$3 AND item.active_content_plan_id=$4
+         RETURNING attempt.*`,
+        [...SCOPE_KEYS.map((key) => input[key]), input.inputHash, input.attemptNo, input.leaseToken,
+          input.planHash, input.sourceHash, input.factRegistryHash, input.assetHash, input.promptHash,
+          input.profileId, input.profileVersion, input.modelName, input.promptTemplateVersion,
+          JSON.stringify(input.sourceFactEvidence), JSON.stringify(input.assetEvidence), JSON.stringify(input.requestEvidence),
+          input.gatewayConnectionId ?? null, input.gatewayConnectionVersion ?? null, input.expectedStatusVersion],
+      );
+    } catch {
+      throw repositoryError();
+    }
+    const record = mapRow(result.rows?.[0]);
+    if (result.rowCount !== 1 || record?.status !== "GENERATING"
+      || record.leaseOwner !== CHANNEL_RELEASED || record.errorCode !== null || record.errorRetryable !== null
+      || record.attemptNo !== input.attemptNo || record.leaseToken !== input.leaseToken) throw attemptError();
+    return record;
+  }
+
   const repository = {
     reserveRichContentAttempt,
     completeRichContentAttempt: (input) => transition(input, "ACCEPTED"),
     rejectRichContentAttempt: (input) => transition(input, "REJECTED"),
     failRichContentAttempt: (input) => transition(input, "FAILED"),
+    releaseRichContentAttempt,
   };
   repository.reserveRichContent = repository.reserveRichContentAttempt;
   repository.completeRichContent = repository.completeRichContentAttempt;
   repository.rejectRichContent = repository.rejectRichContentAttempt;
   repository.failRichContent = repository.failRichContentAttempt;
+  repository.releaseRichContent = repository.releaseRichContentAttempt;
   return Object.freeze(repository);
 }
 

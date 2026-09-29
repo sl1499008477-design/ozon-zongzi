@@ -1,3 +1,5 @@
+import { getPostgresPool } from "./db/connection.mjs";
+import { authorizeDirectRfbsPhase } from "./listing-direct-rfbs.mjs";
 import crypto from "node:crypto";
 import { types as utilTypes } from "node:util";
 
@@ -158,4 +160,6 @@ const productionRuntime = createListingRfbsWriteAuthorizationRuntime({
   authorizeSubmissionRfbsWrite: authorizeSubmissionRfbsWriteV3,
 });
 
-export const authorizeListingRfbsWritePhase = (work, phase) => productionRuntime.authorizePhase(work, phase);
+export const authorizeListingRfbsWritePhase = async (work, phase, {stocks} = {}) => work.type === "AUTO_LISTING"
+  ? productionRuntime.authorizePhase(work, phase)
+  : authorizeDirectRfbsPhase(work, phase, {pool: await getPostgresPool(), readCredential: readStoreCredentialV3, callOzonSellerApi, stocks});

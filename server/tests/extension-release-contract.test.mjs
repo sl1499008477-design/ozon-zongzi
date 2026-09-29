@@ -24,7 +24,7 @@ async function requestJson(handle, pathname) {
   return { status: response.status, body: JSON.parse(response.body || "{}") };
 }
 
-test("0.13.46.27 release metadata and download endpoint stay aligned", async (context) => {
+test("extension release metadata and download endpoint stay aligned independently of the app version", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "sonli-release-contract-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
   process.env.QH_LOCAL_DATA_DIR = dataDir;
@@ -48,29 +48,28 @@ test("0.13.46.27 release metadata and download endpoint stay aligned", async (co
     requestJson(handle, "/extension/latest"),
   ]);
 
-  assert.equal(manifest.version, "0.13.46.27");
+  assert.match(manifest.version, /^\d+(?:\.\d+){0,3}$/);
   assert.equal(extensionContract.EXTENSION_VERSION, manifest.version);
-  assert.equal(extensionContract.EXTENSION_DOWNLOAD_PATH, `/sonli-extension-${manifest.version}.zip`);
-  assert.equal(rootPackage.version, `${manifest.version}-local`);
+  assert.equal(extensionContract.EXTENSION_DOWNLOAD_PATH, `/ozon 粽子-扩展-v${manifest.version}.zip`);
   assert.equal(health.status, 200);
   assert.equal(health.body.version, rootPackage.version);
   assert.equal(latest.status, 200);
   assert.deepEqual(latest.body, {
     version: manifest.version,
     latestVersion: manifest.version,
-    downloadUrl: `/sonli-extension-${manifest.version}.zip`,
+    downloadUrl: `/ozon 粽子-扩展-v${manifest.version}.zip`,
   });
 
   for (const currentReleasePath of [
-    `app/public/sonli-extension-${manifest.version}`,
-    `app/public/sonli-extension-${manifest.version}.zip`,
+    `app/public/ozon 粽子-扩展-v${manifest.version}`,
+    `app/public/ozon 粽子-扩展-v${manifest.version}.zip`,
   ]) {
     await access(path.join(rootDir, currentReleasePath));
   }
 
   const trackedDistZip = spawnSync(
     "git",
-    ["ls-files", "--error-unmatch", `app/dist/sonli-extension-${manifest.version}.zip`],
+    ["ls-files", "--error-unmatch", `app/dist/ozon 粽子-扩展-v${manifest.version}.zip`],
     { cwd: rootDir, stdio: "ignore" },
   );
   assert.notEqual(

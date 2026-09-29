@@ -49,7 +49,7 @@ function observeBody(overrides = {}) {
 
 function failBody(overrides = {}) {
   return {
-    code: "OZON_ENRICH_NOT_FOUND",
+    code: "ZONGZI_ENRICH_NOT_FOUND",
     message: "not found",
     captureContext: resultBody().captureContext,
     claimFence: "claim-fence-route",
@@ -130,7 +130,7 @@ function harness(overrides = {}) {
             sku,
             status: "ERROR",
             error: {
-              code: "OZON_ENRICH_INCOMPLETE",
+              code: "ZONGZI_ENRICH_INCOMPLETE",
               message: "商品资料不完整",
               missingFields: ["weightG"],
               retryable: true,
@@ -417,7 +417,7 @@ test("batch route preserves service order and stable per-item error shape", asyn
     ["third", "COMPLETE"],
   ]);
   assert.deepEqual(response.body.data[1].error, {
-    code: "OZON_ENRICH_INCOMPLETE",
+    code: "ZONGZI_ENRICH_INCOMPLETE",
     message: "商品资料不完整",
     missingFields: ["weightG"],
     retryable: true,
@@ -431,7 +431,7 @@ test("batch route preserves the stable unique-SKU limit error contract", async (
     skus: Array.from({ length: 21 }, (_, index) => `sku-${index + 1}`),
   });
   assert.equal(response.status, 400);
-  assert.equal(response.body.code, "OZON_ENRICH_BATCH_LIMIT");
+  assert.equal(response.body.code, "ZONGZI_ENRICH_BATCH_LIMIT");
   assert.equal(response.body.retryable, false);
   assert.equal(h.calls.enrichBatch.length, 0);
 });
@@ -607,7 +607,7 @@ test("nested secret, request-control, and retired-scope keys are rejected before
       claimFence: "claim-fence-route",
     });
     assert.equal(response.status, 400, forbiddenKey);
-    assert.equal(response.body.code, "OZON_ENRICH_REQUEST_INVALID", forbiddenKey);
+    assert.equal(response.body.code, "ZONGZI_ENRICH_REQUEST_INVALID", forbiddenKey);
     assert.equal(response.body.message.includes(forbiddenKey), true, forbiddenKey);
     assert.equal(h.calls.completeClaim.length, 0, forbiddenKey);
   }
@@ -795,7 +795,7 @@ test("fail route is strict and does not accept nested or arbitrary executor comm
   assert.deepEqual(accepted.calls.failClaim[0], {
     session: SESSION,
     jobId: "job-route",
-    code: "OZON_ENRICH_NOT_FOUND",
+    code: "ZONGZI_ENRICH_NOT_FOUND",
     message: "not found",
     captureContext: resultBody().captureContext,
     claimFence: "claim-fence-route",
@@ -817,7 +817,7 @@ test("fail route is strict and does not accept nested or arbitrary executor comm
       "POST",
       "/collector/ozon/enrichment-jobs/job-route/fail",
       failBody({
-        code: "OZON_ENRICH_UPSTREAM_FAILED",
+        code: "ZONGZI_ENRICH_UPSTREAM_FAILED",
         message: "failed",
         ...injected,
       }),
@@ -898,7 +898,7 @@ test("repository-prefixed failures are not exposed through the public route", as
       async enrichOne() {
         throw Object.assign(new Error("relation collector_ozon_enrichment_cache missing"), {
           status: 500,
-          code: "OZON_ENRICHMENT_PERSISTENCE_FAILED",
+          code: "ZONGZI_ENRICHMENT_PERSISTENCE_FAILED",
         });
       },
     },
@@ -910,9 +910,344 @@ test("repository-prefixed failures are not exposed through the public route", as
   assert.equal(response.status, 500);
   assert.deepEqual(response.body, {
     ok: false,
-    code: "OZON_ENRICH_UPSTREAM_FAILED",
+    code: "ZONGZI_ENRICH_UPSTREAM_FAILED",
     message: "Ozon 商品资料补全失败",
     missingFields: [],
     retryable: true,
   });
+});
+
+test('result accepts two bounded packaging candidates while rejecting extra candidate fields',async()=>{
+ const candidates=[{weightG:105,lengthMm:140,widthMm:60,heightMm:50},{weightG:125,lengthMm:143,widthMm:63,heightMm:54}];
+ const h=harness(),body=resultBody();body.variantData.packagingCandidates=candidates;
+ const accepted=await request(h,'POST','/collector/ozon/enrichment-jobs/job-route/result',body);
+ assert.equal(accepted.status,200);assert.deepEqual(h.calls.completeClaim[0].variantData.packagingCandidates,candidates);
+ body.variantData.packagingCandidates[0].companyId='injected';
+ assert.equal((await request(h,'POST','/collector/ozon/enrichment-jobs/job-route/result',body)).status,400);
+});
+
+
+test('result route accepts explicitly missing logistics while retaining native numeric checks', async () => {
+  const h=harness();
+  const body=resultBody();body.variantData.height=null;
+  const response=await request(h,'POST','/collector/ozon/enrichment-jobs/job-route/result',body);
+  assert.equal(response.status,200);
+  assert.equal(h.calls.completeClaim[0].variantData.height,null);
+  for(const height of [-1,'100',false]) {
+    const rejected=await request(h,'POST','/collector/ozon/enrichment-jobs/job-route/result',{...body,variantData:{...body.variantData,height}});
+    assert.equal(rejected.status,400);
+  }
+});
+
+test("current extension attribute values reach completion with per-value dictionary IDs intact", async () => {
+  await import("../../extension/lib/ozon-enrichment-contract.js");
+  const attributes = globalThis.JzOzonEnrichmentContract.projectCollectedVariant({ attributes: [
+    { key: "8229", values: [{ value: "Настенный светильник", dictionary_value_id: 91647 }] },
+    { key: "10096", values: [{ value: "Теплый белый", dictionary_value_id: 123 }, { value: "Белый", dictionary_value_id: 456 }] },
+    { key: "85", values: [{ dictionary_value_id: 789 }] },
+    { key: "9048", values: [] },
+  ] }).attributes;
+  let normalized;
+  const h = harness({ service: { async completeClaim(input) {
+    normalized = normalizeOzonAgentResult({sku:"2102713933",variantData:input.variantData,capturedAt:NOW});
+    return normalized;
+  } } });
+  const response = await request(h,"POST","/collector/ozon/enrichment-jobs/job-route/result",{
+    ...resultBody(), variantData: { ...resultBody().variantData, attributes },
+  });
+  assert.equal(response.status,200,JSON.stringify(response.body));
+  assert.equal(normalized.status,"COMPLETE");
+  assert.deepEqual(normalized.variantData.attributes,attributes);
+  assert.equal(normalized.sourceCategory.typeIdCandidate,91647);
+  assert.deepEqual(normalized.sourceCategory.attributes.map(a=>a.values),[
+    [{value:"Настенный светильник",dictionary_value_id:91647}],
+    [{value:"Теплый белый",dictionary_value_id:123},{value:"Белый",dictionary_value_id:456}],
+    [{dictionary_value_id:789}], [],
+  ]);
+});
+
+test("structured attribute values preserve legacy clients and reject malformed or sensitive entries", async () => {
+  const path="/collector/ozon/enrichment-jobs/job-route/result";
+  for (const attribute of [
+    {key:"85",collection:[{value:"A",dictionary_value_id:100},{dictionary_value_id:200}]},
+    {key:"85",dictionary_value_id:100},
+    {key:"85",values:[],value:"old text"},
+    {key:"85",value:"legacy"},
+    {key:"85",collection:["legacy A","legacy B"]},
+  ]) {
+    const h=harness();const response=await request(h,"POST",path,{...resultBody(),variantData:{...resultBody().variantData,attributes:[attribute]}});
+    assert.equal(response.status,200,JSON.stringify(response.body));
+  }
+  for (const attribute of [
+    {key:"85",values:{}}, {key:"85",values:[{}]}, {key:"85",values:["bad"]},
+    {key:"85",values:[{value:{nested:"bad"}}]}, {key:"85",values:[{dictionary_value_id:0}]},
+    {key:"85",values:[{dictionary_value_id:1.2}]}, {key:"85",values:[{dictionary_value_id:"100"}]},
+    {key:"85",values:[{value:"A",unknown:"bad"}]},
+    {key:"85",values:[{value:"A",accountId:"forged"}]},
+    {key:"85",values:[{value:"A",cookie:"sid=private"}]},
+    {key:"85",values:[{value:"Bearer secret-secret-secret-secret"}]},
+  ]) {
+    const h=harness();const response=await request(h,"POST",path,{...resultBody(),variantData:{...resultBody().variantData,attributes:[attribute]}});
+    assert.equal(response.status,400,JSON.stringify(attribute));
+    assert.equal(h.calls.completeClaim.length,0);
+  }
+});
+
+// These regressions cross the HTTP boundary, service and real JSON repository.
+async function repairHarness({ linked = false, attemptCount = 0 } = {}) {
+  const { createCollectorOzonEnrichmentService } = await import('../collector-ozon-enrichment-service.mjs');
+  const { createJsonCollectorOzonEnrichmentRepository } = await import('../collector-ozon-enrichment-repository.mjs');
+  const clock = { value: NOW.getTime() };
+  const context = resultBody().captureContext;
+  const state = {
+    collectorSessions: ['csess_route', 'csess_other'].map(id => ({
+      id, accountId: SESSION.accountId, expiresAt: '2027-01-01T00:00:00.000Z', sellerContext: context,
+    })),
+    caches: { collectBox: [{ id: 'repair-item', accountId: SESSION.accountId }] },
+    collectorOzonEnrichmentJobs: [{
+      id: 'job-route', accountId: SESSION.accountId, requestId: 'repair-request', sku: '2102713588',
+      collectItemId: linked ? 'repair-item' : null,
+      status: 'PROCESSING', claimedSessionId: SESSION.collectorSessionId, claimFence: 'claim-fence-route',
+      captureContext: context, claimExpiresAt: new Date(clock.value + 30_000).toISOString(),
+      deadlineAt: new Date(clock.value + 20_000).toISOString(), createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(), nextAttemptAt: NOW.toISOString(), attemptCount,
+      refreshBundle: true, error: null, result: null, lastError: null,
+    }],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const audits = [];
+  let sequence = 0;
+  const service = createCollectorOzonEnrichmentService({
+    repository, now: () => new Date(clock.value), randomUUID: () => `repair-${++sequence}`,
+    sleep: async ms => { clock.value += ms; }, audit: async event => audits.push(event),
+    collectItems: {
+      async defer(input) { return { item: state.caches.collectBox[0], job: await repository.deferClaim(input.deferClaim) }; },
+      async fail(input) { return { item: state.caches.collectBox[0], job: await repository.failJobAndCache(input.failure) }; },
+    },
+  });
+  const handler = createCollectorOzonEnrichmentHttpHandler({
+    authenticate: async (_req, permission) => { assert.equal(permission, 'collector.ozon.read'); return SESSION; },
+    authenticateAccount: async () => ACCOUNT, service, readJson, sendJson, now: () => new Date(clock.value),
+  });
+  return { handler, service, state, repository, audits, clock };
+}
+
+const repairDiagnostic = Object.freeze({
+  stage: 'seller.search', upstreamCode: 'NETWORK_ERROR', upstreamStatus: 503,
+  requestSent: true, extensionVersion: '1.0.6',
+});
+
+test('repair: fail preserves the specific cause and diagnostic through persistence, audit and public errors', async () => {
+  const h = await repairHarness();
+  const response = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/fail', failBody({
+    code: 'NETWORK_ERROR', message: 'Seller /api/v1/search: net::ERR_CONNECTION_RESET', diagnostic: repairDiagnostic,
+  }));
+  assert.equal(response.status, 200);
+  const saved = h.state.collectorOzonEnrichmentJobs[0].error;
+  assert.equal(saved.message, 'Seller /api/v1/search: net::ERR_CONNECTION_RESET');
+  assert.deepEqual(saved.diagnostic, repairDiagnostic);
+  assert.deepEqual(h.audits.at(-1).diagnostic, repairDiagnostic);
+  assert.equal(h.audits.at(-1).message, saved.message);
+  const failed = await request(h, 'POST', '/collector/ozon/enrich', { requestId: 'repair-request', sku: '2102713588' });
+  assert.equal(failed.status, 502);
+  assert.equal(failed.body.message, saved.message);
+  assert.deepEqual(failed.body.diagnostic, repairDiagnostic);
+});
+
+test('repair: legacy fail body keeps a sanitized cause instead of rejecting credentials or replacing the whole message', async () => {
+  const h = await repairHarness();
+  const message = 'Seller /api/v1/search: net::ERR_CONNECTION_RESET\n'
+    + 'Authorization: Bearer bearer-secret\nCookie: sid=cookie-secret; auth=another-secret\n'
+    + 'https://user:password-secret@seller.ozon.ru/api?token=query-secret\n'
+    + '{"password":"json secret", "api_key":"api-secret"} cst_collector-secret';
+  const response = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/fail', failBody({ code: 'NETWORK_ERROR', message }));
+  assert.equal(response.status, 200);
+  const saved = h.state.collectorOzonEnrichmentJobs[0].error;
+  assert.match(saved.message, /net::ERR_CONNECTION_RESET/);
+  const persisted = JSON.stringify([h.state, h.audits]);
+  for (const secret of ['bearer-secret','cookie-secret','another-secret','password-secret','query-secret','json secret','api-secret','cst_collector-secret']) {
+    assert.equal(persisted.includes(secret), false, secret);
+  }
+});
+
+test('repair: linked retry and retry exhaustion retain the actual upstream explanation', async () => {
+  for (const attemptCount of [0, 4]) {
+    const h = await repairHarness({ linked: true, attemptCount });
+    const response = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/fail', failBody({
+      code: 'NETWORK_ERROR', message: 'Seller /api/v1/search: net::ERR_CONNECTION_RESET', diagnostic: repairDiagnostic,
+    }));
+    assert.equal(response.status, 200);
+    const job = h.state.collectorOzonEnrichmentJobs[0];
+    assert.equal(job.attemptCount, attemptCount + 1);
+    assert.equal(job.status, attemptCount === 4 ? 'FAILED' : 'PENDING');
+    const saved = attemptCount === 4 ? job.error : job.lastError;
+    assert.equal(saved.message, 'Seller /api/v1/search: net::ERR_CONNECTION_RESET');
+    assert.deepEqual(saved.diagnostic, repairDiagnostic);
+  }
+});
+
+test('repair: diagnostic validates its actual allowlist and scalar types before any write', async () => {
+  for (const diagnostic of [[], null, {requestSent: 'false'}, {upstreamStatus: '503'}, {upstreamStatus: 700},
+    {stage: {}}, {extensionVersion: {token: 'secret'}}, {authorization: 'secret'}]) {
+    const h = await repairHarness();
+    const before = structuredClone(h.state);
+    const response = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/fail', failBody({ diagnostic }));
+    assert.equal(response.status, 400, JSON.stringify(diagnostic));
+    assert.deepEqual(h.state, before);
+  }
+});
+
+test('repair: progress renews the same lease without a business transition, even after a long capture', async () => {
+  const h = await repairHarness();
+  h.clock.value += 11 * 60_000;
+  const before = structuredClone(h.state.collectorOzonEnrichmentJobs[0]);
+  const body = { claimFence: before.claimFence, captureContext: before.captureContext };
+  for (let i = 0; i < 2; i++) {
+    const response = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/progress', body);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.ok, true);
+  }
+  const renewed = h.state.collectorOzonEnrichmentJobs[0];
+  assert.deepEqual({ ...renewed, claimExpiresAt: before.claimExpiresAt, updatedAt: before.updatedAt }, before);
+  assert.equal(new Date(renewed.claimExpiresAt).getTime(), h.clock.value + 30_000);
+  assert.equal(h.audits.some(event => event.status === 'FAILED'), false);
+  const result = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/result', resultBody());
+  assert.equal(result.status, 200);
+  assert.equal(renewed.status, 'SUCCESS');
+});
+
+test('repair: a late result is accepted until takeover and a repeated terminal result cannot write again', async () => {
+  const h = await repairHarness();
+  h.clock.value += 45_000;
+  const response = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/result', resultBody());
+  assert.equal(response.status, 200);
+  assert.equal(h.state.collectorOzonEnrichmentJobs[0].attemptCount, 0);
+  const before = structuredClone(h.state);
+  const duplicate = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/result', resultBody());
+  assert.equal(duplicate.status, 409);
+  assert.deepEqual(h.state, before);
+});
+
+test('repair: expiration permits fenced takeover without inventing failures or resetting retry history', async () => {
+  const h = await repairHarness({ linked: true, attemptCount: 2 });
+  let previousFence = 'claim-fence-route';
+  for (let i = 0; i < 6; i++) {
+    assert.equal(await h.service.claimNext({session: SESSION, captureContext: resultBody().captureContext}), null);
+    h.clock.value += 31_000;
+    const claim = await h.service.claimNext({session: SESSION, captureContext: resultBody().captureContext});
+    assert.ok(claim);
+    assert.notEqual(claim.claimFence, previousFence);
+    const stale = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/progress', {
+      claimFence: previousFence, captureContext: resultBody().captureContext,
+    });
+    assert.equal(stale.status, 409);
+    previousFence = claim.claimFence;
+    const job = h.state.collectorOzonEnrichmentJobs[0];
+    assert.equal(job.status, 'PROCESSING');
+    assert.equal(job.attemptCount, 2);
+    assert.equal(job.lastError, null);
+    assert.equal(job.error, null);
+  }
+  const stale = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/result', resultBody());
+  assert.equal(stale.status, 409);
+});
+
+test('repair: progress enforces session, account, Seller watermark, fence and active claim capacity', async () => {
+  for (const mutation of [
+    h => { h.state.collectorOzonEnrichmentJobs[0].accountId = 'other-account'; },
+    h => { h.state.collectorOzonEnrichmentJobs[0].claimedSessionId = 'csess_other'; },
+    h => { h.state.collectorOzonEnrichmentJobs[0].claimFence = 'new-fence'; },
+    h => { h.state.collectorSessions[0].sellerContext = {...resultBody().captureContext, revision: 5}; },
+    h => { h.state.collectorSessions[0].revokedAt = NOW.toISOString(); },
+    h => {
+      h.clock.value += 31_000;
+      for (let i=0; i<4; i++) h.state.collectorOzonEnrichmentJobs.push({
+        ...h.state.collectorOzonEnrichmentJobs[0], id: `busy-${i}`,
+        claimExpiresAt: new Date(h.clock.value + 30_000).toISOString(),
+      });
+    },
+  ]) {
+    const h = await repairHarness(); mutation(h);
+    const before = structuredClone(h.state);
+    const response = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/progress', {
+      claimFence: 'claim-fence-route', captureContext: resultBody().captureContext,
+    });
+    assert.ok([404, 409, 429].includes(response.status), String(response.status));
+    assert.deepEqual(h.state, before);
+  }
+});
+
+test('repair: public wait returns PENDING and same-request polling preserves the claim until its real result', async () => {
+  const h = await repairHarness();
+  const input = {requestId: 'repair-request', sku: '2102713588'};
+  for (let i=0; i<2; i++) {
+    const response = await request(h, 'POST', '/collector/ozon/enrich', input);
+    assert.equal(response.status, 202);
+    assert.equal(response.body.status, 'PENDING');
+    assert.equal(response.body.ok, true);
+    assert.equal(h.state.collectorOzonEnrichmentJobs.length, 1);
+    assert.equal(h.state.collectorOzonEnrichmentJobs[0].claimFence, 'claim-fence-route');
+    assert.equal(h.state.collectorOzonEnrichmentJobs[0].attemptCount, 0);
+  }
+  assert.deepEqual(h.audits, []);
+  assert.equal((await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/result', resultBody())).status, 200);
+  const result = await request(h, 'POST', '/collector/ozon/enrich', input);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.data.status, 'COMPLETE');
+});
+
+test('repair: batch wait returns 202 with pending SKUs alongside already completed results', async () => {
+  const h = await repairHarness();
+  await h.repository.writeCompleteCache({
+    key: {accountId: SESSION.accountId, source: 'ozon', sku: '2102713769', contractVersion: 'collector.ozon.enrichment.v1'},
+    result: result('2102713769'), responseHash: 'fixture', executorSessionId: SESSION.collectorSessionId,
+    capturedAt: NOW, expiresAt: new Date(NOW.getTime() + 3_600_000),
+  });
+  const response = await request(h, 'POST', '/collector/ozon/enrich/batch', {
+    requestId: 'repair-request', skus: ['2102713588', '2102713769'],
+  });
+  assert.equal(response.status, 202);
+  assert.equal(response.body.status, 'PENDING');
+  assert.deepEqual(response.body.data.map(row => row.status), ['PENDING', 'COMPLETE']);
+  assert.equal(h.audits.some(event => event.status === 'FAILED'), false);
+});
+
+test('repair: message and diagnostic limits preserve useful text and redact escaped JSON credentials', async () => {
+  const h = await repairHarness();
+  const message = 'net::ERR_CONNECTION_RESET ' + JSON.stringify({password:'escaped"credential-tail'}) + ' ' + 'x'.repeat(1100);
+  const response = await request(h, 'POST', '/collector/ozon/enrichment-jobs/job-route/fail', failBody({
+    code:'NETWORK_ERROR', message, diagnostic:{...repairDiagnostic,stage:'s'.repeat(100),upstreamCode:'u'.repeat(100)},
+  }));
+  assert.equal(response.status, 200);
+  const saved = h.state.collectorOzonEnrichmentJobs[0].error;
+  assert.equal(saved.message.length, 1000);
+  assert.match(saved.message, /^net::ERR_CONNECTION_RESET/);
+  assert.equal(saved.diagnostic.stage.length, 80);
+  assert.equal(saved.diagnostic.upstreamCode.length, 80);
+  assert.equal(JSON.stringify([h.state,h.audits]).includes('credential-tail'), false);
+});
+
+test('repair: a batch uses one HTTP wait window even when it has more than four pending SKUs', async () => {
+  const h = await repairHarness();
+  h.state.collectorOzonEnrichmentJobs = [];
+  const start = h.clock.value;
+  const response = await request(h, 'POST', '/collector/ozon/enrich/batch', {
+    requestId:'batch-wait',skus:['2102713588','2102713769','2102714396','2102714113','batch-fifth'],
+  });
+  assert.equal(response.status, 202);
+  assert.deepEqual(response.body.data.map(item => item.status), ['PENDING','PENDING','PENDING','PENDING','PENDING']);
+  assert.equal(h.clock.value - start, 20_000);
+  assert.equal(h.audits.some(event => event.status === 'FAILED'), false);
+});
+
+test('repair: a concrete language failure also survives the public error-code allowlist', async () => {
+  const h = await repairHarness();
+  const message='SKU 2102713588 attribute 8229 contains Chinese product text';
+  assert.equal((await request(h,'POST','/collector/ozon/enrichment-jobs/job-route/fail',failBody({
+    code:'ZONGZI_PRODUCT_RUSSIAN_REQUIRED',message,
+  }))).status,200);
+  const response=await request(h,'POST','/collector/ozon/enrich',{requestId:'repair-request',sku:'2102713588'});
+  assert.equal(response.status,422);
+  assert.equal(response.body.code,'ZONGZI_PRODUCT_RUSSIAN_REQUIRED');
+  assert.equal(response.body.message,message);
 });

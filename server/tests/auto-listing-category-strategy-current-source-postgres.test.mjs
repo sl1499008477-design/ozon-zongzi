@@ -19,7 +19,8 @@ function normalized(sql) {
   return String(sql).replaceAll(/\s+/gu, " ").trim();
 }
 
-function currentSourceFixture() {
+function currentSourceFixture({ currentDraftVersion = 7, categoryEvidenceDraftVersion = 7,
+  sourceKind = "PRODUCT_DRAFT" } = {}) {
   const calls = [];
   const draftRow = (parameters) => ({
     id: parameters[0],
@@ -49,7 +50,14 @@ function currentSourceFixture() {
       if (text.includes("JOIN collect_ozon_category_current_sources pointer")) {
         const requestedDescriptionCategoryId = Number(parameters[4]);
         const requestedTypeId = Number(parameters[5]);
-        let accepted = parameters[3] === CURRENT_SCOPE.taxonomyScope;
+        let accepted = parameters[2] === `draft:${currentDraftVersion}`
+          && parameters[3] === CURRENT_SCOPE.taxonomyScope;
+        if (text.includes("pointer.source_kind='PRODUCT_DRAFT'")) {
+          accepted &&= sourceKind === "PRODUCT_DRAFT";
+        }
+        if (text.includes("pointer.source_version IN (draft.version::TEXT,'draft:' || draft.version::TEXT)")) {
+          accepted &&= categoryEvidenceDraftVersion === currentDraftVersion;
+        }
         if (text.includes("evidence.source_description_category_id=$5")) {
           accepted &&= requestedDescriptionCategoryId === SOURCE_SCOPE.descriptionCategoryId;
         }
@@ -105,6 +113,39 @@ test("draft creation accepts the active shared current scope after a verified so
   assert.equal(created.status, "COLLECTING");
   assert.equal(created.scope.descriptionCategoryId, CURRENT_SCOPE.descriptionCategoryId);
   assert.equal(created.scope.typeId, CURRENT_SCOPE.typeId);
+});
+
+test("draft creation keeps trusted category evidence valid after an unrelated product-draft revision", async () => {
+  const fixture = currentSourceFixture({
+    currentDraftVersion: 7,
+    categoryEvidenceDraftVersion: 6,
+  });
+  const repository = createAutoListingCategoryStrategyPostgres({ pool: fixture.pool });
+
+  const created = await repository.createDraft(createInput(CURRENT_SCOPE, "newer-product-draft"));
+
+  assert.equal(created.status, "COLLECTING");
+  assert.deepEqual(created.scope, { accountId: ACCOUNT_ID, ...CURRENT_SCOPE });
+});
+
+test("draft creation accepts the authoritative current manual-confirmation category source", async () => {
+  const fixture = currentSourceFixture({ sourceKind: "MANUAL_CONFIRMATION" });
+  const repository = createAutoListingCategoryStrategyPostgres({ pool: fixture.pool });
+
+  const created = await repository.createDraft(createInput(CURRENT_SCOPE, "manual-confirmation"));
+
+  assert.equal(created.status, "COLLECTING");
+  assert.deepEqual(created.scope, { accountId: ACCOUNT_ID, ...CURRENT_SCOPE });
+});
+
+test("draft creation still rejects a stale product-draft request when the current source is manual confirmation", async () => {
+  const fixture = currentSourceFixture({ currentDraftVersion: 8, sourceKind: "MANUAL_CONFIRMATION" });
+  const repository = createAutoListingCategoryStrategyPostgres({ pool: fixture.pool });
+
+  await assert.rejects(repository.createDraft(createInput(CURRENT_SCOPE, "manual-confirmation-stale")), {
+    code: "AUTO_LISTING_CATEGORY_STRATEGY_SOURCE_NOT_FOUND",
+    status: 404,
+  });
 });
 
 test("draft creation rejects the immutable source scope after the shared current scope was remapped", async () => {

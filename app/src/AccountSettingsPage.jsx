@@ -10,15 +10,16 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
 } from "antd";
+import Table from "./PagedTable.jsx";
 import {
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
 } from "@ant-design/icons";
 import { apiRequest } from "./client-transport.js";
+import { SourceSectionTitle } from "./SourceTable.jsx";
 
 const accountDateText = (value) => {
   if (!value) return "长期有效";
@@ -46,31 +47,32 @@ const fromDatetimeLocalValue = (value) => {
   return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 };
 
-export default function AccountSettingsPage({ account, accounts = [], onRefresh }) {
+export default function AccountSettingsPage({ account, onRefresh }) {
   const { message } = AntApp.useApp();
-  const [rows, setRows] = useState(accounts || []);
+  const [rows, setRows] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [form] = Form.useForm();
 
-  useEffect(() => {
-    setRows(accounts || []);
-  }, [accounts]);
-
-  const reloadAccounts = async () => {
+  const reloadAccounts = React.useCallback(async () => {
+    if (account?.role !== "admin") return;
     setLoading(true);
     try {
       const response = await apiRequest("/local/accounts");
       setRows(response.accounts || []);
-      await onRefresh?.({ silent: true });
     } catch (error) {
       message.error(`加载失败: ${error.message}`);
     } finally {
       setLoading(false);
     }
-  };
+  }, [account?.id, account?.role, message]);
+
+  useEffect(() => {
+    setRows([]);
+    void reloadAccounts();
+  }, [reloadAccounts]);
 
   const openCreate = () => {
     setEditingAccount(null);
@@ -151,6 +153,7 @@ export default function AccountSettingsPage({ account, accounts = [], onRefresh 
 
   return (
     <div className="source-page hidden-route-page account-settings-page">
+      <SourceSectionTitle title="账号管理" subtitle="管理账号权限、有效期与使用状态" />
       <Card className="panel-card source-card">
         <div className="card-title-row">
           <span>账号管理 <em>{rows.length}/999</em></span>
@@ -164,7 +167,7 @@ export default function AccountSettingsPage({ account, accounts = [], onRefresh 
           className="source-table account-table"
           loading={loading}
           dataSource={rows}
-          pagination={false}
+
           scroll={{ x: 920 }}
           tableLayout="fixed"
           columns={[

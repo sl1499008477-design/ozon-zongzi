@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import test from "node:test";
+import test, { beforeEach } from "node:test";
 import {
   createSub2ApiAdapter,
   SUB2API_IMAGE_PROTOCOLS,
   SUB2API_TEXT_PROTOCOLS,
 } from "../sub2api-ai-adapter.mjs";
+
+// Promise-only transports have no socket/DNS handle to keep Node 22 alive while
+// the adapter's unref'ed watchdog is pending. Model that I/O lifetime per test.
+beforeEach((t) => {
+  const pendingIo = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(pendingIo));
+});
 
 const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const WEBP_VP8_3X2 = "UklGRjQAAABXRUJQVlA4ICgAAACQAQCdASoDAAIAAUAmJQBOl0AAjNAA/vhff9REQUksP0KNlEvmAAAA";
@@ -45,6 +52,104 @@ const jsonResponse = (body, init = {}) => new Response(JSON.stringify(body), {
 });
 
 const publicDns = async () => [{ address: "203.0.113.10", family: 4 }];
+
+test("image rejection diagnostics retain HTTP evidence without echoed inputs", async () => {
+  const privateInput = `Bearer ${secret} https://media.example.test/image?signature=private-signature PRIVATE_PROMPT`;
+  const gateway = adapter(async () => jsonResponse({
+    error: { code: "upstream_timeout", message: privateInput, prompt: privateInput },
+  }, { status: 504, headers: { "x-request-id": "req-diagnostic-504" } }));
+  await assert.rejects(gateway.generateImage(imageInput()), (error) => {
+    assert.deepEqual(error.diagnostic, {
+      code: "RETRYABLE_GATEWAY", requestId: "req-diagnostic-504", httpStatus: 504,
+      upstreamCode: "upstream_timeout", message: "AI 网关暂时不可用",
+      requestedModel: "gpt-image", reportedModel: "", deliveryState: "POSSIBLY_SENT",
+    });
+    assert.doesNotMatch(JSON.stringify(error), /private-signature|PRIVATE_PROMPT|gateway-secret-value/);
+    return true;
+  });
+});
+
+test("model mismatch diagnostics keep the actual conflicting model and response ID", async () => {
+  const gateway = adapter(async () => jsonResponse({
+    id: "body-response-mismatch", model: "gpt-image", data: [{ model: "other-image-model", b64_json: PNG_1X1 }],
+  }));
+  await assert.rejects(gateway.generateImage(imageInput({
+    profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+  })), (error) => {
+    assert.equal(error.requestId, "body-response-mismatch");
+    assert.equal(error.diagnostic.requestedModel, "gpt-image");
+    assert.equal(error.diagnostic.reportedModel, "other-image-model");
+    assert.equal(error.diagnostic.httpStatus, 200);
+    assert.equal(error.diagnostic.deliveryState, "POSSIBLY_SENT");
+    return true;
+  });
+});
+
+test("stream rejection diagnostics retain its upstream code, request ID and actual HTTP status", async () => {
+  const sse = `event: error\ndata: ${JSON.stringify({ type: "error", error: { code: "content_filter", message: "PRIVATE_PROMPT" } })}\n\n`;
+  const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream", "x-request-id": "req-stream-reject" } }));
+  await assert.rejects(gateway.generateImage(imageInput()), (error) => {
+    assert.equal(error.requestId, "req-stream-reject");
+    assert.equal(error.diagnostic.upstreamCode, "content_filter");
+    assert.equal(error.diagnostic.httpStatus, 200);
+    assert.equal(error.diagnostic.deliveryState, "POSSIBLY_SENT");
+    assert.doesNotMatch(JSON.stringify(error), /PRIVATE_PROMPT/);
+    return true;
+  });
+});
+
+test("explicit quota rejection on HTTP 429 is NOT_SENT instead of generic rate limiting", async () => {
+  const gateway = adapter(async () => jsonResponse({ error: { code: "insufficient_quota", message: "private balance" } }, {
+    status: 429, headers: { "x-request-id": "req-quota" },
+  }));
+  await assert.rejects(gateway.generateImage(imageInput()), (error) => {
+    assert.equal(error.code, "AI_GATEWAY_QUOTA_EXHAUSTED");
+    assert.equal(error.deliveryState, "NOT_SENT");
+    assert.equal(error.diagnostic.upstreamCode, "insufficient_quota");
+    assert.equal(error.diagnostic.requestId, "req-quota");
+    return true;
+  });
+});
+
+test("diagnostic metadata omits URLs and credential-like values", async () => {
+  const gateway = adapter(async () => jsonResponse({
+    model: "https://media.example.test/PRIVATE_PROMPT?signature=private-signature", data: [{ b64_json: PNG_1X1 }],
+  }, { headers: { "x-request-id": "https://media.example.test/?signature=private-signature" } }));
+  await assert.rejects(gateway.generateImage(imageInput({ profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" } })), (error) => {
+    assert.equal(error.diagnostic.reportedModel, "");
+    assert.equal(error.diagnostic.requestId, "");
+    assert.doesNotMatch(JSON.stringify(error), /private-signature|PRIVATE_PROMPT/);
+    return true;
+  });
+});
+
+test("diagnostic metadata never stores the active credential even in a valid-looking provider token", async () => {
+  for (const mode of ["http", "model"]) {
+    const gateway = adapter(async () => jsonResponse(mode === "http"
+      ? { error: { code: secret, message: secret } }
+      : { model: secret, data: [{ b64_json: PNG_1X1 }] }, {
+      status: mode === "http" ? 400 : 200, headers: { "x-request-id": secret },
+    }));
+    await assert.rejects(gateway.generateImage(imageInput({ profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" } })), (error) => {
+      assert.equal(error.diagnostic.requestId, "");
+      assert.equal(error.diagnostic.upstreamCode, "");
+      assert.equal(error.diagnostic.reportedModel, "");
+      assert.doesNotMatch(JSON.stringify(error), new RegExp(secret));
+      return true;
+    });
+  }
+});
+
+test("non-text stream error messages do not erase the explicit rejection code", async () => {
+  const sse = `event: error\ndata: ${JSON.stringify({ type: "error", code: "invalid_request", message: { private: true } })}\n\n`;
+  const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+  await assert.rejects(gateway.generateImage(imageInput()), (error) => {
+    assert.equal(error.code, "NON_RETRYABLE_GATEWAY");
+    assert.equal(error.diagnostic.upstreamCode, "invalid_request");
+    assert.equal(error.diagnostic.deliveryState, "POSSIBLY_SENT");
+    return true;
+  });
+});
 
 async function listenCatalogServer(address, port, modelId, observations = []) {
   const server = http.createServer((request, response) => {
@@ -96,6 +201,92 @@ function encryptedAdapter(fetchImpl, options = {}) {
     allowedGatewayBaseUrls: [profile.baseUrl],
     ...options,
   });
+}
+
+function manualTimers() {
+  let now = 0;
+  let nextId = 1;
+  let setCalls = 0;
+  const pending = new Map();
+  return {
+    setTimeout(callback, delay) {
+      setCalls += 1;
+      const handle = { id: nextId += 1, unref() {} };
+      pending.set(handle, { callback, at: now + delay });
+      return handle;
+    },
+    clearTimeout(handle) { pending.delete(handle); },
+    advanceBy(duration) {
+      const target = now + duration;
+      while (true) {
+        const due = [...pending.entries()]
+          .filter(([, task]) => task.at <= target)
+          .sort((left, right) => left[1].at - right[1].at)[0];
+        if (!due) break;
+        const [handle, task] = due;
+        pending.delete(handle);
+        now = task.at;
+        task.callback();
+      }
+      now = target;
+    },
+    activeCount: () => pending.size,
+    setCalls: () => setCalls,
+    delays: () => [...pending.values()].map(({ at }) => at - now).sort((a, b) => a - b),
+  };
+}
+
+async function waitFor(assertion, attempts = 40) {
+  let lastError;
+  for (let index = 0; index < attempts; index += 1) {
+    try { return assertion(); } catch (error) { lastError = error; }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw lastError;
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function trackedAbortSignal(controller) {
+  const listeners = new Set();
+  return {
+    signal: {
+      get aborted() { return controller.signal.aborted; },
+      get reason() { return controller.signal.reason; },
+      addEventListener(type, listener, options) {
+        if (type === "abort") listeners.add(listener);
+        controller.signal.addEventListener(type, listener, options);
+      },
+      removeEventListener(type, listener) {
+        if (type === "abort") listeners.delete(listener);
+        controller.signal.removeEventListener(type, listener);
+      },
+    },
+    activeCount: () => listeners.size,
+  };
+}
+
+function controlledResponse(contentType, headers = {}) {
+  let controller;
+  let cancelled = false;
+  const response = new Response(new ReadableStream({
+    start(value) { controller = value; },
+    cancel() { cancelled = true; },
+  }), { headers: { "content-type": contentType, ...headers } });
+  return {
+    response,
+    enqueue(text) { controller.enqueue(new TextEncoder().encode(text)); },
+    close() { controller.close(); },
+    wasCancelled: () => cancelled,
+  };
 }
 
 const textInput = (overrides = {}) => ({
@@ -358,6 +549,18 @@ test("model discovery accepts the current sub2API catalog item contract", async 
     requestId: "",
     models: [{ id: "provider/text-model:1", ownedBy: "", metadata: {} }],
   });
+});
+
+test("model discovery keeps concrete models when Apilio includes wildcard routing rules", async () => {
+  const ids = ["gemini-3.1-pro-preview-thinking-*", "fal-ai/*", "gemini-2.5-pro-thinking-*",
+    "gemini-3-flash-preview-thinking-*", "gemini-3-pro-preview-thinking-*", "gpt-4-gizmo-*",
+    "gpt-image-2.5-flare"];
+  const gateway = encryptedAdapter(async () => jsonResponse({ object: "list", success: true,
+    data: ids.map(id => ({ id, object: "model", created: 1626777600, owned_by: "custom",
+      supported_endpoint_types: ["openai"] })) }), { resolveSecret: async () => secret });
+  const result = await gateway.listModels({ connection, correlationId: "corr-apilio",
+    requestKey: "request-apilio", timeoutMs: 500 });
+  assert.deepEqual(result.models, [{ id: "gpt-image-2.5-flare", ownedBy: "custom", metadata: {} }]);
 });
 
 test("catalog sync model discovery consumes one lease-bound in-memory credential and never calls the generic resolver", async () => {
@@ -656,6 +859,8 @@ test("model discovery rejects duplicate or conflicting IDs invalid identifiers a
     { object: "list", data: [{ id: "../admin", object: "model", owned_by: "provider" }] },
     { object: "list", data: [{ id: "a/../b", object: "model", owned_by: "provider" }] },
     { object: "list", data: [{ id: "a//b", object: "model", owned_by: "provider" }] },
+    { object: "list", data: [{ id: "a/../*", object: "model", owned_by: "provider" }] },
+    { object: "list", data: [{ id: "a//b*", object: "model", owned_by: "provider" }] },
     { object: "list", data: [{ id: "bad model", object: "model", owned_by: "provider" }] },
     { object: "list", data: [{ id: "x".repeat(301), object: "model", owned_by: "provider" }] },
     [],
@@ -780,7 +985,7 @@ test("Responses structured text stays behind the stable port and logs never expo
     assert.equal(request.init.headers["X-Request-Id"], "corr-123");
     const body = JSON.parse(request.init.body);
     assert.equal(body.model, "gpt-text");
-    assert.equal(body.stream, false);
+    assert.equal(body.stream, true);
     assert.equal(body.store, false);
     assert.deepEqual(body.text.format.schema, textInput().jsonSchema);
   }
@@ -789,6 +994,65 @@ test("Responses structured text stays behind the stable port and logs never expo
     assert.doesNotMatch(recorded, new RegExp(forbidden, "i"));
   }
   assert.deepEqual(second.value, { ok: true });
+});
+
+test("Responses structured text consumes streamed deltas before the five-minute idle deadline", async () => {
+  const timers = manualTimers();
+  const requests = [];
+  const stream = controlledResponse("text/event-stream", {
+    "x-request-id": "stream-request-1",
+  });
+  const gateway = adapter(async (_url, init) => {
+    requests.push(init);
+    return stream.response;
+  }, { timers });
+  const pending = gateway.createTextResponse(textInput({
+    timeoutMs: undefined,
+    idleTimeoutMs: 300_000,
+  }));
+
+  await waitFor(() => assert.deepEqual(timers.delays(), [300_000]));
+  timers.advanceBy(299_999);
+  stream.enqueue([
+    "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-streamed-text\",\"status\":\"in_progress\"}}",
+    "",
+    "",
+  ].join("\n"));
+  await waitFor(() => assert.equal(timers.setCalls(), 2));
+
+  timers.advanceBy(299_999);
+  stream.enqueue([
+      "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"ok\\\":\"}",
+      "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"true}\"}",
+      "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-streamed-text\",\"status\":\"completed\",\"model\":\"gpt-text\",\"usage\":{\"input_tokens\":10,\"output_tokens\":3,\"total_tokens\":13}}}",
+      "data: [DONE]",
+      "",
+    ].join("\n\n"));
+  stream.close();
+
+  const result = await pending;
+
+  assert.deepEqual(result.value, { ok: true });
+  assert.equal(result.requestId, "stream-request-1");
+  assert.deepEqual(result.usage, { inputTokens: 10, outputTokens: 3, totalTokens: 13 });
+  assert.equal(requests[0].headers.Accept, "text/event-stream");
+  assert.equal(JSON.parse(requests[0].body).stream, true);
+  assert.equal(timers.activeCount(), 0);
+});
+
+test("Responses structured text normalizes duplicate proxy request ids to one safe id", async () => {
+  const gateway = adapter(async () => jsonResponse({
+    id: "resp-upstream-duplicate-id",
+    model: "gpt-text",
+    output: [{
+      type: "message",
+      content: [{ type: "output_text", text: "{\"ok\":true}" }],
+    }],
+  }, { headers: { "x-request-id": "proxy-request-a, upstream-request-b" } }));
+
+  const result = await gateway.createTextResponse(textInput());
+
+  assert.equal(result.requestId, "proxy-request-a");
 });
 
 test("disabled profiles reject every business operation before secret resolution or fetch while capability test remains explicit", async () => {
@@ -904,7 +1168,7 @@ test("invalid or unsupported JSON Schemas are rejected before secret resolution 
   assert.equal(fetches, 0);
 });
 
-test("Responses image-tool protocol accepts a documented final streamed output-item event", async () => {
+test("Responses image-tool forces the image tool so gateways cannot return text-only results", async () => {
   const sse = [
     "event: response.output_item.done",
     `data: {"type":"response.output_item.done","item":{"id":"ig-1","type":"image_generation_call","status":"completed","result":"${PNG_1X1}","output_format":"png"}}`,
@@ -930,8 +1194,8 @@ test("Responses image-tool protocol accepts a documented final streamed output-i
   assert.equal(calls[0].url, "https://gateway.example.test/tenant/v1/responses");
   assert.equal(calls[0].body.model, "gpt-text");
   assert.deepEqual(calls[0].body.tools, [{ type: "image_generation", model: "gpt-image", action: "generate", size: "1024x1024", quality: "medium", output_format: "png" }]);
-  assert.equal(calls[0].body.tool_choice, "auto");
-  assert.notDeepEqual(calls[0].body.tool_choice, { type: "image_generation" });
+  assert.equal(calls[0].body.tool_choice, "required");
+  assert.match(calls[0].body.instructions, /image_generation/);
   assert.equal(calls[0].body.stream, true);
   assert.equal(result.contentType, "image/png");
   assert.equal(result.width, 1);
@@ -947,6 +1211,34 @@ test("Responses image-tool protocol accepts a documented final streamed output-i
   });
   assert.deepEqual(result.usage, { inputTokens: 5, outputTokens: 9, totalTokens: 14 });
   assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
+});
+
+test("Responses image-tool sends a mask as an edit control instead of a second reference image", async () => {
+  const sse = [
+    "event: response.output_item.done",
+    `data: {"type":"response.output_item.done","item":{"id":"ig-edit-1","type":"image_generation_call","status":"completed","result":"${PNG_1X1}","output_format":"png"}}`,
+    "",
+    "event: response.completed",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-image-edit\",\"model\":\"gpt-text\"}}",
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  let request;
+  const gateway = adapter(async (url, init) => {
+    request = { url: String(url), body: JSON.parse(init.body) };
+    return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+  });
+  const image = { bytes: Buffer.from(PNG_1X1, "base64"), contentType: "image/png" };
+
+  await gateway.generateImage(imageInput({ sourceImages: [image], editMask: image }));
+
+  assert.equal(request.url, "https://gateway.example.test/tenant/v1/responses");
+  const inputImages = request.body.input[0].content.filter(({ type }) => type === "input_image");
+  assert.equal(inputImages.length, 1, "the mask must not be exposed as an ordinary reference image");
+  assert.match(inputImages[0].image_url, /^data:image\/png;base64,/u);
+  assert.equal(request.body.tools[0].action, "edit");
+  assert.match(request.body.tools[0].input_image_mask.image_url, /^data:image\/png;base64,/u);
 });
 
 test("Responses image-tool accepts the last documented partial image after successful completion", async () => {
@@ -1060,6 +1352,20 @@ test("Responses image-tool never accepts a partial image without successful comp
         ["INVALID_GATEWAY_RESPONSE", "NON_RETRYABLE_GATEWAY"].includes(error?.code));
     });
   }
+});
+
+test("Responses image-tool classifies a physical EOF before response.completed as transient", async () => {
+  const sse = `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}\n\n`;
+  const gateway = adapter(async () => new Response(sse, {
+    headers: { "content-type": "text/event-stream" },
+  }));
+
+  await assert.rejects(gateway.generateImage(imageInput()), (error) => {
+    assert.equal(error?.code, "AI_GATEWAY_UNEXPECTED_EOF");
+    assert.equal(error?.retryable, true);
+    assert.equal(error?.deliveryState, "POSSIBLY_SENT");
+    return true;
+  });
 });
 
 test("Responses image-tool applies the decoded image byte limit to a completed partial image", async () => {
@@ -1180,7 +1486,7 @@ test("SSE event names and data types must agree while either field may be omitte
   }
 });
 
-test("named failure DONE markers invalidate prior images while only bare or message DONE may end normally", async () => {
+test("DONE markers never override complete JSON terminal evidence or synthesize missing terminal evidence", async () => {
   const completedPrefix = [
     `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}`,
     "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
@@ -1188,10 +1494,8 @@ test("named failure DONE markers invalidate prior images while only bare or mess
   for (const eventName of ["response.failed", "error", "response.cancelled"]) {
     const sse = [...completedPrefix, `event: ${eventName}\ndata: [DONE]`, ""].join("\n\n");
     const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
-    await assert.rejects(
-      gateway.generateImage(imageInput()),
-      (error) => error?.code === "NON_RETRYABLE_GATEWAY" && error?.retryable === false,
-    );
+    const result = await gateway.generateImage(imageInput());
+    assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
   }
 
   const incomplete = adapter(async () => new Response(
@@ -1200,7 +1504,7 @@ test("named failure DONE markers invalidate prior images while only bare or mess
   ));
   await assert.rejects(
     incomplete.generateImage(imageInput()),
-    (error) => error?.code === "RETRYABLE_GATEWAY" && error?.retryable === true,
+    (error) => error?.code === "INVALID_GATEWAY_RESPONSE",
   );
 
   for (const doneBlock of ["data: [DONE]", "event: message\ndata: [DONE]"]) {
@@ -1245,10 +1549,10 @@ test("OpenAI Images protocol normalizes b64_json without trying another protocol
   assert.equal(result.requestId, "image-json-id");
 });
 
-test("OpenAI Images uses the official edits endpoint and images[].image_url when source bytes are present", async () => {
+test("OpenAI Images uploads source bytes as multipart to the edits endpoint", async () => {
   let request;
   const gateway = adapter(async (url, init) => {
-    request = { url: String(url), body: JSON.parse(init.body) };
+    request = { url: String(url), body: await new Response(init.body,{headers:{"Content-Type":init.headers["Content-Type"]}}).formData() };
     return jsonResponse({ data: [{ b64_json: PNG_1X1 }] });
   });
   const result = await gateway.generateImage(imageInput({
@@ -1256,8 +1560,8 @@ test("OpenAI Images uses the official edits endpoint and images[].image_url when
     sourceImages: [{ bytes: Buffer.from(PNG_1X1, "base64"), contentType: "image/png" }],
   }));
   assert.equal(request.url, "https://gateway.example.test/tenant/v1/images/edits");
-  assert.equal(Object.hasOwn(request.body, "reference_images"), false);
-  assert.match(request.body.images[0].image_url, /^data:image\/png;base64,/);
+  assert.equal(request.body.has("reference_images"), false);
+  assert.deepEqual(Buffer.from(await request.body.get("image").arrayBuffer()),Buffer.from(PNG_1X1,"base64"));
   assert.equal(result.model, "gpt-image");
 });
 
@@ -1514,6 +1818,43 @@ test("OpenAI Images URL output downloads bytes without authorization inside the 
   assert.equal(requests[1].init.redirect, "manual");
 });
 
+test("OpenAI Images URL download failures stay POSSIBLY_SENT after the paid generation POST", async (t) => {
+  const sensitive = "private-download-response";
+  for (const [name, download, expectedCode, expectedStatus, expectedRetryAfter] of [
+    ["401", () => jsonResponse({ error: sensitive }, { status: 401, headers: { "x-request-id": "download-401" } }), "NON_RETRYABLE_AUTH", 401, null],
+    ["403", () => jsonResponse({ error: sensitive }, { status: 403, headers: { "x-request-id": "download-403" } }), "NON_RETRYABLE_AUTH", 403, null],
+    ["404", () => jsonResponse({ error: sensitive }, { status: 404, headers: { "x-request-id": "download-404" } }), "NON_RETRYABLE_GATEWAY", 404, null],
+    ["429", () => jsonResponse({ error: sensitive }, { status: 429, headers: { "retry-after": "120", "x-request-id": "download-429" } }), "AI_GATEWAY_RATE_LIMITED", 429, 120_000],
+    ["network", () => { throw new TypeError(sensitive); }, "AI_GATEWAY_NETWORK_FAILED", null, null],
+    ["parse", () => new Response("not-an-image", { headers: { "content-type": "image/png" } }), "INVALID_GATEWAY_RESPONSE", null, null],
+  ]) {
+    await t.test(name, async () => {
+      let fetches = 0;
+      const gateway = adapter(async () => {
+        fetches += 1;
+        if (fetches === 1) {
+          return jsonResponse({ data: [{ url: "https://gateway.example.test/tenant/v1/media/generated.png" }] });
+        }
+        return download();
+      });
+      await assert.rejects(gateway.generateImage(imageInput({
+        profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+      })), (error) => {
+        assert.equal(error?.code, expectedCode);
+        assert.equal(error?.status, expectedStatus);
+        assert.equal(error?.deliveryState, "POSSIBLY_SENT");
+        assert.equal(error?.retryAfterMs, expectedRetryAfter);
+        if (expectedStatus) assert.equal(error.diagnostic.httpStatus, expectedStatus);
+        if (expectedStatus) assert.equal(error?.requestId, `download-${name}`);
+        assert.doesNotMatch(error?.message || "", new RegExp(sensitive));
+        assert.doesNotMatch(JSON.stringify(error), new RegExp(sensitive));
+        return true;
+      });
+      assert.equal(fetches, 2);
+    });
+  }
+});
+
 test("gateway and returned-image redirects cannot escape the configured origin and base path", async () => {
   for (const mode of ["gateway", "image"]) {
     const calls = [];
@@ -1734,6 +2075,99 @@ test("HTTP authentication and transient statuses map to stable safe errors", asy
   }
 });
 
+test("a wrapped upstream quota rejection is NOT_SENT and never leaks its balance message", async () => {
+  const sensitive = "private balance and upstream request id";
+  const gateway = adapter(async () => jsonResponse({
+    error: {
+      message: sensitive,
+      type: "new_api_error",
+      code: "insufficient_user_quota",
+    },
+  }, { status: 502 }));
+
+  await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+    assert.equal(error?.code, "AI_GATEWAY_QUOTA_EXHAUSTED");
+    assert.equal(error?.retryable, true);
+    assert.equal(error?.status, 502);
+    assert.equal(error?.deliveryState, "NOT_SENT");
+    assert.doesNotMatch(error?.message || "", new RegExp(sensitive));
+    assert.doesNotMatch(JSON.stringify(error), new RegExp(sensitive));
+    return true;
+  });
+});
+
+test("a local Sub2API insufficient-balance 403 is quota exhaustion instead of invalid credentials", async () => {
+  const sensitive = "private local balance detail";
+  const gateway = adapter(async () => jsonResponse({
+    code: "INSUFFICIENT_BALANCE",
+    message: sensitive,
+  }, { status: 403 }));
+
+  await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+    assert.equal(error?.code, "AI_GATEWAY_QUOTA_EXHAUSTED");
+    assert.equal(error?.retryable, true);
+    assert.equal(error?.status, 403);
+    assert.equal(error?.deliveryState, "NOT_SENT");
+    assert.doesNotMatch(error?.message || "", new RegExp(sensitive));
+    assert.doesNotMatch(JSON.stringify(error), new RegExp(sensitive));
+    return true;
+  });
+});
+
+test("a sanitized local Sub2API quota signal is NOT_SENT without exposing balance details", async () => {
+  const gateway = adapter(async () => jsonResponse({
+    error: {
+      type: "upstream_error",
+      message: "Upstream quota exhausted",
+    },
+  }, { status: 503 }));
+
+  await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+    assert.equal(error?.code, "AI_GATEWAY_QUOTA_EXHAUSTED");
+    assert.equal(error?.retryable, true);
+    assert.equal(error?.status, 503);
+    assert.equal(error?.deliveryState, "NOT_SENT");
+    return true;
+  });
+});
+
+test("a local no-available-account 502 or 503 is NOT_SENT instead of an uncertain paid call", async () => {
+  for (const [status, payload] of [
+    [502, { error: { message: "no available accounts" } }],
+    [503, { message: "no available accounts" }],
+    [503, { error: "no available accounts" }],
+  ]) {
+    const gateway = adapter(async () => jsonResponse(payload, { status }));
+
+    await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+      assert.equal(error?.code, "AI_GATEWAY_NO_CAPACITY");
+      assert.equal(error?.retryable, true);
+      assert.equal(error?.status, status);
+      assert.equal(error?.deliveryState, "NOT_SENT");
+      assert.equal(error?.retryAfterMs, 300_000);
+      return true;
+    });
+  }
+});
+
+test("the current Sub2API empty-pool 503 is NOT_SENT and backs off instead of busy-looping", async () => {
+  const gateway = adapter(async () => jsonResponse({
+    error: {
+      type: "api_error",
+      message: "Service temporarily unavailable",
+    },
+  }, { status: 503 }));
+
+  await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+    assert.equal(error?.code, "AI_GATEWAY_NO_CAPACITY");
+    assert.equal(error?.retryable, true);
+    assert.equal(error?.status, 503);
+    assert.equal(error?.deliveryState, "NOT_SENT");
+    assert.equal(error?.retryAfterMs, 300_000);
+    return true;
+  });
+});
+
 test("malformed successful text and image responses are INVALID_GATEWAY_RESPONSE", async () => {
   const textGateway = adapter(async () => jsonResponse({ output: [] }));
   await assert.rejects(textGateway.createTextResponse(textInput()), (error) => error?.code === "INVALID_GATEWAY_RESPONSE" && error?.retryable === false);
@@ -1745,16 +2179,55 @@ test("malformed successful text and image responses are INVALID_GATEWAY_RESPONSE
 });
 
 test("successful malformed structured text preserves the upstream request id and safe failing field", async () => {
+  const logs = [];
   const gateway = adapter(async () => jsonResponse({
     output: [{ type: "message", content: [{ type: "output_text", text: '{"ok":"not-a-boolean"}' }] }],
-  }, { headers: { "x-request-id": "checker-http-1" } }));
+  }, { headers: { "x-request-id": "checker-http-1" } }), { logs });
 
   await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
     assert.equal(error?.code, "INVALID_GATEWAY_RESPONSE");
     assert.equal(error?.requestId, "checker-http-1");
     assert.equal(error?.failureField, "/ok");
+    assert.equal(error?.responseFailureKind, "OUTPUT_SCHEMA_INVALID");
     return true;
   });
+  assert.deepEqual(logs.find((entry) => entry[1] === "ai_gateway.response_rejected"), [
+    "warn",
+    "ai_gateway.response_rejected",
+    {
+      profileId: "profile-1",
+      profileVersion: 7,
+      protocol: "SUB2API_RESPONSES",
+      operation: "text",
+      correlationId: "corr-123",
+      requestId: "checker-http-1",
+      status: 200,
+      errorCode: "INVALID_GATEWAY_RESPONSE",
+      failureField: "/ok",
+      responseFailureKind: "OUTPUT_SCHEMA_INVALID",
+    },
+  ]);
+});
+
+test("structured-text rejection distinguishes missing output text from invalid JSON without logging payloads", async () => {
+  for (const [body, expectedKind, requestId] of [
+    [{ output: [] }, "OUTPUT_TEXT_MISSING", "request-missing"],
+    [{ output_text: "private malformed product payload" }, "OUTPUT_JSON_INVALID", "request-json"],
+  ]) {
+    const logs = [];
+    const gateway = adapter(async () => jsonResponse(body, {
+      headers: { "x-request-id": requestId },
+    }), { logs });
+    await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+      assert.equal(error?.code, "INVALID_GATEWAY_RESPONSE");
+      assert.equal(error?.failureField, "$");
+      assert.equal(error?.responseFailureKind, expectedKind);
+      return true;
+    });
+    const recorded = JSON.stringify(logs);
+    assert.match(recorded, new RegExp(expectedKind));
+    assert.doesNotMatch(recorded, /private malformed product payload|rawResponse|Authorization|Bearer/iu);
+  }
 });
 
 test("decoded base64 image limits are enforced before an oversized payload can be accepted", async () => {
@@ -1783,6 +2256,388 @@ test("request timeout and caller cancellation abort fetch with distinct stable c
   const pending = gateway.createTextResponse(textInput({ timeoutMs: 5_000, signal: controller.signal }));
   controller.abort();
   await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED" && error?.retryable === false);
+});
+
+test("idle watchdog lets a streamed image run beyond five minutes when complete JSON data frames keep arriving", async () => {
+  const timers = manualTimers();
+  const controller = new AbortController();
+  const stream = controlledResponse("text/event-stream");
+  const gateway = adapter(async () => stream.response, { timers });
+  const pending = gateway.generateImage(imageInput({
+    timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+  }));
+  try {
+    await waitFor(() => assert.deepEqual(timers.delays(), [300_000]));
+    timers.advanceBy(299_999);
+    stream.enqueue([
+      "event: response.image_generation_call.partial_image",
+      `data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"${PNG_1X1}","partial_image_index":0}`,
+      "",
+      "",
+    ].join("\n"));
+    await waitFor(() => assert.equal(timers.setCalls(), 2));
+
+    timers.advanceBy(299_999);
+    stream.enqueue([
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+      "",
+      "data: [DONE]",
+      "",
+      "",
+    ].join("\n"));
+    stream.close();
+
+    const result = await pending;
+    assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
+    assert.equal(timers.activeCount(), 0);
+  } finally {
+    controller.abort();
+    if (timers.activeCount()) timers.advanceBy(300_000);
+    await pending.catch(() => {});
+  }
+});
+
+test("idle watchdog ignores byte noise partial frames and keep-alive comments, then aborts with safe delivery metadata", async () => {
+  const timers = manualTimers();
+  const controller = new AbortController();
+  const stream = controlledResponse("text/event-stream");
+  const gateway = adapter(async () => stream.response, { timers });
+  const pending = gateway.generateImage(imageInput({
+    timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+  }));
+  try {
+    await waitFor(() => assert.deepEqual(timers.delays(), [300_000]));
+    stream.enqueue("garbage bytes\n\n: keep-alive\n\ndata: {\"type\":\"response.completed\"");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(timers.setCalls(), 1);
+
+    timers.advanceBy(300_000);
+    let settled = false;
+    pending.catch(() => { settled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    if (!settled) controller.abort();
+    await assert.rejects(pending, (error) => {
+      assert.equal(error?.code, "AI_GATEWAY_IDLE_TIMEOUT");
+      assert.equal(error?.message, "AI 网关长时间没有有效响应");
+      assert.equal(error?.deliveryState, "POSSIBLY_SENT");
+      assert.equal(error?.retryAfterMs, null);
+      assert.equal(Object.getOwnPropertyDescriptor(error, "deliveryState")?.writable, false);
+      assert.equal(Object.getOwnPropertyDescriptor(error, "retryAfterMs")?.writable, false);
+      return true;
+    });
+    assert.equal(stream.wasCancelled(), true);
+    assert.equal(timers.activeCount(), 0);
+  } finally {
+    controller.abort();
+    await pending.catch(() => {});
+  }
+});
+
+test("a complete valid JSON body ends the idle watchdog and malformed success remains possibly sent", async () => {
+  const timers = manualTimers();
+  const success = adapter(async () => jsonResponse({
+    model: "gpt-text",
+    output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+  }), { timers });
+  assert.equal((await success.createTextResponse(textInput({
+    timeoutMs: 600_000, idleTimeoutMs: 300_000,
+  }))).value.ok, true);
+  assert.equal(timers.activeCount(), 0);
+
+  const malformed = adapter(async () => jsonResponse({ output: [] }), { timers });
+  await assert.rejects(malformed.createTextResponse(textInput({
+    timeoutMs: 600_000, idleTimeoutMs: 300_000,
+  })), (error) => error?.code === "INVALID_GATEWAY_RESPONSE"
+    && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
+  assert.equal(timers.activeCount(), 0);
+});
+
+test("caller cancellation wins an idle-timeout race and every exit path clears the injected timer", async () => {
+  const timers = manualTimers();
+  const controller = new AbortController();
+  let fetchStarted = false;
+  const gateway = adapter(async () => {
+    fetchStarted = true;
+    return new Promise(() => {});
+  }, { timers });
+  const pending = gateway.createTextResponse(textInput({
+    timeoutMs: undefined,
+    idleTimeoutMs: 300_000,
+    signal: controller.signal,
+  }));
+  try {
+    await waitFor(() => assert.equal(fetchStarted, true));
+    timers.advanceBy(300_000);
+    controller.abort();
+    await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED"
+      && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
+    assert.equal(timers.activeCount(), 0);
+  } finally {
+    controller.abort();
+    await pending.catch(() => {});
+  }
+});
+
+test("total deadline bounds a streamed image even while valid progress renews the idle watchdog", async () => {
+  const timers = manualTimers();
+  const controller = new AbortController();
+  const stream = controlledResponse("text/event-stream");
+  const gateway = adapter(async () => stream.response, { timers });
+  const pending = gateway.generateImage(imageInput({timeoutMs:600_000,idleTimeoutMs:300_000,signal:controller.signal}));
+  const outcome = pending.then(value=>({value}),error=>({error}));
+  try {
+    await waitFor(() => assert.deepEqual(timers.delays(), [300_000,600_000]));
+    for(let i=0;i<2;i++) {
+      timers.advanceBy(240_000);
+      stream.enqueue(`event: response.image_generation_call.partial_image\ndata: {"type":"response.image_generation_call.partial_image","partial_image_b64":"${PNG_1X1}","partial_image_index":${i}}\n\n`);
+      await waitFor(()=>assert.equal(timers.setCalls(),3+i));
+    }
+    timers.advanceBy(120_000);
+    const {error}=await outcome;
+    assert.equal(error?.code,'GATEWAY_TIMEOUT');
+    assert.equal(error?.deliveryState,'POSSIBLY_SENT');
+    assert.equal(stream.wasCancelled(),true);
+    assert.equal(timers.activeCount(),0);
+  } finally {controller.abort();await outcome;}
+});
+
+test("idle deadline ends a silent request before its total deadline and clears both timers",async()=>{
+  const timers=manualTimers(),controller=new AbortController();let started=false;
+  const gateway=adapter(async()=>{started=true;return new Promise(()=>{});},{timers});
+  const pending=gateway.generateImage(imageInput({timeoutMs:600_000,idleTimeoutMs:300_000,signal:controller.signal}));
+  const outcome=pending.then(value=>({value}),error=>({error}));
+  try {
+    await waitFor(()=>assert.equal(started,true));
+    timers.advanceBy(300_000);
+    const {error}=await outcome;
+    assert.equal(error?.code,'AI_GATEWAY_IDLE_TIMEOUT');
+    assert.equal(error?.deliveryState,'POSSIBLY_SENT');
+    assert.equal(timers.activeCount(),0);
+  } finally {controller.abort();await outcome;}
+});
+
+test("HTTP rejection delivery state and Retry-After stay bounded safe and immutable", async () => {
+  const sensitive = "private-retry-header-and-body";
+  for (const [status, retryAfter, expectedCode, expectedDelivery, expectedRetryAfter] of [
+    [401, undefined, "NON_RETRYABLE_AUTH", "NOT_SENT", null],
+    [403, undefined, "NON_RETRYABLE_AUTH", "NOT_SENT", null],
+    [404, undefined, "NON_RETRYABLE_GATEWAY", "NOT_SENT", null],
+    [429, "120", "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", 120_000],
+    [429, "999999999", "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", 86_400_000],
+    [429, sensitive, "AI_GATEWAY_RATE_LIMITED", "NOT_SENT", 60_000],
+    [500, undefined, "RETRYABLE_GATEWAY", "POSSIBLY_SENT", null],
+  ]) {
+    const gateway = adapter(async () => jsonResponse({ error: { message: sensitive } }, {
+      status,
+      headers: retryAfter === undefined ? {} : { "retry-after": retryAfter, "x-private": sensitive },
+    }));
+    await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+      assert.equal(error?.code, expectedCode, status);
+      assert.equal(error?.deliveryState, expectedDelivery, status);
+      assert.equal(error?.retryAfterMs, expectedRetryAfter, status);
+      assert.equal(Object.getOwnPropertyDescriptor(error, "deliveryState")?.writable, false);
+      assert.equal(Object.getOwnPropertyDescriptor(error, "retryAfterMs")?.writable, false);
+      assert.doesNotMatch(error?.message || "", new RegExp(sensitive));
+      assert.doesNotMatch(JSON.stringify(error), new RegExp(sensitive));
+      return true;
+    });
+  }
+});
+
+test("pre-send validation is NOT_SENT while network and unexpected streamed EOF are POSSIBLY_SENT", async () => {
+  let fetches = 0;
+  const invalid = adapter(async () => { fetches += 1; return jsonResponse({}); });
+  await assert.rejects(invalid.createTextResponse(textInput({ model: "wrong-model" })), (error) =>
+    error?.code === "AI_GATEWAY_MODEL_MISMATCH" && error?.deliveryState === "NOT_SENT");
+  assert.equal(fetches, 0);
+
+  const network = adapter(async () => { throw new TypeError("private socket failure"); });
+  await assert.rejects(network.createTextResponse(textInput()), (error) =>
+    error?.code === "AI_GATEWAY_NETWORK_FAILED" && error?.deliveryState === "POSSIBLY_SENT");
+
+  const eof = adapter(async () => new Response(
+    "event: response.completed\ndata: {\"type\":\"response.completed\"",
+    { headers: { "content-type": "text/event-stream" } },
+  ));
+  await assert.rejects(eof.generateImage(imageInput()), (error) =>
+    error?.code === "AI_GATEWAY_UNEXPECTED_EOF" && error?.deliveryState === "POSSIBLY_SENT");
+});
+
+test("an explicit streamed model rejection is a NOT_SENT 404 revalidation signal", async () => {
+  const gateway = adapter(async () => new Response([
+    "event: response.failed",
+    "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"model_not_found\"}}}",
+    "",
+  ].join("\n"), { headers: { "content-type": "text/event-stream" } }));
+  await assert.rejects(gateway.generateImage(imageInput()), (error) =>
+    error?.code === "NON_RETRYABLE_GATEWAY" && error?.status === 404
+    && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null);
+});
+
+test("complete SSE terminal frames settle and cancel a connection that never reaches physical EOF", async (t) => {
+  await t.test("successful image completion returns immediately", async () => {
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const stream = controlledResponse("text/event-stream");
+    const gateway = adapter(async () => stream.response, { timers });
+    const pending = gateway.generateImage(imageInput({
+      timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+    }));
+    let settled;
+    pending.then((value) => { settled = { value }; }, (error) => { settled = { error }; });
+    try {
+      stream.enqueue([
+        "event: response.output_item.done",
+        `data: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}`,
+        "",
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"));
+      await waitFor(() => assert.ok(settled, "terminal success must not wait for TCP EOF"));
+      assert.equal(settled.error, undefined);
+      assert.deepEqual(Buffer.from(settled.value.bytes), Buffer.from(PNG_1X1, "base64"));
+      assert.equal(stream.wasCancelled(), true);
+      assert.equal(timers.activeCount(), 0);
+    } finally {
+      controller.abort();
+      await pending.catch(() => {});
+    }
+  });
+
+  for (const [name, event, expectedCode, expectedStatus] of [
+    ["model_not_found", { type: "response.failed", response: { status: "failed", error: { code: "model_not_found" } } }, "NON_RETRYABLE_GATEWAY", 404],
+    ["401", { type: "response.failed", response: { status: "failed", error: { status: 401 } } }, "NON_RETRYABLE_AUTH", 401],
+    ["403", { type: "response.failed", response: { status: "failed", error: { status: 403 } } }, "NON_RETRYABLE_AUTH", 403],
+    ["404", { type: "response.failed", response: { status: "failed", error: { status: 404 } } }, "NON_RETRYABLE_GATEWAY", 404],
+    ["429", { type: "response.failed", response: { status: "failed", error: { status: 429 } } }, "AI_GATEWAY_RATE_LIMITED", 429],
+  ]) {
+    await t.test(`${name} rejection returns immediately as NOT_SENT`, async () => {
+      const timers = manualTimers();
+      const controller = new AbortController();
+      const stream = controlledResponse("text/event-stream");
+      const gateway = adapter(async () => stream.response, { timers });
+      const pending = gateway.generateImage(imageInput({
+        timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+      }));
+      let settled;
+      pending.then((value) => { settled = { value }; }, (error) => { settled = { error }; });
+      try {
+        stream.enqueue(`event: response.failed\ndata: ${JSON.stringify(event)}\n\n`);
+        await waitFor(() => assert.ok(settled, "terminal rejection must not wait for TCP EOF"));
+        assert.equal(settled.value, undefined);
+        assert.equal(settled.error?.code, expectedCode);
+        assert.equal(settled.error?.status, expectedStatus);
+        assert.equal(settled.error?.deliveryState, "NOT_SENT");
+        assert.equal(stream.wasCancelled(), true);
+        assert.equal(timers.activeCount(), 0);
+      } finally {
+        controller.abort();
+        await pending.catch(() => {});
+      }
+    });
+  }
+});
+
+test("200 SSE rate-limit terminals use one safe Retry-After value before immutable metadata is attached", async (t) => {
+  const sensitive = "private-retry-after-must-not-leak";
+  for (const [name, status, header, expectedCode, expectedRetryAfter] of [
+    ["integer seconds", 429, "120", "AI_GATEWAY_RATE_LIMITED", 120_000],
+    ["missing header", 429, undefined, "AI_GATEWAY_RATE_LIMITED", 60_000],
+    ["invalid header", 429, sensitive, "AI_GATEWAY_RATE_LIMITED", 60_000],
+    ["value above 24 hours", 429, "999999999", "AI_GATEWAY_RATE_LIMITED", 86_400_000],
+    ["non-rate-limit terminal", 401, sensitive, "NON_RETRYABLE_AUTH", null],
+  ]) {
+    await t.test(name, async () => {
+      const timers = manualTimers();
+      const controller = new AbortController();
+      const headers = header === undefined ? {} : { "retry-after": header };
+      const stream = controlledResponse("text/event-stream", headers);
+      const gateway = adapter(async () => stream.response, { timers });
+      const pending = gateway.generateImage(imageInput({
+        timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+      }));
+      let settled;
+      pending.then((value) => { settled = { value }; }, (error) => { settled = { error }; });
+      try {
+        stream.enqueue(`event: response.failed\ndata: ${JSON.stringify({
+          type: "response.failed",
+          response: { status: "failed", error: { status } },
+        })}\n\n`);
+        await waitFor(() => assert.ok(settled, "terminal must not wait for TCP EOF"));
+        assert.equal(settled.value, undefined);
+        assert.equal(settled.error?.code, expectedCode);
+        assert.equal(settled.error?.status, status);
+        assert.equal(settled.error?.deliveryState, "NOT_SENT");
+        assert.equal(settled.error?.retryAfterMs, expectedRetryAfter);
+        assert.doesNotMatch(settled.error?.message || "", new RegExp(sensitive));
+        assert.doesNotMatch(JSON.stringify(settled.error), new RegExp(sensitive));
+        assert.equal(stream.wasCancelled(), true);
+        assert.equal(timers.activeCount(), 0);
+      } finally {
+        controller.abort();
+        await pending.catch(() => {});
+      }
+    });
+  }
+});
+
+test("repeated named DONE markers never count as JSON progress", async () => {
+  const timers = manualTimers();
+  const controller = new AbortController();
+  const stream = controlledResponse("text/event-stream");
+  const gateway = adapter(async () => stream.response, { timers });
+  const pending = gateway.generateImage(imageInput({
+    timeoutMs: undefined, idleTimeoutMs: 300_000, signal: controller.signal,
+  }));
+  try {
+    await waitFor(() => assert.deepEqual(timers.delays(), [300_000]));
+    for (let index = 0; index < 2; index += 1) {
+      timers.advanceBy(100_000);
+      stream.enqueue("event: response.failed\ndata: [DONE]\n\n");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(timers.setCalls(), 1, "named DONE must not renew the idle timer");
+    timers.advanceBy(100_000);
+    await assert.rejects(pending, (error) => error?.code === "AI_GATEWAY_IDLE_TIMEOUT");
+    assert.equal(timers.activeCount(), 0);
+  } finally {
+    controller.abort();
+    await pending.catch(() => {});
+  }
+});
+
+test("429 Retry-After accepts only strict seconds or IMF-fixdate and otherwise exposes the 60 second default", async () => {
+  const future = new Date(Date.now() + 48 * 60 * 60 * 1_000).toUTCString();
+  for (const [header, expected] of [
+    [undefined, 60_000],
+    ["-1", 60_000],
+    ["1.5", 60_000],
+    ["+1", 60_000],
+    ["private garbage", 60_000],
+    ["999999999999999999999", 60_000],
+    ["2026-08-28", 60_000],
+    ["Sunday, 06-Nov-94 08:49:37 GMT", 60_000],
+    ["Mon, 06 Nov 1994 08:49:37 GMT", 60_000],
+    ["Sun, 32 Nov 1994 08:49:37 GMT", 60_000],
+    ["120", 120_000],
+    [future, 86_400_000],
+    ["Sun, 06 Nov 1994 08:49:37 GMT", 0],
+  ]) {
+    const gateway = adapter(async () => jsonResponse({}, {
+      status: 429,
+      headers: header === undefined ? {} : { "retry-after": header },
+    }));
+    await assert.rejects(gateway.createTextResponse(textInput()), (error) => {
+      assert.equal(error?.code, "AI_GATEWAY_RATE_LIMITED", header);
+      assert.equal(error?.deliveryState, "NOT_SENT", header);
+      assert.equal(error?.retryAfterMs, expected, header);
+      return true;
+    });
+  }
 });
 
 test("cost-bearing requests may wait without an application deadline while caller cancellation remains active", async () => {
@@ -2135,7 +2990,7 @@ test("explicit capability test performs reachability, structured text, and one d
   const completed = [];
   let reachabilityCancelled = false;
   const gateway = encryptedAdapter(async (url, init) => {
-    calls.push({ url: String(url), headers: init.headers, body: init.body ? JSON.parse(init.body) : null });
+    calls.push({ url: String(url), headers: init.headers, body: init.body ? (Buffer.isBuffer(init.body)?await new Response(init.body,{headers:{"Content-Type":init.headers["Content-Type"]}}).formData():JSON.parse(init.body)) : null });
     if (calls.length === 1) return new Response(new ReadableStream({
       cancel() { reachabilityCancelled = true; },
     }), { headers: { "x-request-id": "models-id" } });
@@ -2193,7 +3048,7 @@ test("explicit capability test performs reachability, structured text, and one d
   assert.deepEqual(result.models, { text: "gpt-text", image: "gpt-image" });
   assert.deepEqual(result.requestIds, { reachability: "models-id", text: "text-id", image: "image-id" });
   assert.ok(Number.isFinite(result.latencyMs) && result.latencyMs >= 0);
-  assert.match(calls[2].body.images[0].image_url, /^data:image\/png;base64,/);
+  assert.ok(calls[2].body.get("image").size > 0);
   assert.deepEqual(result.modelEvidence, {
     requestedImageModel: "gpt-image",
     gatewayReportedImageModel: "",
@@ -2227,7 +3082,8 @@ test("capability test rejects independent request identity before DNS or network
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
     correlationId: "caller-controlled-correlation", requestKey: "caller-controlled-key",
     timeoutMs: 500, capabilityExecution,
-  }), { code: "AI_GATEWAY_REQUEST_INVALID" });
+  }), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID"
+    && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null);
   assert.deepEqual({ preparations, resolutions, fetches }, { preparations: 0, resolutions: 0, fetches: 0 });
 });
 
@@ -2327,7 +3183,7 @@ test("an uncertain PREPARED commit response never terminals the attempt as a cre
   assert.deepEqual({ completions, fetches }, { completions: 0, fetches: 0 });
 });
 
-test("abort before SENDING terminals PREPARED while abort after SENDING stays reclaimable", async () => {
+test("caller abort keeps cancellation semantics before transport regardless of SENDING persistence", async () => {
   for (const abortPoint of ["before-sending", "after-sending"]) {
     const controller = new AbortController();
     const completed = [];
@@ -2359,12 +3215,11 @@ test("abort before SENDING terminals PREPARED while abort after SENDING stays re
         return { terminal: true };
       },
     });
-    const expectedCode = abortPoint === "before-sending"
-      ? "GATEWAY_CANCELLED" : "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN";
     await assert.rejects(gateway.testCapabilities({
       profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
       timeoutMs: 500, signal: controller.signal, capabilityExecution,
-    }), { code: expectedCode });
+    }), (error) => error?.code === "GATEWAY_CANCELLED"
+      && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null);
     assert.equal(fetches, 0);
     if (abortPoint === "before-sending") {
       assert.deepEqual({ marks, completed }, {
@@ -2374,6 +3229,197 @@ test("abort before SENDING terminals PREPARED while abort after SENDING stays re
       assert.deepEqual({ marks, completed }, { marks: 1, completed: [] });
     }
   }
+});
+
+test("capability persistence awaits obey timeout and caller abort without leaking late promises", async (t) => {
+  const profileInput = { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" };
+  const hooks = (overrides = {}) => ({
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async resolveCapabilityCredential(execution) {
+      return {
+        accountId: "account-a", profileId: "profile-1", configVersion: 7,
+        connectionId: "connection-a", connectionVersion: 3,
+        ...capabilityProviderIdentities[execution.probe], secret,
+      };
+    },
+    async markCapabilitySubcallSending(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async completeCapabilitySubcall() { return { terminal: true }; },
+    ...overrides,
+  });
+  const immediateOutcome = async (promise) => Promise.race([
+    promise.then((value) => ({ value }), (error) => ({ error })),
+    new Promise((resolve) => setImmediate(() => resolve(null))),
+  ]);
+
+  await t.test("SENDING persistence timeout is pre-send and consumes a late resolve", async () => {
+    const pending = deferred();
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const tracked = trackedAbortSignal(controller);
+    let marks = 0;
+    let fetches = 0;
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      throw new Error("must not fetch while SENDING persistence is pending");
+    }, {
+      timers,
+      ...hooks({
+        async markCapabilitySubcallSending() {
+          marks += 1;
+          return pending.promise;
+        },
+      }),
+    });
+    const request = gateway.testCapabilities({
+      profile: profileInput, timeoutMs: 5, signal: tracked.signal, capabilityExecution,
+    });
+    await waitFor(() => assert.equal(marks, 1));
+    timers.advanceBy(5);
+    let immediate = await immediateOutcome(request);
+    if (immediate === null) {
+      pending.resolve(capabilityProviderIdentities.REACHABILITY);
+      await assert.rejects(request);
+    }
+    assert.notEqual(immediate, null, "timeout must not wait for SENDING persistence");
+    assert.equal(immediate.error?.code, "GATEWAY_TIMEOUT");
+    assert.equal(immediate.error?.deliveryState, "NOT_SENT");
+    assert.equal(fetches, 0);
+    assert.deepEqual({ timers: timers.activeCount(), listeners: tracked.activeCount() }, {
+      timers: 0, listeners: 0,
+    });
+    pending.resolve(capabilityProviderIdentities.REACHABILITY);
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  await t.test("provider-rejected settlement caller abort is uncertain and consumes a late reject", async () => {
+    const pending = deferred();
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const tracked = trackedAbortSignal(controller);
+    let settlements = 0;
+    let fetches = 0;
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      return jsonResponse({ error: { message: "denied" } }, { status: 401 });
+    }, {
+      timers,
+      ...hooks({
+        async completeCapabilitySubcall(_execution, outcome, reason) {
+          assert.deepEqual([outcome, reason], ["FAILED", "PROVIDER_REJECTED"]);
+          settlements += 1;
+          return pending.promise;
+        },
+      }),
+    });
+    const request = gateway.testCapabilities({
+      profile: profileInput, timeoutMs: 500, signal: tracked.signal, capabilityExecution,
+    });
+    await waitFor(() => assert.equal(settlements, 1));
+    controller.abort();
+    let immediate = await immediateOutcome(request);
+    if (immediate === null) {
+      pending.resolve({ terminal: true });
+      await assert.rejects(request);
+    }
+    assert.notEqual(immediate, null, "caller abort must not wait for rejected settlement");
+    assert.equal(immediate.error?.code, "GATEWAY_CANCELLED");
+    assert.equal(immediate.error?.deliveryState, "POSSIBLY_SENT");
+    assert.equal(fetches, 1);
+    assert.deepEqual({ timers: timers.activeCount(), listeners: tracked.activeCount() }, {
+      timers: 0, listeners: 0,
+    });
+    pending.reject(new Error("late rejected-settlement failure must be consumed"));
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  await t.test("provider-accepted settlement timeout is uncertain and consumes a late reject", async () => {
+    const pending = deferred();
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const tracked = trackedAbortSignal(controller);
+    let settlements = 0;
+    let fetches = 0;
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      return jsonResponse({ object: "list", data: [] });
+    }, {
+      timers,
+      ...hooks({
+        async completeCapabilitySubcall(_execution, outcome, reason) {
+          assert.deepEqual([outcome, reason], ["SUCCEEDED", "PROVIDER_ACCEPTED"]);
+          settlements += 1;
+          return pending.promise;
+        },
+      }),
+    });
+    const request = gateway.testCapabilities({
+      profile: profileInput, timeoutMs: 5, signal: tracked.signal, capabilityExecution,
+    });
+    await waitFor(() => assert.equal(settlements, 1));
+    timers.advanceBy(5);
+    let immediate = await immediateOutcome(request);
+    if (immediate === null) {
+      pending.resolve({ terminal: true });
+      await assert.rejects(request);
+    }
+    assert.notEqual(immediate, null, "timeout must not wait for accepted settlement");
+    assert.equal(immediate.error?.code, "GATEWAY_TIMEOUT");
+    assert.equal(immediate.error?.deliveryState, "POSSIBLY_SENT");
+    assert.equal(fetches, 1);
+    assert.deepEqual({ timers: timers.activeCount(), listeners: tracked.activeCount() }, {
+      timers: 0, listeners: 0,
+    });
+    pending.reject(new Error("late accepted-settlement failure must be consumed"));
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  await t.test("pre-send failure settlement caller abort stays NOT_SENT and consumes a late resolve", async () => {
+    const pending = deferred();
+    const timers = manualTimers();
+    const controller = new AbortController();
+    const tracked = trackedAbortSignal(controller);
+    let settlements = 0;
+    let fetches = 0;
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      throw new Error("must not fetch after credential failure");
+    }, {
+      timers,
+      ...hooks({
+        async resolveCapabilityCredential() {
+          throw Object.assign(new Error("decrypt failed"), { code: "AI_GATEWAY_SECRET_MISSING" });
+        },
+        async completeCapabilitySubcall(_execution, outcome, reason) {
+          assert.deepEqual([outcome, reason], ["FAILED", "PRE_SEND_FAILED"]);
+          settlements += 1;
+          return pending.promise;
+        },
+      }),
+    });
+    const request = gateway.testCapabilities({
+      profile: profileInput, timeoutMs: 500, signal: tracked.signal, capabilityExecution,
+    });
+    await waitFor(() => assert.equal(settlements, 1));
+    controller.abort();
+    let immediate = await immediateOutcome(request);
+    if (immediate === null) {
+      pending.resolve({ terminal: true });
+      await assert.rejects(request);
+    }
+    assert.notEqual(immediate, null, "caller abort must not wait for pre-send settlement");
+    assert.equal(immediate.error?.code, "GATEWAY_CANCELLED");
+    assert.equal(immediate.error?.deliveryState, "NOT_SENT");
+    assert.equal(fetches, 0);
+    assert.deepEqual({ timers: timers.activeCount(), listeners: tracked.activeCount() }, {
+      timers: 0, listeners: 0,
+    });
+    pending.resolve({ terminal: true });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
 });
 
 test("a PREPARED terminal-write failure stays unknown and reclaimable instead of failing the paid attempt", async () => {
@@ -2402,7 +3448,9 @@ test("a PREPARED terminal-write failure stays unknown and reclaimable instead of
   await assert.rejects(gateway.testCapabilities({
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
     timeoutMs: 500, capabilityExecution,
-  }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+  }), (error) => error?.code === "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN"
+    && error?.retryable === true && error?.deliveryState === "NOT_SENT"
+    && error?.retryAfterMs === null);
   assert.deepEqual({ terminalWrites, fetches }, { terminalWrites: 1, fetches: 0 });
 });
 
@@ -2445,7 +3493,10 @@ test("recovered SENDING stays unknown when secret DNS or abort fails before same
     await assert.rejects(gateway.testCapabilities({
       profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
       timeoutMs: 500, signal: controller.signal, capabilityExecution,
-    }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+    }), failurePoint === "abort"
+      ? (error) => error?.code === "GATEWAY_CANCELLED"
+        && error?.deliveryState === "NOT_SENT" && error?.retryAfterMs === null
+      : { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
     assert.equal(fetches, 0);
     assert.equal(marks, 0);
     assert.deepEqual(settlements, [["REACHABILITY", "FAILED",
@@ -2482,7 +3533,9 @@ test("provider 2xx plus completion persistence ambiguity never rewrites the stag
   await assert.rejects(gateway.testCapabilities({
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
     timeoutMs: 500, capabilityExecution,
-  }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+  }), (error) => error?.code === "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN"
+    && error?.retryable === true && error?.deliveryState === "POSSIBLY_SENT"
+    && error?.retryAfterMs === null);
   assert.equal(fetches, 1);
   assert.deepEqual(settlements, [["REACHABILITY", "SUCCEEDED", "PROVIDER_ACCEPTED"]]);
 });
@@ -2498,6 +3551,35 @@ test("capability test has no generic secret or network fallback without persiste
     correlationId: "corr-capability-no-authority", requestKey: "capability-no-authority", timeoutMs: 500,
   }), { code: "AI_GATEWAY_REQUEST_INVALID" });
   assert.deepEqual({ reads, fetches }, { reads: 0, fetches: 0 });
+});
+
+test("capability test treats a later explicit provider rejection as overall POSSIBLY_SENT", async () => {
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => {
+    fetches += 1;
+    if (fetches === 1) return jsonResponse({ object: "list", data: [] });
+    return jsonResponse({}, { status: 401 });
+  }, {
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async resolveCapabilityCredential(execution) {
+      return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
+        connectionId: "connection-a", connectionVersion: 3,
+        ...capabilityProviderIdentities[execution.probe], secret };
+    },
+    async markCapabilitySubcallSending(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async completeCapabilitySubcall() { return { terminal: true }; },
+  });
+
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 500, capabilityExecution,
+  }), (error) => error?.code === "NON_RETRYABLE_AUTH" && error?.status === 401
+    && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
+  assert.equal(fetches, 2);
 });
 
 test("capability execution fence changes stop every later paid probe before network", async () => {
@@ -2530,7 +3612,8 @@ test("capability execution fence changes stop every later paid probe before netw
   await assert.rejects(gateway.testCapabilities({
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
     timeoutMs: 500, capabilityExecution,
-  }), { code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT" });
+  }), (error) => error?.code === "AI_GATEWAY_PROFILE_VERSION_CONFLICT"
+    && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
   assert.deepEqual({ resolutions, fetches }, { resolutions: 2, fetches: 1 });
 });
 
@@ -2560,6 +3643,86 @@ test("capability test rejects image bytes that only mimic a supported header but
       timeoutMs: 500,
       capabilityExecution: legacyCapabilityExecution,
     }),
-    (error) => error?.code === "INVALID_GATEWAY_RESPONSE",
+    (error) => error?.code === "INVALID_GATEWAY_RESPONSE"
+      && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null,
   );
+});
+
+test("capability test preserves POSSIBLY_SENT from image model-evidence failure", async () => {
+  let fetches = 0;
+  const gateway = adapter(async () => {
+    fetches += 1;
+    if (fetches === 1) return jsonResponse({ object: "list", data: [] });
+    if (fetches === 2) {
+      return jsonResponse({
+        output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+      });
+    }
+    return jsonResponse({ model: "different-image-model", data: [{ b64_json: PNG_1X1 }] });
+  }, {
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async resolveCapabilityCredential(execution) {
+      return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
+        connectionId: null, connectionVersion: null,
+        ...capabilityProviderIdentities[execution.probe], secret };
+    },
+    async markCapabilitySubcallSending(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async completeCapabilitySubcall() { return { terminal: true }; },
+  });
+
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 500, capabilityExecution: legacyCapabilityExecution,
+  }), (error) => error?.code === "AI_GATEWAY_MODEL_MISMATCH"
+    && error?.deliveryState === "POSSIBLY_SENT" && error?.retryAfterMs === null);
+  assert.equal(fetches, 3);
+});
+
+test("upstream missing_terminal is an interrupted response with its request ID, not a generic rejection", async () => {
+  const sse = `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "upstream_error", message: "responses stream ended without response.completed: missing_terminal PRIVATE_DETAILS" } })}\n\n`;
+  const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream", "x-request-id": "request-interrupted-1" } }));
+  await assert.rejects(gateway.generateImage(imageInput()), error => {
+    assert.equal(error.code, "AI_GATEWAY_UNEXPECTED_EOF");
+    assert.equal(error.requestId, "request-interrupted-1");
+    assert.equal(error.deliveryState, "POSSIBLY_SENT");
+    assert.ok(!JSON.stringify(error).includes("PRIVATE_DETAILS"));
+    return true;
+  });
+});
+
+test("gateway stream_timeout retains request ID and distinct timeout classification", async () => {
+  const sse = `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "stream_timeout", message: "private" } })}\n\n`;
+  const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream", "x-request-id": "request-idle-timeout" } }));
+  await assert.rejects(gateway.generateImage(imageInput()), error => {
+    assert.equal(error.code, "AI_GATEWAY_STREAM_TIMEOUT");
+    assert.equal(error.requestId, "request-idle-timeout");
+    assert.equal(error.deliveryState, "POSSIBLY_SENT"); return true;
+  });
+});
+
+test("404 no available accounts identifies unavailable model routing without retrying", async () => {
+  const gateway = adapter(async () => jsonResponse({ error: { message: "no available accounts" } }, { status: 404 }));
+  await assert.rejects(gateway.createTextResponse(textInput()), error => {
+    assert.equal(error.code, "AI_GATEWAY_MODEL_UNAVAILABLE");
+    assert.equal(error.deliveryState, "NOT_SENT");
+    assert.equal(error.retryable, false);
+    return true;
+  });
+});
+
+test("luna compatibility preserves the actual returned model in text evidence", async () => {
+  const reported = "gpt-56-luna-2026-07-09-datazone";
+  const gateway = adapter(async () => jsonResponse({ model: reported,
+    output: [{ type: "message", content: [{ type: "output_text", text: '{"ok":true}' }] }],
+  }));
+  const input = textInput();
+  input.profile = { ...input.profile, textModel: "gpt-5.6-luna" };
+  input.model = "gpt-5.6-luna";
+  const result = await gateway.createTextResponse(input);
+  assert.equal(result.modelEvidence.gatewayReportedTextModel, reported);
+  assert.equal(result.modelEvidence.requestedTextModel, "gpt-5.6-luna");
 });

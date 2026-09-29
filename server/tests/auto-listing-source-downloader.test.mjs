@@ -35,6 +35,152 @@ function fakeRequester(definitions, captures = []) {
 }
 
 const publicDns = async () => [{ address: "93.184.216.34", family: 4 }];
+const diagnosticInput = { sourceUrl: 'https://images.example.test/second.png?signature=private#private', timeoutMs: 10000,
+  maxBytes: 1024, maxRedirects: 3, forbidHttpsDowngrade: true };
+
+test('failed source identifies its own URL, underlying cause and bounded retry waits without signed credentials', async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  let now = 100, reads = 0;
+  const waits = [];
+  const downloader = createAutoListingSourceImageDownloader({ clock: () => now,
+    sleep: async ms => { waits.push(ms); now += ms; },
+    downloadImage: async () => { reads++; now += 40;
+      throw Object.assign(new Error('private signed URL must not escape', { cause: Object.assign(new Error('private'), { code: 'ECONNRESET' }) }),
+        { code: 'COLLECTOR_EXCEL_IMAGE_DOWNLOAD_FAILED' }); },
+  });
+  await assert.rejects(downloader.downloadSourceImage(diagnosticInput), error => {
+    assert.equal(error.code, 'AUTO_LISTING_SOURCE_DOWNLOAD_FAILED');
+    assert.equal(error.diagnostic.sourceUrl, 'https://images.example.test/second.png');
+    assert.equal(error.diagnostic.attemptCount, 3);
+    assert.equal(error.diagnostic.elapsedMs, 870);
+    assert.deepEqual(error.diagnostic.attempts.map(value => [value.upstreamCode, value.elapsedMs]),
+      [['ECONNRESET', 40], ['ECONNRESET', 40], ['ECONNRESET', 40]]);
+    assert.doesNotMatch(JSON.stringify(error), /private|signature/);
+    return true;
+  });
+  assert.equal(reads, 3);
+  assert.deepEqual(waits, [250, 500]);
+});
+
+test('a missing image after a signed redirect keeps the actual HTTP status and is not retried', async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  const requests = [], waits = [];
+  const downloader = createAutoListingSourceImageDownloader({ lookupHost: publicDns,
+    sleep: async ms => waits.push(ms),
+    requestImage: fakeRequester([{ status: 302, headers: { location: 'https://cdn.example.test/missing.png?token=private' } }, { status: 404 }], requests),
+  });
+  await assert.rejects(downloader.downloadSourceImage(diagnosticInput), error => {
+    assert.equal(error.retryable, false);
+    assert.equal(error.diagnostic.failedUrl, 'https://cdn.example.test/missing.png');
+    assert.equal(error.diagnostic.attempts[0].httpStatus, 404);
+    assert.equal(error.diagnostic.attempts[0].stage, 'request');
+    assert.equal(error.diagnostic.attemptCount, 1);
+    assert.doesNotMatch(JSON.stringify(error), /private|token|signature/);
+    return true;
+  });
+  assert.equal(requests.length, 2);
+  assert.deepEqual(waits, []);
+});
+
+test('DNS failures retain phase timing and the resolver error code', async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  let now = 0;
+  const downloader = createAutoListingSourceImageDownloader({ clock: () => now, sleep: async ms => { now += ms; },
+    lookupHost: async () => { now += 12; throw Object.assign(new Error('private hostname'), { code: 'EAI_AGAIN' }); },
+  });
+  await assert.rejects(downloader.downloadSourceImage(diagnosticInput), error => {
+    assert.equal(error.diagnostic.attempts[2].stage, 'dns');
+    assert.equal(error.diagnostic.attempts[2].dnsMs, 12);
+    assert.equal(error.diagnostic.attempts[2].upstreamCode, 'EAI_AGAIN');
+    return true;
+  });
+});
+
+test('invalid image bytes retain the inspection phase and never schedule a retry', async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  let reads = 0;
+  const invalid = createAutoListingSourceImageDownloader({ sleep: async () => assert.fail('invalid bytes cannot retry'),
+    downloadImage: async () => { reads++; return { buffer: Buffer.from('not an image'), contentType: 'image/png' }; },
+  });
+  await assert.rejects(invalid.downloadSourceImage(diagnosticInput), error => {
+    assert.equal(error.code, 'AUTO_LISTING_SOURCE_IMAGE_INVALID');
+    assert.equal(error.diagnostic.attempts[0].stage, 'inspect');
+    return true;
+  });
+  assert.equal(reads, 1);
+});
+
+test('connection failures retain time before headers and TLS certificate failures do not retry', async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  let now = 0, reads = 0;
+  const downloader = createAutoListingSourceImageDownloader({ clock: () => now,
+    sleep: async () => assert.fail('certificate errors cannot retry'), lookupHost: publicDns,
+    requestImage: () => {
+      reads++;
+      const request = new EventEmitter();
+      request.setTimeout = () => request;
+      request.end = () => queueMicrotask(() => { now += 40; request.emit('error', Object.assign(new Error('private URL'), { code: 'CERT_HAS_EXPIRED' })); });
+      return request;
+    },
+  });
+  await assert.rejects(downloader.downloadSourceImage(diagnosticInput), error => {
+    assert.equal(error.retryable, false);
+    assert.equal(error.diagnostic.attempts[0].upstreamCode, 'CERT_HAS_EXPIRED');
+    assert.equal(error.diagnostic.attempts[0].requestMs, 40);
+    return true;
+  });
+  assert.equal(reads, 1);
+});
+
+test('an interrupted HTTP 200 body retries and records body time rather than treating headers as success', async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  let now = 0, reads = 0;
+  const waits = [];
+  const downloader = createAutoListingSourceImageDownloader({ clock: () => now, lookupHost: publicDns,
+    sleep: async ms => { waits.push(ms); now += ms; },
+    requestImage: (_target, _options, respond) => {
+      reads++;
+      const request = new EventEmitter();
+      request.setTimeout = () => request;
+      request.end = () => queueMicrotask(() => {
+        const response = new EventEmitter();
+        response.statusCode = 200; response.headers = { 'content-type': 'image/png' };
+        respond(response); now += 25; response.emit('aborted');
+      });
+      return request;
+    },
+  });
+  await assert.rejects(downloader.downloadSourceImage(diagnosticInput), error => {
+    assert.equal(error.retryable, true);
+    assert.equal(error.diagnostic.attempts[2].stage, 'body');
+    assert.equal(error.diagnostic.attempts[2].bodyMs, 25);
+    assert.equal(error.diagnostic.attempts[2].httpStatus, 200);
+    return true;
+  });
+  assert.equal(reads, 3); assert.deepEqual(waits, [250, 500]);
+});
+
+test('invalid null input preserves the public input error even with diagnostic collection enabled', async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  await assert.rejects(createAutoListingSourceImageDownloader().downloadSourceImage(null), { code: 'AUTO_LISTING_SOURCE_DOWNLOAD_INPUT_INVALID' });
+});
+
+test('a redirect DNS failure identifies the destination without misreporting the earlier redirect status', async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  const downloader = createAutoListingSourceImageDownloader({ sleep: async () => {},
+    lookupHost: async host => {
+      if (host === 'cdn.example.test') throw Object.assign(new Error('offline'), { code: 'EAI_AGAIN' });
+      return publicDns();
+    },
+    requestImage: fakeRequester([{ status: 302, headers: { location: 'https://cdn.example.test/missing.png?token=private' } }]),
+  });
+  await assert.rejects(downloader.downloadSourceImage(diagnosticInput), error => {
+    assert.equal(error.diagnostic.failedUrl, 'https://cdn.example.test/missing.png');
+    assert.equal(error.diagnostic.attempts[2].stage, 'dns');
+    assert.equal(error.diagnostic.attempts[2].httpStatus, undefined);
+    return true;
+  });
+});
 
 test("source downloader rejects non-http URLs and URL credentials before requesting the network", async () => {
   const { createAutoListingSourceImageDownloader } = await load();
@@ -244,6 +390,51 @@ test("source downloader accepts Ozon image CDN through benchmark-range proxy DNS
     await assert.rejects(
       redirected.downloadSourceImage({
         sourceUrl: "https://ir-20.ozone.ru/original.png",
+        timeoutMs: 10_000,
+        maxBytes: 1024,
+        maxRedirects: 3,
+        forbidHttpsDowngrade: true,
+      }),
+      (error) => error?.code === "AUTO_LISTING_SOURCE_DOWNLOAD_BLOCKED",
+    );
+  }
+});
+
+test("source downloader trusts only HTTPS Ozon static image CDN hosts behind benchmark proxy DNS", async () => {
+  const { createAutoListingSourceImageDownloader } = await load();
+  const png = await sharp({ create: { width: 2, height: 3, channels: 4, background: "red" } }).png().toBuffer();
+  const benchmarkDns = async () => [{ address: "198.18.0.21", family: 4 }];
+  const downloader = createAutoListingSourceImageDownloader({
+    lookupHost: benchmarkDns,
+    requestImage: fakeRequester([{
+      headers: { "content-type": "image/png", "content-length": String(png.length) },
+      chunks: [png],
+    }]),
+  });
+
+  const downloaded = await downloader.downloadSourceImage({
+    sourceUrl: "https://ir-20.ozonstatic.cn/s3/multimedia-1-z/example.jpg",
+    timeoutMs: 10_000,
+    maxBytes: 1024,
+    maxRedirects: 3,
+    forbidHttpsDowngrade: true,
+  });
+  assert.deepEqual(
+    { contentType: downloaded.contentType, width: downloaded.width, height: downloaded.height },
+    { contentType: "image/png", width: 2, height: 3 },
+  );
+
+  for (const sourceUrl of [
+    "https://ir-20.ozonstatic.cn.evil.test/a.png",
+    "http://ir-20.ozonstatic.cn/a.png",
+  ]) {
+    const blocked = createAutoListingSourceImageDownloader({
+      lookupHost: benchmarkDns,
+      requestImage() { throw new Error("must not request"); },
+    });
+    await assert.rejects(
+      blocked.downloadSourceImage({
+        sourceUrl,
         timeoutMs: 10_000,
         maxBytes: 1024,
         maxRedirects: 3,

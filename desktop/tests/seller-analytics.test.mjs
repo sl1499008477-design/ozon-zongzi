@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
 import {
     buildSellerLeaderboardPayload,
     buildSellerSkuPayload,
@@ -83,10 +85,55 @@ test('normalizes PascalCase Seller Analytics fields', () => {
     assert.equal(result.items[0].convToCartPdp, 6.5);
 });
 
+test('reads scalar totals from recorded Seller responses instead of treating the first page as the total', async () => {
+    const evidence = JSON.parse(await readFile(new URL('./fixtures/seller-pagination-evidence.json', import.meta.url), 'utf8'));
+    for (const page of evidence.pages) {
+        const result = normalizeSellerAnalyticsResponse(page.response);
+        assert.equal(result.total, 1000, `offset ${page.offset}`);
+        assert.equal(result.items.length, page.response.items.length);
+    }
+});
+
+test('preserves valid legacy total formats and distinguishes unknown totals from zero', () => {
+    const cases = [
+        [{ totals: 1000 }, 1000], [{ totals: '1000' }, 1000],
+        [{ total: '60' }, 60], [{ totals: { total: '60' } }, 60],
+        [{ data: { total: '60' } }, 60], [{ data: { totals: { total: '60' } } }, 60],
+        [{ data: { totals: '60' } }, 60],
+        [{ total: 0 }, 0], [{ totals: 0 }, 0], [{ totals: '0' }, 0],
+        [{}, null], [{ total: null }, null], [{ totals: {} }, null],
+        [{ total: '' }, null], [{ total: ' ' }, null], [{ total: 'bad' }, null],
+        [{ total: -1 }, null], [{ totals: true }, null], [{ totals: [] }, null],
+        [{ total: Infinity }, null], [{ total: 1.5 }, null],
+    ];
+    for (const [payload, expected] of cases) {
+        assert.equal(normalizeSellerAnalyticsResponse({ items: [{ sku: 'fixture' }], ...payload }).total, expected, JSON.stringify(payload));
+    }
+});
+
 test('only retries transient Seller Analytics failures', () => {
     assert.equal(isRetryableSellerFailure(429), true);
     assert.equal(isRetryableSellerFailure(503), true);
     assert.equal(isRetryableSellerFailure(0, 'TIMEOUT'), true);
     assert.equal(isRetryableSellerFailure(401), false);
     assert.equal(isRetryableSellerFailure(422), false);
+});
+
+test('real Seller photo remains available to collection and export after public detail enrichment', async () => {
+    const photo = 'https://ir-20.ozonstatic.cn/s3/multimedia-1-d/10110544429.jpg';
+    const { items: [goods] } = normalizeSellerAnalyticsResponse({
+        items: [{ sku: '2581899751', name: 'Philips Automatic Coffee Machine', photo }],
+    });
+    assert.equal(goods.cover, photo);
+    const source = await readFile(new URL('../dist-electron/services/collection/parse.services.js', import.meta.url), 'utf8');
+    const ParseService = vm.runInNewContext(source.replace(/^import .*;\n/gm, '').replace(/^export (?=class |function )/gm, '') + '\nParseService', {
+        log: { error: assert.fail },
+    });
+    const parser = new ParseService({ getSellingData: async () => ({ success: true, data: { widgetStates: {} } }) });
+    const detail = await parser.ozonDetailParse({ success: true, data: { widgetStates: {} } }, 'https://www.ozon.ru', goods);
+    assert.equal(detail.cover, photo);
+    assert.equal(detail.photo, photo);
+    assert.equal(detail.id, '2581899751');
+    const explicit = normalizeSellerAnalyticsResponse({ items: [{ cover: 'https://example.com/cover.jpg', photo }] });
+    assert.equal(explicit.items[0].cover, 'https://example.com/cover.jpg');
 });

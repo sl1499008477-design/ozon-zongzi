@@ -1,10 +1,12 @@
 import axios from 'axios';
+import { clearCollectorAuthorization } from './sonli-api.services.js';
 import { shell, clipboard } from 'electron';
 import { operationStore } from '../store/index.js';
 import { TaskManager } from './collection/task-manager.services.js';
 import { runtimeConfig } from '../config/runtime.js';
 import { clearAccountSessions } from './session.services.js';
 import { destroySellerWindow } from './seller-ozon.services.js';
+import { enrichmentWorker } from './enrichment.services.js';
 
 const sonliClient = axios.create({
     baseURL: runtimeConfig.sonliApiBase,
@@ -53,16 +55,19 @@ export const accountHandle = async (_type, mainWindow) => {
 };
 
 export const login = async (data) => {
+    await enrichmentWorker.stop();
+    clearCollectorAuthorization();
     try {
         const username = String(data.phone || data.username || '').trim();
         const password = String(data.pwd || data.password || '');
-        const response = await sonliClient.post('/local/accounts/login', { username, password });
+        const response = await sonliClient.post('/local/accounts/login?view=bootstrap', { username, password });
         const sonliToken = String(response.data?.token || '');
         if (!sonliToken || !response.data?.account)
             throw new Error('sonli 登录响应缺少账号或令牌');
         const user = mapSonliAccount(response.data.account);
         operationStore.set('token', sonliToken);
         operationStore.set('user', user);
+        enrichmentWorker.start();
         return {
             code: 0,
             message: '登录成功',
@@ -74,6 +79,7 @@ export const login = async (data) => {
         };
     }
     catch (error) {
+        clearCollectorAuthorization();
         operationStore.delete('token');
         operationStore.delete('user');
         return {
@@ -84,21 +90,25 @@ export const login = async (data) => {
     }
 };
 
-export const getUserInfo = async (data = {}) => {
+export const getUserInfo = async () => {
+    const token = String(operationStore.get('token') || '');
+    const sessionChanged = () => token !== String(operationStore.get('token') || '');
     try {
-        const token = String(data.token || operationStore.get('token') || '');
         if (!token)
             throw new Error('登录已过期');
-        const response = await sonliClient.get('/local/state', {
+        const response = await sonliClient.get('/local/state?view=bootstrap', {
             headers: { Authorization: `Bearer ${token}` },
         });
         if (!response.data?.account)
             throw new Error('登录已过期');
+        if (sessionChanged()) return { code: 401, message: '登录账号已切换，请重试', data: null };
         const user = mapSonliAccount(response.data.account);
         operationStore.set('user', user);
         return { code: 0, message: '获取成功', data: user };
     }
     catch (error) {
+        if (sessionChanged()) return { code: 401, message: '登录账号已切换，请重试', data: null };
+        clearCollectorAuthorization();
         operationStore.delete('token');
         operationStore.delete('user');
         return { code: 401, message: errorMessage(error, '登录已过期'), data: null };
@@ -106,6 +116,8 @@ export const getUserInfo = async (data = {}) => {
 };
 
 export const logout = async () => {
+    await enrichmentWorker.stop();
+    clearCollectorAuthorization();
     const sonliToken = String(operationStore.get('token') || '');
     const user = operationStore.get('user') || {};
     const accountKey = String(user._id || user.id || user.phone || 'anonymous');
@@ -123,6 +135,7 @@ export const logout = async () => {
     }
     finally {
         operationStore.delete('user');
+        clearCollectorAuthorization();
         operationStore.delete('token');
     }
 };

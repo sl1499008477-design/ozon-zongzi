@@ -1,3 +1,5 @@
+import { assertOzonRussianProductText } from "./ozon-product-language.mjs";
+import { collectedAttributeValues } from "./collector-attribute-values.mjs";
 import { findRetiredCollectorScopePath } from "./collector-scope-sanitizer.mjs";
 import { missingOzonEnrichmentFields } from "./collect-enrichment-policy.mjs";
 
@@ -43,10 +45,10 @@ function assertNoRetiredCollectorScope(body) {
 function assertRequestShape(body, allowedKeys) {
   assertNoRetiredCollectorScope(body);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw contractError("补全请求格式无效", 400, "OZON_ENRICH_REQUEST_INVALID");
+    throw contractError("补全请求格式无效", 400, "ZONGZI_ENRICH_REQUEST_INVALID");
   }
   if (Object.keys(body).some((key) => !allowedKeys.includes(key))) {
-    throw contractError("补全请求包含不允许的字段", 400, "OZON_ENRICH_REQUEST_INVALID");
+    throw contractError("补全请求包含不允许的字段", 400, "ZONGZI_ENRICH_REQUEST_INVALID");
   }
 }
 
@@ -63,7 +65,7 @@ function attributesByKey(variantData) {
     const key = cleanText(attribute?.key);
     if (!key) continue;
     const current = values.get(key) || [];
-    current.push(attribute?.value);
+    current.push(...collectedAttributeValues(attribute).map(value => value?.value));
     values.set(key, current);
   }
   return values;
@@ -82,6 +84,7 @@ function sourceCategoryEvidence(variantData) {
   const typeAttribute = attributes.find(
     (attribute) => cleanText(attribute?.key) === ATTRIBUTE_IDS.typeName,
   );
+  const typeValues = collectedAttributeValues(typeAttribute);
   const categories = Array.isArray(variantData?.categories) ? variantData.categories : [];
   const path = [...categories]
     .sort((left, right) => positiveNumber(left?.level) - positiveNumber(right?.level))
@@ -89,19 +92,22 @@ function sourceCategoryEvidence(variantData) {
     .filter((label, index, labels) => label && labels.indexOf(label) === index);
   const evidence = {
     descriptionCategoryId: positiveNumber(variantData?.description_category_id),
-    typeName: cleanText(typeAttribute?.value),
+    typeName: cleanText(typeValues[0]?.value),
     typeIdCandidate: positiveNumber(
-      typeAttribute?.dictionary_value_id
-        ?? typeAttribute?.dictionaryValueId
+      typeValues[0]?.dictionary_value_id
+        ?? typeValues[0]?.dictionaryValueId
         ?? variantData?.type_id
         ?? variantData?.typeId,
     ),
     path,
-    attributes: attributes.slice(0, 100).map((attribute) => {
+    attributes: attributes.map((attribute) => {
       const projected = {
         key: cleanText(attribute?.key),
         value: attribute?.value ?? null,
       };
+      for (const key of ["values", "collection"]) {
+        if (Array.isArray(attribute?.[key])) projected[key] = structuredClone(attribute[key]);
+      }
       if (attribute?.dictionary_value_id !== undefined) {
         projected.dictionary_value_id = attribute.dictionary_value_id;
       }
@@ -111,6 +117,9 @@ function sourceCategoryEvidence(variantData) {
       return projected;
     }).filter((attribute) => attribute.key),
   };
+  if (Array.isArray(variantData?.complex_attributes)) {
+    evidence.complex_attributes = structuredClone(variantData.complex_attributes);
+  }
   return Object.values(evidence).some((value) =>
     Array.isArray(value) ? value.length > 0 : Boolean(value),
   )
@@ -121,28 +130,28 @@ function sourceCategoryEvidence(variantData) {
 export function parseOzonEnrichmentRequest(body) {
   assertRequestShape(body, ["requestId", "sku"]);
   return {
-    requestId: requiredText(body.requestId, "requestId", "OZON_ENRICH_REQUEST_ID_REQUIRED"),
-    sku: requiredText(body.sku, "SKU", "OZON_ENRICH_SKU_REQUIRED"),
+    requestId: requiredText(body.requestId, "requestId", "ZONGZI_ENRICH_REQUEST_ID_REQUIRED"),
+    sku: requiredText(body.sku, "SKU", "ZONGZI_ENRICH_SKU_REQUIRED"),
   };
 }
 
 export function parseOzonBatchEnrichmentRequest(body) {
   assertRequestShape(body, ["requestId", "skus"]);
-  const requestId = requiredText(body.requestId, "requestId", "OZON_ENRICH_REQUEST_ID_REQUIRED");
+  const requestId = requiredText(body.requestId, "requestId", "ZONGZI_ENRICH_REQUEST_ID_REQUIRED");
   if (!Array.isArray(body.skus) || !body.skus.length) {
-    throw contractError("补全请求缺少 SKU 列表", 400, "OZON_ENRICH_BATCH_SKUS_REQUIRED");
+    throw contractError("补全请求缺少 SKU 列表", 400, "ZONGZI_ENRICH_BATCH_SKUS_REQUIRED");
   }
   const skus = [];
   const seen = new Set();
   for (const rawSku of body.skus) {
-    const sku = requiredText(rawSku, "SKU", "OZON_ENRICH_SKU_REQUIRED");
+    const sku = requiredText(rawSku, "SKU", "ZONGZI_ENRICH_SKU_REQUIRED");
     if (!seen.has(sku)) {
       seen.add(sku);
       skus.push(sku);
     }
   }
   if (skus.length >= 21) {
-    throw contractError("单次补全最多 20 个 SKU", 400, "OZON_ENRICH_BATCH_LIMIT");
+    throw contractError("单次补全最多 20 个 SKU", 400, "ZONGZI_ENRICH_BATCH_LIMIT");
   }
   return { requestId, skus };
 }
@@ -152,6 +161,7 @@ export function missingOzonRequiredFields(value) {
 }
 
 export function normalizeOzonAgentResult({ sku, variantData, source, capturedAt } = {}) {
+  assertOzonRussianProductText(variantData, { sku, operation: "采集" });
   const attributeValues = attributesByKey(variantData);
   const logistics = {
     weightG: firstPositive(
@@ -163,6 +173,13 @@ export function normalizeOzonAgentResult({ sku, variantData, source, capturedAt 
     widthMm: firstPositive(attributeValues.get(ATTRIBUTE_IDS.widthMm), variantData?.width),
     heightMm: firstPositive(attributeValues.get(ATTRIBUTE_IDS.heightMm), variantData?.height),
   };
+  // The approved source is candidate one. A missing field there must remain
+  // unknown rather than being borrowed from a conflicting physical attribute.
+  if (Array.isArray(variantData?.packagingCandidates) && variantData.packagingCandidates.length === 2) {
+    for (const field of Object.keys(logistics)) {
+      logistics[field] = positiveNumber(variantData.packagingCandidates[0]?.[field]);
+    }
+  }
   const result = {
     status: "COMPLETE",
     contractVersion: OZON_ENRICHMENT_CONTRACT_VERSION,
@@ -178,13 +195,13 @@ export function normalizeOzonAgentResult({ sku, variantData, source, capturedAt 
   const sourceCategory = sourceCategoryEvidence(variantData);
   if (sourceCategory) result.sourceCategory = sourceCategory;
   const missingFields = missingOzonRequiredFields(result);
+  if (missingFields.includes('descriptionCategoryId')) {
+    throw contractError('Ozon 来源类目缺失', 422, 'ZONGZI_ENRICH_INCOMPLETE', { missingFields });
+  }
   if (missingFields.length) {
-    throw contractError(
-      `Ozon 商品资料不完整：${missingFields.join(", ")}`,
-      422,
-      "OZON_ENRICH_INCOMPLETE",
-      { missingFields },
-    );
+    result.status = 'PARTIAL';
+    result.missingFields = missingFields;
+    for (const field of missingFields) result.logistics[field] = null;
   }
   return result;
 }
@@ -196,7 +213,7 @@ export function assertCompleteOzonCollectPayload(source, payload) {
     throw contractError(
       `Ozon 采集商品资料不完整：${missingFields.join(", ")}`,
       422,
-      "OZON_COLLECT_INCOMPLETE",
+      "ZONGZI_COLLECT_INCOMPLETE",
       { missingFields },
     );
   }

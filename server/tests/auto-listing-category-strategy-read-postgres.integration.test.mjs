@@ -18,7 +18,7 @@ const roles = ["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INF
 async function migrate(client) {
   const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
   assert.equal(migrations.includes("076_auto_listing_category_strategy_analysis_edits.sql"), true);
-  assert.equal(migrations.at(-1), "096_auto_listing_validation_boundary.sql");
+  assert.equal(migrations.at(-1), "105_auto_listing_source_image_derivatives.sql");
   for (const migration of migrations) await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
 }
 
@@ -90,6 +90,10 @@ if (!enabled) {
       await admin.query(`INSERT INTO product_drafts
         (id,collect_item_id,source_payload_id,version,data_hash,data) VALUES ($1,$2,$3,7,$4,'{}'::JSONB)`,
       [productDraftId, collectId, rawId, h(productDraftId)]);
+      await admin.query(`INSERT INTO product_draft_revisions
+        (id,draft_id,version,data_hash,data,changed_by,change_reason)
+        VALUES ($1,$2,7,$3,'{}'::JSONB,$4,'category strategy read test seed')`,
+      [`product-draft-revision-${suffix}`, productDraftId, h(productDraftId), accountA]);
       await admin.query("UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3",
         [productDraftId, accountA, collectId]);
       await admin.query(`INSERT INTO auto_listing_category_strategy_drafts
@@ -242,7 +246,11 @@ if (!enabled) {
       const service = createAutoListingCategoryStrategyService({ repository: repositoryShape(), readModel,
         sampleStore: { persistSampleImages: async () => {} }, exactProductFacts: { verify: async () => {} },
         extensionSessionChannel: { assertReady: async () => {}, putSession: async () => {} },
-        publicationService: { publishCategoryStrategyDraft: async () => {}, rollbackCategoryStrategyVersion: async () => {} },
+        publicationService: {
+          publishCategoryStrategyDraft: async () => {},
+          archiveCategoryStrategyDraft: async () => {},
+          rollbackCategoryStrategyVersion: async () => {},
+        },
         analyzer: { analyze: async () => {}, editGuidance: async () => {} },
         objectStorage: { readObjectExpected: async (input) => { objectRead = input; return thumbnailBytes; } },
         now: () => new Date().toISOString(), deriveSessionIdentity: async () => ({ sessionId: "unused", sessionSecret: "x".repeat(32) }) });

@@ -1,0 +1,293 @@
+{
+  "sourceSku": "3491634425",
+  "capturedAt": "2026-09-14",
+  "initial": {
+    "widgetStates": {
+      "paginator-658722-default-1": {
+        "nextPage": "/product/3491634425/?layout_container=pdpPage2column&layout_page_index=2",
+        "size": 10,
+        "offsetTop": 2000,
+        "fetchType": "scroll",
+        "minHeight": 3000,
+        "isContentVisibilityAuto": true,
+        "layoutContainer": "pdpPage2column"
+      },
+      "webGallery-3311626-default-1": {
+        "sku": "3491634425",
+        "coverImage": "https://ir-20.ozonstatic.cn/s3/multimedia-1-c/10085720088.jpg",
+        "images": [
+          {
+            "src": "https://ir-20.ozonstatic.cn/s3/multimedia-1-c/10085720088.jpg",
+            "alt": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт #1"
+          },
+          {
+            "src": "https://ir-20.ozonstatic.cn/s3/multimedia-1-i/8999647614.jpg",
+            "alt": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт #2"
+          },
+          {
+            "src": "https://ir-20.ozonstatic.cn/s3/multimedia-1-a/8999646598.jpg",
+            "alt": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт #3"
+          },
+          {
+            "src": "https://ir-20.ozonstatic.cn/s3/multimedia-1-h/8999646641.jpg",
+            "alt": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт #4"
+          },
+          {
+            "src": "https://ir-20.ozonstatic.cn/s3/multimedia-1-1/8999645509.jpg",
+            "alt": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт #5"
+          },
+          {
+            "src": "https://ir-20.ozonstatic.cn/s3/multimedia-1-0/8999646588.jpg",
+            "alt": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт #6"
+          },
+          {
+            "src": "https://ir-20.ozonstatic.cn/s3/multimedia-1-4/8999645440.jpg",
+            "alt": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт #7"
+          },
+          {
+            "src": "https://ir-20.ozonstatic.cn/s3/multimedia-1-f/8999645667.jpg",
+            "alt": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт #8"
+          },
+          {
+            "src": "https://ir-20.ozonstatic.cn/s3/multimedia-1-m/8999645422.jpg",
+            "alt": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт #9"
+          }
+        ],
+        "videoCover": {},
+        "videos": [
+          {
+            "name": "",
+            "url": "https://v-1.ozone.ru/vod/video-25/01H8184SZGV5BXWV3PBTQD8VDH/asset_2_h264.mp4?type=pdp",
+            "coverUrl": "https://ir-20.ozonstatic.cn/s3/video-25/01H8184SZGV5BXWV3PBTQD8VDH/cover/cover.jpg"
+          }
+        ],
+        "isWithParandja": false,
+        "isWithWave": false,
+        "isUnavailable": false,
+        "galleryTipRs": [
+          {
+            "type": "text",
+            "content": "Для просмотра удерживайте левую кнопку мыши"
+          },
+          {
+            "type": "newLine"
+          },
+          {
+            "type": "text",
+            "content": "и вращайте влево или вправо,"
+          },
+          {
+            "type": "newLine"
+          },
+          {
+            "type": "text",
+            "content": "кликните по изображению, чтобы увеличить его"
+          }
+        ],
+        "galleryRatio": 0.75,
+        "similarItemsURL": "/modal/similar-products?product_id=3491634425",
+        "imageRendering": "",
+        "imageQualityInModal": 2500,
+        "similarItemsText": "Похожие"
+      },
+      "webShortCharacteristics-3385952-default-1": {
+        "titleRs": [
+          {
+            "type": "text",
+            "content": "О товаре",
+            "font": "tsHeadline500Medium",
+            "color": "textPrimary"
+          }
+        ],
+        "goTo": {
+          "text": "Перейти к описанию",
+          "styleType": "NEUTRAL_PRIMARY",
+          "common": {
+            "action": {
+              "behavior": "BEHAVIOR_TYPE_SCROLL_TO_WIDGET",
+              "link": "section-description"
+            }
+          }
+        },
+        "characteristics": [
+          {
+            "id": "Type_0",
+            "title": {
+              "textRs": [
+                {
+                  "type": "text",
+                  "content": "Тип",
+                  "font": "tsBodyM",
+                  "color": "textSecondary"
+                }
+              ]
+            },
+            "values": [
+              {
+                "id": "Type_0",
+                "text": "Съемник",
+                "textColor": "textPrimary",
+                "textStyle": "tsBody400Small"
+              }
+            ]
+          },
+          {
+            "id": "QuantityinItem_1",
+            "title": {
+              "textRs": [
+                {
+                  "type": "text",
+                  "content": "Количество инструментов в наборе, шт.",
+                  "font": "tsBodyM",
+                  "color": "textSecondary"
+                }
+              ]
+            },
+            "values": [
+              {
+                "id": "QuantityinItem_0",
+                "text": "6",
+                "textColor": "textPrimary",
+                "textStyle": "tsBody400Small"
+              }
+            ]
+          },
+          {
+            "id": "Material_Auto_2",
+            "title": {
+              "textRs": [
+                {
+                  "type": "text",
+                  "content": "Материал",
+                  "font": "tsBodyM",
+                  "color": "textSecondary"
+                }
+              ]
+            },
+            "values": [
+              {
+                "id": "Material_Auto_0",
+                "text": "Металл",
+                "textColor": "textPrimary",
+                "textStyle": "tsBody400Small"
+              }
+            ]
+          },
+          {
+            "id": "length_3",
+            "title": {
+              "textRs": [
+                {
+                  "type": "text",
+                  "content": "Длина, мм",
+                  "font": "tsBodyM",
+                  "color": "textSecondary"
+                }
+              ]
+            },
+            "values": [
+              {
+                "id": "length_0",
+                "text": "24",
+                "textColor": "textPrimary",
+                "textStyle": "tsBody400Small"
+              }
+            ]
+          },
+          {
+            "id": "NeutralWidthMM_4",
+            "title": {
+              "textRs": [
+                {
+                  "type": "text",
+                  "content": "Ширина, мм",
+                  "font": "tsBodyM",
+                  "color": "textSecondary"
+                }
+              ]
+            },
+            "values": [
+              {
+                "id": "NeutralWidthMM_0",
+                "text": "130",
+                "textColor": "textPrimary",
+                "textStyle": "tsBody400Small"
+              }
+            ]
+          }
+        ]
+      },
+      "webPrice-3121879-default-1": {
+        "isAvailable": true,
+        "disclaimerPriceHeader": "Итого в CNY",
+        "disclaimerPriceBodyRs": [
+          {
+            "type": "text",
+            "content": "Сумма в CNY приблизительная. Фактическая сумма списания определяется по курсу на дату платежа."
+          }
+        ],
+        "cardPrice": "43,58 ¥",
+        "price": "46,45 ¥",
+        "originalPrice": "322,18 ¥",
+        "showOriginalPrice": true,
+        "link": "/modal/pdpListOfBanks?product_id=3491634425",
+        "trackingInfoOzonBank": {
+          "click": {
+            "actionType": "click",
+            "key": "1oyl1O_Qf-a9QPI2otzBzerLofCG7Mhz"
+          }
+        },
+        "colorBlockRightContent": {
+          "images": [
+            {
+              "image": "https://ir-20.ozonstatic.cn/s3/payments-cdn/ozon-price-compact-new-ozon-light.png",
+              "aspectRatio": "RATIO_1_1",
+              "imageWidth": 23,
+              "cdnSettings": {
+                "size": 64
+              },
+              "fitType": "FIT_CENTER"
+            },
+            {
+              "image": "https://ir-20.ozonstatic.cn/s3/payments-cdn/ozon_other_sovkombank_dark.png",
+              "aspectRatio": "RATIO_1_1",
+              "imageWidth": 20,
+              "cdnSettings": {
+                "size": 64
+              },
+              "fitType": "FIT_CENTER"
+            },
+            {
+              "image": "https://ir-20.ozonstatic.cn/s3/payments-cdn/ozon_other_otp_light.png",
+              "aspectRatio": "RATIO_1_1",
+              "imageWidth": 20,
+              "cdnSettings": {
+                "size": 64
+              },
+              "fitType": "FIT_CENTER"
+            }
+          ]
+        }
+      },
+      "webReviewProductScore-3132021-default-1": {
+        "url": "product/semniki-avtomobilnyh-klips-usilennye-lopatki-dlya-snyatiya-obshivki-i-plastika-v-salone-avto-6-sht-3491634425/reviews",
+        "reviewsCount": 336,
+        "itemId": "3491634425",
+        "totalScore": 4.9
+      },
+      "webProductHeading-3385933-default-1": {
+        "title": "Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт",
+        "rowCount": 3
+      }
+    }
+  },
+  "continuation": {
+    "widgetStates": {
+      "webCharacteristics-3282540-pdpPage2column-2": "{\"totalCount\":7, \"link\":\"https://www.ozon.ru/product/semniki-avtomobilnyh-klips-usilennye-lopatki-dlya-snyatiya-obshivki-i-plastika-v-salone-avto-6-sht-3491634425/features/\", \"characteristics\":[{\"short\":[{\"key\":\"Sku\", \"name\":\"Артикул\", \"values\":[{\"text\":\"3491634425\", \"key\":\"Sku\", \"trackingInfo\":{\"click\":{\"actionType\":\"click\", \"key\":\"1oyl1QYt2XiWpRaE2SrHkV1n3tajdpdR\"}}}], \"copyText\":\"3491634425\"}, {\"key\":\"Type\", \"name\":\"Тип\", \"values\":[{\"text\":\"Съемник\", \"key\":\"Type_0\"}]}, {\"key\":\"QuantityinItem\", \"name\":\"Количество инструментов в наборе, шт.\", \"values\":[{\"text\":\"6\", \"key\":\"QuantityinItem_0\"}]}, {\"key\":\"Material_Auto\", \"name\":\"Материал\", \"values\":[{\"text\":\"Металл\", \"key\":\"Material_Auto_0\"}]}, {\"key\":\"length\", \"name\":\"Длина, мм\", \"values\":[{\"text\":\"24\", \"key\":\"length_0\"}]}, {\"key\":\"NeutralWidthMM\", \"name\":\"Ширина, мм\", \"values\":[{\"text\":\"130\", \"key\":\"NeutralWidthMM_0\"}]}, {\"key\":\"Color\", \"name\":\"Цвет\", \"values\":[{\"text\":\"Светло-серый\", \"key\":\"Color_0\"}]}, {\"key\":\"Country\", \"name\":\"Страна-изготовитель\", \"values\":[{\"text\":\"Китай\", \"key\":\"Country_0\"}]}]}], \"productTitle\":\"Характеристики: Съемники автомобильных клипс, усиленные. Лопатки для снятия обшивки и пластика в салоне авто, 6 шт\", \"lexemes\":{\"allCharacteristicsText\":\"Все характеристики\", \"ariaLabel\":\"Подсказка\", \"collapseText\":\"Свернуть\", \"moreText\":\"Подробнее\", \"notificationError\":\"Ваш браузер не поддерживает данный функционал\", \"shawAllCharacteristicsText\":\"Показать все характеристики\", \"successfulCopyText\":\"Артикул скопирован\"}, \"cellTrackingInfo\":{\"uis\":{\"main\":\"1oyl1Y4UpfV8WPDdmoOpaheUKPc25sPu\", \"sku\":\"1oyl1QYt2XiWpRaE2SrHkV1n3tajdpdR\", \"suggest\":\"1oyl1U_ZvlPs1gvIuGwnJ_kuzR9BozWV\"}}, \"trackingInfo\":{\"view\":{\"actionType\":\"view\", \"key\":\"1oyl1Y4UpfV8WPDdmoOpaheUKPc25sPu\"}},\"params\":{\"anchor\":\"section-characteristics\",\"canExpand\":false,\"columns\":2,\"dataType\":\"characteristics\",\"disablePaidBrand\":false,\"disclaimer\":\"Информация о технических характеристиках, комплекте поставки, стране изготовления, внешнем виде и цвете товара носит справочный характер и основывается на последних доступных к моменту публикации сведениях\",\"hintMaxLength\":1500,\"isShowTitleAsH1\":false,\"isWidgetCharacteristicsOnPage\":false,\"isWidgetDescriptionOnPage\":false,\"limit\":300,\"linkToCharacteristics\":\"#section-characteristics\",\"linkToCharacteristicsButtonText\":\"Перейти к характеристикам\",\"linkToDescription\":\"#section-description\",\"linkToDescriptionButtonText\":\"Перейти к описанию\",\"linkToExternal\":\"\",\"linkToExternalText\":\"Подробнее\",\"markedDownLink\":\"https://docs.ozon.ru/common-mobile/discounted-products/\",\"paramsLinkTarget\":\"self\",\"showLongCharacteristics\":true,\"theme\":\"default\",\"thresholdLength\":60,\"title\":\"Характеристики\",\"topList\":false,\"viewLine\":\"dotted\",\"visibleCount\":100}}",
+      "paginator-318686-pdpPage2column-2": "{\"nextPage\":\"/product/3491634425/?layout_container=pdpReviews&layout_page_index=2&sh=FcIJ7whEsA&start_page_id=d8005668e8c40f8b2ccecf56066206d6\",\"size\":10,\"offsetTop\":3000,\"fetchType\":\"scroll\",\"minHeight\":200,\"layoutContainer\":\"pdpReviews\"}",
+      "webDescription-2983278-pdpPage2column-2": "{\"characteristics\":[{\"title\":\"Комплектация\", \"content\":\"Съемник + упаковка в тканевый мешок + картонная упаковка\"}], \"lexemes\":{\"errorMessage\":\"Не удалось загрузить статью.\", \"externalDescriptionText\":\"Читать далее\", \"showAllText\":\"Показать полностью\"},\"params\":{\"anchor\":\"section-description\",\"descriptionMode\":\"characteristics\",\"enableClickableLinks\":false,\"isWidgetCharacteristicsOnPage\":false,\"isWidgetDescriptionOnPage\":false,\"linkToCharacteristics\":\"#section-characteristics\",\"linkToCharacteristicsButtonText\":\"Перейти к характеристикам\",\"linkToDescription\":\"#section-description\",\"linkToDescriptionButtonText\":\"Перейти к описанию\",\"linkToExternal\":\"\",\"linkToExternalText\":\"Подробнее\",\"loaderOffsetTop\":63,\"maxHeight\":512,\"shortDescriptionLimit\":1000,\"tabTitleRichAnnotation\":\"\",\"tabTitleRichContent\":\"\",\"title\":\"\"}}",
+      "paginator-3702641-pdpPage2column-2": "{\"nextPage\":\"/product/3491634425/?layout_container=BottomShelfs&layout_page_index=3&sh=FcIJ7whEsA&start_page_id=d8005668e8c40f8b2ccecf56066206d6\",\"size\":10,\"fetchType\":\"scroll\",\"layoutContainer\":\"default\"}",
+      "webDescription-2983286-pdpPage2column-2": "{\"richAnnotationJson\":{\"content\":[{\"blocks\":[{\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-g/6731123560.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-g/6731123560.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-p/6731123533.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-p/6731123533.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-8/6731123624.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-8/6731123624.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-r/6731123715.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-r/6731123715.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-5/6731123657.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-5/6731123657.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-7/6731123515.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-7/6731123515.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-e/6731123630.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-e/6731123630.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-3/6731123583.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-3/6731123583.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-s/6731123608.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-s/6731123608.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-6/6731123586.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-6/6731123586.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-u/6731123682.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-u/6731123682.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-4/6731123620.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-4/6731123620.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}, {\"img\":{\"alt\":\"\", \"position\":\"width_full\", \"positionMobile\":\"width_full\", \"src\":\"https://ir-20.ozonstatic.cn/s3/multimedia-j/6731123671.jpg\", \"srcMobile\":\"https://ir-20.ozonstatic.cn/s3/multimedia-j/6731123671.jpg\"}, \"imgLink\":\"\", \"text\":{\"content\":null}, \"title\":{\"content\":null}}], \"text\":{\"content\":null}, \"type\":\"roll\", \"widgetName\":\"raShowcase\"}], \"version\":0.3}, \"richAnnotationType\":\"JSON\", \"lexemes\":{\"errorMessage\":\"Не удалось загрузить статью.\", \"externalDescriptionText\":\"Читать далее\", \"showAllText\":\"Показать полностью\"}, \"clickableLinksEnabled\":true,\"params\":{\"anchor\":\"section-description\",\"descriptionMode\":\"full\",\"enableClickableLinks\":true,\"isWidgetCharacteristicsOnPage\":false,\"isWidgetDescriptionOnPage\":false,\"linkToCharacteristics\":\"#section-characteristics\",\"linkToCharacteristicsButtonText\":\"Перейти к характеристикам\",\"linkToDescription\":\"#section-description\",\"linkToDescriptionButtonText\":\"Перейти к описанию\",\"linkToExternal\":\"\",\"linkToExternalText\":\"Подробнее\",\"loaderOffsetTop\":63,\"maxHeight\":700,\"shortDescriptionLimit\":1000,\"tabTitleRichAnnotation\":\"О товаре\",\"tabTitleRichContent\":\"Обзор товара\",\"title\":\"Описание\"}}"
+    }
+  }
+}

@@ -1,3 +1,7 @@
+> **当前正式版代码已于 2026-09-29 按线上容器核对同步。**
+> API、AI worker、普通 worker 和 Web 的文件清单、版本差异及校验方法见 [正式版快照](deploy/production/snapshot/README.md)。
+> `app/production/` 保留实际线上 Web 文件；根源码与角色覆盖文件用于还原各服务代码。扩展 1.0.28、采集助手 1.0.29 的发布代码及版本信息已同步。
+
 # QH Ozon Local Clone
 
 This workspace contains a local QH Ozon dashboard clone and a copied QH browser extension.

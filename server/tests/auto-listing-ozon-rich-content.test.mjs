@@ -130,7 +130,7 @@ test("rejects unknown blocks, extra patch-like keys, non-Russian documents, and 
     mutate(value);
     assert.throws(
       () => convertAutoListingRichContentToOzon(value),
-      (error) => error?.code === "AUTO_LISTING_OZON_RICH_CONTENT_INVALID",
+      (error) => error?.code === "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID",
     );
   }
 });
@@ -142,11 +142,11 @@ test("binds every URL to the injected production publication origin", () => {
   ]) {
     const value = fixture();
     value.publicationPolicy.origin = origin;
-    assert.throws(() => convertAutoListingRichContentToOzon(value), (error) => error?.code === "AUTO_LISTING_OZON_RICH_CONTENT_INVALID");
+    assert.throws(() => convertAutoListingRichContentToOzon(value), (error) => error?.code === "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID");
   }
   const crossOrigin = fixture();
   crossOrigin.publishedAssets[0].publishedUrl = "https://other.example.test/main.webp";
-  assert.throws(() => convertAutoListingRichContentToOzon(crossOrigin), (error) => error?.code === "AUTO_LISTING_OZON_RICH_CONTENT_INVALID");
+  assert.throws(() => convertAutoListingRichContentToOzon(crossOrigin), (error) => error?.code === "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID");
 });
 
 test("rejects private, temporary, credential-bearing, non-HTTPS, duplicate, and unaccepted publication evidence", () => {
@@ -164,14 +164,14 @@ test("rejects private, temporary, credential-bearing, non-HTTPS, duplicate, and 
     value.publishedAssets[0] = invalid;
     assert.throws(
       () => convertAutoListingRichContentToOzon(value),
-      (error) => error?.code === "AUTO_LISTING_OZON_RICH_CONTENT_INVALID",
+      (error) => error?.code === "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID",
     );
   }
   const duplicate = fixture();
   duplicate.publishedAssets.push({ ...duplicate.publishedAssets[0] });
   assert.throws(
     () => convertAutoListingRichContentToOzon(duplicate),
-    (error) => error?.code === "AUTO_LISTING_OZON_RICH_CONTENT_INVALID",
+    (error) => error?.code === "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID",
   );
 });
 
@@ -184,13 +184,13 @@ test("keeps output within the versioned UTF-8 boundary and rejects oversized tex
   oversizedText.richContent.blocks[1].text = `Русский ${"а".repeat(8_192)}`;
   assert.throws(
     () => convertAutoListingRichContentToOzon(oversizedText),
-    (error) => error?.code === "AUTO_LISTING_OZON_RICH_CONTENT_INVALID",
+    (error) => error?.code === "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID",
   );
 
   const oversizedUrl = fixture();
   oversizedUrl.publishedAssets[0].publishedUrl = `https://listing.example.test/${"a".repeat(8_192)}.webp`;
   assert.throws(
     () => convertAutoListingRichContentToOzon(oversizedUrl),
-    (error) => error?.code === "AUTO_LISTING_OZON_RICH_CONTENT_INVALID",
+    (error) => error?.code === "AUTO_LISTING_ZONGZI_RICH_CONTENT_INVALID",
   );
 });

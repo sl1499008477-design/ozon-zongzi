@@ -16,7 +16,7 @@ const translatedTree = (categoryName, typeName) => [{
 
 function assertTaxonomyRejected(operation) {
   assert.throws(operation, (error) => (
-    error?.code === "OZON_TAXONOMY_CONTRACT_INVALID"
+    error?.code === "ZONGZI_TAXONOMY_CONTRACT_INVALID"
       && !String(error?.message).includes("vendor-secret")
       && !Object.hasOwn(error, "cause")
   ));

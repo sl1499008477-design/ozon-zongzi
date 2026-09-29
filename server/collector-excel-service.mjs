@@ -290,7 +290,7 @@ async function promiseBeforeDeadline(promise, deadline) {
   }
 }
 
-async function resolveAllowedAddresses(hostname, {
+export async function resolveAllowedAddresses(hostname, {
   lookupHost = dnsLookup,
   deadline,
   allowBenchmarkAddressHost = "",
@@ -546,7 +546,7 @@ function decodeDataImage(target, limits) {
   return { buffer, extension, contentType: `image/${extension}` };
 }
 
-function validateHttpTarget(target) {
+export function validateHttpTarget(target) {
   let parsed;
   try {
     parsed = new URL(target);
